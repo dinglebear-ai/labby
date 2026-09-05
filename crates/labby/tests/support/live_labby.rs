@@ -19,6 +19,21 @@ const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(45);
 const LOG_TAIL_BYTES: usize = 32 * 1024;
 const DROP_DEADLINE: Duration = Duration::from_secs(3);
+const CLEANUP_MAX_FILES: usize = 4_096;
+const CLEANUP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const CLEANUP_MAX_DEPTH: usize = 32;
+
+#[cfg(unix)]
+#[path = "live_labby/guardian.rs"]
+mod guardian;
+
+#[cfg(unix)]
+#[path = "live_labby/process_inventory.rs"]
+mod process_inventory;
+
+#[cfg(unix)]
+#[path = "live_labby/process_identity.rs"]
+mod process_identity;
 
 /// OS runtime inputs only; never inherit credentials, proxies, or user configuration.
 fn isolated_runtime_env() -> Vec<(&'static str, OsString)> {
@@ -41,8 +56,40 @@ fn labby_binary() -> PathBuf {
 }
 
 struct RevocationGuard {
-    revoke: Box<dyn FnMut() -> Result<(), String> + Send>,
-    is_absent: Box<dyn Fn() -> Result<bool, String> + Send>,
+    session: String,
+    command: Command,
+    absent_paths: NonEmptyAbsencePaths,
+}
+
+#[derive(Debug)]
+struct NonEmptyAbsencePaths {
+    first: PathBuf,
+    rest: Vec<PathBuf>,
+}
+
+impl NonEmptyAbsencePaths {
+    fn try_from_paths(mut paths: Vec<PathBuf>) -> Result<Self, String> {
+        if paths.is_empty() {
+            return Err("credential/session revocation requires absence evidence".into());
+        }
+        let first = paths.remove(0);
+        Ok(Self { first, rest: paths })
+    }
+
+    fn any_exists(&self) -> Result<bool, String> {
+        for path in std::iter::once(&self.first).chain(&self.rest) {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => return Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "credential/session absence could not be verified: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(false)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,8 +122,13 @@ pub(crate) struct OwnershipLedger {
     pub(crate) created_at_ms: u128,
     pub(crate) nonce: String,
     pub(crate) root: PathBuf,
+    /// Owned Rust Child / process-group leader; a guardian when supervised.
     pub(crate) pid: Option<u32>,
     pub(crate) process_start_identity: Option<String>,
+    /// Distinct roles: never present a guardian PID as the actual Labby daemon.
+    pub(crate) guardian_pid: Option<u32>,
+    pub(crate) daemon_pid: Option<u32>,
+    pub(crate) daemon_process_start_identity: Option<String>,
     pub(crate) process_group: Option<i32>,
     pub(crate) listener: Option<SocketAddr>,
     pub(crate) listener_identity: Option<String>,
@@ -111,7 +163,12 @@ pub(crate) struct LiveLabbyBuilder {
     config: Option<String>,
     fail_evidence_writes: bool,
     existing_root: Option<PathBuf>,
+    identity_probe: Option<IdentityProbe>,
 }
+
+type IdentityProbe = std::sync::Arc<
+    dyn Fn(u32, SocketAddr, Option<&Path>, Instant) -> Result<String, String> + Send + Sync,
+>;
 
 impl Default for LiveLabbyBuilder {
     fn default() -> Self {
@@ -125,6 +182,7 @@ impl Default for LiveLabbyBuilder {
             config: None,
             fail_evidence_writes: false,
             existing_root: None,
+            identity_probe: None,
         }
     }
 }
@@ -268,6 +326,7 @@ impl LiveLabbyBuilder {
                 temp: temp.clone(),
                 args: self.args.clone(),
                 extra_env: self.extra_env.clone(),
+                identity_probe: self.identity_probe.clone(),
             };
             // The ownership nonce is persisted by design, so it must never double as
             // a credential canary. The credential is independent and never serialized.
@@ -298,23 +357,49 @@ impl LiveLabbyBuilder {
                 .env("LABBY_AUTH_MODE", "bearer")
                 .env("LABBY_MCP_HTTP_TOKEN", &credential_canary)
                 .envs(isolated_runtime_env())
-                .envs(self.extra_env)
+                .envs(self.extra_env);
+            #[cfg(unix)]
+            let (mut command, guardian_admission) = guardian::supervise(command)?;
+            command
                 .stdin(Stdio::null())
                 .stdout(stdout)
                 .stderr(stderr)
                 .kill_on_drop(true);
             configure_process_group(&mut command);
-            let child = command.spawn().map_err(|error| error.to_string())?;
+            let readiness_expires = Instant::now() + self.readiness_deadline;
+            let mut child = command.spawn().map_err(|error| error.to_string())?;
+            let (start_identity, owned_job) = capture_spawned_child_identity(
+                &mut child,
+                address,
+                self.identity_probe.as_ref(),
+                #[cfg(unix)]
+                guardian_admission.as_deref(),
+                readiness_expires,
+            )?;
             #[cfg(windows)]
-            let windows_job = child
-                .id()
-                .map(labby_winjob::JobObject::assign)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let windows_job = owned_job;
+            #[cfg(not(windows))]
+            let _ = owned_job;
             ledger.pid = child.id();
-            ledger.process_start_identity = ledger.pid.map(process_start_identity);
+            ledger.process_start_identity = Some(start_identity);
+            ledger.daemon_pid = ledger.pid;
+            ledger.daemon_process_start_identity = ledger.process_start_identity.clone();
+            #[cfg(unix)]
+            if guardian_admission.is_some() {
+                ledger.guardian_pid = ledger.pid;
+                ledger.daemon_pid = None;
+                ledger.daemon_process_start_identity = None;
+            }
             ledger.process_group = ledger.pid.and_then(|pid| i32::try_from(pid).ok());
-            write_ledger(&manifest_path, &ledger)?;
+            if let Err(error) = write_ledger(&manifest_path, &ledger) {
+                #[cfg(windows)]
+                let cleanup_job = windows_job;
+                #[cfg(not(windows))]
+                let cleanup_job = unassigned_cleanup_job();
+                let mut failures = vec![format!("daemon ownership publication failed: {error}")];
+                terminate_and_reap_owned_child(&mut child, cleanup_job, &mut failures);
+                return Err(failures.join("; "));
+            }
             evidence.push(
                 EvidenceKind::Process,
                 format!("spawned pid {:?}", child.id()),
@@ -346,9 +431,11 @@ impl LiveLabbyBuilder {
                 fail_evidence_writes: self.fail_evidence_writes,
                 #[cfg(windows)]
                 windows_job,
+                #[cfg(unix)]
+                guardian_admission,
                 finalized: false,
             };
-            if let Err(error) = guard.wait_ready(self.readiness_deadline).await {
+            if let Err(error) = guard.wait_ready(readiness_expires).await {
                 guard.primary_failure = Some(error.clone());
                 let diagnostics = guard.diagnostics(Some(&error));
                 drop(guard.finish_with_deadline(Duration::from_secs(5)).await);
@@ -387,11 +474,14 @@ pub(crate) struct LiveLabbyGuard {
     fail_evidence_writes: bool,
     #[cfg(windows)]
     windows_job: Option<labby_winjob::JobObject>,
+    #[cfg(unix)]
+    guardian_admission: Option<PathBuf>,
     finalized: bool,
 }
 
 #[derive(Clone)]
 struct RestartRecipe {
+    identity_probe: Option<IdentityProbe>,
     address: SocketAddr,
     home: PathBuf,
     labby_home: PathBuf,
@@ -447,29 +537,59 @@ impl LiveLabbyGuard {
             .env("LABBY_AUTH_MODE", "bearer")
             .env("LABBY_MCP_HTTP_TOKEN", &self.credential_canary)
             .envs(isolated_runtime_env())
-            .envs(recipe.extra_env.clone())
+            .envs(recipe.extra_env.clone());
+        #[cfg(unix)]
+        let (mut command, guardian_admission) = guardian::supervise(command)?;
+        command
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
             .kill_on_drop(true);
         configure_process_group(&mut command);
-        let child = command.spawn().map_err(|error| error.to_string())?;
+        let readiness_expires = Instant::now() + DEFAULT_DEADLINE;
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let (start_identity, owned_job) = capture_spawned_child_identity(
+            &mut child,
+            recipe.address,
+            recipe.identity_probe.as_ref(),
+            #[cfg(unix)]
+            guardian_admission.as_deref(),
+            readiness_expires,
+        )?;
         #[cfg(windows)]
         {
-            self.windows_job = child
-                .id()
-                .map(labby_winjob::JobObject::assign)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            self.windows_job = owned_job;
         }
+        #[cfg(not(windows))]
+        let _ = owned_job;
         self.ledger.generation += 1;
         self.ledger.pid = child.id();
-        self.ledger.process_start_identity = self.ledger.pid.map(process_start_identity);
+        self.ledger.process_start_identity = Some(start_identity);
+        self.ledger.guardian_pid = None;
+        self.ledger.daemon_pid = self.ledger.pid;
+        self.ledger.daemon_process_start_identity = self.ledger.process_start_identity.clone();
+        #[cfg(unix)]
+        {
+            self.guardian_admission = guardian_admission;
+            if self.guardian_admission.is_some() {
+                self.ledger.guardian_pid = self.ledger.pid;
+                self.ledger.daemon_pid = None;
+                self.ledger.daemon_process_start_identity = None;
+            }
+        }
         self.ledger.process_group = self.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
-        write_ledger(&self.manifest_path, &self.ledger)?;
+        if let Err(error) = write_ledger(&self.manifest_path, &self.ledger) {
+            #[cfg(windows)]
+            let cleanup_job = self.windows_job.take();
+            #[cfg(not(windows))]
+            let cleanup_job = unassigned_cleanup_job();
+            let mut failures = vec![format!("daemon ownership publication failed: {error}")];
+            terminate_and_reap_owned_child(&mut child, cleanup_job, &mut failures);
+            return Err(failures.join("; "));
+        }
         self.child = Some(child);
         self.evidence.push(EvidenceKind::Process, "restarted labby");
-        self.wait_ready(DEFAULT_DEADLINE).await
+        self.wait_ready(readiness_expires).await
     }
 
     pub(crate) async fn finish(mut self) -> CleanupResult {
@@ -519,15 +639,38 @@ impl LiveLabbyGuard {
     pub(crate) fn register_credential_session(
         &mut self,
         session: impl Into<String>,
-        revoke: impl FnMut() -> Result<(), String> + Send + 'static,
-        is_absent: impl Fn() -> Result<bool, String> + Send + 'static,
-    ) {
-        self.ledger.credential_sessions.push(session.into());
+        command: Command,
+        absent_paths: Vec<PathBuf>,
+    ) -> Result<(), String> {
+        let absent_paths = NonEmptyAbsencePaths::try_from_paths(absent_paths)?;
+        let session = session.into();
+        self.ledger.credential_sessions.push(session.clone());
         self.revocations.push(RevocationGuard {
-            revoke: Box::new(revoke),
-            is_absent: Box::new(is_absent),
+            session,
+            command,
+            absent_paths,
         });
         drop(write_ledger(&self.manifest_path, &self.ledger));
+        Ok(())
+    }
+
+    /// Settle one guard only after the caller has verified authoritative
+    /// credential/session denial. File absence alone is not revocation proof.
+    pub(crate) fn confirm_credential_session_revoked(
+        &mut self,
+        session: &str,
+    ) -> Result<(), String> {
+        let index = self
+            .revocations
+            .iter()
+            .position(|guard| guard.session == session)
+            .ok_or_else(|| "confirmed revocation has no matching guard".to_string())?;
+        if self.revocations[index].absent_paths.any_exists()? {
+            return Err("confirmed revocation still has secret outputs".into());
+        }
+        self.revocations.remove(index);
+        self.ledger.credential_sessions.retain(|id| id != session);
+        Ok(())
     }
 
     async fn finish_inner(&mut self, timeout: Duration) -> CleanupResult {
@@ -559,51 +702,56 @@ impl LiveLabbyGuard {
                     .push(format!("unsafe owned lock path: {}", lock.display()));
             }
         }
-        for revoke in &mut self.revocations {
-            if let Err(error) = (revoke.revoke)() {
-                result
-                    .failures
-                    .push(format!("credential/session revocation failed: {error}"));
-            } else {
-                match (revoke.is_absent)() {
-                    Ok(true) => {}
-                    Ok(false) => result
-                        .failures
-                        .push("credential/session remained after revocation".into()),
-                    Err(error) => result.failures.push(format!(
-                        "credential/session absence verification failed: {error}"
-                    )),
+        let revocation_count = self.revocations.len();
+        let mut revocations = std::mem::take(&mut self.revocations);
+        match run_cleanup_blocking(absolute, "credential/session cleanup", move |deadline| {
+            let mut failures = Vec::new();
+            for revoke in &mut revocations {
+                if Instant::now() >= absolute {
+                    failures.push("credential/session cleanup deadline exhausted".into());
+                    break;
+                }
+                if let Err(error) = run_owned_command(&mut revoke.command, deadline) {
+                    failures.push(format!("credential/session revocation failed: {error}"));
+                } else {
+                    match revoke.absent_paths.any_exists() {
+                        Ok(false) => {}
+                        Ok(true) => {
+                            failures.push("credential/session remained after revocation".into())
+                        }
+                        Err(error) => failures.push(error),
+                    }
                 }
             }
+            failures
+        })
+        .await
+        {
+            Ok(failures) => result.failures.extend(failures),
+            Err(error) => result.failures.push(error),
         }
-        if self.revocations.len() != self.ledger.credential_sessions.len() {
+        if revocation_count != self.ledger.credential_sessions.len() {
             result
                 .failures
                 .push("credential/session ledger has no matching revocation guard".into());
         }
-        self.revocations.clear();
         self.ledger.credential_sessions.clear();
-        for path in [&self.stdout_path, &self.stderr_path] {
-            if let Err(error) = cap_log_file(path) {
-                result
-                    .failures
-                    .push(format!("log retention failed: {error}"));
-            }
-            let bytes = std::fs::read(path).unwrap_or_default();
-            for canary in &self.secret_canaries {
-                if !canary.is_empty()
-                    && bytes
-                        .windows(canary.len())
-                        .any(|window| window == canary.as_bytes())
-                {
-                    result
-                        .failures
-                        .push(format!("secret canary appeared in {}", path.display()));
-                }
-            }
+        let root = self.root.clone();
+        let stdout_path = self.stdout_path.clone();
+        let stderr_path = self.stderr_path.clone();
+        let canaries = self.secret_canaries.clone();
+        let artifact_cleanup = run_cleanup_blocking(
+            absolute,
+            "artifact retention and secret scan",
+            move |deadline| {
+                run_artifact_cleanup_helper(&root, &stdout_path, &stderr_path, &canaries, deadline)
+            },
+        );
+        match artifact_cleanup.await {
+            Ok(Ok(failures)) => result.failures.extend(failures),
+            Ok(Err(error)) => result.failures.push(error),
+            Err(error) => result.failures.push(error),
         }
-        cap_log_tree(&self.root.join("logs"), &mut result.failures);
-        scan_artifact_tree(&self.root, &self.secret_canaries, &mut result.failures);
         if TcpListener::bind(self.ledger.listener.expect("listener recorded")).is_err() {
             result
                 .failures
@@ -635,12 +783,12 @@ impl LiveLabbyGuard {
         }
         self.finalized = true;
         let owns_root = self.root_guard.is_some();
-        if let Some(root_guard) = self.root_guard.take()
-            && let Err(error) = root_guard.close()
-        {
-            result
-                .failures
-                .push(format!("owned root deletion failed: {error}"));
+        if let Some(root_guard) = self.root_guard.take() {
+            if let Err(error) = root_guard.close() {
+                result
+                    .failures
+                    .push(format!("owned root deletion failed: {error}"));
+            }
         }
         if owns_root && self.root.exists() {
             result.failures.push(format!(
@@ -651,7 +799,7 @@ impl LiveLabbyGuard {
         result
     }
 
-    async fn wait_ready(&mut self, deadline: Duration) -> Result<(), String> {
+    async fn wait_ready(&mut self, expires: Instant) -> Result<(), String> {
         // The workspace deliberately builds reqwest with rustls-no-provider so
         // each executable/test binary chooses its provider explicitly.
         drop(rustls::crypto::ring::default_provider().install_default());
@@ -659,18 +807,31 @@ impl LiveLabbyGuard {
             .timeout(Duration::from_secs(1))
             .build()
             .map_err(|e| e.to_string())?;
-        let expires = Instant::now() + deadline;
         loop {
-            if let Some(status) = self
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().ok())
-                .flatten()
-            {
-                return Err(format!("labby exited before readiness: {status}"));
+            if Instant::now() >= expires {
+                return Err("readiness deadline exceeded".into());
             }
-            let health = client.get(&self.descriptor.health_url).send().await;
-            let ready = client.get(&self.descriptor.ready_url).send().await;
+            if let Some(child) = self.child.as_mut() {
+                let pid = child.id().ok_or("daemon was reaped before readiness")?;
+                if let Some(status) = observe_owned_child(child, pid).map_err(|error| {
+                    format!("daemon readiness process observation failed: {error}")
+                })? {
+                    return Err(format!("labby exited before readiness: {status}"));
+                }
+            }
+            let request_deadline = tokio::time::Instant::from_std(expires);
+            let health = tokio::time::timeout_at(
+                request_deadline,
+                client.get(&self.descriptor.health_url).send(),
+            )
+            .await
+            .map_err(|_| "readiness deadline exceeded".to_string())?;
+            let ready = tokio::time::timeout_at(
+                request_deadline,
+                client.get(&self.descriptor.ready_url).send(),
+            )
+            .await
+            .map_err(|_| "readiness deadline exceeded".to_string())?;
             self.evidence.push(
                 EvidenceKind::Readiness,
                 format!(
@@ -686,6 +847,14 @@ impl LiveLabbyGuard {
                     .as_ref()
                     .is_ok_and(|response| response.status().is_success())
             {
+                if Instant::now() >= expires {
+                    return Err("readiness identity deadline exceeded".into());
+                }
+                #[cfg(unix)]
+                guardian::record_daemon_identity(self, expires)?;
+                if Instant::now() >= expires {
+                    return Err("readiness identity deadline exceeded".into());
+                }
                 self.evidence
                     .push(EvidenceKind::Readiness, "health and ready succeeded");
                 return Ok(());
@@ -693,19 +862,44 @@ impl LiveLabbyGuard {
             if Instant::now() >= expires {
                 return Err("readiness deadline exceeded".into());
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep_until(tokio::time::Instant::from_std(
+                expires.min(Instant::now() + Duration::from_millis(50)),
+            ))
+            .await;
         }
     }
 
     async fn stop_process(&mut self, deadline: Instant) -> Result<bool, String> {
-        self.validate_ownership()?;
+        if let Err(error) = self.validate_ownership_before(deadline) {
+            let mut failures = vec![error];
+            if let Some(child) = self.child.as_mut() {
+                #[cfg(windows)]
+                let job = self.windows_job.take();
+                #[cfg(not(windows))]
+                let job = unassigned_cleanup_job();
+                let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+                terminate_and_reap_owned_child_with_signal(
+                    child,
+                    job,
+                    &mut failures,
+                    kill_deadline,
+                    |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
+                );
+            }
+            return Err(failures.join("; "));
+        }
         let Some(mut child) = self.child.take() else {
             return Ok(false);
         };
+        let pid = child
+            .id()
+            .ok_or("owned daemon has no PID before settlement")?;
+        let mut failures = Vec::new();
         #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
+        {
+            require_waitable_cleanup_owner(&child, pid, &mut failures);
             let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(group),
+                nix::unistd::Pid::from_raw(pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
             );
         }
@@ -720,55 +914,64 @@ impl LiveLabbyGuard {
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let graceful_window = (remaining / 2).min(Duration::from_secs(2));
-        let mut forced = false;
-        match tokio::time::timeout(graceful_window, child.wait()).await {
-            Ok(Ok(status)) => self
-                .evidence
-                .push(EvidenceKind::Process, format!("exit status={status}")),
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(_) => {
-                forced = true;
-                #[cfg(unix)]
-                if let Some(group) = self.ledger.process_group {
-                    let _ = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(group),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
+        let graceful_deadline = Instant::now() + graceful_window;
+        let status = loop {
+            match observe_owned_child(&mut child, pid) {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < graceful_deadline => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
-                drop(child.start_kill());
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let status = tokio::time::timeout(remaining, child.wait())
-                    .await
-                    .map_err(|_| "cleanup deadline exhausted".to_string())?
-                    .map_err(|e| e.to_string())?;
-                self.evidence.push(
-                    EvidenceKind::Process,
-                    format!("forced exit status={status}"),
-                );
+                Ok(None) => break None,
+                Err(error) => {
+                    failures.push(format!("owned daemon exit observation failed: {error}"));
+                    break None;
+                }
             }
+        };
+        let forced = status.is_none();
+        if let Some(status) = status {
+            self.evidence
+                .push(EvidenceKind::Process, format!("exit status={status}"));
         }
         #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
-            // Signal escalation and the owned child wait remain constrained by
-            // `deadline`. After SIGKILL, allow a separate bounded interval for
-            // the kernel/init reaper to remove already-dead grandchildren from
-            // process-group enumeration on loaded hosts.
-            let reap_deadline = Instant::now() + Duration::from_secs(2);
-            let mut members = process_group_members(group);
-            while !members.is_empty() && Instant::now() < reap_deadline {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                members = process_group_members(group);
+        let forced = if !forced {
+            match process_group_members_typed(pid as i32, deadline) {
+                Ok(members) => !members.is_empty(),
+                Err(failure) => {
+                    if failure.unsettled.is_some() {
+                        terminate_and_reap_owned_child(
+                            &mut child,
+                            unassigned_cleanup_job(),
+                            &mut failures,
+                        );
+                    }
+                    failures.push(settle_inventory_failure(failure));
+                    true
+                }
             }
-            if !members.is_empty() {
-                return Err(format!(
-                    "owned process group leaked descendants: {members:?}"
-                ));
-            }
+        } else {
+            forced
+        };
+        let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+        terminate_and_reap_owned_child_with_signal(
+            &mut child,
+            unassigned_cleanup_job(),
+            &mut failures,
+            kill_deadline,
+            |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
+        );
+        if failures.is_empty() {
+            Ok(forced)
+        } else {
+            Err(failures.join("; "))
         }
-        Ok(forced)
     }
 
-    fn validate_ownership(&self) -> Result<(), String> {
+    fn validate_ownership(&mut self) -> Result<(), String> {
+        self.validate_ownership_before(Instant::now() + Duration::from_secs(1))
+    }
+
+    fn validate_ownership_before(&mut self, deadline: Instant) -> Result<(), String> {
         let root_metadata =
             std::fs::symlink_metadata(&self.root).map_err(|error| error.to_string())?;
         if root_metadata.file_type().is_symlink() {
@@ -792,6 +995,10 @@ impl LiveLabbyGuard {
             || persisted.root != self.ledger.root
             || persisted.pid != self.ledger.pid
             || persisted.process_start_identity != self.ledger.process_start_identity
+            || persisted.process_group != self.ledger.process_group
+            || persisted.guardian_pid != self.ledger.guardian_pid
+            || persisted.daemon_pid != self.ledger.daemon_pid
+            || persisted.daemon_process_start_identity != self.ledger.daemon_process_start_identity
             || persisted.listener_identity != self.ledger.listener_identity
             || persisted.owned_roots != self.ledger.owned_roots
         {
@@ -819,15 +1026,51 @@ impl LiveLabbyGuard {
         {
             return Err("unsafe ownership manifest identity".into());
         }
-        if let (Some(pid), Some(expected)) = (self.ledger.pid, &self.ledger.process_start_identity)
-            && process_start_identity(pid) != *expected
-        {
-            return Err("owned PID start identity changed".into());
+        #[cfg(unix)]
+        if self.child.is_some() && !self.observed_identity_matches_before(deadline) {
+            return Err("owned PID start identity changed or could not be verified".into());
         }
+        #[cfg(not(unix))]
+        let _ = deadline;
         Ok(())
     }
 
-    pub(crate) fn diagnostics(&self, primary: Option<&str>) -> String {
+    #[cfg(unix)]
+    fn settle_observation_failure(&mut self, mut failure: process_inventory::Failure) -> String {
+        if failure.unsettled.is_some() {
+            let mut errors = vec![failure.message.clone()];
+            if let Some(child) = self.child.as_mut() {
+                terminate_and_reap_owned_child(child, unassigned_cleanup_job(), &mut errors);
+            }
+            failure.message = errors.join("; ");
+        }
+        settle_inventory_failure(failure)
+    }
+
+    #[cfg(unix)]
+    fn observed_identity_matches_before(&mut self, deadline: Instant) -> bool {
+        let (Some(pid), Some(expected)) =
+            (self.ledger.pid, self.ledger.process_start_identity.clone())
+        else {
+            return false;
+        };
+        if process_identity::validate(pid, &expected).is_err() {
+            return false;
+        }
+        let observed = process_identity::capture_typed(pid, deadline)
+            .map_err(|failure| self.settle_observation_failure(failure));
+        process_identity::matches(Some(pid), Some(&expected), observed)
+    }
+
+    pub(crate) fn diagnostics(&mut self, primary: Option<&str>) -> String {
+        #[cfg(unix)]
+        let process_inventory = match self.ledger.process_group.map(process_group_inventory) {
+            Some(Ok(inventory)) => inventory,
+            Some(Err(failure)) => vec![self.settle_observation_failure(failure)],
+            None => Vec::new(),
+        };
+        #[cfg(not(unix))]
+        let process_inventory: Vec<String> = Vec::new();
         let readiness_history = self
             .evidence
             .events
@@ -835,11 +1078,6 @@ impl LiveLabbyGuard {
             .filter(|event| event.kind == EvidenceKind::Readiness)
             .map(|event| event.message.as_str())
             .collect::<Vec<_>>();
-        let process_inventory = self
-            .ledger
-            .process_group
-            .map(process_group_inventory)
-            .unwrap_or_default();
         format!(
             "run={} command={} version={} binary_sha256={} address={} primary={} stdout_tail={} stderr_tail={} health_ready_history={:?} process_inventory={:?} process_pid={:?} process_group={:?} generation={}",
             self.identity.run_id,
@@ -867,64 +1105,68 @@ impl Drop for LiveLabbyGuard {
         self.evidence
             .push(EvidenceKind::Failure, "guard dropped without finish");
         let deadline = Instant::now() + DROP_DEADLINE;
-        let safe_to_signal = owned_process_identity_matches(&self.ledger);
+        #[cfg(unix)]
+        let safe_to_signal = self.observed_identity_matches_before(
+            deadline.min(Instant::now() + Duration::from_secs(1)),
+        );
+        #[cfg(not(unix))]
+        let safe_to_signal = self.child.as_ref().and_then(Child::id) == self.ledger.pid;
         if !safe_to_signal && self.ledger.pid.is_some() {
             self.evidence.push(
                 EvidenceKind::Failure,
-                "drop skipped process signaling: owned PID start identity changed",
+                "drop identity verification failed; only retained child/job authority may settle",
             );
         }
-        #[cfg(unix)]
-        if safe_to_signal && let Some(group) = self.ledger.process_group {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(group),
-                nix::sys::signal::Signal::SIGKILL,
+        if let Some(child) = self.child.as_mut() {
+            #[cfg(windows)]
+            let job = self.windows_job.take();
+            #[cfg(not(windows))]
+            let job = unassigned_cleanup_job();
+            let mut failures = Vec::new();
+            let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+            terminate_and_reap_owned_child_with_signal(
+                child,
+                job,
+                &mut failures,
+                kill_deadline,
+                |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
             );
-        }
-        #[cfg(windows)]
-        if let Some(job) = self.windows_job.take() {
-            let _ = job.close();
-        }
-        if safe_to_signal && let Some(child) = self.child.as_mut() {
-            drop(child.start_kill());
-            while Instant::now() < deadline {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            for failure in failures {
+                self.evidence.push(EvidenceKind::Failure, failure);
             }
         }
         for revoke in &mut self.revocations {
-            if let Err(error) = (revoke.revoke)() {
+            if Instant::now() >= deadline {
+                self.evidence
+                    .push(EvidenceKind::Failure, "drop revocation deadline exhausted");
+                break;
+            }
+            if let Err(error) = run_owned_command(&mut revoke.command, deadline) {
                 self.evidence.push(
                     EvidenceKind::Failure,
                     format!("drop revocation failed: {error}"),
                 );
-            } else if !matches!((revoke.is_absent)(), Ok(true)) {
-                self.evidence.push(
-                    EvidenceKind::Failure,
-                    "drop revocation absence verification failed",
-                );
-            }
-        }
-        #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
-            while !process_group_members(group).is_empty() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let leaked = process_group_members(group);
-            if !leaked.is_empty() {
-                self.evidence.push(
-                    EvidenceKind::Failure,
-                    format!("drop finalization missed descendants: {leaked:?}"),
-                );
+            } else {
+                match revoke.absent_paths.any_exists() {
+                    Ok(false) => {}
+                    Ok(true) => self.evidence.push(
+                        EvidenceKind::Failure,
+                        "drop revocation absence verification failed",
+                    ),
+                    Err(error) => self.evidence.push(EvidenceKind::Failure, error),
+                }
             }
         }
         let mut artifact_scan_failures = Vec::new();
-        scan_artifact_tree(
+        let mut scan_budget = ScanBudget {
+            deadline,
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+        scan_artifact_tree_with_budget(
             &self.root,
             &self.secret_canaries,
             &mut artifact_scan_failures,
+            &mut scan_budget,
         );
         for failure in artifact_scan_failures {
             self.evidence.push(EvidenceKind::Failure, failure);
@@ -939,7 +1181,12 @@ impl Drop for LiveLabbyGuard {
             );
         } else {
             let mut scan_failures = Vec::new();
-            scan_file_for_canaries(&retained, &self.secret_canaries, &mut scan_failures);
+            scan_file_for_canaries_bounded(
+                &retained,
+                &self.secret_canaries,
+                &mut scan_failures,
+                &mut scan_budget,
+            );
             for failure in scan_failures {
                 eprintln!(
                     "labby-e2e drop evidence secret scan run={} failure={failure}",
@@ -1182,6 +1429,24 @@ fn cap_log_file(path: &Path) -> std::io::Result<()> {
 }
 
 fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<String>) {
+    let mut budget = ScanBudget {
+        deadline: Instant::now() + DEFAULT_DEADLINE,
+        bytes_remaining: u64::MAX,
+    };
+    scan_file_for_canaries_bounded(path, canaries, failures, &mut budget);
+}
+
+struct ScanBudget {
+    deadline: Instant,
+    bytes_remaining: u64,
+}
+
+fn scan_file_for_canaries_bounded(
+    path: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    budget: &mut ScanBudget,
+) {
     let Ok(mut file) = std::fs::File::open(path) else {
         return;
     };
@@ -1199,13 +1464,36 @@ fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<S
     let mut retained = Vec::new();
     let mut chunk = [0_u8; 64 * 1024];
     loop {
-        let Ok(read) = file.read(&mut chunk) else {
+        if Instant::now() >= budget.deadline {
+            failures.push(format!(
+                "secret scan deadline exhausted at {}",
+                path.display()
+            ));
+            return;
+        }
+        // Read at most one byte beyond the remaining allowance. That detects an
+        // over-budget file from bytes actually returned by the filesystem without
+        // trusting sparse-file metadata or buffering the file as a whole.
+        let read_limit = budget
+            .bytes_remaining
+            .saturating_add(1)
+            .min(chunk.len() as u64) as usize;
+        let Ok(read) = file.read(&mut chunk[..read_limit]) else {
             failures.push(format!("secret scan failed for {}", path.display()));
             return;
         };
         if read == 0 {
             return;
         }
+        if read as u64 > budget.bytes_remaining {
+            budget.bytes_remaining = 0;
+            failures.push(format!(
+                "artifact scan byte cap exceeded while reading {}",
+                path.display()
+            ));
+            return;
+        }
+        budget.bytes_remaining -= read as u64;
         retained.extend_from_slice(&chunk[..read]);
         if secrets.iter().any(|secret| {
             retained
@@ -1221,8 +1509,43 @@ fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<S
 }
 
 fn scan_artifact_tree(root: &Path, canaries: &[String], failures: &mut Vec<String>) {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
+    scan_artifact_tree_bounded(root, canaries, failures, Instant::now() + DEFAULT_DEADLINE);
+}
+
+fn scan_artifact_tree_bounded(
+    root: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    deadline: Instant,
+) {
+    let mut budget = ScanBudget {
+        deadline,
+        bytes_remaining: CLEANUP_MAX_BYTES,
+    };
+    scan_artifact_tree_with_budget(root, canaries, failures, &mut budget);
+}
+
+fn scan_artifact_tree_with_budget(
+    root: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    budget: &mut ScanBudget,
+) {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut files = 0_usize;
+    let mut discovered = 0_usize;
+    while let Some((path, depth)) = pending.pop() {
+        if Instant::now() >= budget.deadline {
+            failures.push("artifact scan deadline exhausted".into());
+            return;
+        }
+        if depth > CLEANUP_MAX_DEPTH {
+            failures.push(format!(
+                "artifact scan depth cap exceeded at {}",
+                path.display()
+            ));
+            continue;
+        }
         let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -1230,18 +1553,78 @@ fn scan_artifact_tree(root: &Path, canaries: &[String], failures: &mut Vec<Strin
             continue;
         }
         if metadata.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                pending.extend(entries.flatten().map(|entry| entry.path()));
+            if let Err(error) = enqueue_cleanup_directory(
+                &path,
+                depth,
+                &mut pending,
+                &mut discovered,
+                budget.deadline,
+            ) {
+                failures.push(error);
+                return;
             }
         } else if metadata.is_file() {
-            scan_file_for_canaries(&path, canaries, failures);
+            files += 1;
+            if files > CLEANUP_MAX_FILES {
+                failures.push(format!(
+                    "artifact scan resource cap exceeded (files={files})"
+                ));
+                return;
+            }
+            scan_file_for_canaries_bounded(&path, canaries, failures, budget);
+            if failures.last().is_some_and(|failure| {
+                failure.contains("byte cap exceeded") || failure.contains("scan deadline exhausted")
+            }) {
+                return;
+            }
         }
     }
+}
+
+fn enqueue_cleanup_directory(
+    path: &Path,
+    depth: usize,
+    pending: &mut Vec<(PathBuf, usize)>,
+    discovered: &mut usize,
+    deadline: Instant,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(path)
+        .map_err(|error| format!("cleanup directory read failed: {error}"))?;
+    for entry in entries {
+        if Instant::now() >= deadline {
+            return Err("cleanup directory scan deadline exhausted".into());
+        }
+        if *discovered >= CLEANUP_MAX_FILES {
+            return Err("cleanup directory entry cap exceeded".into());
+        }
+        let entry = entry.map_err(|error| format!("cleanup directory entry failed: {error}"))?;
+        *discovered += 1;
+        pending.push((entry.path(), depth + 1));
+    }
+    Ok(())
 }
 
 fn cap_log_tree(root: &Path, failures: &mut Vec<String>) {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
+    cap_log_tree_bounded(root, failures, Instant::now() + DEFAULT_DEADLINE);
+}
+
+fn cap_log_tree_bounded(root: &Path, failures: &mut Vec<String>, deadline: Instant) {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut files = 0_usize;
+    let mut discovered = 0_usize;
+    let mut bytes = 0_u64;
+    while let Some((path, depth)) = pending.pop() {
+        if Instant::now() >= deadline {
+            failures.push("log retention deadline exhausted".into());
+            return;
+        }
+        if depth > CLEANUP_MAX_DEPTH {
+            failures.push(format!(
+                "log retention depth cap exceeded at {}",
+                path.display()
+            ));
+            continue;
+        }
         let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -1249,82 +1632,1003 @@ fn cap_log_tree(root: &Path, failures: &mut Vec<String>) {
             continue;
         }
         if metadata.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                pending.extend(entries.flatten().map(|entry| entry.path()));
+            if let Err(error) =
+                enqueue_cleanup_directory(&path, depth, &mut pending, &mut discovered, deadline)
+            {
+                failures.push(error);
+                return;
             }
-        } else if metadata.is_file()
-            && let Err(error) = cap_log_file(&path)
-        {
-            failures.push(format!(
-                "log retention failed for {}: {error}",
-                path.display()
-            ));
+        } else if metadata.is_file() {
+            files += 1;
+            bytes = bytes.saturating_add(metadata.len());
+            if files > CLEANUP_MAX_FILES || bytes > CLEANUP_MAX_BYTES {
+                failures.push(format!(
+                    "log retention resource cap exceeded (files={files}, bytes={bytes})"
+                ));
+                return;
+            }
+            if let Err(error) = cap_log_file(&path) {
+                failures.push(format!(
+                    "log retention failed for {}: {error}",
+                    path.display()
+                ));
+            }
         }
     }
 }
 
-fn process_start_identity(pid: u32) -> String {
-    Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            format!(
-                "pid:{pid}:{}",
-                String::from_utf8_lossy(&output.stdout).trim()
-            )
-        })
-        .unwrap_or_else(|| format!("pid:{pid}:unknown"))
+async fn run_cleanup_blocking<T>(
+    deadline: Instant,
+    label: &'static str,
+    operation: impl FnOnce(Instant) -> T + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    if deadline <= Instant::now() {
+        return Err(format!("{label} deadline exhausted"));
+    }
+    // Inner cleanup is cooperative and joined: it never detaches mutation work.
+    // The documented `labby-live-e2e.sh` process-group supervisor is the hard
+    // wall-clock boundary because an in-process future cannot interrupt a
+    // blocked filesystem syscall. The real-shard watchdog regression proves a
+    // stuck test process is killed before it can mutate after supervision ends.
+    let received = tokio::task::spawn_blocking(move || operation(deadline))
+        .await
+        .map_err(|error| format!("{label} worker failed: {error}"))?;
+    Ok(received)
 }
 
-fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
-    match (ledger.pid, ledger.process_start_identity.as_deref()) {
-        (Some(pid), Some(expected)) => process_start_identity(pid) == expected,
-        (None, None) => true,
-        _ => false,
+fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), String> {
+    #[cfg(unix)]
+    let helper_registry = std::env::var_os("LABBY_E2E_HELPER_REGISTRY").map(PathBuf::from);
+    #[cfg(unix)]
+    if let Some(registry) = &helper_registry {
+        let token = std::env::var("LABBY_E2E_GROUP_TOKEN")
+            .map_err(|_| "supervised cleanup helper has no owned shard token".to_string())?;
+        *command = supervised_cleanup_command(command, registry, &token)?;
+    }
+    #[cfg(unix)]
+    let admission = helper_registry
+        .as_ref()
+        .map(|registry| supervised_admission_path(command, registry))
+        .transpose()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0).stderr(Stdio::piped());
+    }
+    let child = command.spawn().map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    let mut child = child;
+    #[cfg(unix)]
+    let mut diagnostics = CleanupStderr::new(child.stderr.take().expect("requested helper stderr"));
+    #[cfg(unix)]
+    let setup = diagnostics.configure();
+    #[cfg(unix)]
+    let configured = setup.is_ok();
+    let result = run_spawned_owned_child(
+        child,
+        deadline,
+        |pid| {
+            #[cfg(unix)]
+            setup?;
+            assign_cleanup_job(pid)
+        },
+        |child| {
+            #[cfg(unix)]
+            diagnostics.drain()?;
+            #[cfg(unix)]
+            if let Some(admission) = &admission
+                && let Some(status) = supervised_helper_status(admission, child.id())?
+            {
+                return Ok(Some(status));
+            }
+            child.try_wait()
+        },
+    );
+    #[cfg(unix)]
+    if let Err(error) = result {
+        // Nonblocking and bounded after settlement as well as during polling.
+        let drain_error = if configured {
+            diagnostics.drain().err()
+        } else {
+            None
+        }
+        .map(|_| " stderr_read_failed")
+        .unwrap_or("");
+        return Err(format!("{error}; {}{drain_error}", diagnostics.summary()));
+    }
+    result
+}
+
+#[cfg(unix)]
+struct CleanupStderr {
+    pipe: std::process::ChildStderr,
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+#[cfg(unix)]
+impl CleanupStderr {
+    fn new(pipe: std::process::ChildStderr) -> Self {
+        Self {
+            pipe,
+            bytes: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn configure(&self) -> Result<(), String> {
+        use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+        let flags = fcntl_getfl(&self.pipe).map_err(|error| error.to_string())?;
+        fcntl_setfl(&self.pipe, flags | OFlags::NONBLOCK).map_err(|error| error.to_string())
+    }
+
+    fn drain(&mut self) -> std::io::Result<()> {
+        let mut buffer = [0_u8; 1024];
+        // A chatty helper cannot monopolize the deadline/status polling loop.
+        for _ in 0..8 {
+            match self.pipe.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let retained = count.min(2048_usize.saturating_sub(self.bytes.len()));
+                    self.bytes.extend_from_slice(&buffer[..retained]);
+                    self.truncated |= retained < count;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    fn summary(&self) -> String {
+        cleanup_stderr_summary(&self.bytes, self.truncated)
     }
 }
 
 #[cfg(unix)]
-fn process_group_members(group: i32) -> Vec<u32> {
-    Command::new("pgrep")
-        .args(["-g", &group.to_string()])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| line.trim().parse::<u32>().ok())
-                .filter(|pid: &u32| {
-                    Command::new("ps")
-                        .args(["-o", "stat=", "-p", &pid.to_string()])
-                        .output()
-                        .ok()
-                        .filter(|status| status.status.success())
-                        .is_some_and(|status| {
-                            !String::from_utf8_lossy(&status.stdout)
-                                .trim_start()
-                                .starts_with('Z')
-                        })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn cleanup_stderr_summary(bytes: &[u8], truncated: bool) -> String {
+    // Raw subprocess stderr may contain credentials or private paths. Emit only
+    // fixed diagnostic categories and a fingerprint of the bounded capture.
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    let categories = [
+        ("file exists", "already_exists"),
+        ("permission denied", "permission_denied"),
+        ("no such file", "missing_file"),
+        ("not found", "not_found"),
+        ("panicked", "test_panic"),
+        ("invalid", "invalid_input"),
+    ]
+    .into_iter()
+    .filter_map(|(needle, category)| text.contains(needle).then_some(category))
+    .collect::<Vec<_>>();
+    format!(
+        "stderr categories={categories:?} bytes={} truncated={truncated} fingerprint={}",
+        bytes.len(),
+        hex::encode(Sha256::digest(bytes))
+    )
 }
 
 #[cfg(unix)]
-fn process_group_inventory(group: i32) -> Vec<String> {
-    process_group_members(group)
-        .into_iter()
-        .map(|pid| process_start_identity(pid))
-        .collect()
+const CLEANUP_HELPER_ADMISSION_GATE: &str =
+    include_str!("../../../../scripts/ci/labby-owned-process-gate.sh");
+
+#[cfg(unix)]
+fn supervised_helper_status(
+    admission: &Path,
+    pid: u32,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    use std::io::Read as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    let file = match std::fs::File::open(admission.join("status")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut status = String::new();
+    file.take(257).read_to_string(&mut status)?;
+    let mut fields = status.lines();
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid cleanup helper status",
+        )
+    };
+    if status.len() > 256
+        || fields.next().and_then(|value| value.parse::<u32>().ok()) != Some(pid)
+        || fields.next() != admission.file_name().and_then(|name| name.to_str())
+    {
+        return Err(invalid());
+    }
+    let code = fields
+        .next()
+        .ok_or_else(invalid)?
+        .parse::<u8>()
+        .map_err(|_| invalid())?;
+    if fields.next().is_some() {
+        return Err(invalid());
+    }
+    Ok(Some(std::process::ExitStatus::from_raw(
+        i32::from(code) << 8,
+    )))
 }
 
-#[cfg(not(unix))]
-fn process_group_inventory(_group: i32) -> Vec<String> {
-    Vec::new()
+#[cfg(unix)]
+fn supervised_admission_path(command: &Command, registry: &Path) -> Result<PathBuf, String> {
+    let id = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "LABBY_E2E_ADMISSION_ID").then_some(value).flatten())
+        .and_then(|value| value.to_str())
+        .ok_or("missing cleanup helper admission identity")?;
+    if !id.starts_with("admission-")
+        || id.len() != 58
+        || !id[10..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid cleanup helper admission identity".into());
+    }
+    Ok(registry.join(id))
+}
+
+#[cfg(unix)]
+fn supervised_cleanup_command(
+    command: &Command,
+    registry: &Path,
+    token: &str,
+) -> Result<Command, String> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let metadata = std::fs::symlink_metadata(registry).map_err(|error| error.to_string())?;
+    if !registry.is_absolute()
+        || !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || token.is_empty()
+    {
+        return Err("cleanup helper supervisor registry is not a private owned directory".into());
+    }
+    let mut wrapper = Command::new("/bin/sh");
+    let mut admission_nonce = [0_u8; 24];
+    getrandom::fill(&mut admission_nonce).map_err(|error| error.to_string())?;
+    // Both supported helper kinds use explicit configuration. Do not restore
+    // ambient credentials that the offline-recovery command deliberately drops.
+    wrapper.env_clear().env("PATH", "/usr/bin:/bin");
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            wrapper.env(key, value);
+        } else {
+            wrapper.env_remove(key);
+        }
+    }
+    wrapper
+        .env(
+            "LABBY_E2E_ADMISSION_ID",
+            format!("admission-{}", hex::encode(admission_nonce)),
+        )
+        .env("LABBY_E2E_GROUP_TOKEN", token)
+        .args(["-c", CLEANUP_HELPER_ADMISSION_GATE, "labby-cleanup-helper"])
+        .arg(registry)
+        .arg(command.get_program())
+        .args(command.get_args());
+    if let Some(directory) = command.get_current_dir() {
+        wrapper.current_dir(directory);
+    }
+    Ok(wrapper)
+}
+
+// Poll callbacks cannot reap a Unix leader: its waitable identity reserves the
+// process-group number until every descendant has settled.
+struct CleanupChildObserver<'a>(&'a mut std::process::Child);
+
+impl CleanupChildObserver<'_> {
+    #[cfg(unix)]
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(unix)]
+        {
+            observe_cleanup_child(self.id())
+        }
+        #[cfg(not(unix))]
+        self.0.try_wait()
+    }
+}
+
+#[cfg(unix)]
+fn observe_cleanup_child(pid: u32) -> std::io::Result<Option<std::process::ExitStatus>> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use std::os::unix::process::ExitStatusExt as _;
+    let pid = Pid::from_raw(pid as i32).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid cleanup child PID",
+        )
+    })?;
+    let status = waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+    )?;
+    status
+        .map(|status| {
+            let raw = if let Some(code) = status.exit_status() {
+                code << 8
+            } else if let Some(signal) = status.terminating_signal() {
+                signal | if status.dumped() { 0x80 } else { 0 }
+            } else {
+                return Err(std::io::Error::other(
+                    "unexpected cleanup child wait status",
+                ));
+            };
+            Ok(std::process::ExitStatus::from_raw(raw))
+        })
+        .transpose()
+}
+
+fn run_spawned_owned_child<A, P>(
+    mut child: std::process::Child,
+    deadline: Instant,
+    assign_job: A,
+    mut poll: P,
+) -> Result<(), String>
+where
+    A: FnOnce(u32) -> Result<OwnedCleanupJob, String>,
+    P: FnMut(&mut CleanupChildObserver<'_>) -> std::io::Result<Option<std::process::ExitStatus>>,
+{
+    let mut post_spawn_errors = Vec::new();
+    let owned_job = match assign_job(child.id()) {
+        Ok(job) => job,
+        Err(error) => {
+            post_spawn_errors.push(format!("cleanup helper job assignment failed: {error}"));
+            unassigned_cleanup_job()
+        }
+    };
+    if !post_spawn_errors.is_empty() {
+        terminate_and_reap_owned_child(&mut child, owned_job, &mut post_spawn_errors);
+        return Err(format!(
+            "cleanup helper post-spawn setup failed; helper killed and reaped: {}",
+            post_spawn_errors.join("; ")
+        ));
+    }
+    loop {
+        match poll(&mut CleanupChildObserver(&mut child)) {
+            Ok(Some(status)) => {
+                let mut failures = Vec::new();
+                if !status.success() {
+                    failures.push(format!("cleanup helper exited with {status}"));
+                }
+                terminate_and_reap_owned_child(&mut child, owned_job, &mut failures);
+                return if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                post_spawn_errors.push(format!("cleanup helper status poll failed: {error}"));
+                terminate_and_reap_owned_child(&mut child, owned_job, &mut post_spawn_errors);
+                return Err(format!(
+                    "cleanup helper polling failed; helper killed and reaped: {}",
+                    post_spawn_errors.join("; ")
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            let mut termination_errors = Vec::new();
+            terminate_and_reap_owned_child(&mut child, owned_job, &mut termination_errors);
+            let detail = if termination_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; termination errors: {}", termination_errors.join("; "))
+            };
+            return Err(format!(
+                "cleanup helper deadline exhausted; helper killed and reaped{detail}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(windows)]
+type OwnedCleanupJob = Option<labby_winjob::JobObject>;
+#[cfg(not(windows))]
+struct OwnedCleanupJob;
+
+#[cfg(windows)]
+fn assign_cleanup_job(pid: u32) -> Result<OwnedCleanupJob, String> {
+    labby_winjob::JobObject::assign(pid)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn assign_cleanup_job(_pid: u32) -> Result<OwnedCleanupJob, String> {
+    Ok(OwnedCleanupJob)
+}
+
+fn unassigned_cleanup_job() -> OwnedCleanupJob {
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        OwnedCleanupJob
+    }
+}
+
+trait ChildControl {
+    fn owned_pid(&self) -> Option<u32>;
+    fn start_owned_kill(&mut self) -> std::io::Result<()>;
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl ChildControl for std::process::Child {
+    fn owned_pid(&self) -> Option<u32> {
+        Some(self.id())
+    }
+    fn start_owned_kill(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
+impl ChildControl for Child {
+    fn owned_pid(&self) -> Option<u32> {
+        self.id()
+    }
+    fn start_owned_kill(&mut self) -> std::io::Result<()> {
+        self.start_kill()
+    }
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
+fn observe_owned_child(
+    child: &mut impl ChildControl,
+    pid: u32,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(unix)]
+    {
+        let _ = child;
+        observe_cleanup_child(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        child.final_try_wait()
+    }
+}
+
+fn terminate_and_reap_owned_child(
+    child: &mut impl ChildControl,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    terminate_and_reap_owned_child_with_signal(child, owned_job, errors, deadline, |pid| {
+        signal_cleanup_group_with_deadline(pid, deadline)
+    });
+}
+
+#[cfg(unix)]
+fn signal_cleanup_group(pid: u32) -> Result<(), String> {
+    signal_cleanup_group_with_deadline(pid, Instant::now() + Duration::from_secs(1)).map(|_| ())
+}
+
+// A positive empty observation is consumed immediately by the same retained
+// child owner. It is never cached or used to authorize a later signal.
+enum SignalDisposition {
+    Sent,
+    #[cfg(unix)]
+    ExitedAndEmpty {
+        pid: u32,
+    },
+}
+
+fn signal_cleanup_group_with_deadline(
+    pid: u32,
+    deadline: Instant,
+) -> Result<SignalDisposition, String> {
+    #[cfg(unix)]
+    {
+        signal_cleanup_group_with_probe(
+            pid,
+            deadline,
+            |pid| {
+                nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                )
+            },
+            process_group_members_checked_before,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, deadline);
+        Ok(SignalDisposition::Sent)
+    }
+}
+
+#[cfg(unix)]
+fn signal_cleanup_group_with_probe(
+    pid: u32,
+    deadline: Instant,
+    signal: impl FnOnce(u32) -> Result<(), nix::errno::Errno>,
+    inventory: impl FnOnce(i32, Instant) -> Result<Vec<u32>, String>,
+) -> Result<SignalDisposition, String> {
+    match signal(pid) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(SignalDisposition::Sent),
+        Err(nix::errno::Errno::EPERM)
+            if observe_cleanup_child(pid)
+                .map_err(|error| format!("cleanup helper exit verification failed: {error}"))?
+                .is_some()
+                && inventory(pid as i32, deadline)?.is_empty() =>
+        {
+            // macOS reports EPERM for a group containing only its retained
+            // zombie leader. Prove that exact waitable child has exited and
+            // no live member remains; never ignore a live-group denial.
+            Ok(SignalDisposition::ExitedAndEmpty { pid })
+        }
+        Err(error) => Err(format!("cleanup helper process-group kill failed: {error}")),
+    }
+}
+
+fn terminate_and_reap_owned_child_with_signal(
+    child: &mut impl ChildControl,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+    reap_deadline: Instant,
+    mut signal_group: impl FnMut(u32) -> Result<SignalDisposition, String>,
+) {
+    terminate_and_reap_owned_child_with_operations(
+        child,
+        owned_job,
+        errors,
+        reap_deadline,
+        &mut signal_group,
+        process_group_members_for_cleanup,
+    );
+}
+
+fn process_group_members_for_cleanup(group: i32, deadline: Instant) -> Result<Vec<u32>, String> {
+    #[cfg(unix)]
+    {
+        process_group_members_checked_before(group, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (group, deadline);
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(unix)]
+fn require_waitable_cleanup_owner(child: &impl ChildControl, pid: u32, errors: &mut Vec<String>) {
+    if child.owned_pid() != Some(pid) {
+        errors.push("cleanup child handle does not match its ownership PID".into());
+        abort_unsettled_cleanup_helper(pid, errors);
+    }
+    if let Err(error) = observe_cleanup_child(pid) {
+        errors.push(format!(
+            "cleanup helper ownership observation failed: {error}"
+        ));
+        // Returning an error would drop a Tokio kill_on_drop guard, which can
+        // itself signal the rejected numeric PID. Never unwind lost authority.
+        abort_unsettled_cleanup_helper(pid, errors);
+    }
+}
+
+#[cfg(unix)]
+fn reap_verified_empty_group(
+    child: &mut impl ChildControl,
+    owner_pid: u32,
+    observed_pid: u32,
+    deadline: Instant,
+    errors: &mut Vec<String>,
+) {
+    require_waitable_cleanup_owner(child, owner_pid, errors);
+    if owner_pid != observed_pid || Instant::now() >= deadline {
+        errors.push("empty cleanup observation does not match its live ownership budget".into());
+        abort_unsettled_cleanup_helper(owner_pid, errors);
+    }
+    if !matches!(observe_owned_child(child, owner_pid), Ok(Some(_))) {
+        errors.push("empty cleanup observation has no exited retained owner".into());
+        abort_unsettled_cleanup_helper(owner_pid, errors);
+    }
+    match child.final_try_wait() {
+        Ok(Some(_)) => {}
+        result => {
+            errors.push(format!("cleanup helper final reap failed: {result:?}"));
+            abort_unsettled_cleanup_helper(owner_pid, errors);
+        }
+    }
+}
+
+fn terminate_and_reap_owned_child_with_operations(
+    child: &mut impl ChildControl,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+    reap_deadline: Instant,
+    mut signal_group: impl FnMut(u32) -> Result<SignalDisposition, String>,
+    mut inventory: impl FnMut(i32, Instant) -> Result<Vec<u32>, String>,
+) {
+    let Some(pid) = child.owned_pid() else {
+        #[cfg(unix)]
+        {
+            errors.push("owned Unix child was reaped before group settlement".into());
+            abort_unsettled_cleanup_helper(0, errors);
+        }
+        #[cfg(windows)]
+        if let Some(job) = owned_job {
+            if let Err(error) = job.close() {
+                errors.push(format!("cleanup helper job termination failed: {error}"));
+            }
+        }
+        #[cfg(not(unix))]
+        return;
+    };
+    #[cfg(not(unix))]
+    let _ = &mut inventory;
+    #[cfg(unix)]
+    require_waitable_cleanup_owner(child, pid, errors);
+    // Setup can fail before a group exists; direct kill/reap is still required.
+    match signal_group(pid) {
+        #[cfg(unix)]
+        Ok(SignalDisposition::ExitedAndEmpty { pid: observed_pid }) => {
+            reap_verified_empty_group(child, pid, observed_pid, reap_deadline, errors);
+            return;
+        }
+        Ok(SignalDisposition::Sent) => {}
+        Err(error) => errors.push(error),
+    }
+    #[cfg(windows)]
+    if let Some(job) = owned_job {
+        if let Err(error) = job.close() {
+            errors.push(format!("cleanup helper job termination failed: {error}"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = owned_job;
+    if let Err(error) = child.start_owned_kill() {
+        match observe_owned_child(child, pid) {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => errors.push(format!("cleanup helper direct kill failed: {error}")),
+        }
+    }
+    #[cfg(unix)]
+    let mut last_members = Vec::new();
+    loop {
+        match observe_owned_child(child, pid) {
+            Ok(Some(_)) => {
+                #[cfg(unix)]
+                match inventory(pid as i32, reap_deadline) {
+                    Ok(members) if members.is_empty() => {
+                        reap_verified_empty_group(child, pid, pid, reap_deadline, errors);
+                        break;
+                    }
+                    Ok(members) => {
+                        last_members = members;
+                        // The first signal need not settle every descendant.
+                        // NOWAIT retains the leader's PID, preventing numeric
+                        // group reuse until the final drain and reap.
+                        match signal_group(pid) {
+                            Ok(SignalDisposition::ExitedAndEmpty { pid: observed_pid }) => {
+                                reap_verified_empty_group(
+                                    child,
+                                    pid,
+                                    observed_pid,
+                                    reap_deadline,
+                                    errors,
+                                );
+                                break;
+                            }
+                            Ok(SignalDisposition::Sent) => {}
+                            Err(error) => {
+                                errors.push(error);
+                                abort_unsettled_cleanup_helper(pid, errors);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(error);
+                        abort_unsettled_cleanup_helper(pid, errors);
+                    }
+                }
+                #[cfg(not(unix))]
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                errors.push(format!("cleanup helper reap failed: {error}"));
+                abort_unsettled_cleanup_helper(pid, errors);
+            }
+        }
+        if Instant::now() >= reap_deadline {
+            // Returning would permit a mutation-capable helper to outlive its
+            // owner, so fail-stop this disposable integration-test process.
+            errors.push("cleanup helper kill/reap verification deadline exhausted".into());
+            #[cfg(unix)]
+            errors.push(format!(
+                "last observed owned group survivors (first 32): {:?}",
+                &last_members[..last_members.len().min(32)]
+            ));
+            abort_unsettled_cleanup_helper(pid, errors);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn abort_unsettled_cleanup_helper(pid: u32, errors: &[String]) -> ! {
+    use std::io::Write as _;
+    // Bypass libtest capture: abort does not flush captured test output. Only
+    // bounded process-control diagnostics belong here, never command arguments.
+    let mut stderr = std::io::stderr().lock();
+    let thread = std::thread::current();
+    write_cleanup_fail_stop_evidence(&mut stderr, pid, thread.name(), errors);
+    drop(stderr.flush());
+    std::process::abort();
+}
+
+fn write_cleanup_fail_stop_evidence(
+    output: &mut impl std::io::Write,
+    pid: u32,
+    thread_name: Option<&str>,
+    errors: &[String],
+) {
+    drop(writeln!(
+        output,
+        "cleanup helper fail-stop: owned pid/group {pid}"
+    ));
+    let test_name: String = thread_name.unwrap_or("unnamed").chars().take(160).collect();
+    drop(writeln!(output, "cleanup owner thread: {test_name}"));
+    // Keep the terminal reason even when earlier cleanup failures fill the cap.
+    for error in &errors[errors.len().saturating_sub(8)..] {
+        let detail: String = error.chars().take(512).collect();
+        drop(writeln!(output, "{detail}"));
+    }
+}
+
+fn run_artifact_cleanup_helper(
+    root: &Path,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    canaries: &[String],
+    deadline: Instant,
+) -> Result<Vec<String>, String> {
+    let control = tempfile::tempdir().map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(control.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    let canaries_path = control.path().join("canaries.json");
+    let response_path = control.path().join("response.json");
+    let mut canary_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&canaries_path)
+        .map_err(|error| error.to_string())?;
+    // Apply the platform's owner-only policy while the file is still empty.
+    labby_auth::util::harden_secret_file(&canaries_path).map_err(|error| error.to_string())?;
+    std::io::Write::write_all(
+        &mut canary_file,
+        &serde_json::to_vec(canaries).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    drop(canary_file);
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    // libtest names omit the crate prefix, while this shared module is included
+    // at different depths by different integration-test binaries.
+    let module = module_path!()
+        .split_once("::")
+        .expect("nested test support")
+        .1;
+    let helper_name = format!("{module}::tests::artifact_cleanup_helper_entrypoint");
+    command
+        .args([&helper_name, "--exact", "--ignored", "--nocapture"])
+        .env("LABBY_ARTIFACT_HELPER_ROOT", root)
+        .env("LABBY_ARTIFACT_HELPER_STDOUT", stdout_path)
+        .env("LABBY_ARTIFACT_HELPER_STDERR", stderr_path)
+        .env("LABBY_ARTIFACT_HELPER_CANARIES", &canaries_path)
+        .env("LABBY_ARTIFACT_HELPER_RESPONSE", &response_path);
+    run_owned_command(&mut command, deadline)?;
+    let response = std::fs::read(&response_path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&response).map_err(|error| error.to_string())
+}
+
+// Diagnostic-only formatting. Ownership paths use the fallible native probe.
+fn process_start_identity(pid: u32) -> String {
+    process_start_identity_before(pid, Instant::now() + Duration::from_secs(1))
+        .unwrap_or_else(|_| format!("pid:{pid}:unknown"))
+}
+
+fn capture_spawned_child_identity(
+    child: &mut Child,
+    address: SocketAddr,
+    probe: Option<&IdentityProbe>,
+    #[cfg(unix)] admission: Option<&Path>,
+    deadline: Instant,
+) -> Result<(String, OwnedCleanupJob), String> {
+    let pid = child.id().ok_or("spawned child has no owned PID")?;
+    let job = match assign_cleanup_job(pid) {
+        Ok(job) => job,
+        Err(error) => {
+            let mut failures = vec![format!("daemon containment assignment failed: {error}")];
+            terminate_and_reap_owned_child(child, unassigned_cleanup_job(), &mut failures);
+            return Err(failures.join("; "));
+        }
+    };
+    #[cfg(unix)]
+    let mut failed_probe = None;
+    let observation = match probe {
+        Some(probe) => probe(
+            pid,
+            address,
+            {
+                #[cfg(unix)]
+                {
+                    admission
+                }
+                #[cfg(not(unix))]
+                {
+                    None
+                }
+            },
+            deadline,
+        ),
+        None => {
+            let deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+            #[cfg(unix)]
+            {
+                process_identity::capture_typed(pid, deadline).map_err(|failure| {
+                    let message = failure.message.clone();
+                    failed_probe = Some(failure);
+                    message
+                })
+            }
+            #[cfg(not(unix))]
+            process_start_identity_before(pid, deadline)
+        }
+    }
+    .and_then(|identity| {
+        #[cfg(unix)]
+        process_identity::validate(pid, &identity)?;
+        Ok(identity)
+    });
+    match observation {
+        Ok(identity) => Ok((identity, job)),
+        Err(error) => {
+            let mut failures = vec![format!("daemon process identity capture failed: {error}")];
+            // The retained Child is independent cleanup authority. Never store
+            // an unknown fallback and later compare two failed observations.
+            terminate_and_reap_owned_child(child, job, &mut failures);
+            #[cfg(unix)]
+            if let Some(failure) = failed_probe {
+                // Only after the retained daemon child has settled may a
+                // failed native probe trigger its own fail-stop boundary.
+                drop(settle_inventory_failure(failure));
+            }
+            Err(failures.join("; "))
+        }
+    }
+}
+
+fn process_start_identity_before(pid: u32, deadline: Instant) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        process_identity::capture(pid, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = deadline;
+        // Display only: Windows cleanup authority is the retained Child/Job
+        // handle, never a repeated numeric PID observation.
+        Ok(format!("pid:{pid}:owned-child-handle"))
+    }
+}
+
+#[cfg(unix)]
+fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
+    owned_process_identity_matches_before(ledger, Instant::now() + Duration::from_secs(1))
+}
+
+#[cfg(unix)]
+fn owned_process_identity_matches_before(ledger: &OwnershipLedger, deadline: Instant) -> bool {
+    let (Some(pid), Some(expected)) = (ledger.pid, ledger.process_start_identity.as_deref()) else {
+        return false;
+    };
+    if process_identity::validate(pid, expected).is_err() {
+        return false;
+    }
+    process_identity::matches(
+        Some(pid),
+        Some(expected),
+        process_start_identity_before(pid, deadline),
+    )
+}
+
+#[cfg(unix)]
+fn process_group_members_checked(group: i32) -> Result<Vec<u32>, String> {
+    process_group_members_checked_before(group, Instant::now() + Duration::from_secs(1))
+}
+
+#[cfg(unix)]
+fn process_group_members_checked_before(group: i32, deadline: Instant) -> Result<Vec<u32>, String> {
+    process_group_members_typed(group, deadline).map_err(settle_inventory_failure)
+}
+
+#[cfg(unix)]
+fn process_group_members_typed(
+    group: i32,
+    deadline: Instant,
+) -> Result<Vec<u32>, process_inventory::Failure> {
+    let text = process_inventory::read(deadline)?;
+    parse_process_group_inventory(group, &text).map_err(Into::into)
+}
+
+#[cfg(unix)]
+fn settle_inventory_failure(mut failure: process_inventory::Failure) -> String {
+    if let Some(mut probe) = failure.unsettled.take() {
+        // Observational probes grant no authority over the observed PID/group.
+        // This handle owns only the native probe itself.
+        drop(probe.kill());
+        abort_unsettled_cleanup_helper(probe.id(), &[failure.message]);
+    }
+    failure.message
+}
+
+#[cfg(unix)]
+fn parse_process_group_inventory(group: i32, inventory: &str) -> Result<Vec<u32>, String> {
+    let mut members = Vec::new();
+    for (row, line) in inventory
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+    {
+        let mut fields = line.split_whitespace();
+        let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
+        let pgid = fields.next().and_then(|value| value.parse::<i32>().ok());
+        let state = fields.next();
+        let (Some(pid), Some(pgid), Some(state)) = (pid, pgid, state) else {
+            return Err(format!(
+                "process inventory contained an invalid row: row={} fields={} pid_numeric={} pgid_numeric={} state_present={}",
+                row + 1,
+                line.split_whitespace().count(),
+                pid.is_some(),
+                pgid.is_some(),
+                state.is_some(),
+            ));
+        };
+        if pgid == group && !state.starts_with('Z') {
+            members.push(pid);
+        }
+    }
+    Ok(members)
+}
+
+#[cfg(unix)]
+fn process_group_inventory(group: i32) -> Result<Vec<String>, process_inventory::Failure> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let members = process_group_members_typed(group, deadline)?;
+    let mut result = Vec::new();
+    for pid in members.into_iter().take(32) {
+        result.push(process_identity::capture_typed(pid, deadline)?);
+    }
+    Ok(result)
 }
 
 #[cfg(unix)]
@@ -1344,6 +2648,359 @@ mod tests {
     };
 
     #[test]
+    fn artifact_cleanup_subprocess_executes_the_exact_nested_entrypoint() {
+        let root = tempfile::tempdir().unwrap();
+        let stdout = root.path().join("stdout.log");
+        let stderr = root.path().join("stderr.log");
+        std::fs::write(&stdout, b"clean output").unwrap();
+        std::fs::write(&stderr, b"clean errors").unwrap();
+        let failures = run_artifact_cleanup_helper(
+            root.path(),
+            &stdout,
+            &stderr,
+            &[],
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("helper must actually execute and publish a response");
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn directory_enumeration_is_bounded_before_queueing_entries() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("directory-also-counts")).unwrap();
+        let mut discovered = CLEANUP_MAX_FILES;
+        let mut pending = Vec::new();
+        let error = enqueue_cleanup_directory(
+            root.path(),
+            0,
+            &mut pending,
+            &mut discovered,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.contains("entry cap exceeded"));
+        assert!(pending.is_empty());
+        assert_eq!(discovered, CLEANUP_MAX_FILES);
+    }
+
+    #[test]
+    fn cleanup_fail_stop_evidence_preserves_reason_with_bounded_output() {
+        let mut output = Vec::new();
+        let mut errors = vec!["oldest-error-must-be-omitted".to_string()];
+        errors.extend((0..7).map(|_| "é".repeat(600)));
+        errors.push("terminal process inventory failed".into());
+        write_cleanup_fail_stop_evidence(&mut output, 123, Some(&"t".repeat(200)), &errors);
+        let report = String::from_utf8(output).unwrap();
+        assert!(report.contains("owned pid/group 123"));
+        assert!(report.contains("terminal process inventory failed"));
+        assert!(!report.contains("oldest-error-must-be-omitted"));
+        assert_eq!(report.lines().count(), 10);
+        assert_eq!(
+            report.lines().nth(1).unwrap().len(),
+            "cleanup owner thread: ".len() + 160
+        );
+        assert!(
+            report
+                .lines()
+                .skip(2)
+                .take(7)
+                .all(|line| line.chars().count() == 512)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_inventory_rejects_invalid_rows_and_ignores_only_known_zombies() {
+        assert_eq!(
+            parse_process_group_inventory(12, "10 12 S\n11 12 Z+\n13 14 R\n").unwrap(),
+            vec![10]
+        );
+        assert!(parse_process_group_inventory(12, "unavailable").is_err());
+        assert!(parse_process_group_inventory(12, "10 12").is_err());
+        let error =
+            parse_process_group_inventory(12, "10 12 S\nprivate-sentinel 12\n").unwrap_err();
+        assert_eq!(
+            error,
+            "process inventory contained an invalid row: row=2 fields=2 pid_numeric=false pgid_numeric=true state_present=false"
+        );
+        assert!(!error.contains("private-sentinel"));
+        assert!(error.len() < 200);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn leader_exit_does_not_leave_term_resistant_descendants_alive() {
+        let mut guard = LiveLabbyBuilder::new().start().await.unwrap();
+        guard
+            .stop_process(Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let marker = guard.root.join("descendant-ready");
+        let mut command = TokioCommand::new("sh");
+        command
+            .args([
+                "-c",
+                "(trap '' TERM; echo ready >\"$1\"; while :; do sleep 1; done) & wait",
+                "fixture",
+            ])
+            .arg(&marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        configure_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_admission = None;
+        guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
+        guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
+        write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
+        guard.child = Some(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "descendant did not become ready");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let group = guard.ledger.process_group.unwrap();
+        let cleanup = guard.finish().await;
+        assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
+        assert!(cleanup.forced, "surviving descendant requires escalation");
+        assert!(process_group_members_checked(group).unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "one-shot artifact cleanup subprocess entrypoint"]
+    fn artifact_cleanup_helper_entrypoint() {
+        let root = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_ROOT").unwrap());
+        let stdout_path = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_STDOUT").unwrap());
+        let stderr_path = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_STDERR").unwrap());
+        let canaries_path =
+            PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_CANARIES").unwrap());
+        let response_path =
+            PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_RESPONSE").unwrap());
+        let canaries: Vec<String> =
+            serde_json::from_slice(&std::fs::read(canaries_path).unwrap()).unwrap();
+        let deadline = Instant::now() + DEFAULT_DEADLINE;
+        let mut failures = Vec::new();
+        let mut scan_budget = ScanBudget {
+            deadline,
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+        for path in [&stdout_path, &stderr_path] {
+            if let Err(error) = cap_log_file(path) {
+                failures.push(format!("log retention failed: {error}"));
+            }
+            scan_file_for_canaries_bounded(path, &canaries, &mut failures, &mut scan_budget);
+        }
+        cap_log_tree_bounded(&root.join("logs"), &mut failures, deadline);
+        scan_artifact_tree_with_budget(&root, &canaries, &mut failures, &mut scan_budget);
+        std::fs::write(response_path, serde_json::to_vec(&failures).unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "outer supervisor cancellation fixture"]
+    fn supervised_cleanup_cancellation_fixture() {
+        let marker = std::env::var_os("LABBY_E2E_WEDGED_MARKER").expect("owned marker");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "trap '' TERM; sleep 6; touch -- \"$1\"; while :; do sleep 1; done",
+                "fixture",
+            ])
+            .arg(marker);
+        run_owned_command(&mut command, Instant::now() + Duration::from_secs(30)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closed_supervisor_admission_cannot_execute_mutation() {
+        let registry = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir(registry.path().join("closed")).unwrap();
+        let marker = registry.path().join("forbidden-mutation");
+        let mut command = Command::new("/usr/bin/touch");
+        command.arg(&marker);
+        let mut wrapper =
+            supervised_cleanup_command(&command, registry.path(), "test-owned-token").unwrap();
+        let error =
+            run_owned_command(&mut wrapper, Instant::now() + Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains("70"), "{error}");
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_pid_and_cross_admission_status_cannot_complete_a_new_helper() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let registry = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 7"]);
+        let previous =
+            supervised_cleanup_command(&command, registry.path(), "owned-token").unwrap();
+        let current = supervised_cleanup_command(&command, registry.path(), "owned-token").unwrap();
+        let previous = supervised_admission_path(&previous, registry.path()).unwrap();
+        let current = supervised_admission_path(&current, registry.path()).unwrap();
+        assert_ne!(previous, current);
+        let reused_pid = 12345;
+        let legacy = registry.path().join(reused_pid.to_string());
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("status"), b"0\n").unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        let old_status = format!(
+            "{reused_pid}\n{}\n0\n",
+            previous.file_name().unwrap().to_str().unwrap()
+        );
+        std::fs::write(previous.join("status"), &old_status).unwrap();
+        assert!(
+            supervised_helper_status(&current, reused_pid)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::create_dir(&current).unwrap();
+        std::fs::write(current.join("status"), old_status).unwrap();
+        assert!(supervised_helper_status(&current, reused_pid).is_err());
+        let id = current.file_name().unwrap().to_str().unwrap();
+        std::fs::write(
+            current.join("status"),
+            format!("{}\n{id}\n0\n", reused_pid + 1),
+        )
+        .unwrap();
+        assert!(supervised_helper_status(&current, reused_pid).is_err());
+        std::fs::write(current.join("status"), format!("{reused_pid}\n{id}\n7\n")).unwrap();
+        assert_eq!(
+            supervised_helper_status(&current, reused_pid)
+                .unwrap()
+                .unwrap()
+                .code(),
+            Some(7)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guardian_admission_does_not_collide_with_a_reused_numeric_pid_record() {
+        use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
+        let registry = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = registry.path().join("executed");
+        let mut fixture = Command::new("/bin/sh");
+        fixture
+            .args(["-c", "touch -- \"$1\"; exit 7", "fixture"])
+            .arg(&marker);
+        let wrapper = supervised_cleanup_command(&fixture, registry.path(), "reuse-token").unwrap();
+        let admission = supervised_admission_path(&wrapper, registry.path()).unwrap();
+        // Deterministically recreate the retained record for this exact new
+        // leader's PID before admission, without waiting for kernel PID wrap.
+        let script = CLEANUP_HELPER_ADMISSION_GATE.replace(
+            "admission_id=${admission##*/}",
+            "mkdir \"$registry/$$\"\nprintf '0\\n' >\"$registry/$$/status\"\nadmission_id=${admission##*/}",
+        );
+        let mut command = Command::new("/bin/sh");
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LABBY_E2E_GROUP_TOKEN", "reuse-token")
+            .env("LABBY_E2E_ADMISSION_ID", admission.file_name().unwrap())
+            .args(["-c", &script, "reused-pid-fixture"])
+            .arg(registry.path())
+            .arg(fixture.get_program())
+            .args(fixture.get_args())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let result = run_spawned_owned_child(
+            child,
+            Instant::now() + Duration::from_secs(3),
+            assign_cleanup_job,
+            |child| match supervised_helper_status(&admission, child.id())? {
+                Some(status) => Ok(Some(status)),
+                None => child.try_wait(),
+            },
+        );
+        assert!(result.unwrap_err().contains("exit status: 7"));
+        assert!(marker.exists());
+        assert_eq!(
+            std::fs::read_to_string(registry.path().join(pid.to_string()).join("status")).unwrap(),
+            "0\n"
+        );
+        assert!(
+            process_group_members_checked(pid as i32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_stderr_is_bounded_and_only_reports_safe_categories() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'mkdir: secret=private-sentinel: File exists\\n' >&2; exit 1",
+        ]);
+        let error =
+            run_owned_command(&mut command, Instant::now() + Duration::from_secs(3)).unwrap_err();
+        assert!(error.contains("already_exists"), "{error}");
+        assert!(!error.contains("private-sentinel"), "{error}");
+        assert!(error.len() < 512, "{error}");
+        let summary = cleanup_stderr_summary(&vec![b'x'; 2048], true);
+        assert!(summary.contains("bytes=2048 truncated=true"));
+        assert!(summary.len() < 256);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervised_guardian_reports_command_status_and_is_reaped() {
+        use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
+        for mode in ["remove-marker", "invalid-command-fixture"] {
+            let registry = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let marker = registry.path().join("marker");
+            std::fs::write(&marker, b"owned").unwrap();
+            let mut command = Command::new(env!("CARGO_BIN_EXE_live-harness-fixture"));
+            command.args([mode, "0"]).arg(&marker);
+            let mut wrapper =
+                supervised_cleanup_command(&command, registry.path(), "test-owned-token").unwrap();
+            let admission = supervised_admission_path(&wrapper, registry.path()).unwrap();
+            wrapper
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = wrapper.spawn().unwrap();
+            let group = child.id() as i32;
+            let result = run_spawned_owned_child(
+                child,
+                Instant::now() + Duration::from_secs(3),
+                assign_cleanup_job,
+                |child| match supervised_helper_status(&admission, child.id())? {
+                    Some(status) => Ok(Some(status)),
+                    None => child.try_wait(),
+                },
+            );
+            if mode == "remove-marker" {
+                result.unwrap();
+                assert!(!marker.exists());
+            } else {
+                assert!(result.unwrap_err().contains("cleanup helper exited"));
+            }
+            assert!(process_group_members_checked(group).unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn artifact_scan_detects_a_canary_across_stream_chunks() {
         let temp = tempfile::tempdir().unwrap();
         let artifact = temp.path().join("large.log");
@@ -1355,6 +3012,274 @@ mod tests {
         let mut failures = Vec::new();
         scan_file_for_canaries(&artifact, &[canary.into()], &mut failures);
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn recursive_cleanup_enforces_depth_and_deadline_budgets() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut nested = temp.path().to_path_buf();
+        for index in 0..=CLEANUP_MAX_DEPTH {
+            nested = nested.join(index.to_string());
+            std::fs::create_dir(&nested).unwrap();
+        }
+        std::fs::write(nested.join("beyond-budget.log"), b"safe").unwrap();
+
+        let mut failures = Vec::new();
+        scan_artifact_tree_bounded(
+            temp.path(),
+            &[],
+            &mut failures,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(failures.iter().any(|failure| failure.contains("depth cap")));
+
+        failures.clear();
+        cap_log_tree_bounded(temp.path(), &mut failures, Instant::now());
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("deadline exhausted"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_cleanup_work_does_not_stall_the_async_executor() {
+        let cleanup = run_cleanup_blocking(
+            Instant::now() + Duration::from_secs(1),
+            "blocking proof",
+            |_| {
+                std::thread::sleep(Duration::from_millis(50));
+                42
+            },
+        );
+        let tick = tokio::time::sleep(Duration::from_millis(5));
+        let (value, ()) = tokio::join!(cleanup, tick);
+        assert_eq!(value.unwrap(), 42);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deadline_aware_cleanup_settles_before_return() {
+        let settled = Arc::new(AtomicBool::new(false));
+        let worker_settled = Arc::clone(&settled);
+        let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_mutations = Arc::clone(&mutations);
+        run_cleanup_blocking(
+            Instant::now() + Duration::from_millis(5),
+            "owned timeout proof",
+            move |deadline| {
+                while Instant::now() < deadline {
+                    worker_mutations.fetch_add(1, Ordering::SeqCst);
+                    std::hint::spin_loop();
+                }
+                worker_settled.store(true, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(settled.load(Ordering::SeqCst));
+        let after_return = mutations.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(mutations.load(Ordering::SeqCst), after_return);
+    }
+
+    #[test]
+    fn non_cooperative_cleanup_helper_is_killed_reaped_and_cannot_mutate_later() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-deadline-mutation");
+        let mut command = delayed_mutation_fixture(&marker);
+
+        let error = run_owned_command(&mut command, Instant::now() + Duration::from_millis(20))
+            .unwrap_err();
+
+        assert!(error.contains("killed and reaped"), "{error}");
+        assert!(!marker.exists());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !marker.exists(),
+            "killed helper mutated after cleanup returned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_helper_leader_exit_still_reaps_background_mutations() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("late-helper-mutation");
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "(sleep 0.20; touch -- \"$1\") & exit 0", "fixture"])
+            .arg(&marker);
+        run_owned_command(&mut command, Instant::now() + Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !marker.exists(),
+            "helper descendant mutated after successful settlement"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absence_evidence_rejects_dangling_links_and_unreadable_paths() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let dangling = temp.path().join("dangling");
+        symlink(temp.path().join("missing"), &dangling).unwrap();
+        assert!(
+            NonEmptyAbsencePaths::try_from_paths(vec![dangling])
+                .unwrap()
+                .any_exists()
+                .unwrap()
+        );
+        let loop_path = temp.path().join("loop");
+        symlink(&loop_path, &loop_path).unwrap();
+        let evidence =
+            NonEmptyAbsencePaths::try_from_paths(vec![loop_path.join("credential")]).unwrap();
+        assert!(
+            evidence
+                .any_exists()
+                .unwrap_err()
+                .contains("could not be verified")
+        );
+    }
+
+    #[test]
+    fn containment_failure_still_falls_back_to_direct_kill_and_bounded_reap() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-settlement-mutation");
+        let mut child = delayed_mutation_fixture(&marker).spawn().unwrap();
+        let mut errors = vec!["injected process-group termination failure".to_owned()];
+
+        terminate_and_reap_owned_child(&mut child, unassigned_cleanup_job(), &mut errors);
+
+        assert_eq!(errors, ["injected process-group termination failure"]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !marker.exists(),
+            "fallback-killed helper mutated after reap"
+        );
+    }
+
+    enum InjectedPostSpawnFailure {
+        Assignment,
+        Poll,
+    }
+
+    fn delayed_mutation_fixture(marker: &Path) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_live-harness-fixture"));
+        command.args(["delayed-mutation", "0"]).arg(marker);
+        command
+    }
+
+    fn assert_injected_post_spawn_failure_settles(failure: InjectedPostSpawnFailure) {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-settlement-mutation");
+        let mut command = delayed_mutation_fixture(&marker);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let child = command.spawn().unwrap();
+        let error = match failure {
+            InjectedPostSpawnFailure::Assignment => run_spawned_owned_child(
+                child,
+                Instant::now() + Duration::from_secs(1),
+                |_| Err("injected post-spawn setup failure".to_owned()),
+                |child| child.try_wait(),
+            ),
+            InjectedPostSpawnFailure::Poll => run_spawned_owned_child(
+                child,
+                Instant::now() + Duration::from_secs(1),
+                |_| Ok(unassigned_cleanup_job()),
+                |_| Err(std::io::Error::other("injected child status poll failure")),
+            ),
+        }
+        .unwrap_err();
+
+        assert!(error.contains("helper killed and reaped"), "{error}");
+        assert!(error.contains("injected"), "{error}");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "spawned helper mutated after settlement");
+    }
+
+    #[test]
+    fn post_spawn_setup_failure_is_killed_and_reaped_before_return() {
+        assert_injected_post_spawn_failure_settles(InjectedPostSpawnFailure::Assignment);
+    }
+
+    #[test]
+    fn child_status_poll_failure_is_killed_and_reaped_before_return() {
+        assert_injected_post_spawn_failure_settles(InjectedPostSpawnFailure::Poll);
+    }
+
+    #[test]
+    fn artifact_scan_enforces_actual_byte_budget_inside_a_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("over-budget.log");
+        std::fs::write(&artifact, b"ninebytes").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now() + Duration::from_secs(1),
+            bytes_remaining: 8,
+        };
+
+        scan_file_for_canaries_bounded(&artifact, &[], &mut failures, &mut budget);
+
+        assert_eq!(budget.bytes_remaining, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("byte cap exceeded")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn artifact_scan_checks_deadline_during_file_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("deadline.log");
+        std::fs::write(&artifact, b"safe").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now(),
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+
+        scan_file_for_canaries_bounded(&artifact, &[], &mut failures, &mut budget);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("deadline exhausted")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn direct_and_recursive_artifact_scans_share_one_byte_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let direct = temp.path().join("stdout.log");
+        let tree = temp.path().join("artifacts");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(&direct, b"123456").unwrap();
+        std::fs::write(tree.join("later.log"), b"789").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now() + Duration::from_secs(1),
+            bytes_remaining: 8,
+        };
+
+        scan_file_for_canaries_bounded(&direct, &[], &mut failures, &mut budget);
+        scan_artifact_tree_with_budget(&tree, &[], &mut failures, &mut budget);
+
+        assert_eq!(budget.bytes_remaining, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("byte cap exceeded")),
+            "{failures:?}"
+        );
     }
 
     #[test]
@@ -1374,6 +3299,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn process_signaling_requires_the_recorded_start_identity() {
         let pid = std::process::id();
@@ -1501,16 +3427,30 @@ mod tests {
         );
         std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
 
-        guard.ledger.process_start_identity = Some("pid-reuse-simulation".into());
-        write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
+        let mut swapped_daemon = original_ledger.clone();
+        swapped_daemon.daemon_pid = Some(u32::MAX);
+        write_ledger(&guard.manifest_path, &swapped_daemon).unwrap();
         assert!(
             guard
                 .validate_ownership()
                 .unwrap_err()
-                .contains("start identity")
+                .contains("stale ownership")
         );
-        guard.ledger = original_ledger;
         std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
+
+        #[cfg(unix)]
+        {
+            guard.ledger.process_start_identity = Some("pid-reuse-simulation".into());
+            write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
+            assert!(
+                guard
+                    .validate_ownership()
+                    .unwrap_err()
+                    .contains("start identity")
+            );
+            guard.ledger = original_ledger;
+            std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
+        }
 
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
@@ -1530,24 +3470,34 @@ mod tests {
 
     #[tokio::test]
     async fn credential_sessions_are_revoked_instead_of_only_forgotten() {
-        let revoked = Arc::new(AtomicBool::new(false));
-        let observed = Arc::clone(&revoked);
-        let verified = Arc::clone(&revoked);
         let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
-        guard.register_credential_session(
-            "synthetic-session",
-            move || {
-                observed.store(true, Ordering::SeqCst);
-                Ok(())
-            },
-            move || Ok(verified.load(Ordering::SeqCst)),
+        let marker = guard.root.join("synthetic-session");
+        std::fs::write(&marker, b"present").unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_live-harness-fixture"));
+        command.args(["remove-marker", "0"]).arg(&marker);
+        guard
+            .register_credential_session("synthetic-session", command, vec![marker.clone()])
+            .unwrap();
+        assert!(
+            guard
+                .confirm_credential_session_revoked("synthetic-session")
+                .unwrap_err()
+                .contains("still has secret outputs")
+        );
+        assert!(
+            guard
+                .confirm_credential_session_revoked("another-session")
+                .is_err()
         );
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
-        assert!(
-            revoked.load(Ordering::SeqCst),
-            "revocation guard was not invoked"
-        );
+        assert!(!marker.exists(), "revocation helper was not invoked");
+    }
+
+    #[test]
+    fn credential_session_requires_absence_evidence_before_registration() {
+        let error = NonEmptyAbsencePaths::try_from_paths(vec![]).unwrap_err();
+        assert!(error.contains("requires absence evidence"), "{error}");
     }
 
     #[tokio::test]
@@ -1578,7 +3528,7 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_nonce_and_bearer_never_escape_operator_safe_outputs() {
-        let guard = LiveLabbyBuilder::new().start().await.expect("live labby");
+        let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
         let nonce = guard.identity.nonce.clone();
         let bearer = guard.credential_canary.clone();
         assert!(guard.validate_ownership().is_ok());
@@ -1642,7 +3592,7 @@ mod tests {
     async fn ownership_validation_rejects_nonce_symlink_swap() {
         use std::os::unix::fs::symlink;
 
-        let guard = LiveLabbyBuilder::new().start().await.expect("live labby");
+        let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
         let backup = guard.root.join("nonce.backup");
         std::fs::rename(&guard.nonce_path, &backup).unwrap();
         symlink(&backup, &guard.nonce_path).unwrap();
@@ -1767,6 +3717,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -1813,6 +3767,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -1857,6 +3815,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();

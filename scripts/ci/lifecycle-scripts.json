@@ -18,6 +18,7 @@
     "scripts/ci/smoke-incus-image.sh",
     "scripts/ci/check-lifecycle-scripts.sh",
     "scripts/ci/labby-live-e2e.sh",
+    "scripts/ci/labby-owned-process-gate.sh",
     "scripts/ci/mcp-conformance.sh",
     "scripts/ci/openai-auth-conformance.sh",
     "scripts/ci/unraid-plugin-checksums.sh",

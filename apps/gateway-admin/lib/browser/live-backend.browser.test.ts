@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import { appendFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { chromium, request as playwrightRequest, type Page } from 'playwright'
+import { chromium, type Page } from 'playwright'
 
 import {
   assertCanaryFree,
   captureFailureEvidence,
   observeLivePage,
+  ownedBrowserLaunchOptions,
   readPrivateCsrf,
   readLiveDescriptor,
+  runBrowserCleanupIfActive,
+  useBrowserWithAbort,
   withAbsoluteDeadline,
 } from './live-backend-harness.ts'
 
@@ -169,21 +172,15 @@ test('embedded Gateway Admin completes a real backend journey', {
   assert.ok(descriptor)
   const csrfToken = await readPrivateCsrf(descriptor)
   progress('descriptor-read')
-  await withAbsoluteDeadline((async () => {
+  await withAbsoluteDeadline(async (signal) => {
     progress('chromium-launch-start')
-    const browser = await chromium.launch({ headless: true })
+    await useBrowserWithAbort(signal, async () => chromium.launch(await ownedBrowserLaunchOptions(chromium.executablePath())), async (browser) => {
     progress('chromium-launched')
-    let context: import('playwright').BrowserContext | undefined
-    try {
-      context = await browser.newContext({
+    const context = await browser.newContext({
         baseURL: descriptor.base_url,
         storageState: descriptor.storage_state_path,
         viewport: { width: 1360, height: 900 },
       })
-    } catch (error) {
-      await browser.close()
-      throw error
-    }
     await context.tracing.start({ screenshots: false, snapshots: false, sources: false })
     const page = await context.newPage()
     // The outer supervisor owns the authenticated browser fixture and its
@@ -213,11 +210,11 @@ test('embedded Gateway Admin completes a real backend journey', {
         progress(`${route}:${response.status()}`)
         assert.ok(response.ok(), `${route} returned ${response.status()}`)
       }
-      const anonymous = await playwrightRequest.newContext({ baseURL: descriptor.base_url })
-      const denied = await anonymous.post('/v1/gateway', {
+      const anonymous = await browser.newContext({ baseURL: descriptor.base_url })
+      const denied = await anonymous.request.post('/v1/gateway', {
         data: { action: 'gateway.remove', params: { name: 'browser-denied' } },
       })
-      await anonymous.dispose()
+      await anonymous.close()
       assert.ok([401, 403].includes(denied.status()), `unauthorized mutation returned ${denied.status()}`)
       progress(`anonymous-denial:${denied.status()}`)
 
@@ -274,17 +271,20 @@ test('embedded Gateway Admin completes a real backend journey', {
       progress('trace-stopped')
     } catch (error) {
       failure = error
-      await captureFailureEvidence({ browser, context, page, descriptor, evidence, error })
+      await captureFailureEvidence({ browser, context, page, descriptor, evidence, error, signal })
       throw error
     } finally {
+      await runBrowserCleanupIfActive(signal, () => progress('cleanup-deferred-to-owned-root:deadline'), async (mayContinue) => {
       for (const [name, operation] of [
         ...(!ownedRouteRemoved ? [[ownedRoute, 'gateway.protected_route.stage_remove'] as const] : []),
         [`${ownedName}-duplicate`, 'gateway.remove'],
         [ownedGatewayId, 'gateway.remove'],
       ] as const) {
+        if (!mayContinue()) break
         const result = await action(page, csrfToken, 'gateway', operation, { name }).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)
         if (![200, 404].includes(result.status) && operation === 'gateway.remove') {
+          if (!mayContinue()) break
           const absent = await action(page, csrfToken, 'gateway', 'gateway.get', { name })
           progress(`cleanup-observe:${name}:${absent.status}`)
           if (absent.status === 404) continue
@@ -297,6 +297,7 @@ test('embedded Gateway Admin completes a real backend journey', {
         }
         if (![200, 404].includes(result.status)) cleanupFailures.push(`${operation}(${name})=${result.status}`)
       }
+      })
       if (!failure) {
         // `/auth/session` rotates the browser cookie. Preserve the current
         // authenticated state for the separately-created mobile context.
@@ -304,10 +305,10 @@ test('embedded Gateway Admin completes a real backend journey', {
         await context.close()
       }
       else await context.close().catch(() => undefined)
-      await browser.close()
       if (!failure) assert.deepEqual(cleanupFailures, [], `live browser cleanup failed: ${cleanupFailures.join(', ')}`)
     }
-  })(), 'live Gateway Admin journey')
+    })
+  }, 'live Gateway Admin journey')
 })
 
 test('nightly mobile viewport has no overflow and essential landmarks', {
@@ -316,8 +317,8 @@ test('nightly mobile viewport has no overflow and essential landmarks', {
 }, async () => {
   const descriptor = await readLiveDescriptor()
   assert.ok(descriptor)
-  const browser = await chromium.launch({ headless: true })
-  try {
+  await withAbsoluteDeadline(async (signal) => {
+    await useBrowserWithAbort(signal, async () => chromium.launch(await ownedBrowserLaunchOptions(chromium.executablePath())), async (browser) => {
     const context = await browser.newContext({
       baseURL: descriptor.base_url, storageState: descriptor.storage_state_path,
       viewport: { width: 390, height: 844 },
@@ -333,7 +334,6 @@ test('nightly mobile viewport has no overflow and essential landmarks', {
     await navigationDialog.waitFor({ state: 'visible', timeout: 10_000 })
     await navigationDialog.getByRole('navigation').waitFor({ state: 'visible', timeout: 10_000 })
     await context.close()
-  } finally {
-    await browser.close()
-  }
+    })
+  }, 'nightly live Gateway Admin journey')
 })

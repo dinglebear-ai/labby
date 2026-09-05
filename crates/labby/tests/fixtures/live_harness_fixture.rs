@@ -20,6 +20,13 @@ fn main() {
         .expect("fixture port");
     let marker = args.next().map(PathBuf::from).expect("fixture marker");
     match mode.as_str() {
+        "delayed-mutation" => {
+            std::thread::sleep(Duration::from_millis(200));
+            std::fs::write(&marker, b"mutation").expect("write delayed marker");
+        }
+        "remove-marker" => {
+            std::fs::remove_file(&marker).expect("remove owned marker");
+        }
         "grandchild-listener" => {
             #[allow(clippy::zombie_processes)]
             let _child = Command::new(std::env::current_exe().expect("fixture executable"))

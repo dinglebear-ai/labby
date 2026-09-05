@@ -10,6 +10,10 @@ use std::{process::Command, thread};
 use support::LiveLabbyBuilder;
 
 #[cfg(unix)]
+#[path = "live_process_harness/daemon_supervisor.rs"]
+mod daemon_supervisor;
+
+#[cfg(unix)]
 #[test]
 fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
     let run_root = tempfile::tempdir().expect("temporary parent");
@@ -34,6 +38,88 @@ fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
         report.contains("\"owned_children_absent\":true"),
         "{report}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn outer_supervisor_kills_wedged_cleanup_before_post_deadline_mutation() {
+    let run_root = tempfile::tempdir().expect("temporary parent");
+    let owned_root = run_root.path().join("wedged-cleanup-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let started = Instant::now();
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_WEDGED_SHARD_SELFTEST", "1")
+        .env("LABBY_E2E_SHARD_TIMEOUT_SECONDS", "1")
+        .env("LABBY_E2E_RUN_TIMEOUT_SECONDS", "5")
+        .env("LABBY_E2E_PREBUILT", "1")
+        .env("LABBY_E2E_BINARY", "/usr/bin/true")
+        .status()
+        .expect("wedged-cleanup self-test starts");
+
+    assert!(
+        !status.success(),
+        "a watchdog-killed shard must fail qualification: {status}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(8));
+    let marker = owned_root.join("post-deadline-mutation");
+    assert!(!marker.exists());
+    thread::sleep(Duration::from_secs(2));
+    assert!(
+        !marker.exists(),
+        "terminated shard mutated after supervisor returned"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn outer_supervisor_reaps_separate_helper_groups_on_shard_timeout() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("escaped-helper");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let started = Instant::now();
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &root)
+        .env("LABBY_E2E_ESCAPED_HELPER_SELFTEST", "1")
+        .env(
+            "LABBY_E2E_HELPER_TEST_BINARY",
+            std::env::current_exe().unwrap(),
+        )
+        .env(
+            "LABBY_E2E_HELPER_TEST_FILTER",
+            "support::live_labby::tests::supervised_cleanup_cancellation_fixture",
+        )
+        .env("LABBY_E2E_PREBUILT", "1")
+        .env("LABBY_E2E_BINARY", "/usr/bin/true")
+        .env("LABBY_E2E_SHARD_TIMEOUT_SECONDS", "1")
+        .env("LABBY_E2E_RUN_TIMEOUT_SECONDS", "5")
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "timed-out owned helper must fail the run"
+    );
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(root.join("helper-groups/closed").is_dir());
+    let registrations = std::fs::read_dir(root.join("helper-groups"))
+        .unwrap()
+        .count();
+    assert!(registrations > 1, "test must admit a separate helper group");
+    let marker = root.join("post-deadline-mutation");
+    assert!(!marker.exists());
+    thread::sleep(Duration::from_secs(3));
+    assert!(
+        !marker.exists(),
+        "escaped helper mutated after supervisor exit"
+    );
+    let status_json = std::fs::read_to_string(root.join("artifacts/status.json")).unwrap();
+    assert!(status_json.contains("\"primary\":1"), "{status_json}");
 }
 
 #[cfg(unix)]
@@ -148,6 +234,30 @@ fn orchestration_exit_cleanup_failure_overrides_success() {
     assert_eq!(status.code(), Some(1));
     let report = std::fs::read_to_string(owned_root.join("artifacts/status.json")).unwrap();
     assert!(report.contains("\"cleanup\":1"), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn orchestration_inventory_failure_preserves_failed_final_status() {
+    for variable in [
+        "LABBY_E2E_INVENTORY_FAILURE_SELFTEST",
+        "LABBY_E2E_MEMBER_INVENTORY_FAILURE_SELFTEST",
+    ] {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("inventory-failure");
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/ci/labby-live-e2e.sh");
+        let status = Command::new("bash")
+            .arg(script)
+            .args(["pr", "1"])
+            .env("LABBY_E2E_RUN_ROOT", &root)
+            .env(variable, "1")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(1));
+        let report = std::fs::read_to_string(root.join("artifacts/status.json")).unwrap();
+        assert!(report.contains("\"cleanup\":1"), "{report}");
+    }
 }
 
 #[cfg(unix)]
@@ -329,7 +439,10 @@ command = "/definitely/not/allowed"
         }
         Err(failure) => failure,
     };
-    assert!(failure.contains("loaded gateway config failed validation"));
+    assert!(
+        failure.contains("loaded gateway config failed validation"),
+        "{failure}"
+    );
     assert!(!failure.contains("panicked at"));
 }
 
@@ -419,4 +532,14 @@ fn sigterm_drives_supervised_cleanup_to_completion() {
     let owned_root =
         std::path::PathBuf::from(String::from_utf8(std::fs::read(marker).unwrap()).unwrap());
     assert!(!owned_root.exists(), "signal cleanup retained owned root");
+}
+#[test]
+fn aggregate_phase_runs_only_the_exact_coverage_join() {
+    let script = include_str!("../../../scripts/ci/labby-live-e2e.sh");
+    assert!(script.contains("--test e2e_coverage_report --locked -- exact_catalog_join_emits_versioned_coverage_report --exact"));
+    assert!(script.contains("LABBY_E2E_DECLARED_SHARDS"));
+    assert!(script.contains("LABBY_E2E_CLEANUP_STATUS=passed LABBY_E2E_EVIDENCE_STATUS=passed"));
+    assert!(script.contains(
+        "contracts) cargo test -p labby --all-features --test action_matrix_completeness --locked"
+    ));
 }
