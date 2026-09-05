@@ -46,15 +46,15 @@
     "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "default", "gateway-host"],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::browser::browser_pairing_approve",
-    "minimum_evidence": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::browser::browser_pairing_approve",
+    "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
     "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"pairing_id": "$fixture.pairing_id"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "browser",
@@ -78,15 +78,15 @@
     "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "default", "gateway-host"],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::browser::browser_revoke",
-    "minimum_evidence": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::browser::browser_revoke",
+    "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
     "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"browser_id": "$fixture.browser_id"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "browser",
@@ -94,15 +94,15 @@
     "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "default", "gateway-host"],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::browser::browser_session_enable",
-    "minimum_evidence": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::browser::browser_session_enable",
+    "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
     "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"session_id": "$fixture.session_id", "enabled": "$fixture.enabled"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "browser",
