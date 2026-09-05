@@ -294,9 +294,24 @@ impl CodeModeHost for GatewayManager {
         &self,
         uri: String,
         caller: &CodeModeCaller,
-        _surface: CodeModeSurface,
+        surface: CodeModeSurface,
         scope: &ToolScope,
     ) -> Result<Value, ToolError> {
+        if let Some(upstream) = uri
+            .strip_prefix("lab://upstream/")
+            .and_then(|rest| rest.split_once('/').map(|(name, _)| name))
+            && scope
+                .allowed_namespaces()
+                .is_none_or(|allowed| allowed.contains(upstream))
+            && let Some(config) = self.upstream_config(upstream).await
+            && config.enabled
+            && config.proxy_resources
+            && config.oauth.is_none()
+        {
+            let owner = runtime_owner(caller, surface);
+            self.ensure_upstream_tool_runtime_ready(upstream, Some(&owner), None)
+                .await?;
+        }
         let Some(pool) = self.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "provider_unavailable".to_string(),
