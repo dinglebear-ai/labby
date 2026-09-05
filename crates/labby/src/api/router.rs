@@ -2844,8 +2844,8 @@ mod tests {
         let path = match service {
             "lab_admin" => return None,
             "fs" => "/v1/fs/list".to_string(),
-            name @ ("artifacts" | "bundles" | "doctor" | "gateway" | "jobs" | "server_logs"
-            | "setup" | "snippets" | "sources" | "uploads") => {
+            name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
+            | "server_logs" | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
             }
             unknown => panic!(
