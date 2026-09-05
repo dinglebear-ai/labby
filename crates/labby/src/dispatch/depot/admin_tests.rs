@@ -104,6 +104,29 @@ fn upsert_preserves_foreign_toml_and_env_while_rotating_only_owned_secret() {
 }
 
 #[test]
+fn bearer_credentials_reject_header_and_environment_control_characters() {
+    for token in [
+        "line\nbreak",
+        "carriage\rreturn",
+        "tab\tvalue",
+        "nul\0value",
+    ] {
+        let mutation = Mutation {
+            id: "team".into(),
+            name: "Team Depot".into(),
+            endpoint: "https://team.example/api".into(),
+            enabled: true,
+            auth_mode: AuthMode::Bearer,
+            credential: CredentialChange::Replace(token.into()),
+        };
+        assert_eq!(
+            build_upsert("", "", &mutation).unwrap_err(),
+            AdminError::Invalid
+        );
+    }
+}
+
+#[test]
 fn retained_secret_and_reserved_ids_fail_closed() {
     let mutation = Mutation {
         id: "all".into(),

@@ -212,6 +212,7 @@ fn provider_state(
             id: provider.view.id.clone(),
             incarnation: provider.runtime.incarnation().to_owned(),
             listing_epoch: identity.listing_epoch.into(),
+            max_page_size: Some(identity.max_page_size),
             upstream_cursor: None,
             page: ProviderPage::participating(&provider.view.id, Vec::new(), None, None),
         },
@@ -219,6 +220,7 @@ fn provider_state(
             id: provider.view.id.clone(),
             incarnation: provider.runtime.incarnation().to_owned(),
             listing_epoch: String::new(),
+            max_page_size: None,
             upstream_cursor: None,
             page: ProviderPage::pending(&provider.view.id),
         },
@@ -226,6 +228,7 @@ fn provider_state(
             id: provider.view.id.clone(),
             incarnation: provider.runtime.incarnation().to_owned(),
             listing_epoch: String::new(),
+            max_page_size: None,
             upstream_cursor: None,
             page: ProviderPage::failed(&provider.view.id, failure_kind(error)),
         },
@@ -244,14 +247,26 @@ async fn fetch_pages(
     let calls = federation.providers.iter().enumerate().filter_map(|(index, state)| {
         let quota = base + usize::from(index < remainder);
         let provider = selected.iter().find(|provider| provider.view.id == state.id)?;
-        (quota > state.page.items.len() && matches!(state.page.outcome.as_str(), "participating" | "pending")).then_some(async move {
-            let body = serde_json::json!({ "query": request.query, "limit": quota, "cursor": state.upstream_cursor });
-            (index, provider.runtime.call(Operation::List, body, admission).await)
+        let needed = quota.saturating_sub(state.page.items.len());
+        (needed > 0 && matches!(state.page.outcome.as_str(), "participating" | "pending")).then_some(async move {
+            let result = match provider.runtime.qualify(admission, false).await {
+                Ok(identity) => {
+                    let limit = provider_request_limit(needed, Some(identity.max_page_size));
+                    let body = serde_json::json!({ "query": request.query, "limit": limit, "cursor": state.upstream_cursor });
+                    provider.runtime.call(Operation::List, body, admission).await
+                }
+                Err(error) => Err(error),
+            };
+            (index, result)
         })
     });
     for (index, result) in join_all(calls).await {
         apply_reply(&mut federation.providers[index], result);
     }
+}
+
+pub(super) fn provider_request_limit(requested: usize, advertised: Option<u16>) -> usize {
+    requested.min(usize::from(advertised.unwrap_or(MAX_PAGE)))
 }
 
 fn apply_reply(
@@ -272,6 +287,7 @@ fn apply_reply(
                 return;
             };
             state.listing_epoch = reply.identity.listing_epoch.into();
+            state.max_page_size = Some(reply.identity.max_page_size);
             state.upstream_cursor = result
                 .get("nextCursor")
                 .and_then(Value::as_str)
@@ -328,6 +344,8 @@ struct FederatedProvider {
     id: String,
     incarnation: String,
     listing_epoch: String,
+    #[serde(default)]
+    max_page_size: Option<u16>,
     upstream_cursor: Option<String>,
     page: ProviderPage,
 }

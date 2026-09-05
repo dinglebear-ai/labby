@@ -81,6 +81,19 @@ impl SqliteStore {
         }).await
     }
 
+    pub async fn retry_browser_reauth_challenge(&self, state: &str) -> Result<(), AuthError> {
+        let state = state.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE browser_reauth_challenges SET status = 0 WHERE state = ?1 AND status = 1 AND expires_at > ?2",
+                params![state, crate::util::now_unix()],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn poll_browser_reauth(
         &self,
         interaction_hash: &[u8; 32],

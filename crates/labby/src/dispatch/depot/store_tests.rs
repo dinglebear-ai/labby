@@ -1,4 +1,6 @@
 use super::store::{Pair, Store, StoreError};
+use crate::config::host_write::HostConfigLock;
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn store(root: &TempDir) -> Store {
@@ -73,5 +75,38 @@ fn corrupt_recovery_intent_blocks_activation_without_touching_the_pair() {
     assert_eq!(
         std::fs::read_to_string(root.path().join("labby.env")).unwrap(),
         "SAFE=secret\n"
+    );
+}
+
+#[test]
+fn pair_read_holds_the_config_lock_while_waiting_for_the_environment_lock() {
+    let root = TempDir::new().unwrap();
+    let store = store(&root);
+    let config_path = root.path().join("config.toml");
+    let environment_path = root.path().join("labby.env");
+    std::fs::write(&config_path, "config").unwrap();
+    std::fs::write(&environment_path, "ENV=value\n").unwrap();
+    let environment = HostConfigLock::acquire(&environment_path).unwrap();
+
+    let reader = std::thread::spawn(move || store.read_pair());
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match HostConfigLock::acquire_with_timeout(&config_path, Duration::from_millis(5)) {
+            Err(_) => break,
+            Ok(lock) => drop(lock),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pair reader never acquired its first lock"
+        );
+        std::thread::yield_now();
+    }
+    drop(environment);
+    assert_eq!(
+        reader.join().unwrap().unwrap(),
+        Pair {
+            config: "config".into(),
+            environment: "ENV=value\n".into(),
+        }
     );
 }

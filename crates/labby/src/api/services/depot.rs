@@ -176,6 +176,7 @@ async fn providers(
             .as_ref()
             .ok_or_else(unavailable)?
             .current_version()
+            .await
             .map_err(map_admin_error)?;
         serde_json::to_value(state.depot_manager.admin_status(&version))
     } else {
@@ -295,6 +296,7 @@ async fn provider_operation(
         .as_ref()
         .ok_or_else(unavailable)?
         .operation(&operation_id)
+        .await
         .map(|outcome| Json(json!(outcome)))
         .map_err(map_admin_error)
 }

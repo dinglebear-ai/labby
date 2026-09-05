@@ -103,6 +103,36 @@ async fn cursor_rejects_foreign_authority_and_expires_old_transitions() {
 }
 
 #[tokio::test]
+async fn cursor_accepts_current_provider_binding_without_a_live_listing_epoch() {
+    let store = CursorStore::default();
+    let now = Instant::now();
+    let saved = binding("actor-a");
+    let cursor = store.create(saved.clone(), vec![], now).await.unwrap();
+    let mut current = saved;
+    current.providers[0].2.clear();
+
+    assert!(matches!(
+        store.begin(&cursor, &current, now).await.unwrap(),
+        PageInput::Compute(_)
+    ));
+}
+
+#[tokio::test]
+async fn cursor_still_rejects_a_changed_known_listing_epoch() {
+    let store = CursorStore::default();
+    let now = Instant::now();
+    let saved = binding("actor-a");
+    let cursor = store.create(saved.clone(), vec![], now).await.unwrap();
+    let mut current = saved;
+    current.providers[0].2 = "list-2".into();
+
+    assert_eq!(
+        store.begin(&cursor, &current, now).await.unwrap_err(),
+        CursorError::Expired
+    );
+}
+
+#[tokio::test]
 async fn cursor_enforces_idle_and_absolute_expiry() {
     let store = CursorStore::default();
     let now = Instant::now();

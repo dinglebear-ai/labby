@@ -1,5 +1,6 @@
 use super::discovery::{
-    DiscoveryError, ProviderPage, merge_page, project_detail, validate_request,
+    DiscoveryError, ProviderPage, merge_page, project_detail, provider_request_limit,
+    validate_request,
 };
 use serde_json::json;
 
@@ -12,6 +13,12 @@ fn page(id: &str, count: usize) -> ProviderPage {
         None,
         Some(count as u64),
     )
+}
+
+#[test]
+fn provider_request_never_exceeds_the_advertised_page_size() {
+    assert_eq!(provider_request_limit(150, Some(25)), 25);
+    assert_eq!(provider_request_limit(20, Some(25)), 20);
 }
 
 #[test]

@@ -121,7 +121,9 @@ pub fn build_upsert(
     let mut values = parse_environment(environment)?;
     match &mutation.credential {
         CredentialChange::Retain => {}
-        CredentialChange::Replace(value) if !value.is_empty() && value.len() <= 8192 => {
+        CredentialChange::Replace(value)
+            if !value.is_empty() && value.len() <= 8192 && !value.chars().any(char::is_control) =>
+        {
             values.insert(env_key.clone(), value.clone());
         }
         CredentialChange::Replace(_) => return Err(AdminError::Invalid),
@@ -322,13 +324,20 @@ impl Admin {
         }
     }
 
-    pub fn current_version(&self) -> Result<String, AdminError> {
-        self.store.current_version().map_err(map_store)
+    pub async fn current_version(&self) -> Result<String, AdminError> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.current_version())
+            .await
+            .map_err(|_| AdminError::Recovery)?
+            .map_err(map_store)
     }
 
-    pub fn operation(&self, operation_id: &str) -> Result<StoreOutcome, AdminError> {
-        self.store
-            .recover()
+    pub async fn operation(&self, operation_id: &str) -> Result<StoreOutcome, AdminError> {
+        let store = self.store.clone();
+        let operation_id = operation_id.to_owned();
+        tokio::task::spawn_blocking(move || store.recover())
+            .await
+            .map_err(|_| AdminError::Recovery)?
             .map_err(map_store)?
             .filter(|outcome| outcome.operation_id == operation_id)
             .ok_or(AdminError::Invalid)
@@ -343,7 +352,11 @@ impl Admin {
         mutation: &Mutation,
         payload: &Value,
     ) -> Result<StoreOutcome, AdminError> {
-        let current = self.store.read_pair().map_err(map_store)?;
+        let store = self.store.clone();
+        let current = tokio::task::spawn_blocking(move || store.read_pair())
+            .await
+            .map_err(|_| AdminError::Recovery)?
+            .map_err(map_store)?;
         let built = build_upsert(&current.config, &current.environment, mutation)?;
         let candidate =
             self.manager
@@ -367,7 +380,11 @@ impl Admin {
         &self,
         mutation: &Mutation,
     ) -> Result<super::health::HealthView, AdminError> {
-        let current = self.store.read_pair().map_err(map_store)?;
+        let store = self.store.clone();
+        let current = tokio::task::spawn_blocking(move || store.read_pair())
+            .await
+            .map_err(|_| AdminError::Recovery)?
+            .map_err(map_store)?;
         let built = build_upsert(&current.config, &current.environment, mutation)?;
         let candidate =
             self.manager
@@ -396,7 +413,11 @@ impl Admin {
         operation_id: &str,
         payload: &Value,
     ) -> Result<StoreOutcome, AdminError> {
-        let current = self.store.read_pair().map_err(map_store)?;
+        let store = self.store.clone();
+        let current = tokio::task::spawn_blocking(move || store.read_pair())
+            .await
+            .map_err(|_| AdminError::Recovery)?
+            .map_err(map_store)?;
         let built = build_remove(&current.config, &current.environment, provider_id)?;
         let candidate =
             self.manager

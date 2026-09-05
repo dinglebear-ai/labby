@@ -10,15 +10,25 @@ import { useBrowserSession } from '@/lib/auth/session'
 type Props = { provider?: DepotProvider; baseVersion: string; onSaved(): void; onClose(): void }
 type ReauthAction = 'save' | 'remove'
 
+export function initialProviderAuthMode(provider?: DepotProvider): 'anonymous'|'bearer' {
+  return provider?.authMode ?? 'anonymous'
+}
+
+export function providerRequiresFreshProof(provider: DepotProvider | undefined, endpoint: string, authMode: 'anonymous'|'bearer', credential: 'retain'|'replace'|'clear') {
+  if (provider?.id === 'public') return false
+  if (!provider) return authMode === 'bearer'
+  return credential !== 'retain' || provider.endpoint !== endpoint || provider.authMode !== authMode
+}
+
 export function DepotProviderDialog({ provider, baseVersion, onSaved, onClose }: Props) {
   const session = useBrowserSession(), title = useId(), secret = useRef<HTMLInputElement>(null)
   const generation = useRef(0), operation = useRef(crypto.randomUUID())
   const [id,setId]=useState(provider?.id??''), [name,setName]=useState(provider?.name??''), [endpoint,setEndpoint]=useState(provider?.endpoint??'')
-  const [enabled,setEnabled]=useState(provider?.enabled??false), [authMode,setAuthMode]=useState<'anonymous'|'bearer'>(provider?.credentialConfigured?'bearer':'anonymous')
+  const [enabled,setEnabled]=useState(provider?.enabled??false), [authMode,setAuthMode]=useState<'anonymous'|'bearer'>(()=>initialProviderAuthMode(provider))
   const [credential,setCredential]=useState<'retain'|'replace'|'clear'>('retain'), [error,setError]=useState<string>(), [busy,setBusy]=useState(false), [probe,setProbe]=useState<string>()
   const [proof,setProof]=useState<string>(), [reauthAction,setReauthAction]=useState<ReauthAction>('save'), [reauthOpen,setReauthOpen]=useState(false)
   const builtin=provider?.id==='public', version=provider?.configVersion??baseVersion
-  const needsProof=!builtin&&(credential!=='retain'||provider?.endpoint!==endpoint||provider?.authMode!==authMode||(!provider&&authMode==='bearer'))
+  const needsProof=providerRequiresFreshProof(provider,endpoint,authMode,credential)
 
   useEffect(()=>()=>{ if(secret.current)secret.current.value=''; generation.current+=1 },[])
   const credentialValue=():CredentialOperation=>credential==='replace'?{action:'replace',value:secret.current?.value??''}:credential==='clear'?{action:'clear'}:{action:'retain'}

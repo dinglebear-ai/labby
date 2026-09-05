@@ -141,6 +141,24 @@ pub async fn callback(
     else {
         return Ok(false);
     };
+    let result =
+        complete_callback(state, callback_state, code, browser_session_id, &challenge).await;
+    if result.is_err() {
+        state
+            .store
+            .retry_browser_reauth_challenge(callback_state)
+            .await?;
+    }
+    result.map(|()| true)
+}
+
+async fn complete_callback(
+    state: &AuthState,
+    callback_state: &str,
+    code: &str,
+    browser_session_id: Option<&str>,
+    challenge: &BrowserReauthChallengeRow,
+) -> Result<(), AuthError> {
     if browser_session_id != Some(challenge.session_id.as_str()) {
         return Err(AuthError::AuthFailed(
             "reauthentication browser session changed".into(),
@@ -187,7 +205,7 @@ pub async fn callback(
         .store
         .complete_browser_reauth(callback_state, issued.proof.as_str())
         .await?;
-    Ok(true)
+    Ok(())
 }
 
 pub async fn poll(

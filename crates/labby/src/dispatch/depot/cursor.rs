@@ -83,6 +83,26 @@ impl Binding {
                 .map(|(a, b, c)| a.capacity() + b.capacity() + c.capacity())
                 .sum::<usize>()
     }
+
+    fn matches_current(&self, current: &Self) -> bool {
+        self.actor == current.actor
+            && self.authority_epoch == current.authority_epoch
+            && self.scope == current.scope
+            && self.query == current.query
+            && self.page_contract == current.page_contract
+            && self.registry_epoch == current.registry_epoch
+            && self.providers.len() == current.providers.len()
+            && self.providers.iter().zip(&current.providers).all(
+                |(
+                    (saved_id, saved_incarnation, saved_listing),
+                    (current_id, current_incarnation, current_listing),
+                )| {
+                    saved_id == current_id
+                        && saved_incarnation == current_incarnation
+                        && (current_listing.is_empty() || saved_listing == current_listing)
+                },
+            )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -257,7 +277,7 @@ impl CursorStore {
                 else {
                     return Err(CursorError::Expired);
                 };
-                if &chain.binding != binding {
+                if !chain.binding.matches_current(binding) {
                     return Err(CursorError::Expired);
                 }
                 chain.last_access = now;

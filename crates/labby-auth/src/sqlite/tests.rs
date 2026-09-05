@@ -2488,6 +2488,45 @@ async fn browser_reauth_challenge_is_bounded_single_use_and_session_bound() {
 }
 
 #[tokio::test]
+async fn failed_browser_reauth_callback_can_release_the_challenge_for_retry() {
+    let store = temp_store().await;
+    let now = now_unix();
+    let row = BrowserReauthChallengeRow {
+        state: "retry-state".into(),
+        interaction_hash: [8; 32],
+        session_id: "session-one".into(),
+        subject: "subject-one".into(),
+        provider_code_verifier: "pkce-secret".into(),
+        nonce: "nonce-secret".into(),
+        purpose_json: r#"{"action":"save"}"#.into(),
+        created_at: now,
+        expires_at: now + 300,
+    };
+    store
+        .insert_browser_reauth_challenge(row.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .take_browser_reauth_challenge("retry-state")
+            .await
+            .unwrap(),
+        Some(row.clone())
+    );
+    store
+        .retry_browser_reauth_challenge("retry-state")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .take_browser_reauth_challenge("retry-state")
+            .await
+            .unwrap(),
+        Some(row)
+    );
+}
+
+#[tokio::test]
 async fn browser_reauth_challenge_rejects_expiry_and_capacity_overflow() {
     let store = temp_store().await;
     let now = now_unix();

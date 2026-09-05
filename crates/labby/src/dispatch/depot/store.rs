@@ -69,33 +69,15 @@ impl Store {
 
     pub fn current_version(&self) -> Result<String, StoreError> {
         let key = self.key()?;
-        let config = HostConfigLock::acquire(&self.config)
-            .map_err(map_host)?
-            .read_raw()
-            .map_err(map_host)?;
-        let environment = HostConfigLock::acquire(&self.environment)
-            .map_err(map_host)?
-            .read_raw()
-            .map_err(map_host)?;
-        digest(
-            &key,
-            &Pair {
-                config,
-                environment,
-            },
-        )
+        digest(&key, &self.read_pair()?)
     }
 
     pub fn read_pair(&self) -> Result<Pair, StoreError> {
+        let config = HostConfigLock::acquire(&self.config).map_err(map_host)?;
+        let environment = HostConfigLock::acquire(&self.environment).map_err(map_host)?;
         Ok(Pair {
-            config: HostConfigLock::acquire(&self.config)
-                .map_err(map_host)?
-                .read_raw()
-                .map_err(map_host)?,
-            environment: HostConfigLock::acquire(&self.environment)
-                .map_err(map_host)?
-                .read_raw()
-                .map_err(map_host)?,
+            config: config.read_raw().map_err(map_host)?,
+            environment: environment.read_raw().map_err(map_host)?,
         })
     }
 
