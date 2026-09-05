@@ -533,6 +533,7 @@ mod tests {
 
         let tool = ToolDescriptor::tool("fixture", "query", "Query data", None, None);
         let snippet = ToolDescriptor::snippet(&SnippetInfo {
+            tools: None,
             name: "summarize".to_string(),
             description: Some("Summarize results".to_string()),
             tags: vec![],
