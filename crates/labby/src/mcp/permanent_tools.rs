@@ -942,6 +942,7 @@ mod tests {
 
         // Reachable by a caller with `can_execute() == false` at hop 2.
         let expected_callable = [
+            "browser",
             "doctor",
             "fs",
             "jobs",

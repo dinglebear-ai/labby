@@ -235,7 +235,7 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
             "artifacts" | "bundles" | "jobs" | "skills" | "sources" | "uploads" => {
                 assert!(intent.applicable_features.contains("skills"));
             }
-            "gateway" | "snippets" => {
+            "browser" | "gateway" | "snippets" => {
                 assert!(intent.applicable_features.contains("gateway-host"));
             }
             _ => assert!(intent.applicable_features.contains("base")),
@@ -248,6 +248,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
     let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
     let gateway = BTreeSet::from([
         "artifacts",
+        "browser",
         "bundles",
         "doctor",
         "gateway",
@@ -288,6 +289,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         (
             "all",
             BTreeSet::from([
+                "browser",
                 "doctor",
                 "fs",
                 "gateway",
