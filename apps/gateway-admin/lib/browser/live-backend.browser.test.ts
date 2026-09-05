@@ -48,15 +48,23 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
-  await page.getByRole('button', { name: 'Add Server', exact: true }).last().click()
+  const observedPosts: string[] = []
+  const observePost = (request: import('playwright').Request) => {
+    if (request.method() === 'POST') observedPosts.push(`${new URL(request.url()).pathname}:${request.postData() ?? ''}`)
+  }
+  page.on('request', observePost)
+  await page.getByRole('button', { name: 'Add server', exact: true }).last().click()
   const dialog = page.getByRole('dialog', { name: 'Add server' })
   await dialog.getByLabel('Name').fill(name)
   await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
   const mutation = page.waitForResponse((response) =>
-    response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/gateway',
-  { timeout: 10_000 })
+    response.request().method() === 'POST'
+      && response.request().postData()?.includes('gateway.add') === true,
+  { timeout: 30_000 })
   await dialog.getByRole('button', { name: 'Add server', exact: true }).click()
-  const response = await mutation
+  const response = await mutation.catch(async (error) => {
+    throw new Error(`add-server request was not sent; posts=${JSON.stringify(observedPosts)}; page=${await page.locator('body').innerText()}`, { cause: error })
+  }).finally(() => page.off('request', observePost))
   assert.equal(response.status(), 200, `UI gateway.add returned ${response.status()}: ${await response.text()}`)
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(async (error) => {
     throw new Error(`add-server dialog remained open: ${await dialog.innerText()}`, { cause: error })
@@ -289,7 +297,12 @@ test('embedded Gateway Admin completes a real backend journey', {
         }
         if (![200, 404].includes(result.status)) cleanupFailures.push(`${operation}(${name})=${result.status}`)
       }
-      if (!failure) await context.close()
+      if (!failure) {
+        // `/auth/session` rotates the browser cookie. Preserve the current
+        // authenticated state for the separately-created mobile context.
+        await context.storageState({ path: descriptor.storage_state_path })
+        await context.close()
+      }
       else await context.close().catch(() => undefined)
       await browser.close()
       if (!failure) assert.deepEqual(cleanupFailures, [], `live browser cleanup failed: ${cleanupFailures.join(', ')}`)
@@ -312,8 +325,8 @@ test('nightly mobile viewport has no overflow and essential landmarks', {
     const page = await context.newPage()
     await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
-    assert.ok(await page.getByRole('main').count())
-    assert.ok(await page.getByRole('navigation').count())
+    await page.getByRole('main').waitFor({ state: 'visible', timeout: 10_000 })
+    await page.getByRole('navigation').waitFor({ state: 'visible', timeout: 10_000 })
     await context.close()
   } finally {
     await browser.close()

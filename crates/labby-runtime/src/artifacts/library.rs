@@ -635,11 +635,7 @@ impl LibraryDurableAudit {
             || self.correlation_id.is_empty()
             || self.correlation_id.len() > 256
             || self.correlation_id.chars().any(char::is_control)
-            || !matches!(
-                (self.action.strip_prefix("artifacts."), receipt.action.as_str()),
-                (Some(product), runtime) if product == runtime
-                    || (product == "import" && runtime == "create")
-            )
+            || !terminal_audit_action_matches(&self.action, &receipt.action)
             || self.tenant_id != receipt.tenant_id
             || self.actor_id != receipt.actor_id
             || self.committed_version != Some(receipt.committed_version)
@@ -660,6 +656,15 @@ impl LibraryDurableAudit {
         }
         Ok(())
     }
+}
+
+fn terminal_audit_action_matches(audit_action: &str, receipt_action: &str) -> bool {
+    ["artifacts.", "skill_library."]
+        .into_iter()
+        .filter_map(|prefix| audit_action.strip_prefix(prefix))
+        .any(|product| {
+            product == receipt_action || (product == "import" && receipt_action == "create")
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2069,6 +2074,34 @@ mod tests {
             stage: "commit".to_owned(),
             replayed: false,
         }
+    }
+
+    #[test]
+    fn terminal_audit_accepts_legacy_skill_library_action_names() {
+        let owner = ownership("org-a", "alice");
+        let artifact_id = "art_legacy";
+        let mut audit = terminal_audit(&owner, artifact_id, 1);
+        let mut receipt = LibraryReceipt {
+            sequence: 1,
+            scope_digest: canonical_json::digest(&"scope").unwrap(),
+            tenant_id: owner.tenant_id.clone(),
+            actor_id: owner.owner_id.clone(),
+            action: "create".to_owned(),
+            artifact_id: artifact_id.to_owned(),
+            idempotency_key: "legacy-import".to_owned(),
+            request_digest: canonical_json::digest(&"request").unwrap(),
+            committed_version: 1,
+            transaction_digest: None,
+            response_facts: None,
+            terminal_audit: None,
+        };
+
+        audit.action = "skill_library.import".to_owned();
+        audit.validate_for(&receipt).unwrap();
+
+        receipt.action = "activate".to_owned();
+        audit.action = "skill_library.activate".to_owned();
+        audit.validate_for(&receipt).unwrap();
     }
 
     #[test]

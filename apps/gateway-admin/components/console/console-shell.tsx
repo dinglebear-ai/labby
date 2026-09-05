@@ -42,7 +42,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         >
           <ConsoleTopbar />
 
-          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0 }}>
+          <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0 }}>
             <div
               data-main-scroll="1"
               style={{
@@ -56,7 +56,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             >
               {children}
             </div>
-          </div>
+          </main>
         </div>
       </div>
     </ConsoleShellProvider>
