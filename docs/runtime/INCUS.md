@@ -386,12 +386,23 @@ runtime as the recommended self-host path.
 
 ## Rollback
 
-Rollback from Incus by stopping or deleting the container:
+Never delete the container as a rollback. A deployment updates the binary and
+web assets inside the durable container that also owns operator configuration,
+credentials, tombstones, and transaction state. Before syncing, retain a
+matched copy of the active binary and web asset directory, record their hashes,
+and record the state-format version they were qualified against.
 
-```bash
-incus stop labby
-incus delete labby
-```
+If activation fails, stop writes and restore the matched binary and asset bundle
+only when they remain compatible with the current durable state. Restart the
+service, then verify readiness, binary and `index.html` hashes, API provenance,
+and operator controls. Do not restore an older config, secret, or tombstone over
+accepted operator edits. When the current state is incompatible with the prior
+bundle, keep writes frozen and reconcile only the affected configuration
+transaction from its retained manifest before restarting either version.
+
+Rehearse this restore on an isolated Incus copy before deploying to the target.
+Snapshots and exports protect the durable container; deleting it destroys the
+state that rollback must preserve.
 
 Rollback from bare metal:
 

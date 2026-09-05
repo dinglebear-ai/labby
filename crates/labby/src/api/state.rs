@@ -29,6 +29,10 @@ pub struct AppState {
     pub depot: Arc<crate::dispatch::depot::DepotClient>,
     /// Resolved discovery runtime shared by all browser adapters.
     pub depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
+    /// Durable provider lifecycle dispatch, available only with browser OAuth authority.
+    pub depot_admin: Option<Arc<crate::dispatch::depot::admin::Admin>>,
+    depot_store: Option<Arc<crate::dispatch::depot::store::Store>>,
+    depot_policy: crate::dispatch::depot::network::NetworkPolicy,
     /// Shared HTTP client for protected MCP reverse proxy requests.
     pub protected_mcp_http_client: reqwest::Client,
     /// Shared public OAuth callback relay forwarder.
@@ -153,6 +157,9 @@ impl AppState {
             clients,
             depot: Arc::new(crate::dispatch::depot::DepotClient::disabled()),
             depot_manager: Arc::new(crate::dispatch::depot::manager::Manager::default()),
+            depot_admin: None,
+            depot_store: None,
+            depot_policy: Default::default(),
             protected_mcp_http_client,
             // `PublicRelayForwarder::new()` only fails on reqwest client
             // build errors (e.g. TLS backend init failure), the same class
@@ -266,11 +273,27 @@ impl AppState {
         secrets: crate::dispatch::depot::manager::SecretSnapshot,
         policy: crate::dispatch::depot::network::NetworkPolicy,
     ) -> Self {
+        self.depot_policy = policy.clone();
         self.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
             &self.config.depot,
             secrets,
             policy,
         ));
+        self
+    }
+
+    #[must_use]
+    pub fn with_depot_storage(
+        mut self,
+        config: PathBuf,
+        environment: PathBuf,
+        state: PathBuf,
+    ) -> Self {
+        self.depot_store = Some(Arc::new(crate::dispatch::depot::store::Store::new(
+            config,
+            environment,
+            state,
+        )));
         self
     }
 
@@ -291,6 +314,14 @@ impl AppState {
 
     #[must_use]
     pub fn with_oauth_state(mut self, auth_state: labby_auth::state::AuthState) -> Self {
+        if let Some(store) = self.depot_store.clone() {
+            self.depot_admin = Some(Arc::new(crate::dispatch::depot::admin::Admin::new(
+                Arc::clone(&self.depot_manager),
+                store,
+                labby_auth::reauth::Proofs::new(auth_state.store.clone()),
+                self.depot_policy.clone(),
+            )));
+        }
         self.oauth_state = Some(Arc::new(auth_state));
         self
     }

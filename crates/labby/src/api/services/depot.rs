@@ -1,8 +1,8 @@
 use axum::{
     Extension, Json,
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    routing::{delete, get, post},
 };
 use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::{AuthContext, Authenticator, PrincipalLink, VerifiedIdentity};
@@ -13,6 +13,7 @@ use crate::api::{
     route_registry::{RouteAuth, RouteDescriptor, RouteGroup},
     state::AppState,
 };
+use crate::dispatch::depot::admin::{AdminError, Mutation};
 use crate::dispatch::depot::discovery::{self, DiscoveryError, DiscoveryRequest};
 use crate::dispatch::depot::{DepotError, error_body};
 
@@ -37,6 +38,22 @@ pub fn routes(_state: AppState) -> RouteGroup {
         .route(routes.next().expect("discover descriptor"), post(discover))
         .route(routes.next().expect("detail descriptor"), post(detail))
         .route(routes.next().expect("providers descriptor"), get(providers))
+        .route(
+            routes.next().expect("upsert descriptor"),
+            post(upsert_provider),
+        )
+        .route(
+            routes.next().expect("probe descriptor"),
+            post(probe_provider),
+        )
+        .route(
+            routes.next().expect("remove descriptor"),
+            delete(remove_provider),
+        )
+        .route(
+            routes.next().expect("outcome descriptor"),
+            get(provider_operation),
+        )
 }
 
 pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
@@ -61,6 +78,41 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
         .private_no_store(),
         RouteDescriptor::new("GET", "/providers", "providers", "depot", RouteAuth::V1)
             .private_no_store(),
+        RouteDescriptor::new(
+            "POST",
+            "/providers",
+            "providers_upsert",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store()
+        .side_effects("durable provider configuration mutation"),
+        RouteDescriptor::new(
+            "POST",
+            "/providers/probe",
+            "providers_probe",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store()
+        .side_effects("bounded provider diagnostic"),
+        RouteDescriptor::new(
+            "DELETE",
+            "/providers/{provider_id}",
+            "providers_remove",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store()
+        .side_effects("durable provider removal"),
+        RouteDescriptor::new(
+            "GET",
+            "/provider-operations/{operation_id}",
+            "provider_operation",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store(),
     ]
 }
 
@@ -119,18 +171,172 @@ async fn providers(
         return Err(forbidden());
     }
     let value = if grant.has_scope("lab:admin") {
-        serde_json::to_value(state.depot_manager.admin_status())
+        let version = state
+            .depot_admin
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .current_version()
+            .map_err(map_admin_error)?;
+        serde_json::to_value(state.depot_manager.admin_status(&version))
     } else {
         serde_json::to_value(state.depot_manager.status())
     };
-    value
-        .map(Json)
-        .map_err(|_| {
+    value.map(Json).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"kind":"internal","message":"provider status unavailable"})),
+        )
+    })
+}
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertRequest {
+    #[serde(flatten)]
+    mutation: Mutation,
+    expected_version: String,
+    operation_id: String,
+    proof: Option<String>,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoveRequest {
+    expected_version: String,
+    operation_id: String,
+    proof: String,
+}
+
+async fn upsert_provider(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
+    Json(request): Json<UpsertRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_admin_mutation(&authority, &auth, &headers, "providers.upsert").await?;
+    let admin = state.depot_admin.as_ref().ok_or_else(unavailable)?;
+    let credential = match request.mutation.credential {
+        crate::dispatch::depot::admin::CredentialChange::Retain => "retain",
+        crate::dispatch::depot::admin::CredentialChange::Replace(_) => "replace",
+        crate::dispatch::depot::admin::CredentialChange::Clear => "clear",
+    };
+    let payload = json!({"id":request.mutation.id,"name":request.mutation.name,"endpoint":request.mutation.endpoint,"enabled":request.mutation.enabled,"authMode":request.mutation.auth_mode,"credential":credential});
+    admin
+        .upsert(
+            &authority,
+            request.proof,
+            &request.expected_version,
+            &request.operation_id,
+            &request.mutation,
+            &payload,
+        )
+        .await
+        .map(|outcome| Json(json!(outcome)))
+        .map_err(map_admin_error)
+}
+
+async fn probe_provider(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
+    Json(mutation): Json<Mutation>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_admin_mutation(&authority, &auth, &headers, "providers.probe").await?;
+    let health = state
+        .depot_admin
+        .as_ref()
+        .ok_or_else(unavailable)?
+        .probe(&mutation)
+        .await
+        .map_err(map_admin_error)?;
+    Ok(Json(
+        json!({"providerId":mutation.id,"state":health.state,"observedAt":health.observed_at.unwrap_or_default()}),
+    ))
+}
+
+async fn remove_provider(
+    State(state): State<AppState>,
+    Path(provider_id): Path<String>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
+    Json(request): Json<RemoveRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_admin_mutation(&authority, &auth, &headers, "providers.remove").await?;
+    let admin = state.depot_admin.as_ref().ok_or_else(unavailable)?;
+    let payload = json!({"providerId":provider_id});
+    admin
+        .remove(
+            &authority,
+            request.proof,
+            &provider_id,
+            &request.expected_version,
+            &request.operation_id,
+            &payload,
+        )
+        .await
+        .map(|outcome| Json(json!(outcome)))
+        .map_err(map_admin_error)
+}
+
+async fn provider_operation(
+    State(state): State<AppState>,
+    Path(operation_id): Path<String>,
+    Extension(authority): Extension<BrowserAuthority>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
+    if !grant.has_scope("lab:admin") {
+        return Err(forbidden());
+    }
+    state
+        .depot_admin
+        .as_ref()
+        .ok_or_else(unavailable)?
+        .operation(&operation_id)
+        .map(|outcome| Json(json!(outcome)))
+        .map_err(map_admin_error)
+}
+
+async fn require_admin_mutation(
+    authority: &BrowserAuthority,
+    auth: &AuthContext,
+    headers: &HeaderMap,
+    action: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
+    if !grant.has_scope("lab:admin") {
+        return Err(forbidden());
+    }
+    crate::api::services::remote_control::require_session_csrf(action, headers, Some(auth)).map_err(
+        |error| {
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"kind":"internal","message":"provider status unavailable"})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"kind":error.kind(),"message":error.to_string()})),
             )
-        })
+        },
+    )
+}
+
+fn unavailable() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"kind":"unavailable","message":"provider administration is unavailable"})),
+    )
+}
+
+fn map_admin_error(error: AdminError) -> (StatusCode, Json<Value>) {
+    let (status, kind) = match error {
+        AdminError::Invalid => (StatusCode::BAD_REQUEST, "validation_failed"),
+        AdminError::FreshAuth => (StatusCode::UNAUTHORIZED, "reauthentication_required"),
+        AdminError::Stale => (StatusCode::CONFLICT, "conflict"),
+        AdminError::Recovery => (StatusCode::SERVICE_UNAVAILABLE, "recovery_required"),
+    };
+    (
+        status,
+        Json(json!({"kind":kind,"message":error.to_string()})),
+    )
 }
 
 fn map_discovery_error(error: DiscoveryError) -> (StatusCode, Json<Value>) {
@@ -264,6 +470,10 @@ mod tests {
             ("POST", "/discover"),
             ("POST", "/artifacts/detail"),
             ("GET", "/providers"),
+            ("POST", "/providers"),
+            ("POST", "/providers/probe"),
+            ("DELETE", "/providers/{provider_id}"),
+            ("GET", "/provider-operations/{operation_id}"),
         ] {
             let route = routes
                 .iter()

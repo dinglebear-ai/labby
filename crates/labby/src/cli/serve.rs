@@ -1,9 +1,7 @@
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
-#[cfg(any(feature = "skills", target_os = "linux"))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -599,6 +597,14 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
         .with_depot_snapshot(depot_secrets, depot_policy)
+        .with_depot_storage(
+            config_path.clone(),
+            dotenv_path().unwrap_or_else(|| ".env".into()),
+            config_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("depot-transactions"),
+        )
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
     #[cfg(feature = "gateway")]

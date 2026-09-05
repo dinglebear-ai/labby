@@ -16,6 +16,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { getArtifact, listArtifacts, listProviderOptions, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKey } from '@/lib/depot/provider-model'
 import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
+import { RequestLanes } from './request-lanes'
 
 type LoadState = { loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 type View = 'cards' | 'list'
@@ -29,25 +30,26 @@ export function DepotPageContent() {
   const [providers,setProviders] = useState<DepotProviderOption[]>([])
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<View>('cards')
-  const intent = useRef(0), inFlight = useRef<string>()
+  const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
 
   const load = useCallback(async (searchQuery:string,cursor?:string,signal?:AbortSignal) => {
-    const generation = ++intent.current, key = JSON.stringify([generation,selectedProvider,cursor??null])
+    const key = JSON.stringify([selectedProvider,searchQuery,cursor??null])
     if(inFlight.current===key)return
+    const generation = lanes.current.begin('list')
     inFlight.current=key
     setState(c=>({...c,loading:true,error:undefined,window:cursor?c.window:createDiscoveryWindow(),cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
     try {
       const listing = await listArtifacts({provider:selectedProvider,query:searchQuery,limit:50,cursor},signal)
-      if(generation!==intent.current||signal?.aborted)return
+      if(!lanes.current.isCurrent('list',generation)||signal?.aborted)return
       setState(c=>({loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch}))
-    } catch(error) { if(generation===intent.current&&!signal?.aborted)setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
+    } catch(error) { if(lanes.current.isCurrent('list',generation)&&!signal?.aborted)setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
     finally { if(inFlight.current===key)inFlight.current=undefined }
   },[selectedProvider])
 
   useEffect(()=>{const controller=new AbortController();void listProviderOptions(controller.signal).then(setProviders).catch(()=>{});return()=>controller.abort()},[])
 
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
-  useEffect(()=>{const generation=++intent.current;if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(generation===intent.current)setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(generation===intent.current&&!controller.signal.aborted)toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(generation===intent.current&&!controller.signal.aborted)setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
+  useEffect(()=>{const generation=lanes.current.begin('detail');if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation))setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,pathname,selectedProvider])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
@@ -60,7 +62,7 @@ export function DepotPageContent() {
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME}>
       <ConsoleHero eyebrow="Depot · Bazaar" title="Discovery" description="Browse the bounded artifact catalog reported by configured Depot providers." pulse={{color:state.error?'var(--aurora-warn)':'var(--aurora-success)',label:state.coverage??'ready'}} actions={<Badge variant="outline" className="h-8 gap-1.5 border-aurora-warn/45 px-3 text-aurora-warn"><Lock className="size-3"/>Read-only</Badge>}>
         <div className="space-y-3"><p className="px-1 text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Loading catalog…':`${resultCount} artifact${resultCount===1?'':'s'} reported by Depot`}</p>
-          <div className="flex flex-col gap-2 xl:flex-row"><label className="sr-only" htmlFor="depot-provider">Depot provider</label><select id="depot-provider" value={selectedProvider} onChange={event=>{intent.current+=1;const params=new URLSearchParams(window.location.search);params.set('provider',event.target.value);params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}?${params}`,{scroll:false})}} className="h-11 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"><option value="all">All providers</option>{providers.map(provider=><option key={provider.id} value={provider.id} disabled={!provider.enabled}>{provider.name} · {provider.id}{provider.enabled?'':' (disabled)'}</option>)}</select><div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-accent-primary"/><Input aria-label="Search Depot artifacts" className="h-11 rounded-aurora-2 border-aurora-accent-primary/70 bg-aurora-control-surface pl-10 text-sm" value={query} onChange={e=>{intent.current+=1;setQuery(e.target.value)}} placeholder="Search Depot artifacts"/></div>
+          <div className="flex flex-col gap-2 xl:flex-row"><label className="sr-only" htmlFor="depot-provider">Depot provider</label><select id="depot-provider" value={selectedProvider} onChange={event=>{lanes.current.invalidate('list');const params=new URLSearchParams(window.location.search);params.set('provider',event.target.value);params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}?${params}`,{scroll:false})}} className="h-11 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"><option value="all">All providers</option>{providers.map(provider=><option key={provider.id} value={provider.id} disabled={!provider.enabled}>{provider.name} · {provider.id}{provider.enabled?'':' (disabled)'}</option>)}</select><div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-accent-primary"/><Input aria-label="Search Depot artifacts" className="h-11 rounded-aurora-2 border-aurora-accent-primary/70 bg-aurora-control-surface pl-10 text-sm" value={query} onChange={e=>{lanes.current.invalidate('list');setQuery(e.target.value)}} placeholder="Search Depot artifacts"/></div>
             <div className="flex h-11 items-center rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface p-1">{([['cards',Grid2X2],['list',List]] as const).map(([mode,Icon])=><button key={mode} type="button" onClick={()=>setView(mode)} aria-label={`${mode} view`} aria-pressed={view===mode} className="rounded-aurora-1 p-2 text-aurora-text-muted aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-4"/></button>)}</div>
           </div></div>
       </ConsoleHero>

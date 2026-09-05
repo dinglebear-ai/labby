@@ -77,6 +77,7 @@ impl SecretSnapshot {
 pub struct Provider {
     pub view: ProviderView,
     pub runtime: Arc<ProviderRuntime>,
+    pub credential_configured: bool,
 }
 pub struct Topology {
     pub version: String,
@@ -87,6 +88,11 @@ pub struct Topology {
 pub struct Candidate {
     expected_version: String,
     topology: Arc<Topology>,
+}
+impl Candidate {
+    pub(super) fn provider(&self, id: &str) -> Option<&Provider> {
+        self.topology.providers.get(id)
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -190,7 +196,7 @@ impl Manager {
             })
             .collect()
     }
-    pub fn admin_status(&self) -> Vec<ProviderAdminStatus> {
+    pub fn admin_status(&self, config_version: &str) -> Vec<ProviderAdminStatus> {
         self.snapshot()
             .providers
             .values()
@@ -201,9 +207,8 @@ impl Manager {
                 enabled: provider.view.enabled,
                 auth_mode: provider.view.auth_mode,
                 builtin: provider.view.id == crate::config::depot::PUBLIC_ID,
-                config_version: self.snapshot().version.clone(),
-                credential_configured: provider.view.auth_mode
-                    == crate::config::depot::AuthMode::Bearer,
+                config_version: config_version.to_owned(),
+                credential_configured: provider.credential_configured,
                 health: provider.runtime.health.view(),
             })
             .collect()
@@ -229,7 +234,14 @@ fn build(
                     || Arc::new(ProviderRuntime::new(&view, token, policy.clone())),
                     |old| old.runtime.clone(),
                 );
-            (view.id.clone(), Provider { view, runtime })
+            (
+                view.id.clone(),
+                Provider {
+                    view,
+                    runtime,
+                    credential_configured: token.is_some(),
+                },
+            )
         })
         .collect();
     let membership = |providers: &BTreeMap<String, Provider>| {

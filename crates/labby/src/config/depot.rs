@@ -76,7 +76,7 @@ pub enum AuthMode {
     Bearer,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,

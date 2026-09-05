@@ -86,6 +86,19 @@ impl Store {
         )
     }
 
+    pub fn read_pair(&self) -> Result<Pair, StoreError> {
+        Ok(Pair {
+            config: HostConfigLock::acquire(&self.config)
+                .map_err(map_host)?
+                .read_raw()
+                .map_err(map_host)?,
+            environment: HostConfigLock::acquire(&self.environment)
+                .map_err(map_host)?
+                .read_raw()
+                .map_err(map_host)?,
+        })
+    }
+
     pub fn recover(&self) -> Result<Option<Outcome>, StoreError> {
         let config = HostConfigLock::acquire(&self.config).map_err(map_host)?;
         let environment = HostConfigLock::acquire(&self.environment).map_err(map_host)?;

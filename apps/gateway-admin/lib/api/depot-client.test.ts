@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { depotCall, depotStatus, getArtifact, listArtifacts, listProviders } from './depot-client.ts'
+import { depotCall, depotStatus, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -63,4 +63,22 @@ test('admin provider projection is strict and contains no credential material', 
   const provider = { id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'bearer', builtin: false, configVersion: 'v1', credentialConfigured: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
   await withFetch(json([{ ...provider, token: 'secret' }]), async () => assert.rejects(listProviders(), /unrecognized/i))
   await withFetch(json([provider]), async () => assert.equal((await listProviders())[0]?.credentialConfigured, true))
+})
+
+test('provider mutations carry CSRF and preserve operation identity', async () => {
+  const original = globalThis.fetch
+  const requests: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (url, init) => {
+    requests.push({ url: String(url), init })
+    return json({ operationId: 'op-1', version: 'v2', committed: true })
+  }) as typeof fetch
+  try {
+    await upsertProvider({ id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'anonymous', credential: { action: 'retain' }, expectedVersion: 'v1', operationId: 'op-1' }, 'csrf-1')
+    await removeProvider('team', 'v2', 'op-1', 'proof-1', 'csrf-2')
+    await providerOperation('op-1')
+  } finally { globalThis.fetch = original }
+  assert.equal(new Headers(requests[0]?.init?.headers).get('x-csrf-token'), 'csrf-1')
+  assert.equal(new Headers(requests[1]?.init?.headers).get('x-csrf-token'), 'csrf-2')
+  assert.equal(requests[1]?.url, '/v1/depot/providers/team')
+  assert.equal(requests[2]?.url, '/v1/depot/provider-operations/op-1')
 })

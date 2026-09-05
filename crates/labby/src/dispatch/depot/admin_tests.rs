@@ -1,4 +1,6 @@
-use super::admin::{AdminError, CredentialChange, change_policy};
+use super::admin::{
+    AdminError, CredentialChange, Mutation, build_remove, build_upsert, change_policy,
+};
 use crate::config::depot::{AuthMode, ProviderView};
 
 fn provider(endpoint: &str, auth_mode: AuthMode, enabled: bool) -> ProviderView {
@@ -74,4 +76,55 @@ fn operation_metadata_keeps_admin_and_destructive_axes_separate() {
         .unwrap();
     assert!(upsert.requires_admin && !upsert.destructive);
     assert!(remove.requires_admin && remove.destructive);
+}
+
+#[test]
+fn upsert_preserves_foreign_toml_and_env_while_rotating_only_owned_secret() {
+    let config = "foreign = 'keep'\n[depot]\npublic_enabled = true\n";
+    let environment = "# keep me\nOTHER=value\nLABBY_DEPOT_PROVIDER_TEAM_TOKEN=old\n";
+    let mutation = Mutation {
+        id: "team".into(),
+        name: "Team Depot".into(),
+        endpoint: "https://team.example/api".into(),
+        enabled: true,
+        auth_mode: AuthMode::Bearer,
+        credential: CredentialChange::Replace("new secret".into()),
+    };
+    let built = build_upsert(config, environment, &mutation).unwrap();
+    assert!(built.pair.config.contains("foreign = 'keep'"));
+    assert!(built.pair.config.contains("id = \"team\""));
+    assert!(built.pair.environment.contains("# keep me\nOTHER=value\n"));
+    assert!(
+        built
+            .pair
+            .environment
+            .contains("LABBY_DEPOT_PROVIDER_TEAM_TOKEN=\"new secret\"")
+    );
+    assert!(!built.pair.environment.contains("=old"));
+}
+
+#[test]
+fn retained_secret_and_reserved_ids_fail_closed() {
+    let mutation = Mutation {
+        id: "all".into(),
+        name: "Reserved".into(),
+        endpoint: "https://team.example".into(),
+        enabled: true,
+        auth_mode: AuthMode::Bearer,
+        credential: CredentialChange::Retain,
+    };
+    assert_eq!(
+        build_upsert("", "", &mutation).unwrap_err(),
+        AdminError::Invalid
+    );
+}
+
+#[test]
+fn removal_tombstones_id_and_deletes_only_its_active_secret() {
+    let config = "[depot]\n[[depot.providers]]\nid='team'\nname='Team'\nendpoint='https://team.example'\nenabled=true\nauth_mode='bearer'\nbearer_token_env='LABBY_DEPOT_PROVIDER_TEAM_TOKEN'\n";
+    let environment = "OTHER=keep\nLABBY_DEPOT_PROVIDER_TEAM_TOKEN=secret\n";
+    let built = build_remove(config, environment, "team").unwrap();
+    assert!(!built.pair.config.contains("id = \"team\""));
+    assert!(built.preferences.tombstones.contains("team"));
+    assert_eq!(built.pair.environment, "OTHER=keep\n");
 }

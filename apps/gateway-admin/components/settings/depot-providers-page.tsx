@@ -49,6 +49,6 @@ export function DepotProvidersPage() {
       </details>)}
     </SettingsCard>
     <p className="text-xs leading-5 text-aurora-text-muted">Enabling a shared bearer provider grants eligible users of this Labby instance read discovery through that credential. Removing it deletes only Labby&apos;s active copy; it does not revoke the upstream credential or erase recovery snapshots.</p>
-    {editing !== undefined ? <DepotProviderDialog provider={editing ?? undefined} onClose={()=>setEditing(undefined)} onSaved={()=>{setEditing(undefined);load()}} /> : null}
+    {editing !== undefined && providers[0]?.configVersion ? <DepotProviderDialog provider={editing ?? undefined} baseVersion={providers[0].configVersion} onClose={()=>setEditing(undefined)} onSaved={()=>{setEditing(undefined);load()}} /> : null}
   </div>
 }
