@@ -752,10 +752,23 @@ impl LiveLabbyGuard {
             Ok(Err(error)) => result.failures.push(error),
             Err(error) => result.failures.push(error),
         }
-        if TcpListener::bind(self.ledger.listener.expect("listener recorded")).is_err() {
-            result
-                .failures
-                .push("owned listener remains bound".to_string());
+        let listener = self.ledger.listener.expect("listener recorded");
+        loop {
+            match TcpListener::bind(listener) {
+                Ok(probe) => {
+                    drop(probe);
+                    break;
+                }
+                Err(_) if Instant::now() < absolute => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(_) => {
+                    result
+                        .failures
+                        .push("owned listener remains bound".to_string());
+                    break;
+                }
+            }
         }
         self.evidence.push(
             EvidenceKind::Cleanup,
