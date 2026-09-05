@@ -72,6 +72,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.15.1](https://github.com/dinglebear-ai/labby/compare/v1.15.0...v1.15.1) (2026-09-05)
+
+
+### Fixed
+
+* **web:** restore Depot discovery and shell controls ([#559](https://github.com/dinglebear-ai/labby/issues/559)) ([e195956](https://github.com/dinglebear-ai/labby/commit/e195956db73f05e44d5a990cf3ee7b7cec0f71d8))
+
 ## [1.15.0](https://github.com/dinglebear-ai/labby/compare/v1.14.1...v1.15.0) (2026-09-05)
 
 
