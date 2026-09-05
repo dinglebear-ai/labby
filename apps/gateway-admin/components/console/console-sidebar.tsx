@@ -632,6 +632,7 @@ export function ConsoleSidebar() {
   const [toggleHovered, setToggleHovered] = React.useState(false)
   const [workspaceOpen, setWorkspaceOpen] = React.useState(false)
   const dragRef = React.useRef<{ section: string; id: string } | null>(null)
+  const sidebarRef = React.useRef<HTMLElement>(null)
 
   React.useEffect(() => {
     setPinned(readJson<string[]>(PINNED_KEY, []))
@@ -652,13 +653,41 @@ export function ConsoleSidebar() {
   }, [pathname, setMobileNavOpen])
 
   React.useEffect(() => {
-    if (!mobileNavOpen) return
+    if (!isMobile || !mobileNavOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const focusableControls = () => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ) ?? []).filter((element) => element.getClientRects().length > 0)
+    window.requestAnimationFrame(() => focusableControls()[0]?.focus())
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileNavOpen(false)
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMobileNavOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = focusableControls()
+      if (controls.length === 0) return
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [mobileNavOpen, setMobileNavOpen])
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>('[data-mobile-menu]')?.focus()
+      })
+    }
+  }, [isMobile, mobileNavOpen, setMobileNavOpen])
 
   const visuallyCollapsed = collapsed && !isMobile
 
@@ -737,16 +766,23 @@ export function ConsoleSidebar() {
 
   return (
     <>
-    <button
+    {mobileNavOpen ? <button
       type="button"
       data-mobile-nav-backdrop="1"
-      data-open={mobileNavOpen ? '1' : '0'}
+      data-open="1"
       aria-label="Close navigation"
       onClick={() => setMobileNavOpen(false)}
-    />
+      tabIndex={-1}
+    /> : null}
     <aside
+      ref={sidebarRef}
+      id="console-navigation"
       data-console-sidebar="1"
       data-mobile-open={mobileNavOpen ? '1' : '0'}
+      aria-hidden={isMobile && !mobileNavOpen ? true : undefined}
+      aria-modal={isMobile && mobileNavOpen ? true : undefined}
+      role={isMobile && mobileNavOpen ? 'dialog' : undefined}
+      inert={isMobile && !mobileNavOpen ? true : undefined}
       style={{
         position: 'relative',
         width: visuallyCollapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,

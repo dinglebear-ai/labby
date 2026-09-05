@@ -58,6 +58,7 @@ export function ConsoleTopbar() {
         type="button"
         data-mobile-only="1"
         data-mobile-menu="1"
+        aria-controls="console-navigation"
         aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
         aria-expanded={mobileNavOpen}
         onClick={toggleMobileNav}

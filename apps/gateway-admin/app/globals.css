@@ -928,9 +928,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 
 /* Icon-led actions stay visually compact. Their text remains in the accessibility
    tree and is also exposed as a native tooltip by the shared control primitives. */
-[data-slot='button']:has(svg),
-[data-slot='dropdown-menu-trigger']:has(svg),
-[data-icon-text-control]:has(svg) {
+[data-slot='button']:has(svg):not(:has(svg.animate-spin)),
+[data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)),
+[data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) {
   width: var(--aurora-icon-control-size, 2.25rem) !important;
   min-width: var(--aurora-icon-control-size, 2.25rem) !important;
   max-width: var(--aurora-icon-control-size, 2.25rem) !important;
@@ -940,9 +940,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   font-size: 0 !important;
 }
 
-[data-slot='button']:has(svg) > svg,
-[data-slot='dropdown-menu-trigger']:has(svg) > svg,
-[data-icon-text-control]:has(svg) > svg {
+[data-slot='button']:has(svg):not(:has(svg.animate-spin)) > svg,
+[data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)) > svg,
+[data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) > svg {
   width: 1rem;
   height: 1rem;
 }
@@ -977,6 +977,11 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-actioncluster] button {
     min-width: 40px;
   }
+  [data-slot='button']:has(svg):not(:has(svg.animate-spin)),
+  [data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)),
+  [data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) {
+    --aurora-icon-control-size: 2.75rem;
+  }
   [data-main-scroll] {
     padding: 12px !important;
     padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
@@ -996,9 +1001,11 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     box-shadow: 18px 0 48px rgba(0, 0, 0, 0.42);
     transform: translateX(-105%);
     transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+    visibility: hidden;
   }
   aside[data-console-sidebar][data-mobile-open='1'] {
     transform: translateX(0);
+    visibility: visible;
   }
   [data-mobile-nav-backdrop] {
     position: fixed;
