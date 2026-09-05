@@ -72,6 +72,46 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.15.0](https://github.com/dinglebear-ai/labby/compare/v1.14.1...v1.15.0) (2026-09-05)
+
+
+### Added
+
+* **api:** expose runtime-backed integration identity ([#543](https://github.com/dinglebear-ai/labby/issues/543)) ([96d7b82](https://github.com/dinglebear-ai/labby/commit/96d7b824c2dc0ef16d7d0e4225a92cd1c72c0e91))
+* **artifacts:** add agent artifact materialization ([#554](https://github.com/dinglebear-ai/labby/issues/554)) ([2af29be](https://github.com/dinglebear-ai/labby/commit/2af29bec298940e10b868ca32feb7aa8b159cc40))
+* **artifacts:** add hook artifact materialization ([#555](https://github.com/dinglebear-ai/labby/issues/555)) ([966984a](https://github.com/dinglebear-ai/labby/commit/966984af49e96d0604b372ad4889d7baa955c5a7))
+* **artifacts:** add prompt artifact materialization ([#553](https://github.com/dinglebear-ai/labby/issues/553)) ([f2613f3](https://github.com/dinglebear-ai/labby/commit/f2613f3f195ee7d5d4b248986c20e73600dd5500))
+* **auth:** add provider-neutral Authelia OAuth ([#558](https://github.com/dinglebear-ai/labby/issues/558)) ([141980d](https://github.com/dinglebear-ai/labby/commit/141980d6a7112c2c2f06164ab761acfa709dd7be))
+* **depot:** polish artifact discovery ([#545](https://github.com/dinglebear-ai/labby/issues/545)) ([3513032](https://github.com/dinglebear-ai/labby/commit/35130322e9292b7529ef0ce8485532f8fc48cb2d))
+* **depot:** unify the Labby and Depot control plane ([#519](https://github.com/dinglebear-ai/labby/issues/519)) ([3f2e0dc](https://github.com/dinglebear-ai/labby/commit/3f2e0dc54727827e40cea5e341e035bf34de55e6))
+* **gateway:** add durable delegated exact execution ([#561](https://github.com/dinglebear-ai/labby/issues/561)) ([57b403f](https://github.com/dinglebear-ai/labby/commit/57b403f4d1d3dd2e594087fe3af7b3d795028569))
+* **gateway:** add execution loadout foundation ([#556](https://github.com/dinglebear-ai/labby/issues/556)) ([a901e33](https://github.com/dinglebear-ai/labby/commit/a901e3358ea5e65eec1a09a4630abc6874a60643))
+* integrate trusted Core provider without vendored rmcp ([#533](https://github.com/dinglebear-ai/labby/issues/533)) ([cc175a8](https://github.com/dinglebear-ai/labby/commit/cc175a8e6ba0e484387a86b8e25d167e09e4e6d8))
+* **loadouts:** publish canonical execution catalogs ([#562](https://github.com/dinglebear-ai/labby/issues/562)) ([2d0ba9d](https://github.com/dinglebear-ai/labby/commit/2d0ba9dff59dd6bea0d912d68f15da4e875aca99))
+* **mcp:** make Labby-owned apps opt-in ([#483](https://github.com/dinglebear-ai/labby/issues/483)) ([893a9fc](https://github.com/dinglebear-ai/labby/commit/893a9fc93e92aaacd1df74556036dd9caf44b741))
+* **palette:** preserve explicit execution mode receipts ([#544](https://github.com/dinglebear-ai/labby/issues/544)) ([09b010a](https://github.com/dinglebear-ai/labby/commit/09b010a00ade9fd47c3f9bf3c54ffffe56b4533f))
+* **snippets:** preserve descriptive tool declaration metadata ([#547](https://github.com/dinglebear-ai/labby/issues/547)) ([e9613e5](https://github.com/dinglebear-ai/labby/commit/e9613e5cc0ec12133522060ffbc9bf5341a19f2f))
+* **web:** optimize console controls for mobile ([#549](https://github.com/dinglebear-ai/labby/issues/549)) ([19296fd](https://github.com/dinglebear-ai/labby/commit/19296fdebd80cf073ea0d06c63fb47a1884a619c))
+
+
+### Fixed
+
+* **auth:** recover generation-safe OAuth refresh and redaction ([#539](https://github.com/dinglebear-ai/labby/issues/539)) ([3244faa](https://github.com/dinglebear-ai/labby/commit/3244faa0bed794bca67a48b756c1cbfcb5b603d3))
+* **auth:** remediate Authelia review findings ([f79d9fb](https://github.com/dinglebear-ai/labby/commit/f79d9fb07f603deced5231e264528664414999fa))
+* **ci:** clear remaining strict warning blockers ([#528](https://github.com/dinglebear-ai/labby/issues/528)) ([b33d473](https://github.com/dinglebear-ai/labby/commit/b33d473a727acccefad283744ec597e03dcee002))
+* **ci:** restore Cargo manifest qualification ([#538](https://github.com/dinglebear-ai/labby/issues/538)) ([8c27c5f](https://github.com/dinglebear-ai/labby/commit/8c27c5f0f78cd1d32bd55bdb2ded83e942649497))
+* **ci:** restore feature-slice builds ([#526](https://github.com/dinglebear-ai/labby/issues/526)) ([e95ea22](https://github.com/dinglebear-ai/labby/commit/e95ea22cf3804e0f3b77cff6752d331039913192))
+* **gateway:** connect lazy upstreams before Code Mode resource reads ([#551](https://github.com/dinglebear-ai/labby/issues/551)) ([322839d](https://github.com/dinglebear-ai/labby/commit/322839d3157fd7c0fe9264c4e0ecddc658c7ea0f))
+* **loadouts:** enforce tenant catalog authority ([#563](https://github.com/dinglebear-ai/labby/issues/563)) ([1a04d46](https://github.com/dinglebear-ai/labby/commit/1a04d4678d12d5e0ed6469f865a563e985337b50))
+* **mcp:** execute project-bound Skill Library actions ([#534](https://github.com/dinglebear-ai/labby/issues/534)) ([23538b7](https://github.com/dinglebear-ai/labby/commit/23538b7d714bad134f15b2ae502cf790403776cb))
+* **palette:** bound exact launcher searches to published snapshots ([#540](https://github.com/dinglebear-ai/labby/issues/540)) ([af99b84](https://github.com/dinglebear-ai/labby/commit/af99b8414aa0f3386fa9a11ef367e1b56a3523db))
+* **palette:** recover desktop endpoint status and macOS window behavior ([#548](https://github.com/dinglebear-ai/labby/issues/548)) ([fb84451](https://github.com/dinglebear-ai/labby/commit/fb8445148c792403008d54da5c6ccf214d419805))
+* restore hosted mainline CI ([40625dd](https://github.com/dinglebear-ai/labby/commit/40625dd20f52c66b67117817d1c97e4b6c532524))
+* **runtime:** remove obsolete macOS path helper ([#527](https://github.com/dinglebear-ai/labby/issues/527)) ([0e6d508](https://github.com/dinglebear-ai/labby/commit/0e6d508e3023881a21c3fa358088f3f0de536596))
+* **skills:** preserve nested identities and bounded websocket payloads ([#537](https://github.com/dinglebear-ai/labby/issues/537)) ([061d2ae](https://github.com/dinglebear-ai/labby/commit/061d2aea297b3581126999a4d7caaa20fa2b7591))
+* **skills:** preserve strict gateway params ([#501](https://github.com/dinglebear-ai/labby/issues/501)) ([6514263](https://github.com/dinglebear-ai/labby/commit/6514263a68ed4ebcb219e3bcd8bf5d8160a2bbde))
+* **test:** recover bounded live and browser harness cleanup ([#542](https://github.com/dinglebear-ai/labby/issues/542)) ([6fe70f5](https://github.com/dinglebear-ai/labby/commit/6fe70f5e81f0daf0639c3dc4585faa0fa519194b))
+
 ## [1.14.1](https://github.com/dinglebear-ai/labby/compare/v1.14.0...v1.14.1) (2026-08-24)
 
 
