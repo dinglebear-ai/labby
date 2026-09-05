@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 #![allow(clippy::multiple_crate_versions)]
 #![cfg_attr(
     test,
