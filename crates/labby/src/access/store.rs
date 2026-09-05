@@ -120,6 +120,16 @@ impl AccessStore {
         .await
     }
 
+    pub(crate) async fn resolve_file_stash_principal(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<super::AccessPrincipalId> {
+        self.with_connection(move |connection| {
+            super::read::resolve_principal_id(connection, &identity)
+        })
+        .await
+    }
+
     pub(crate) async fn select_project(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -1204,5 +1214,64 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = directory.path().join("access.db");
         AccessStore::open(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_stash_identity_is_resolved_from_principal_links_across_transports() {
+        let directory = super::super::test_support::secure_tempdir();
+        let store = AccessStore::open(secure_test_path(&directory))
+            .await
+            .unwrap();
+        store.execute_test_statement("INSERT INTO organizations VALUES('org','Org','active',0,1,1); INSERT INTO principals VALUES('external-principal','org','user','active',NULL,1,1),('local-principal','org','service_account','active',NULL,1,1); INSERT INTO principal_links VALUES('external-link','external-principal','external','https://accounts.google.com','stable-subject',NULL,'active',1,1,1,1),('local-link','local-principal','local_credential',NULL,NULL,'static-credential','active',1,1,1,1);").await.unwrap();
+        let browser = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "stable-subject",
+        )
+        .unwrap();
+        let oauth = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::OauthBearer,
+            "https://accounts.google.com",
+            "stable-subject",
+        )
+        .unwrap();
+        let local = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-credential",
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(browser)
+                .await
+                .unwrap()
+                .as_str(),
+            "external-principal"
+        );
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(oauth)
+                .await
+                .unwrap()
+                .as_str(),
+            "external-principal"
+        );
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(local)
+                .await
+                .unwrap()
+                .as_str(),
+            "local-principal"
+        );
+        let missing = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::UnixPeer,
+            "missing",
+        )
+        .unwrap();
+        assert!(matches!(
+            store.resolve_file_stash_principal(missing).await,
+            Err(AccessStoreError::IdentityUnavailable)
+        ));
     }
 }

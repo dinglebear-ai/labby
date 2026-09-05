@@ -27,6 +27,18 @@ mod store;
 mod test_support;
 mod workflow;
 
+/// Durable principal identity resolved from a live [`labby_auth::PrincipalLink`]
+/// by AccessStore. The private field prevents storage services from inventing
+/// identities from actor keys or presentation metadata.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct AccessPrincipalId(String);
+
+impl AccessPrincipalId {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[allow(unused_imports)]
 pub(crate) use authorization::{
     AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
@@ -61,6 +73,8 @@ pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome}
 #[allow(unused_imports)]
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 pub(crate) use runtime::CredentialLifecycleError;
+#[allow(unused_imports)]
+pub(crate) use runtime::FileStashPrincipalResolutionError;
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,

@@ -49,6 +49,16 @@ pub(crate) enum AccessRuntimeError {
     LifecycleUnavailable,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FileStashPrincipalResolutionError {
+    #[error("the verified identity has no active durable principal link")]
+    IdentityUnavailable,
+    #[error(transparent)]
+    Runtime(#[from] AccessRuntimeError),
+    #[error("the access store could not resolve a principal")]
+    StoreUnavailable,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum CredentialLifecycleError {
     #[error("credential request is invalid")]
@@ -197,6 +207,22 @@ impl AccessRuntime {
             )),
             RuntimeState::Blocked(reason) => Err(AccessRuntimeError::Blocked(*reason)),
         }
+    }
+
+    pub(crate) async fn resolve_file_stash_principal(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
+        self.store()
+            .await?
+            .resolve_file_stash_principal(identity)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
     }
 
     pub(super) async fn credential_reads(&self) -> Result<CredentialReadPool, AccessRuntimeError> {
@@ -850,5 +876,38 @@ mod tests {
             runtime.status().await,
             AccessRuntimeStatus::Blocked(AccessBlockedReason::Locked)
         );
+    }
+
+    #[tokio::test]
+    async fn file_stash_resolution_distinguishes_unmapped_identity() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        let missing = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:not-mapped",
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.resolve_file_stash_principal(missing).await,
+            Err(FileStashPrincipalResolutionError::IdentityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_stash_resolution_preserves_blocked_runtime_reason() {
+        let runtime = AccessRuntime::blocked_unavailable();
+        let identity =
+            VerifiedIdentity::local_credential(Authenticator::StaticBearer, "static-bearer:any")
+                .unwrap();
+        assert!(matches!(
+            runtime.resolve_file_stash_principal(identity).await,
+            Err(FileStashPrincipalResolutionError::Runtime(
+                AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable)
+            ))
+        ));
     }
 }

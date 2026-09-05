@@ -174,6 +174,13 @@ qualification promotes it, it is not registered or usable. Feature slices must
 agree: a surface is absent when its owning runtime is not compiled or available,
 rather than advertising a handler that fails later.
 
+The v1 durable runtime is available only where Labby can anchor SQLite and blob
+operations to verified directory handles. Linux and Android satisfy that
+contract. macOS, Windows, and other unsupported targets fail initialization
+closed and must not register or advertise File Stash until a sanctioned
+handle-relative implementation exists; the rest of `gateway-host` remains
+available.
+
 Every `/v1/stash/*` route remains behind the ordinary `/v1` authentication,
 host/origin, and authorization middleware. Cookie-authenticated mutations also
 require the shared CSRF validation. No loopback, multipart, download, or MCP

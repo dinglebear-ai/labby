@@ -363,6 +363,19 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    let file_stash_runtime = match crate::config::file_stash_root_path(config) {
+        Ok(root) => Arc::new(
+            crate::file_stash::FileStashRuntime::initialize_with_interval(
+                root,
+                Duration::from_secs(config.file_stash.janitor_interval_seconds),
+            )
+            .await,
+        ),
+        Err(_) => {
+            tracing::warn!("file stash runtime unavailable: state root could not be resolved");
+            Arc::new(crate::file_stash::FileStashRuntime::blocked())
+        }
+    };
 
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
@@ -618,6 +631,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 .join("depot-transactions"),
         )
         .with_access_runtime(Arc::clone(&access_runtime))
+        .with_file_stash_runtime(Arc::clone(&file_stash_runtime))
         .with_http_bind_host(host.clone());
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
@@ -798,7 +812,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         "startup plan resolved"
     );
 
-    run_http(
+    let result = run_http(
         &host,
         port,
         bearer_token,
@@ -812,7 +826,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         unix_listener_config,
         peer_auth_enabled,
     )
-    .await
+    .await;
+    file_stash_runtime.shutdown().await;
+    result
 }
 
 #[cfg(feature = "fs")]

@@ -40,6 +40,8 @@ pub mod dispatch;
 pub mod docs;
 pub mod durable_state;
 mod entrypoint;
+#[allow(dead_code)]
+pub(crate) mod file_stash;
 pub mod installation;
 pub(crate) mod integration_identity;
 #[cfg(feature = "gateway")]
