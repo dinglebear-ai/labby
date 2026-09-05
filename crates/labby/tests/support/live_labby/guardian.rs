@@ -18,7 +18,6 @@ pub(super) fn record_daemon_identity(
     guard: &mut LiveLabbyGuard,
     deadline: Instant,
 ) -> Result<(), String> {
-    use std::io::Read as _;
     let Some(registry) = &guard.guardian_admission else {
         return Ok(());
     };
@@ -26,21 +25,8 @@ pub(super) fn record_daemon_identity(
         .ledger
         .guardian_pid
         .ok_or("missing daemon guardian identity")?;
-    let file = std::fs::File::open(registry.join("child.pid"))
-        .map_err(|error| format!("cannot read guarded daemon PID: {error}"))?;
-    let mut value = String::new();
-    file.take(12)
-        .read_to_string(&mut value)
-        .map_err(|error| error.to_string())?;
-    if value.len() > 11 {
-        return Err("guarded daemon PID exceeds its bound".into());
-    }
-    let pid = value
-        .trim_end_matches('\n')
-        .parse::<u32>()
-        .map_err(|_| "invalid guarded daemon PID".to_string())?;
-    if pid == 0
-        || pid == guardian_pid
+    let pid = read_daemon_pid(registry, deadline)?;
+    if pid == guardian_pid
         || !process_group_members_typed(guardian_pid as i32, deadline)
             .map_err(|failure| guard.settle_observation_failure(failure))?
             .contains(&pid)
@@ -59,11 +45,303 @@ pub(super) fn record_daemon_identity(
     Ok(())
 }
 
+pub(super) fn read_daemon_pid(admission: &Path, deadline: Instant) -> Result<u32, String> {
+    read_daemon_pid_with_observation(admission, deadline, || Ok(()))
+}
+
+fn read_daemon_pid_with_observation(
+    admission: &Path,
+    deadline: Instant,
+    mut on_missing: impl FnMut() -> Result<(), String>,
+) -> Result<u32, String> {
+    use std::io::Read as _;
+    // Listener readiness and atomic PID publication are independent events.
+    // Wait only for a not-yet-published file, within the caller's original
+    // readiness budget; malformed or unreadable evidence never retries.
+    let expired = || "guarded daemon PID publication deadline exceeded".to_string();
+    let file = loop {
+        if Instant::now() >= deadline {
+            return Err(expired());
+        }
+        match std::fs::File::open(admission.join("child.pid")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                on_missing()?;
+                std::thread::sleep(
+                    Duration::from_millis(5)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            result => {
+                break result
+                    .map_err(|error| format!("cannot read guarded daemon PID: {error}"))?;
+            }
+        }
+    };
+    let mut value = String::new();
+    file.take(12)
+        .read_to_string(&mut value)
+        .map_err(|error| error.to_string())?;
+    if Instant::now() >= deadline {
+        return Err(expired());
+    }
+    if value.len() > 11 {
+        return Err("guarded daemon PID exceeds its bound".into());
+    }
+    let pid = value
+        .trim_end_matches('\n')
+        .parse::<u32>()
+        .map_err(|_| "invalid guarded daemon PID".to_string())?;
+    if pid == 0 {
+        return Err("invalid guarded daemon PID".into());
+    }
+    Ok(pid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+
+    #[test]
+    fn daemon_pid_publication_preserves_deadline_and_rejects_invalid_evidence() {
+        let admission = tempfile::tempdir().unwrap();
+        let expired = read_daemon_pid_with_observation(admission.path(), Instant::now(), || {
+            Err("expired reader must not retry".into())
+        })
+        .unwrap_err();
+        assert!(expired.contains("deadline"));
+        let failure = read_daemon_pid_with_observation(
+            admission.path(),
+            Instant::now() + Duration::from_secs(1),
+            || Err("injected missing-publication observation failure".into()),
+        )
+        .unwrap_err();
+        assert_eq!(failure, "injected missing-publication observation failure");
+        for value in ["0\n", "invalid\n", "123456789012\n"] {
+            std::fs::write(admission.path().join("child.pid"), value).unwrap();
+            let error = read_daemon_pid_with_observation(
+                admission.path(),
+                Instant::now() + Duration::from_secs(1),
+                || Err("malformed evidence must not retry".into()),
+            )
+            .unwrap_err();
+            assert!(!error.contains("retry"));
+        }
+        std::fs::write(admission.path().join("child.pid"), "41\n").unwrap();
+        assert_eq!(
+            read_daemon_pid(admission.path(), Instant::now() + Duration::from_secs(1)).unwrap(),
+            41
+        );
+        assert!(
+            read_daemon_pid(admission.path(), Instant::now())
+                .unwrap_err()
+                .contains("deadline")
+        );
+    }
+
+    #[test]
+    fn listener_readiness_can_precede_guardian_pid_publication() {
+        for publish in [true, false] {
+            let registry = tempfile::tempdir().unwrap();
+            let admission_id = format!("admission-{}", "a".repeat(48));
+            let admission = registry.path().join(&admission_id);
+            let marker = registry.path().join("listener");
+            let release = registry.path().join("publish");
+            let publication = "mv \"$admission/child.pid.pending\" \"$admission/child.pid\"";
+            assert!(CLEANUP_HELPER_ADMISSION_GATE.contains(publication));
+            let script = CLEANUP_HELPER_ADMISSION_GATE.replace(
+                publication,
+                &format!(
+                    "while [ ! -f \"$registry/publish\" ]; do sleep 0.01; done\n{publication}"
+                ),
+            );
+            let child = Command::new("/bin/sh")
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("LABBY_E2E_GROUP_TOKEN", "pid-publication-test")
+                .env("LABBY_E2E_GATE_MODE", "runtime")
+                .env("LABBY_E2E_ADMISSION_ID", &admission_id)
+                .args(["-c", &script, "pid-publication"])
+                .arg(registry.path())
+                .arg(env!("CARGO_BIN_EXE_live-harness-fixture"))
+                .args(["child-listener", "0"])
+                .arg(&marker)
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let group = child.id();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut observed = None;
+            let mut missing_observed = false;
+            let result = run_spawned_owned_child(child, deadline, assign_cleanup_job, |_| {
+                let Ok(text) = std::fs::read_to_string(&marker) else {
+                    return Ok(None);
+                };
+                let fields: Vec<_> = text.split_whitespace().collect();
+                if fields.len() != 3 {
+                    return Ok(None);
+                }
+                let daemon_pid = fields[0].parse::<u32>().unwrap();
+                let port = fields[1].parse::<u16>().unwrap();
+                let address = SocketAddr::from(([127, 0, 0, 1], port));
+                let listener_ready =
+                    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20))
+                        .is_ok();
+                let before_publication = !admission.join("child.pid").try_exists()?;
+                let pid = read_daemon_pid_with_observation(&admission, deadline, || {
+                    missing_observed = true;
+                    if publish {
+                        std::fs::write(&release, b"publish").map_err(|error| error.to_string())
+                    } else {
+                        Ok(())
+                    }
+                });
+                observed = Some((daemon_pid, address, listener_ready, before_publication, pid));
+                Ok(Some(std::process::ExitStatus::from_raw(0)))
+            });
+            // Cleanup uses the retained owner even when the publication assertion is red.
+            assert!(result.is_ok(), "{result:?}");
+            let (daemon_pid, address, listener_ready, before_publication, pid) = observed.unwrap();
+            assert!(missing_observed && listener_ready && before_publication);
+            assert!(
+                process_group_members_checked(group as i32)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(TcpListener::bind(address).is_ok());
+            if publish {
+                assert_eq!(pid, Ok(daemon_pid));
+            } else {
+                assert!(pid.unwrap_err().contains("deadline"));
+            }
+        }
+    }
+
+    #[test]
+    fn eperm_requires_an_exited_owner_and_successful_empty_inventory() {
+        for mode in ["live", "nonempty", "failed"] {
+            let mut child = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    if mode == "live" {
+                        "exec sleep 5"
+                    } else {
+                        "exit 70"
+                    },
+                ])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            if mode != "live" {
+                while observe_cleanup_child(pid).unwrap().is_none() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+            let mut inventory_calls = 0;
+            let result = signal_cleanup_group_with_probe(
+                pid,
+                deadline,
+                |_| Err(nix::errno::Errno::EPERM),
+                |_, _| {
+                    inventory_calls += 1;
+                    if mode == "failed" {
+                        Err("injected inventory failure".into())
+                    } else {
+                        Ok(vec![pid])
+                    }
+                },
+            );
+            let mut errors = Vec::new();
+            terminate_and_reap_owned_child(&mut child, unassigned_cleanup_job(), &mut errors);
+            assert!(result.is_err(), "{mode}");
+            assert_eq!(inventory_calls, usize::from(mode != "live"));
+            assert!(errors.is_empty(), "{mode}: {errors:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "one-inventory cleanup budget subprocess fixture"]
+    fn single_inventory_budget_fixture() {
+        let marker = PathBuf::from(std::env::var_os("LABBY_SINGLE_INVENTORY_MARKER").unwrap());
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 70"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let setup = Instant::now() + Duration::from_secs(3);
+        while observe_cleanup_child(pid).unwrap().is_none() {
+            assert!(Instant::now() < setup);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let calls = std::cell::Cell::new(0);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let inventory = |group, expires| {
+            assert_eq!(expires, deadline);
+            calls.set(calls.get() + 1);
+            if calls.get() > 1 {
+                return Err(
+                    "injected second inventory exceeds remaining shared probe budget".into(),
+                );
+            }
+            let members = process_group_members_checked_before(group, expires)?;
+            assert!(members.is_empty());
+            std::fs::write(&marker, b"empty observation admitted").unwrap();
+            Ok(members)
+        };
+        let mut errors = Vec::new();
+        terminate_and_reap_owned_child_with_operations(
+            &mut child,
+            unassigned_cleanup_job(),
+            &mut errors,
+            deadline,
+            |pid| {
+                signal_cleanup_group_with_probe(
+                    pid,
+                    deadline,
+                    |_| Err(nix::errno::Errno::EPERM),
+                    inventory,
+                )
+            },
+            inventory,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(calls.get(), 1);
+        assert!(
+            observe_cleanup_child(pid).is_err(),
+            "retained child not finally reaped"
+        );
+        std::fs::write(marker, b"single observation completed").unwrap();
+    }
+
+    #[test]
+    fn exited_empty_group_consumes_only_one_inventory_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("inventory");
+        let module = module_path!().split_once("::").unwrap().1;
+        let fixture = format!("{module}::single_inventory_budget_fixture");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([&fixture, "--exact", "--ignored", "--nocapture"])
+            .env("LABBY_SINGLE_INVENTORY_MARKER", &marker)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let result = run_spawned_owned_child(
+            child,
+            Instant::now() + Duration::from_secs(5),
+            assign_cleanup_job,
+            |child| child.try_wait(),
+        );
+        assert!(result.is_ok(), "{result:?}; admitted={}", marker.exists());
+        assert_eq!(
+            std::fs::read(marker).unwrap(),
+            b"single observation completed"
+        );
+    }
 
     #[test]
     fn adoption_rechecks_an_exited_leader_before_reporting_cleanup_failure() {
@@ -195,6 +473,7 @@ exit "$cleanup"
                 signal_cleanup_group(pid)?;
                 std::fs::write(&marker, b"owned group kill attempted")
                     .map_err(|error| error.to_string())
+                    .map(|()| SignalDisposition::Sent)
             },
             |_, _| Err("injected process inventory failure".into()),
         );
@@ -305,10 +584,10 @@ exit "$cleanup"
                 if signals == 1 {
                     // Deterministically leave the descendant alive through the
                     // first group-signal attempt. Direct kill still exits the leader.
-                    return Ok(());
+                    return Ok(SignalDisposition::Sent);
                 }
                 assert!(observe_cleanup_child(pid).unwrap().is_some());
-                signal_cleanup_group(pid)
+                signal_cleanup_group(pid).map(|()| SignalDisposition::Sent)
             },
         );
         assert!(signals >= 2);

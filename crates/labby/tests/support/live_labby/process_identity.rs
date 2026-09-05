@@ -352,11 +352,18 @@ mod tests {
                 };
                 let captures = Arc::new(Mutex::new(Vec::new()));
                 let capture_records = Arc::clone(&captures);
+                let stages = Arc::new(Mutex::new(Vec::new()));
+                let capture_stages = Arc::clone(&stages);
                 let calls = AtomicUsize::new(0);
                 let probe: IdentityProbe = Arc::new(move |pid, address, admission, deadline| {
                     if restart && calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        capture_stages
+                            .lock()
+                            .unwrap()
+                            .push("initial_restart_identity");
                         return capture(pid, deadline);
                     }
+                    capture_stages.lock().unwrap().push("capture_entered");
                     let ready_deadline = deadline.min(Instant::now() + Duration::from_secs(3));
                     loop {
                         if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20))
@@ -369,17 +376,19 @@ mod tests {
                         }
                         std::thread::sleep(Duration::from_millis(5));
                     }
+                    capture_stages.lock().unwrap().push("listener_ready");
                     let daemon_pid = if let Some(admission) = admission {
-                        let text = std::fs::read_to_string(admission.join("child.pid"))
-                            .map_err(|error| error.to_string())?;
-                        text.trim()
-                            .parse::<u32>()
-                            .map_err(|error| error.to_string())?
+                        guardian::read_daemon_pid(admission, deadline)?
                     } else {
                         pid
                     };
+                    capture_stages.lock().unwrap().push("pid_available");
                     let members = process_group_members_checked_before(pid as i32, deadline)?;
                     assert!(members.contains(&daemon_pid));
+                    capture_stages
+                        .lock()
+                        .unwrap()
+                        .push("owned_membership_verified");
                     capture_records
                         .lock()
                         .unwrap()
@@ -430,9 +439,21 @@ mod tests {
                 assert_eq!(
                     records.len(),
                     1,
-                    "restart={restart} mode={mode}: {}",
+                    "restart={restart} mode={mode} stages={:?}: {}",
+                    stages.lock().unwrap().iter().take(8).collect::<Vec<_>>(),
                     observed_error.chars().take(512).collect::<String>()
                 );
+                let mut expected_stages = Vec::new();
+                if restart {
+                    expected_stages.push("initial_restart_identity");
+                }
+                expected_stages.extend([
+                    "capture_entered",
+                    "listener_ready",
+                    "pid_available",
+                    "owned_membership_verified",
+                ]);
+                assert_eq!(*stages.lock().unwrap(), expected_stages);
                 let (group, daemon_pid, address, members) = &records[0];
                 assert!(members.contains(daemon_pid));
                 assert!(

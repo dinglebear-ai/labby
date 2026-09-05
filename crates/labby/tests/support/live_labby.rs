@@ -2124,33 +2124,65 @@ fn terminate_and_reap_owned_child(
 
 #[cfg(unix)]
 fn signal_cleanup_group(pid: u32) -> Result<(), String> {
-    signal_cleanup_group_with_deadline(pid, Instant::now() + Duration::from_secs(1))
+    signal_cleanup_group_with_deadline(pid, Instant::now() + Duration::from_secs(1)).map(|_| ())
 }
 
-fn signal_cleanup_group_with_deadline(pid: u32, deadline: Instant) -> Result<(), String> {
+// A positive empty observation is consumed immediately by the same retained
+// child owner. It is never cached or used to authorize a later signal.
+enum SignalDisposition {
+    Sent,
     #[cfg(unix)]
-    match nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    ) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(nix::errno::Errno::EPERM)
-            if observe_cleanup_child(pid)
-                .map_err(|error| format!("cleanup helper exit verification failed: {error}"))?
-                .is_some()
-                && process_group_members_checked_before(pid as i32, deadline)?.is_empty() =>
-        {
-            // macOS reports EPERM for a group containing only its retained
-            // zombie leader. Prove that exact waitable child has exited and
-            // no live member remains; never ignore a live-group denial.
-            Ok(())
-        }
-        Err(error) => Err(format!("cleanup helper process-group kill failed: {error}")),
+    ExitedAndEmpty {
+        pid: u32,
+    },
+}
+
+fn signal_cleanup_group_with_deadline(
+    pid: u32,
+    deadline: Instant,
+) -> Result<SignalDisposition, String> {
+    #[cfg(unix)]
+    {
+        signal_cleanup_group_with_probe(
+            pid,
+            deadline,
+            |pid| {
+                nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                )
+            },
+            process_group_members_checked_before,
+        )
     }
     #[cfg(not(unix))]
     {
         let _ = (pid, deadline);
-        Ok(())
+        Ok(SignalDisposition::Sent)
+    }
+}
+
+#[cfg(unix)]
+fn signal_cleanup_group_with_probe(
+    pid: u32,
+    deadline: Instant,
+    signal: impl FnOnce(u32) -> Result<(), nix::errno::Errno>,
+    inventory: impl FnOnce(i32, Instant) -> Result<Vec<u32>, String>,
+) -> Result<SignalDisposition, String> {
+    match signal(pid) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(SignalDisposition::Sent),
+        Err(nix::errno::Errno::EPERM)
+            if observe_cleanup_child(pid)
+                .map_err(|error| format!("cleanup helper exit verification failed: {error}"))?
+                .is_some()
+                && inventory(pid as i32, deadline)?.is_empty() =>
+        {
+            // macOS reports EPERM for a group containing only its retained
+            // zombie leader. Prove that exact waitable child has exited and
+            // no live member remains; never ignore a live-group denial.
+            Ok(SignalDisposition::ExitedAndEmpty { pid })
+        }
+        Err(error) => Err(format!("cleanup helper process-group kill failed: {error}")),
     }
 }
 
@@ -2159,7 +2191,7 @@ fn terminate_and_reap_owned_child_with_signal(
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
     reap_deadline: Instant,
-    mut signal_group: impl FnMut(u32) -> Result<(), String>,
+    mut signal_group: impl FnMut(u32) -> Result<SignalDisposition, String>,
 ) {
     terminate_and_reap_owned_child_with_operations(
         child,
@@ -2199,12 +2231,38 @@ fn require_waitable_cleanup_owner(child: &impl ChildControl, pid: u32, errors: &
     }
 }
 
+#[cfg(unix)]
+fn reap_verified_empty_group(
+    child: &mut impl ChildControl,
+    owner_pid: u32,
+    observed_pid: u32,
+    deadline: Instant,
+    errors: &mut Vec<String>,
+) {
+    require_waitable_cleanup_owner(child, owner_pid, errors);
+    if owner_pid != observed_pid || Instant::now() >= deadline {
+        errors.push("empty cleanup observation does not match its live ownership budget".into());
+        abort_unsettled_cleanup_helper(owner_pid, errors);
+    }
+    if !matches!(observe_owned_child(child, owner_pid), Ok(Some(_))) {
+        errors.push("empty cleanup observation has no exited retained owner".into());
+        abort_unsettled_cleanup_helper(owner_pid, errors);
+    }
+    match child.final_try_wait() {
+        Ok(Some(_)) => {}
+        result => {
+            errors.push(format!("cleanup helper final reap failed: {result:?}"));
+            abort_unsettled_cleanup_helper(owner_pid, errors);
+        }
+    }
+}
+
 fn terminate_and_reap_owned_child_with_operations(
     child: &mut impl ChildControl,
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
     reap_deadline: Instant,
-    mut signal_group: impl FnMut(u32) -> Result<(), String>,
+    mut signal_group: impl FnMut(u32) -> Result<SignalDisposition, String>,
     mut inventory: impl FnMut(i32, Instant) -> Result<Vec<u32>, String>,
 ) {
     let Some(pid) = child.owned_pid() else {
@@ -2227,8 +2285,14 @@ fn terminate_and_reap_owned_child_with_operations(
     #[cfg(unix)]
     require_waitable_cleanup_owner(child, pid, errors);
     // Setup can fail before a group exists; direct kill/reap is still required.
-    if let Err(error) = signal_group(pid) {
-        errors.push(error);
+    match signal_group(pid) {
+        #[cfg(unix)]
+        Ok(SignalDisposition::ExitedAndEmpty { pid: observed_pid }) => {
+            reap_verified_empty_group(child, pid, observed_pid, reap_deadline, errors);
+            return;
+        }
+        Ok(SignalDisposition::Sent) => {}
+        Err(error) => errors.push(error),
     }
     #[cfg(windows)]
     if let Some(job) = owned_job {
@@ -2252,24 +2316,30 @@ fn terminate_and_reap_owned_child_with_operations(
                 #[cfg(unix)]
                 match inventory(pid as i32, reap_deadline) {
                     Ok(members) if members.is_empty() => {
-                        match child.final_try_wait() {
-                            Ok(Some(_)) => break,
-                            Ok(None) => errors
-                                .push("observed exited cleanup leader was not reapable".into()),
-                            Err(error) => {
-                                errors.push(format!("cleanup helper final reap failed: {error}"))
-                            }
-                        }
-                        abort_unsettled_cleanup_helper(pid, errors);
+                        reap_verified_empty_group(child, pid, pid, reap_deadline, errors);
+                        break;
                     }
                     Ok(members) => {
                         last_members = members;
                         // The first signal need not settle every descendant.
                         // NOWAIT retains the leader's PID, preventing numeric
                         // group reuse until the final drain and reap.
-                        if let Err(error) = signal_group(pid) {
-                            errors.push(error);
-                            abort_unsettled_cleanup_helper(pid, errors);
+                        match signal_group(pid) {
+                            Ok(SignalDisposition::ExitedAndEmpty { pid: observed_pid }) => {
+                                reap_verified_empty_group(
+                                    child,
+                                    pid,
+                                    observed_pid,
+                                    reap_deadline,
+                                    errors,
+                                );
+                                break;
+                            }
+                            Ok(SignalDisposition::Sent) => {}
+                            Err(error) => {
+                                errors.push(error);
+                                abort_unsettled_cleanup_helper(pid, errors);
+                            }
                         }
                     }
                     Err(error) => {
