@@ -10,7 +10,8 @@ image:
 source:
   downloader: debootstrap
   same_as: gutsy
-  url: http://archive.ubuntu.com/ubuntu/
+  # LABBY_SUPPLY: ubuntu_snapshot
+  url: https://snapshot.ubuntu.com/ubuntu/20260904T000000Z/
 
 packages:
   manager: apt
@@ -24,9 +25,9 @@ packages:
   repositories:
     - name: ubuntu
       url: |-
-        deb http://archive.ubuntu.com/ubuntu {{ image.release }} main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu {{ image.release }}-updates main restricted universe multiverse
-        deb http://security.ubuntu.com/ubuntu {{ image.release }}-security main restricted universe multiverse
+        deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z {{ image.release }} main restricted universe multiverse
+        deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z {{ image.release }}-updates main restricted universe multiverse
+        deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z {{ image.release }}-security main restricted universe multiverse
   sets:
     - action: install
       packages:
@@ -101,6 +102,7 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: node
+      # LABBY_SUPPLY: node
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       case "$(uname -m)" in
@@ -108,14 +110,14 @@ actions:
         *) echo "unsupported Node static tarball architecture: $(uname -m)" >&2; exit 1 ;;
       esac
       mkdir -p "$HOME/.local/bin" "$HOME/.local/opt"
-      base="https://nodejs.org/dist/latest-v24.x"
+      version="24.13.0"
+      digest="e798599612f4bb71333a3397ab0d095fd62214e115aea45aa858a145fc72d67e"
+      base="https://nodejs.org/dist/v${version}"
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
-      asset="$(curl -fsSL "$base/SHASUMS256.txt" | awk '\''/linux-x64.tar.xz$/ {print $2; exit}'\'')"
-      test -n "$asset"
-      curl -fsSL -o "$tmp/$asset" "$base/$asset"
-      curl -fsSL -o "$tmp/SHASUMS256.txt" "$base/SHASUMS256.txt"
-      (cd "$tmp" && grep "  $asset$" SHASUMS256.txt | sha256sum -c -)
+      asset="node-v${version}-linux-x64.tar.xz"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/$asset" "$base/$asset"
+      echo "$digest  $tmp/$asset" | sha256sum --check --strict
       tar -xJf "$tmp/$asset" -C "$HOME/.local/opt"
       dir="$HOME/.local/opt/${asset%.tar.xz}"
       ln -sfn "$dir" "$HOME/.local/opt/node"
@@ -129,6 +131,7 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: uv-python
+      # LABBY_SUPPLY: uv
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       # uv discovers config by walking up from the CWD; the provision runs from
@@ -139,14 +142,16 @@ actions:
       mkdir -p "$HOME/.local/bin"
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
-      installer="$tmp/uv-install.sh"
-      curl -fsSL -o "$installer" https://astral.sh/uv/install.sh
-      test -s "$installer"
-      env UV_INSTALL_DIR="$HOME/.local/bin" sh "$installer"
-      "$HOME/.local/bin/uv" python install
-      python_path="$("$HOME/.local/bin/uv" python find)"
-      ln -sfn "$python_path" "$HOME/.local/bin/python"
-      ln -sfn "$python_path" "$HOME/.local/bin/python3"
+      asset="$tmp/uv.tar.gz"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$asset" https://github.com/astral-sh/uv/releases/download/0.11.10/uv-x86_64-unknown-linux-gnu.tar.gz
+      echo "077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a  $asset" | sha256sum --check --strict
+      tar -xzf "$asset" -C "$tmp"
+      install -m 0755 "$tmp/uv-x86_64-unknown-linux-gnu/uv" "$HOME/.local/bin/uv"
+      install -m 0755 "$tmp/uv-x86_64-unknown-linux-gnu/uvx" "$HOME/.local/bin/uvx"
+      # Python comes from the immutable Ubuntu snapshot above; uv must not fetch
+      # a second, independently mutable managed-Python artifact.
+      ln -sfn /usr/bin/python3 "$HOME/.local/bin/python"
+      ln -sfn /usr/bin/python3 "$HOME/.local/bin/python3"
       '
 
   - trigger: post-packages
@@ -154,41 +159,26 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: rust-go
+      # LABBY_SUPPLY: rustup
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       mkdir -p "$HOME/.cargo" "$HOME/.local/bin"
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
-      installer="$tmp/rustup-init.sh"
-      curl -fsSL -o "$installer" https://sh.rustup.rs
-      test -s "$installer"
-      sh "$installer" -y --profile minimal --default-toolchain stable
+      installer="$tmp/rustup-init"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+      echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $installer" | sha256sum --check --strict
+      chmod 0755 "$installer"
+      # LABBY_SUPPLY: rust
+      "$installer" -y --profile minimal --default-toolchain 1.97.1
       '
-      case "$(uname -m)" in
-        x86_64|amd64) go_arch=amd64 ;;
-        aarch64|arm64) go_arch=arm64 ;;
-        *) echo "unsupported Go static tarball architecture: $(uname -m)" >&2; exit 1 ;;
-      esac
+      # LABBY_SUPPLY: go
+      case "$(uname -m)" in x86_64|amd64) ;; *) echo "unsupported Go architecture" >&2; exit 1 ;; esac
       tmp="$(mktemp -d)"
       trap 'rm -rf "$tmp"' EXIT
-      go_json="$tmp/go.json"
-      curl -fsSL -o "$go_json" "https://go.dev/dl/?mode=json"
-      go_asset="$(python3 - "$go_json" "$go_arch" <<'PY'
-      import json
-      import sys
-
-      data = json.load(open(sys.argv[1], encoding="utf-8"))
-      arch = sys.argv[2]
-      for release in data:
-          for file in release.get("files", []):
-              if file.get("os") == "linux" and file.get("arch") == arch and file.get("kind") == "archive":
-                  print(file["filename"])
-                  sys.exit(0)
-      sys.exit(1)
-      PY
-      )"
-      test -n "$go_asset"
-      curl -fsSL -o "$tmp/$go_asset" "https://go.dev/dl/$go_asset"
+      go_asset="go1.26.5.linux-amd64.tar.gz"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/$go_asset" "https://go.dev/dl/$go_asset"
+      echo "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053  $tmp/$go_asset" | sha256sum --check --strict
       rm -rf /usr/local/go
       tar -C /usr/local -xzf "$tmp/$go_asset"
       ln -sfn /usr/local/go/bin/go /usr/local/bin/go
@@ -203,7 +193,22 @@ actions:
       set -eu
       export PATH="$HOME/.local/bin:$PATH"
       npm config set prefix "$HOME/.local"
-      npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+      tmp="$(mktemp -d)"
+      trap '\''rm -rf "$tmp"'\'' EXIT
+      install_verified() {
+        package=$1 version=$2 integrity=$3 file="$tmp/$(echo "$package" | tr '\''/@'\'' '\''__'\'').tgz"
+        url="$(npm view "$package@$version" dist.tarball)"
+        curl -fsSL --connect-timeout 10 --max-time 300 -o "$file" "$url"
+        actual="sha512-$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)"
+        test "$actual" = "$integrity"
+        npm install -g "$file"
+      }
+      # LABBY_SUPPLY: claude_code
+      install_verified @anthropic-ai/claude-code 2.1.163 sha512-aK+hmLIaxp6v2M/fifhrCdYJ+kuQuGOl4Iok+AwRijeZl/HMn55rkwF6lEIq1Ny0xNCp2UKiZcmCegyoMumoWg==
+      # LABBY_SUPPLY: codex
+      install_verified @openai/codex 0.130.0 sha512-WGDj+RZ3TXWC/7MlwprgLWOqzpwatPIINPhP3IRzHA0ni+o3QZ4i4xrS2uWwGmHUJ395J5JHwoZAAZYyfJyz6w==
+      # LABBY_SUPPLY: gemini_cli
+      install_verified @google/gemini-cli 0.58.0 sha512-++LtUYMcLE8dVxMcuwv6kIp8+h6z+std/7iVE+vSunkrwNDaWMFkWw/psv2RSySWjr2A1SsEEIGCK0xULWY2sA==
       '
 
   - trigger: post-packages
@@ -211,15 +216,16 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: mise
+      # LABBY_SUPPLY: mise_installer
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       mkdir -p "$HOME/.local/bin"
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/mise-install.sh"
-      curl -fsSL -o "$installer" https://mise.run
-      test -s "$installer"
-      env MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh "$installer"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://mise.run
+      echo "3731dfec59ffb0bc23df96ae19b4b51470db939c875c2fdf01cf6c25b1b1e039  $installer" | sha256sum --check --strict
+      env MISE_VERSION=2026.9.1 MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh "$installer"
       '
 
   - trigger: post-packages
@@ -227,15 +233,16 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: chezmoi
+      # LABBY_SUPPLY: chezmoi_installer
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       mkdir -p "$HOME/.local/bin"
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/chezmoi-install.sh"
-      curl -fsSL -o "$installer" https://get.chezmoi.io
-      test -s "$installer"
-      sh "$installer" -b "$HOME/.local/bin"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://get.chezmoi.io
+      echo "75de125a45a82b53c16546db7057052e98c11866ded27c4b6f95a51f59432e7b  $installer" | sha256sum --check --strict
+      sh "$installer" -t v2.72.1 -b "$HOME/.local/bin"
       '
 
   - trigger: post-packages
@@ -243,6 +250,7 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: crgx
+      # LABBY_SUPPLY: crgx_installer
       runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
       set -eu
       if command -v crgx >/dev/null 2>&1; then
@@ -252,8 +260,9 @@ actions:
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/crgx-install.sh"
-      curl -fsSL -o "$installer" https://crgx.dev/install.sh
-      test -s "$installer"
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://crgx.dev/install.sh
+      echo "232ca80d014043bfac12afd7a48e75d7cd98d35e6d0e7384062093535e3eb998  $installer" | sha256sum --check --strict
+      sed -i 's|VERSION=$(curl .*|VERSION=0.1.0|' "$installer"
       sh "$installer"
       '
 
@@ -281,8 +290,14 @@ actions:
       #!/usr/bin/env bash
       set -euo pipefail
       # LABBY_PROVISION_ACTION: tailscale-install
+      # LABBY_SUPPLY: tailscale_installer
       if ! command -v tailscale >/dev/null 2>&1; then
-        curl -fsSL https://tailscale.com/install.sh | sh
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/install.sh" https://tailscale.com/install.sh
+        echo "805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e  $tmp/install.sh" | sha256sum --check --strict
+        sh "$tmp/install.sh"
+        tailscale version | grep -F '1.102.3'
       fi
       rm -f /var/lib/tailscale/*.state /run/labby-ts-authkey
 

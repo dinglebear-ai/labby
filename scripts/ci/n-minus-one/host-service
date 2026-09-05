@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+state_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/labby-n-minus-one/host-service"
+export LABBY_HOME=/home/labby/.labby
+
+service() { sudo /usr/local/bin/labby setup host-service "$1" -y; }
+version() { /usr/local/bin/labby --version | grep -Fq "${1#v}"; }
+authenticated_action() {
+  token=$(sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env")
+  curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    --data '{"action":"gateway.list","params":{}}' http://127.0.0.1:8765/v1/gateway >/dev/null
+}
+call() {
+  token=$(sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env")
+  curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:8765/v1/$1"
+}
+customized_state() { sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$LABBY_HOME"; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -Fq 'preserved-state'; }
+state_digest() { sudo sh -c "cd '$LABBY_HOME' && sha256sum config.toml .env"; }
+require_fixture() {
+  [[ "$(uname -s)" == Linux ]] || { echo 'host-service N-1 requires Linux' >&2; exit 1; }
+  command -v systemctl >/dev/null
+  [[ "$(ps -p 1 -o comm=)" == systemd ]] || { echo 'host-service N-1 requires systemd as PID 1' >&2; exit 1; }
+}
+require_fixture
+
+case "${1:-}" in
+  install-previous) sudo env LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
+  seed-state) mkdir -p "$state_root"; sudo install -d -m 0700 -o labby -g labby "$LABBY_HOME"; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; sudo systemctl stop labby.service; sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$LABBY_HOME"; if ! sudo tar -C /home/labby -czf "$state_root/full-durable-state.tar.gz" .labby; then sudo systemctl start labby.service; exit 1; fi; sudo chown -R labby:labby "$LABBY_HOME"; sudo systemctl start labby.service; sudo chown "$(id -u):$(id -g)" "$state_root/full-durable-state.tar.gz"; state_digest >"$state_root/state.sha256" ;;
+  verify-previous) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
+  verify-provenance) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- true ;;
+  upgrade) candidate="${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}"; if sudo env LABBY_HOST_SERVICE_FAIL_AFTER=restart "$candidate" setup host-service install --install-self -y; then echo 'host upgrade fault unexpectedly succeeded' >&2; exit 1; fi; version "$LABBY_PREVIOUS_VERSION"; customized_state; "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- sudo "$candidate" setup host-service install --install-self -y ;;
+  verify-candidate) version "$LABBY_CANDIDATE_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state ;;
+  authenticated-action) authenticated_action ;;
+  restart) service restart ;;
+  verify-restart) version "$LABBY_CANDIDATE_VERSION"; service status >/dev/null; authenticated_action; customized_state ;;
+  rollback) sudo /usr/local/bin/labby setup host-service rollback -y ;;
+  verify-rollback) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
+  *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
+esac

@@ -8,15 +8,18 @@ export async function syncInstallScript({
 } = {}) {
   const source = resolve(repoRoot, "scripts/install.sh");
   const target = resolve(appRoot, "public/install.sh");
+  const rootTarget = resolve(repoRoot, "install.sh");
 
   await mkdir(dirname(target), { recursive: true });
-  await copyFile(source, target);
-  await chmod(target, 0o755);
+  for (const destination of [target, rootTarget]) {
+    await copyFile(source, destination);
+    await chmod(destination, 0o755);
+  }
 
-  return { source, target };
+  return { source, target, rootTarget };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { source, target } = await syncInstallScript();
-  console.log(`Synced ${source} -> ${target}`);
+  const { source, target, rootTarget } = await syncInstallScript();
+  console.log(`Synced ${source} -> ${target}, ${rootTarget}`);
 }

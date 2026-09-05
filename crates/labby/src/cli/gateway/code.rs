@@ -13,73 +13,78 @@ use crate::output::OutputFormat;
 use super::dispatch::dispatch_gateway_action;
 use crate::live_gateway as remote;
 
-pub(super) async fn run_gateway_code(
+pub(super) fn run_gateway_code(
     manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     args: GatewayCodeArgs,
     format: OutputFormat,
-) -> Result<ExitCode> {
-    match args.command {
-        GatewayCodeCommand::Status => {
-            let value = dispatch_gateway_action(
-                manager,
-                config,
-                "gateway.code_mode.get".to_string(),
-                json!({}),
-            )
-            .await?;
-            crate::output::print(&value, format)?;
+) -> impl Future<Output = Result<ExitCode>> {
+    // Keep this invocation's state out of the parent poll frame while the
+    // nested broker/catalog call chain executes.
+    Box::pin(async move {
+        match args.command {
+            GatewayCodeCommand::Status => {
+                let value = dispatch_gateway_action(
+                    manager,
+                    config,
+                    "gateway.code_mode.get".to_string(),
+                    json!({}),
+                )
+                .await?;
+                crate::output::print(&value, format)?;
+            }
+            GatewayCodeCommand::Enable => {
+                let value = dispatch_gateway_action(
+                    manager,
+                    config,
+                    "gateway.code_mode.set".to_string(),
+                    json!({ "enabled": true }),
+                )
+                .await?;
+                crate::output::print(&value, format)?;
+            }
+            GatewayCodeCommand::Disable => {
+                let value = dispatch_gateway_action(
+                    manager,
+                    config,
+                    "gateway.code_mode.set".to_string(),
+                    json!({ "enabled": false }),
+                )
+                .await?;
+                crate::output::print(&value, format)?;
+            }
+            GatewayCodeCommand::Ui { command } => {
+                let params = match command {
+                    GatewayCodeUiCommand::Status => None,
+                    GatewayCodeUiCommand::Enable => Some(json!({ "mcp_ui_enabled": true })),
+                    GatewayCodeUiCommand::Disable => Some(json!({ "mcp_ui_enabled": false })),
+                };
+                let value = dispatch_gateway_action(
+                    manager,
+                    config,
+                    if params.is_some() {
+                        "gateway.code_mode.set".to_string()
+                    } else {
+                        "gateway.code_mode.get".to_string()
+                    },
+                    params.unwrap_or_else(|| json!({})),
+                )
+                .await?;
+                crate::output::print(&value, format)?;
+            }
+            GatewayCodeCommand::Exec { code, file } => {
+                // The selected daemon owns its configured source limit. The CLI only
+                // applies the shared allocation ceiling before target resolution;
+                // local and remote execution paths enforce their own lower limit.
+                let code =
+                    read_code_mode_source(code, file, labby_codemode::MAX_SOURCE_BYTES as u64)?;
+                let response = execute_code_mode(manager, config, &code).await?;
+                crate::output::print(&response, format)?;
+            }
         }
-        GatewayCodeCommand::Enable => {
-            let value = dispatch_gateway_action(
-                manager,
-                config,
-                "gateway.code_mode.set".to_string(),
-                json!({ "enabled": true }),
-            )
-            .await?;
-            crate::output::print(&value, format)?;
-        }
-        GatewayCodeCommand::Disable => {
-            let value = dispatch_gateway_action(
-                manager,
-                config,
-                "gateway.code_mode.set".to_string(),
-                json!({ "enabled": false }),
-            )
-            .await?;
-            crate::output::print(&value, format)?;
-        }
-        GatewayCodeCommand::Ui { command } => {
-            let params = match command {
-                GatewayCodeUiCommand::Status => None,
-                GatewayCodeUiCommand::Enable => Some(json!({ "mcp_ui_enabled": true })),
-                GatewayCodeUiCommand::Disable => Some(json!({ "mcp_ui_enabled": false })),
-            };
-            let value = dispatch_gateway_action(
-                manager,
-                config,
-                if params.is_some() {
-                    "gateway.code_mode.set".to_string()
-                } else {
-                    "gateway.code_mode.get".to_string()
-                },
-                params.unwrap_or_else(|| json!({})),
-            )
-            .await?;
-            crate::output::print(&value, format)?;
-        }
-        GatewayCodeCommand::Exec { code, file } => {
-            // The selected daemon owns its configured source limit. The CLI only
-            // applies the shared allocation ceiling before target resolution;
-            // local and remote execution paths enforce their own lower limit.
-            let code = read_code_mode_source(code, file, labby_codemode::MAX_SOURCE_BYTES as u64)?;
-            let response = execute_code_mode(manager, config, &code).await?;
-            crate::output::print(&response, format)?;
-        }
-    }
 
-    Ok(ExitCode::SUCCESS)
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 /// Prefer executing against the live daemon's actual `codemode` MCP tool
@@ -87,48 +92,50 @@ pub(super) async fn run_gateway_code(
 /// CLI's own throwaway `CodeModeBroker`, which lazily cold-connects whatever
 /// the snippet touches and never shares in-memory state (OAuth refresh
 /// circuit breaker included) with the process actually serving traffic.
-async fn execute_code_mode(
+fn execute_code_mode(
     manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     code: &str,
-) -> Result<serde_json::Value> {
-    if let Some(live) = remote::detect(config, "cli").await? {
-        match live.call_codemode_tool(code).await {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                if !live.allows_local_fallback() {
-                    return Err(anyhow::Error::new(error).context(format!(
-                        "Code Mode execution through configured Labby server ({}) failed",
-                        live.source()
-                    )));
+) -> impl Future<Output = Result<serde_json::Value>> {
+    Box::pin(async move {
+        if let Some(live) = remote::detect(config, "cli").await? {
+            match live.call_codemode_tool(code).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if !live.allows_local_fallback() {
+                        return Err(anyhow::Error::new(error).context(format!(
+                            "Code Mode execution through configured Labby server ({}) failed",
+                            live.source()
+                        )));
+                    }
+                    tracing::warn!(
+                        surface = "cli",
+                        service = "gateway",
+                        action = "gateway.code.exec",
+                        error = %error,
+                        "remote code mode execution failed, falling back to local broker"
+                    );
                 }
-                tracing::warn!(
-                    surface = "cli",
-                    service = "gateway",
-                    action = "gateway.code.exec",
-                    error = %error,
-                    "remote code mode execution failed, falling back to local broker"
-                );
             }
         }
-    }
 
-    let manager = manager.get().await?;
-    let broker = CodeModeBroker::new(Some(manager.as_ref()));
-    let response = broker
-        .execute(
-            code,
-            CodeModeCaller::TrustedLocal,
-            CodeModeSurface::Cli,
-            manager.code_mode_config().await,
-            crate::dispatch::gateway::code_mode::ToolScope::default(),
-            // No durable-run execution id on the local CLI broker path: journaling
-            // is driven through the MCP `codemode` tool where an execution id +
-            // owner context exist. `None` keeps `record_step` write-free here.
-            None,
-        )
-        .await?;
-    Ok(serde_json::to_value(response)?)
+        let manager = manager.get().await?;
+        let broker = CodeModeBroker::new(Some(manager.as_ref()));
+        let response = broker
+            .execute(
+                code,
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                manager.code_mode_config().await,
+                crate::dispatch::gateway::code_mode::ToolScope::default(),
+                // No durable-run execution id on the local CLI broker path: journaling
+                // is driven through the MCP `codemode` tool where an execution id +
+                // owner context exist. `None` keeps `record_step` write-free here.
+                None,
+            )
+            .await?;
+        Ok(serde_json::to_value(response)?)
+    })
 }
 
 fn read_code_mode_source(

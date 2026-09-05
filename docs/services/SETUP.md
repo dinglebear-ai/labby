@@ -37,6 +37,21 @@ Plugin lifecycle and other local host mutations are additionally constrained by 
 
 `setup repair` never creates, migrates, bootstraps, chmods, checkpoints, or repairs `access.db` or its SQLite sidecars. Access-store recovery requires an explicit access-control workflow so setup repair cannot silently change authorization state or ownership.
 
+Access-bootstrap proof, credential, identity, and journal files are bounded to
+1 MiB each. Reads verify private ownership, file type, and hard-link count before
+loading content. Windows publication applies the owner-only policy before writing
+bytes and publishes the completed file without overwriting an existing artifact.
+Recovery verifies the content digest plus the full file and parent-directory
+identities before deleting through the verified Windows handle. Junctions,
+alternate data streams, replaced files/parents, and inherited or foreign access
+rules on files are refused; no pathname-delete fallback is used. New bootstrap
+directories are made private. Existing parent directories may inherit rules,
+but their owner and all write/delete-child/ACL-change authority must be limited
+to the current user, Windows SYSTEM, or local Administrators. Unsafe existing
+parents are refused without rewriting their permissions. Windows files are flushed
+before atomic publication, but the platform does not provide the Unix parent
+directory synchronization guarantee through the portable filesystem API.
+
 ## Main Action Families
 
 | Family | Examples |

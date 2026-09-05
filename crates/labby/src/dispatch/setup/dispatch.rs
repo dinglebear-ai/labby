@@ -247,7 +247,7 @@ async fn uninstall_plugin_action(params: &Value) -> Result<Value, ToolError> {
 }
 
 fn state_action() -> Result<Value, ToolError> {
-    to_json(state::snapshot(cached_registry()))
+    to_json(state::snapshot(cached_registry())?)
 }
 
 fn schema_get_action(params: &Value) -> Result<Value, ToolError> {
@@ -305,9 +305,9 @@ fn service_schema(entry: &RegisteredService, meta: &PluginMeta) -> Value {
 
 fn settings_state_action(params: &Value) -> Result<Value, ToolError> {
     let section = requested_section(params)?;
-    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+    let path = config_toml_path().map_err(|error| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
-        message: "HOME env var not set; cannot resolve config.toml path".into(),
+        message: format!("cannot resolve config.toml path: {error}"),
     })?;
     let cfg = load_settings_config(&path)?;
     to_json(super::settings::state_response(
@@ -315,7 +315,7 @@ fn settings_state_action(params: &Value) -> Result<Value, ToolError> {
         path.display().to_string(),
         env_path().display().to_string(),
         &section,
-    ))
+    )?)
 }
 
 fn settings_advanced_state_action(params: &Value) -> Result<Value, ToolError> {
@@ -378,9 +378,9 @@ fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
 fn settings_config_update_action(params: &Value) -> Result<Value, ToolError> {
     let entries = parse_update_entries(params)?;
     let patches = super::settings::config_patches_from_entries(&entries)?;
-    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+    let path = config_toml_path().map_err(|error| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
-        message: "HOME env var not set; cannot resolve config.toml path".into(),
+        message: format!("cannot resolve config.toml path: {error}"),
     })?;
     let expected = super::settings::expected_config_scalars(&entries)?;
     let outcome = crate::config::patch_config_scalars_checked(&path, &patches, &expected)
@@ -397,19 +397,20 @@ fn settings_config_update_action(params: &Value) -> Result<Value, ToolError> {
             path.display().to_string(),
             env_path().display().to_string(),
             requested_section(params)?.as_str(),
-        ),
+        )?,
         backup_path: outcome.backup_path.map(|path| path.display().to_string()),
+        maintenance_warning: outcome.maintenance_warning,
     })
 }
 
 fn settings_env_schema_action() -> Result<Value, ToolError> {
-    to_json(super::settings::env_schema())
+    to_json(super::settings::env_schema()?)
 }
 
 fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
-    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+    let path = config_toml_path().map_err(|error| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
-        message: "HOME env var not set; cannot resolve config.toml path".into(),
+        message: format!("cannot resolve config.toml path: {error}"),
     })?;
     let enabled = parse_built_in_upstream_apis_enabled(params)?;
     let current = load_settings_config(&path)?;
@@ -653,7 +654,15 @@ fn ui_schema_to_json(ui: &labby_primitives::plugin_ui::UiSchema) -> Value {
 
 fn draft_get_action() -> Result<Value, ToolError> {
     let path = draft_path();
-    let entries = draft::read_entries(&path);
+    let entries = match draft::read_entries(&path) {
+        Ok(entries) => entries,
+        Err(draft::DraftReadError::Read { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Vec::new()
+        }
+        Err(error) => return Err(error.into()),
+    };
     let masked: Vec<Value> = entries
         .into_iter()
         .map(|e| {
@@ -693,7 +702,7 @@ fn draft_discard_action() -> Result<Value, ToolError> {
 
 fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
     let index = cached_env_var_index();
-    let schema = super::settings::env_schema();
+    let schema = super::settings::env_schema()?;
     for entry in entries {
         let valid_name = !entry.key.is_empty()
             && entry.key.len() <= 128
@@ -752,6 +761,15 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
         });
     }
 
+    // Parse and retain the exact bytes before the potentially long audit. The
+    // transaction below refuses to commit or discard if another actor replaces
+    // the draft while the audit is running.
+    let draft_for_snapshot = draft.clone();
+    let draft_snapshot = run_blocking_setup("draft.commit.read", move || {
+        draft::read_snapshot(&draft_for_snapshot).map_err(ToolError::from)
+    })
+    .await?;
+
     // Snapshot mtime before the audit so an interleaved writer is detected.
     let snapshot_path = env.clone();
     let expected_mtime = run_blocking_setup("draft.commit.snapshot", move || {
@@ -789,8 +807,9 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
     }
 
     let outcome = run_blocking_setup("draft.commit", move || {
-        let entries = draft::read_entries(&draft);
-        let outcome = env_merge::merge(
+        let claimed = draft_snapshot.claim(&draft)?;
+        let entries = draft_snapshot.entries;
+        let outcome = match env_merge::merge(
             &env,
             MergeRequest {
                 entries: entries
@@ -800,12 +819,21 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
                 force,
                 expected_mtime,
             },
-        )
-        .map_err(map_merge_err)?;
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let mapped = map_merge_err(error);
+                claimed.restore().map_err(|restore_error| ToolError::Sdk {
+                    sdk_kind: "draft_restore_failed".into(),
+                    message: format!("environment commit failed and claimed draft could not be restored: {restore_error}; original error: {mapped}"),
+                })?;
+                return Err(mapped);
+            }
+        };
         // env_merge::merge owns rollback semantics. Clearing the durable draft
         // is part of the same blocking transaction boundary: report a partial
         // commit instead of allowing the async adapter to claim success.
-        clear_draft_after_commit(&draft, outcome.backup_path.as_deref(), draft::discard)?;
+        clear_draft_after_commit(&draft, outcome.backup_path.as_deref(), |_| claimed.discard())?;
         Ok(outcome)
     })
     .await?;

@@ -10,6 +10,14 @@ use super::types::{
     PublicRelaySnapshot, RegistryWriteOutcome, RelayTarget,
 };
 
+pub const MAX_PROBE_TARGETS: usize = 256;
+pub const MAX_PROBE_TARGET_BYTES: usize = 1024 * 1024;
+
+pub struct ProbeTargetBatch {
+    pub targets: Vec<(MachineId, Result<RelayTarget, PublicRelayError>)>,
+    pub truncated: bool,
+}
+
 #[derive(Clone)]
 pub struct PublicRelayRegistryManager {
     store: PublicRelayRegistryStore,
@@ -93,21 +101,33 @@ impl PublicRelayRegistryManager {
         self.snapshot.read().await.entries.get(machine_id).cloned()
     }
 
-    pub async fn probe_targets(&self) -> Vec<(MachineId, Result<RelayTarget, PublicRelayError>)> {
+    pub async fn probe_targets(&self) -> ProbeTargetBatch {
         let snapshot = self.snapshot.read().await;
-        snapshot
-            .entries
-            .values()
-            .map(|entry| {
-                let machine_id = entry.machine_id.clone();
-                let target = if entry.disabled {
-                    Err(PublicRelayError::DisabledMachine)
-                } else {
-                    entry.target()
-                };
-                (machine_id, target)
-            })
-            .collect()
+        let mut targets = Vec::with_capacity(snapshot.entries.len().min(MAX_PROBE_TARGETS));
+        let mut bytes = 0usize;
+        let mut truncated = false;
+        for entry in snapshot.entries.values() {
+            let entry_bytes = entry
+                .machine_id
+                .as_str()
+                .len()
+                .saturating_add(entry.target_url().len());
+            if targets.len() == MAX_PROBE_TARGETS
+                || bytes.saturating_add(entry_bytes) > MAX_PROBE_TARGET_BYTES
+            {
+                truncated = true;
+                break;
+            }
+            bytes = bytes.saturating_add(entry_bytes);
+            let machine_id = entry.machine_id.clone();
+            let target = if entry.disabled {
+                Err(PublicRelayError::DisabledMachine)
+            } else {
+                entry.target()
+            };
+            targets.push((machine_id, target));
+        }
+        ProbeTargetBatch { targets, truncated }
     }
 
     pub async fn count(&self) -> usize {
@@ -309,6 +329,27 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn probe_targets_is_bounded_before_returning_a_batch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+        {
+            let mut snapshot = manager.snapshot.write().await;
+            for index in 0..(MAX_PROBE_TARGETS + 10) {
+                let entry = live_entry(
+                    &format!("machine-{index}"),
+                    &format!("http://100.99.0.1:38935/callback/machine-{index}"),
+                );
+                snapshot.entries.insert(entry.machine_id.clone(), entry);
+            }
+        }
+
+        let batch = manager.probe_targets().await;
+        assert_eq!(batch.targets.len(), MAX_PROBE_TARGETS);
+        assert!(batch.truncated);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

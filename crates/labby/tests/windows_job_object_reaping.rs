@@ -138,12 +138,13 @@ mod windows_job_reaping {
     /// Verify that closing a Job Object handle with `KILL_ON_JOB_CLOSE` terminates
     /// the entire process tree (direct child + grandchild), not just the direct child.
     ///
-    /// This test runs on the `windows-lab` CI runner as part of normal nextest:
+    /// This test runs explicitly on the hosted Windows CI runner:
     ///
     /// ```sh
-    /// cargo nextest run --test windows_job_object_reaping
+    /// cargo nextest run --test windows_job_object_reaping --run-ignored ignored-only
     /// ```
     #[test]
+    #[ignore = "run explicitly on Windows CI outside the sharded workspace suite"]
     fn job_object_kills_grandchild_on_close() {
         let mut direct_child =
             spawn_delayed_two_level_tree().expect("spawn delayed two-level Windows process tree");

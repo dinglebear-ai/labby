@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -77,8 +78,13 @@ impl UpstreamPool {
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
         let mut futures = FuturesUnordered::new();
+        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
+            MAX_UPSTREAM_PROMPTS,
+            super::helpers::max_response_bytes(),
+        ));
         for observed in observed_peers {
             let peer = observed.peer.clone();
+            let shared_budget = Arc::clone(&shared_budget);
             futures.push(async move {
                 let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
@@ -89,8 +95,13 @@ impl UpstreamPool {
                         }),
                     );
                 }
-                let result =
-                    catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS).await;
+                let result = catalog_pagination::list_prompts_with_budget(
+                    &peer,
+                    remaining,
+                    MAX_UPSTREAM_PROMPTS,
+                    &shared_budget,
+                )
+                .await;
                 (observed, result)
             });
         }

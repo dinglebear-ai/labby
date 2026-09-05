@@ -953,6 +953,19 @@ mod tests {
     };
 
     #[test]
+    fn macos_transparent_window_enables_private_api_support() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let manifest = include_str!("../Cargo.toml");
+
+        assert_eq!(config["app"]["macOSPrivateApi"], true);
+        assert!(
+            manifest.contains(r#""macos-private-api""#),
+            "transparent macOS windows require Tauri's macos-private-api feature"
+        );
+    }
+
+    #[test]
     fn default_server_url_prefers_dedicated_api_url() {
         assert_eq!(
             default_server_url(Some(" http://127.0.0.1:8765/ ")),

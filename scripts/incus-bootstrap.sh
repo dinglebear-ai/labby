@@ -18,12 +18,66 @@ SKIP_INSTALL=0
 DRY_RUN=0
 TAILSCALE_SSH=0
 TAILSCALE_HOSTNAME=""
+TAILSCALE_INSTALL_VERSION="1.102.3"
+TAILSCALE_INSTALL_SHA256="805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e"
+TAILSCALE_INSTALL_URL="https://tailscale.com/install.sh"
 ALLOW_SOURCE_FALLBACK=0
 APPLY_BACKUP_CONFIG=1
+TRANSACTION_DIR=""
+ROLLBACK_FILE=""
+TRANSACTION_COMMITTED=0
+MUTATION_COUNT=0
+RESIDUAL_REPORT=""
+TS_AUTHKEY_STAGED=0
+OWNED_STATE_BACKUP=""
+WEB_ASSETS_BACKUP=""
 
 say() { printf '%s\n' "$*"; }
 err() { printf '%s\n' "$*" >&2; }
 fail() { err "incus-bootstrap.sh: $*"; exit 1; }
+
+record_rollback() {
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    printf '%s\n' "$*" >>"$ROLLBACK_FILE"
+}
+
+checkpoint() {
+    MUTATION_COUNT=$((MUTATION_COUNT + 1))
+    [ "${LABBY_INCUS_FAIL_AFTER:-}" != "$1" ] && [ "${LABBY_INCUS_FAIL_AFTER:-}" != "$MUTATION_COUNT" ] || fail "injected failure after $1"
+}
+
+rollback_transaction() {
+    status="${1:-$?}"
+    [ "$TRANSACTION_COMMITTED" -eq 1 ] && return "$status"
+    [ -n "$ROLLBACK_FILE" ] && [ -f "$ROLLBACK_FILE" ] || return "$status"
+    err "activation failed; automatically restoring captured prior values"
+    rollback_failed=0
+    reversed="$TRANSACTION_DIR/rollback.reversed"
+    awk '{ line[NR]=$0 } END { for (i=NR; i>0; i--) print line[i] }' "$ROLLBACK_FILE" >"$reversed"
+    while IFS= read -r undo; do
+        [ -n "$undo" ] || continue
+        if ! sh -c "$undo"; then
+            err "rollback residual: $undo"
+            printf '%s\n' "$undo" >>"$RESIDUAL_REPORT"
+            rollback_failed=1
+        fi
+    done <"$reversed"
+    if [ "$rollback_failed" -ne 0 ]; then
+        chmod 0600 "$RESIDUAL_REPORT"
+        err "rollback was incomplete; durable residual report: $RESIDUAL_REPORT"
+        err "rollback journal retained at: $TRANSACTION_DIR"
+        return 70
+    fi
+    err "rollback completed; this is distinct from teardown of a successful deployment"
+    rm -rf "$TRANSACTION_DIR"
+    return "$status"
+}
+
+transaction_exit() {
+    status="$1"
+    if [ "$TS_AUTHKEY_STAGED" -eq 1 ]; then cleanup_ts_authkey; fi
+    rollback_transaction "$status"
+}
 
 usage() {
     cat <<'USAGE'
@@ -214,16 +268,82 @@ SCRIPT
     say "container networking ready: eth0 has IPv4 and DNS resolves"
 }
 
+capture_container_networking() {
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    if incus exec "$NAME" -- test -e /etc/netplan/10-lxc.yaml; then
+        incus file pull "$NAME/etc/netplan/10-lxc.yaml" "$TRANSACTION_DIR/10-lxc.yaml.previous"
+        record_rollback "incus file push $(quote "$TRANSACTION_DIR/10-lxc.yaml.previous") $(quote "$NAME/etc/netplan/10-lxc.yaml")"
+    else
+        record_rollback "incus exec $(quote "$NAME") -- rm -f /etc/netplan/10-lxc.yaml"
+    fi
+    for network_unit in systemd-networkd systemd-resolved; do
+        network_state="$(incus exec "$NAME" -- systemctl show "$network_unit" --property=ActiveState,UnitFileState --no-pager)"
+        active_state="$(printf '%s\n' "$network_state" | sed -n 's/^ActiveState=//p')"
+        unit_file_state="$(printf '%s\n' "$network_state" | sed -n 's/^UnitFileState=//p')"
+        case "$unit_file_state" in
+            enabled) record_rollback "incus exec $(quote "$NAME") -- systemctl enable $(quote "$network_unit")" ;;
+            enabled-runtime) record_rollback "incus exec $(quote "$NAME") -- systemctl enable --runtime $(quote "$network_unit")" ;;
+            disabled) record_rollback "incus exec $(quote "$NAME") -- systemctl disable $(quote "$network_unit")" ;;
+            *) fail "cannot transactionally capture $network_unit UnitFileState=$unit_file_state" ;;
+        esac
+        case "$active_state" in
+            active) record_rollback "incus exec $(quote "$NAME") -- systemctl start $(quote "$network_unit")" ;;
+            inactive) record_rollback "incus exec $(quote "$NAME") -- systemctl stop $(quote "$network_unit")" ;;
+            *) fail "cannot transactionally capture $network_unit ActiveState=$active_state" ;;
+        esac
+    done
+}
+
+capture_owned_state() {
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    state_backup="/var/lib/labby/.bootstrap-state-$$"
+    OWNED_STATE_BACKUP="$state_backup"
+    labby_state="$(incus exec "$NAME" -- systemctl show labby.service --property=ActiveState,UnitFileState --no-pager)"
+    labby_active="$(printf '%s\n' "$labby_state" | sed -n 's/^ActiveState=//p')"
+    labby_unit_file_state="$(printf '%s\n' "$labby_state" | sed -n 's/^UnitFileState=//p')"
+    case "$labby_unit_file_state" in
+        enabled) record_rollback "incus exec $(quote "$NAME") -- systemctl enable labby.service" ;;
+        enabled-runtime)
+            record_rollback "incus exec $(quote "$NAME") -- systemctl enable --runtime labby.service"
+            record_rollback "incus exec $(quote "$NAME") -- systemctl disable labby.service"
+            ;;
+        disabled) record_rollback "incus exec $(quote "$NAME") -- systemctl disable labby.service" ;;
+        *) fail "cannot transactionally capture labby.service UnitFileState=$labby_unit_file_state" ;;
+    esac
+    case "$labby_active" in
+        active)
+            record_rollback "incus exec $(quote "$NAME") -- systemctl start labby.service"
+            incus exec "$NAME" -- systemctl stop labby.service
+            ;;
+        inactive) ;;
+        failed)
+            record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote 'systemctl start labby.service >/dev/null 2>&1 || :; test "$(systemctl show labby.service --property=ActiveState --value --no-pager)" = failed')"
+            ;;
+        *) fail "cannot transactionally capture labby.service ActiveState=$labby_active" ;;
+    esac
+    if incus exec "$NAME" -- test -e /home/labby/.labby; then
+        incus exec "$NAME" -- sh -c "rm -rf $(quote "$state_backup"); cp -a /home/labby/.labby $(quote "$state_backup")"
+        if [ "$labby_active" = active ]; then
+            record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "systemctl stop labby.service; rm -rf /home/labby/.labby; cp -a $state_backup /home/labby/.labby; rm -rf $state_backup; systemctl start labby.service")"
+        else
+            record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "systemctl stop labby.service; rm -rf /home/labby/.labby; cp -a $state_backup /home/labby/.labby; rm -rf $state_backup")"
+        fi
+    else
+        record_rollback "incus exec $(quote "$NAME") -- rm -rf /home/labby/.labby"
+    fi
+    if [ "$labby_active" = active ]; then incus exec "$NAME" -- systemctl start labby.service; fi
+}
+
 cleanup_ts_authkey() {
     incus exec "$NAME" -- rm -f /run/labby-ts-authkey >/dev/null 2>&1 || true
 }
 
 verify_labby_ready() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ incus exec $(quote "$NAME") -- curl -fsS http://127.0.0.1:8765/ready"
+        say "+ incus exec $(quote "$NAME") -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready"
         return
     fi
-    incus exec "$NAME" -- curl -fsS http://127.0.0.1:8765/ready >/dev/null
+    incus exec "$NAME" -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready >/dev/null
 }
 
 parse_backup_config() {
@@ -309,6 +429,20 @@ apply_backup_config() {
         return
     fi
 
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        key="${entry%%=*}"
+        validate_backup_key "$key"
+        if incus config show "$NAME" | grep -Eq "^[[:space:]]+$key:"; then
+            prior="$(incus config get "$NAME" "$key")"
+            record_rollback "incus config set $(quote "$NAME") $(quote "$key") $(quote "$prior")"
+        else
+            record_rollback "incus config unset $(quote "$NAME") $(quote "$key")"
+        fi
+    done <<EOF
+$(parse_backup_config)
+EOF
+
     if host_labby_supports_incus_backup; then
         run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
     else
@@ -337,6 +471,7 @@ ensure_storage_pool() {
             || fail "Incus storage pool '$STORAGE_POOL_NAME' exists but uses driver '$driver', expected $STORAGE_POOL_DRIVER"
         say "storage pool already exists: $STORAGE_POOL_NAME"
     else
+        record_rollback "incus storage delete $(quote "$STORAGE_POOL_NAME")"
         if [ -n "$STORAGE_POOL_SOURCE" ]; then
             run incus storage create "$STORAGE_POOL_NAME" "$STORAGE_POOL_DRIVER" source="$STORAGE_POOL_SOURCE"
         else
@@ -361,7 +496,11 @@ ensure_profile() {
     fi
 
     if ! incus profile show "$PROFILE_NAME" >/dev/null 2>&1; then
+        record_rollback "incus profile delete $(quote "$PROFILE_NAME")"
         run incus profile create "$PROFILE_NAME"
+    else
+        incus profile show "$PROFILE_NAME" >"$TRANSACTION_DIR/profile.previous.yaml"
+        record_rollback "incus profile edit $(quote "$PROFILE_NAME") < $(quote "$TRANSACTION_DIR/profile.previous.yaml")"
     fi
     profile_source="$PROFILE_FILE"
     profile_tmp=""
@@ -414,7 +553,11 @@ ensure_runtime_profile() {
     fi
 
     if ! incus profile show "$runtime_name" >/dev/null 2>&1; then
+        record_rollback "incus profile delete $(quote "$runtime_name")"
         run incus profile create "$runtime_name"
+    else
+        incus profile show "$runtime_name" >"$TRANSACTION_DIR/runtime-profile.previous.yaml"
+        record_rollback "incus profile edit $(quote "$runtime_name") < $(quote "$TRANSACTION_DIR/runtime-profile.previous.yaml")"
     fi
 
     profile_tmp="$(mktemp)"
@@ -472,6 +615,7 @@ ensure_container_profile() {
     elif container_has_profile "$PROFILE_NAME" && [ "$profile_to_add" = "$PROFILE_NAME" ]; then
         say "profile already applied: $PROFILE_NAME"
     else
+        record_rollback "incus profile remove $(quote "$NAME") $(quote "$profile_to_add")"
         run incus profile add "$NAME" "$profile_to_add"
     fi
 }
@@ -552,18 +696,41 @@ if [ "$INCUS_AVAILABLE" -eq 1 ] && ! incus info >/dev/null 2>&1; then
     fi
 fi
 
+if [ "$DRY_RUN" -eq 0 ]; then
+    TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/labby-incus-transaction.XXXXXX")"
+    ROLLBACK_FILE="$TRANSACTION_DIR/rollback.commands"
+    RESIDUAL_REPORT="/var/tmp/labby-incus-rollback-residual-$(date +%s)-$$.txt"
+    : >"$ROLLBACK_FILE"
+    trap 'transaction_exit $?' EXIT INT TERM
+fi
+
 ensure_storage_pool
+checkpoint storage
 ensure_profile
+checkpoint profile
 
 if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
     run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
-elif ! incus list "$NAME" -c n --format csv 2>/dev/null | grep -qx "$NAME"; then
-    run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
 else
+    if ! container_names="$(incus list "$NAME" -c n --format csv)"; then
+        fail "failed to query Incus container inventory for $NAME"
+    fi
+fi
+
+if [ "$INCUS_AVAILABLE" -eq 1 ] && ! printf '%s\n' "$container_names" | grep -qx "$NAME"; then
+    record_rollback "incus delete -f $(quote "$NAME")"
+    run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
+    checkpoint container-launch
+elif [ "$INCUS_AVAILABLE" -eq 1 ]; then
     say "container exists: $NAME"
     ensure_container_profile
-    if ! incus list "$NAME" -c s --format csv 2>/dev/null | grep -qx RUNNING; then
+    if ! container_status="$(incus list "$NAME" -c s --format csv)"; then
+        fail "failed to query Incus container status for $NAME"
+    fi
+    if ! printf '%s\n' "$container_status" | grep -qx RUNNING; then
+        record_rollback "incus stop $(quote "$NAME")"
         run incus start "$NAME"
+        checkpoint container-start
     fi
 fi
 
@@ -571,10 +738,32 @@ wait_for_guest_systemd
 verify_container_substrate
 ensure_tun_device
 ensure_apparmor_signal_rule
+capture_container_networking
 ensure_container_networking
 apply_backup_config
+checkpoint backup-config
+if [ "$DRY_RUN" -eq 0 ]; then
+    previous_hostname="$(incus exec "$NAME" -- hostname)"
+    record_rollback "incus exec $(quote "$NAME") -- hostnamectl set-hostname $(quote "$previous_hostname")"
+fi
 run incus exec "$NAME" -- hostnamectl set-hostname "$TAILSCALE_HOSTNAME"
+checkpoint hostname
 
+if [ "$SKIP_INSTALL" -eq 0 ]; then
+    if [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -e /usr/local/bin/labby; then
+        incus file pull "$NAME/usr/local/bin/labby" "$TRANSACTION_DIR/labby.previous"
+        record_rollback "incus file push $(quote "$TRANSACTION_DIR/labby.previous") $(quote "$NAME/usr/local/bin/labby")"
+    else
+        record_rollback "incus exec $(quote "$NAME") -- rm -f /usr/local/bin/labby"
+    fi
+    if [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -e /home/labby/.labby/web-assets; then
+        WEB_ASSETS_BACKUP="/var/lib/labby/.bootstrap-web-$$"
+        incus exec "$NAME" -- sh -c "rm -rf /var/lib/labby/.bootstrap-web-$$; cp -a /home/labby/.labby/web-assets /var/lib/labby/.bootstrap-web-$$"
+        record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "rm -rf /home/labby/.labby/web-assets; cp -a /var/lib/labby/.bootstrap-web-$$ /home/labby/.labby/web-assets; rm -rf /var/lib/labby/.bootstrap-web-$$")"
+    else
+        record_rollback "incus exec $(quote "$NAME") -- rm -rf /home/labby/.labby/web-assets"
+    fi
+fi
 if [ "$SKIP_INSTALL" -eq 1 ]; then
     run incus exec "$NAME" -- test -x /usr/local/bin/labby
 elif [ -n "$LOCAL_BINARY" ]; then
@@ -595,15 +784,25 @@ else
         sh /tmp/labby-install.sh
     run incus exec "$NAME" -- rm -f /tmp/labby-install.sh
 fi
+[ "$SKIP_INSTALL" -eq 1 ] || checkpoint binary
 
+capture_owned_state
 run incus exec "$NAME" -- labby setup --provision --yes
+checkpoint provision
 verify_labby_ready
+checkpoint readiness
 
 if [ -n "${TS_AUTHKEY:-}" ]; then
 	if [ "$DRY_RUN" -eq 1 ]; then
-		say "+ incus exec $(quote "$NAME") -- sh -c 'command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh'"
+		say "+ download $(quote "$TAILSCALE_INSTALL_URL"), verify sha256 $(quote "$TAILSCALE_INSTALL_SHA256"), then install Tailscale $(quote "$TAILSCALE_INSTALL_VERSION")"
 	elif ! incus exec "$NAME" -- sh -c "command -v tailscale >/dev/null 2>&1"; then
-		run incus exec "$NAME" -- sh -c "curl -fsSL https://tailscale.com/install.sh | sh"
+		tailscale_installer="$TRANSACTION_DIR/tailscale-install.sh"
+		curl -fsSL --connect-timeout 10 --max-time 300 -o "$tailscale_installer" "$TAILSCALE_INSTALL_URL"
+		printf '%s  %s\n' "$TAILSCALE_INSTALL_SHA256" "$tailscale_installer" | sha256sum --check --strict
+		run incus file push "$tailscale_installer" "$NAME/tmp/labby-tailscale-install.sh"
+		run incus exec "$NAME" -- sh /tmp/labby-tailscale-install.sh
+		run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
+		incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
 	fi
 	ts_args="--auth-key=file:/run/labby-ts-authkey --hostname=$TAILSCALE_HOSTNAME"
 	if [ "$TAILSCALE_SSH" -eq 1 ]; then
@@ -612,20 +811,33 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
 	if [ "$DRY_RUN" -eq 1 ]; then
 		say "+ incus exec $(quote "$NAME") -- tailscale up $ts_args"
 	else
-		trap cleanup_ts_authkey EXIT INT TERM
+		if incus exec "$NAME" -- tailscale ip -4 >/dev/null 2>&1; then
+			fail "$NAME already has active Tailscale state; refusing to overwrite settings without an exact rollback contract"
+		fi
+		record_rollback "incus exec $(quote "$NAME") -- tailscale down"
 		printf '%s' "$TS_AUTHKEY" | incus exec "$NAME" -- sh -c "umask 077; cat > /run/labby-ts-authkey"
+        TS_AUTHKEY_STAGED=1
+        checkpoint tailscale-key
 		set +e
 		# shellcheck disable=SC2086
 		incus exec "$NAME" -- tailscale up $ts_args
 		ts_status=$?
 		set -e
+        checkpoint tailscale-up
 		cleanup_ts_authkey
-		trap - EXIT INT TERM
+        TS_AUTHKEY_STAGED=0
+        checkpoint tailscale-cleanup
 		if [ "$ts_status" -ne 0 ]; then
 			exit "$ts_status"
 		fi
 	fi
 fi
+
+if [ -n "$OWNED_STATE_BACKUP" ]; then incus exec "$NAME" -- rm -rf "$OWNED_STATE_BACKUP"; fi
+if [ -n "$WEB_ASSETS_BACKUP" ]; then incus exec "$NAME" -- rm -rf "$WEB_ASSETS_BACKUP"; fi
+TRANSACTION_COMMITTED=1
+trap - EXIT INT TERM
+if [ -n "$TRANSACTION_DIR" ]; then rm -rf "$TRANSACTION_DIR"; fi
 
 cat <<DONE
 Done. Manual steps remain:
@@ -635,7 +847,7 @@ Done. Manual steps remain:
   4. verify readiness: incus exec $NAME -- curl -fsS http://127.0.0.1:8765/ready
   5. if Tailscale is enabled, verify: incus exec $NAME -- tailscale ip -4
 
-Rollback:
+Destructive teardown (not rollback; successful activation rollback is automatic):
   incus stop $NAME
   incus delete $NAME
 DONE

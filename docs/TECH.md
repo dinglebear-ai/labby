@@ -32,7 +32,7 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 | HTTP client | `reqwest` with rustls |
 | TLS provider | `rustls` with `ring` |
 | URL handling | `url::Url` |
-| serialization | `serde`, `serde_json`, `serde_yaml`, `toml` |
+| serialization | `serde`, `serde_json`, `serde_yaml_ng`, `toml` |
 | library errors | `thiserror` |
 | application errors | `anyhow` |
 | time | `jiff` |
@@ -72,7 +72,7 @@ The current Rust workspace is composed of:
 - `labby-primitives` — leaf metadata and security primitives
 - `labby-runtime` — reusable runtime/config/skills contracts
 - `labby-web` — embedded static web assets and resolution helpers
-- `labby-winjob` — Windows job/process support
+- `labby-winjob` — Windows process containment and verified filesystem primitives
 - `xtask` — repository automation
 
 The binary should compose these crates; leaf/shared crates should not reach back

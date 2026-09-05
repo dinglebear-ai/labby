@@ -52,13 +52,11 @@ Labby is centered on the current gateway/operator surface:
   feature-matrix artifacts under
   [docs/generated](./docs/generated/README.md).
 
-The registered services on this branch are exactly `doctor`, `fs`, `gateway`,
-`lab_admin`, `server_logs`, `setup`, and `snippets`. The older
-`marketplace`/`stash`/`acp`/`nodes`/`deploy`/`logs`/`device` product services
-were removed by the "Slim labby gateway host" pass; their domain types survive
-in `labby-runtime`/`labby-apis` but are no longer registered services and have
-no CLI commands. Use the generated catalogs below for the current surface
-instead of copying command or action lists by hand.
+Use the generated service, action, and CLI catalogs below for the complete
+current product surface instead of copying inventories into hand-written
+documentation. Standalone ACP chat, Marketplace/MCP Registry browser, Fleet,
+Deploy, and Stash products remain retired; bounded provider-backed discovery
+through the `artifacts` control-plane service does not restore those products.
 
 ## Quick Start
 
@@ -92,7 +90,17 @@ the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 Linux/macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh | sh
+version=vX.Y.Z
+base="https://github.com/dinglebear-ai/labby/releases/download/$version"
+curl -fSLO "$base/labby-install.sh"
+curl -fSLO "$base/labby-install.sh.sha256"
+gh attestation verify labby-install.sh \
+  --repo dinglebear-ai/labby \
+  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
+  --source-ref "refs/tags/$version" \
+  --deny-self-hosted-runners
+shasum -a 256 -c labby-install.sh.sha256
+LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
@@ -106,19 +114,64 @@ npx -y @dinglebear/labby mcp
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.ps1 | iex
+$Version = "vX.Y.Z"
+$Base = "https://github.com/dinglebear-ai/labby/releases/download/$Version"
+Invoke-WebRequest "$Base/labby-install.ps1" -OutFile labby-install.ps1
+Invoke-WebRequest "$Base/labby-install.ps1.sha256" -OutFile labby-install.ps1.sha256
+gh attestation verify labby-install.ps1 `
+  --repo dinglebear-ai/labby `
+  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml `
+  --source-ref "refs/tags/$Version" `
+  --deny-self-hosted-runners
+$Expected = ((Get-Content labby-install.ps1.sha256) -split '\s+')[0]
+if ((Get-FileHash labby-install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $Expected) { throw "installer digest mismatch" }
+$env:LABBY_INSTALL_VERSION = $Version
+& ./labby-install.ps1
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
 
-The install scripts download the requested GitHub Release asset, verify its
-checksum, and install `labby` onto the user PATH. They do **not** perform
+The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
+platform asset, require `gh`, verify the archive's attestation against the
+Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
+user PATH. They do **not** perform
 operator provisioning or environment setup. The scripts only install the binary
 (from a release or fallback source build); all first-run provisioning is handled
 inside `labby` via `labby serve` bootstrap and `labby setup`.
 
 Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
-`LABBY_INSTALL_REPO`.
+`LABBY_INSTALL_REPO`. Source fallback is off by default. Opt in with
+`LABBY_ALLOW_SOURCE_FALLBACK=1`; a pinned `LABBY_INSTALL_VERSION` is passed to
+Cargo as the exact tag instead of silently building the default branch.
+
+Each successful install retains the verified binary by SHA-256 plus an
+owner-only receipt beneath `<install-dir>/.labby-install/`. At least the prior
+verified artifact remains available when distribution is unavailable. Restore
+it without downloading or changing `$LABBY_HOME`:
+
+```bash
+LABBY_INSTALL_ROLLBACK=1 sh ./labby-install.sh
+```
+
+```powershell
+$env:LABBY_INSTALL_ROLLBACK = '1'
+& .\labby-install.ps1
+```
+
+Rollback switches only the installed executable and receipt. It does not
+downgrade or delete configuration, credentials, databases, or other durable
+state. Inspect the receipt at `<install-dir>/.labby-install/receipt` on Unix or
+`receipt.json` on Windows.
+
+Release qualification can install an already-downloaded candidate without
+network or source fallback by setting `LABBY_INSTALL_LOCAL_BINARY` and its exact
+lowercase `LABBY_INSTALL_LOCAL_SHA256`. The installer copies that input once to
+private staging, verifies the staged bytes, and activates those same bytes. It
+also rehashes every existing cached artifact before reuse. Before changing the
+binary or either receipt, the installer writes a recovery journal beneath
+`.labby-install/`; a later invocation restores the complete pre-install
+snapshot when it finds an interrupted activation. If restoration fails, the
+installer stops and retains the journal for diagnosis.
 
 ### Build From Source
 
@@ -152,13 +205,20 @@ just macos-service-status
 ```
 
 This installs a `launchd` LaunchAgent that keeps Labby listening on
-`127.0.0.1:8765`, restarts it after login or exit, and writes logs under
-`~/.labby/`. Use `just macos-service-restart` after changing service settings
+`127.0.0.1:8765`, restarts it after login or exit, and uses the stable absolute
+`LABBY_HOME` (default `~/.labby`) as both working directory and durable
+configuration root. It never persists the directory from which installation
+was invoked. Logs default to the same root. Use `just macos-service-restart`
+after changing service settings
 or `just macos-service-uninstall` to remove it. The cross-platform
 `just service-install`, `just service-status`, `just service-restart`, and
 `just service-uninstall` bindings select launchd on macOS and systemd on
 Linux. This is suitable for a Tailscale Serve/Funnel route whose OAuth
 callback targets the local gateway.
+
+When overriding the launchd paths, `LABBY_SERVICE_BIN`, `LABBY_STATE_DIR`, and
+`LABBY_HOME` must all be absolute; relative paths fail before the plist or
+service is changed.
 
 ### First Run
 
@@ -368,17 +428,13 @@ Configuration is split deliberately:
 
 | Data | Location | Examples |
 | --- | --- | --- |
-| Secrets and endpoint values | `~/.labby/.env` | `LABBY_MCP_HTTP_TOKEN`, `LABBY_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
-| Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, and upstream behavior |
+| Secrets and endpoint values | `$LABBY_HOME/.env` | `LABBY_MCP_HTTP_TOKEN`, `LABBY_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
+| Preferences | `$LABBY_HOME/config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, and upstream behavior |
 
-`config.toml` is searched in this order:
-
-1. `./config.toml`
-2. `~/.labby/config.toml`
-3. `~/.config/labby/config.toml`
-
-Startup loads the first `config.toml`, initializes tracing, then loads
-`~/.labby/.env` and a CWD `.env` if present. Runtime precedence is:
+`LABBY_HOME` selects the one authoritative configuration and durable-state
+root and must be absolute. It defaults to `~/.labby`; Labby does not implicitly
+read CWD or XDG fallback files. Existing process environment values win over
+values loaded from the selected `.env`. Runtime precedence is:
 
 1. CLI flags
 2. Environment variables
@@ -539,20 +595,24 @@ recommended agent gateway runtime.
 
 ### Dev Container
 
-The Compose stack is a trusted local operator environment, not a hardened
-generic deployment. It bind-mounts Labby state, the repository, and built web
-assets; secrets are loaded from the mounted `/home/labby/.labby/.env`. The image
-installs pinned Claude, Codex, and Gemini CLIs for stdio upstreams that invoke
-provider tools. It does not install ACP adapters or mount ACP-specific state.
+The development Compose stack mirrors the production process controls: a
+read-only root filesystem, dropped capabilities, `no-new-privileges`, loopback
+port binding, bounded logs, and named volumes for durable state and data. It
+also bind-mounts the source repository read-only so locally built web assets are
+visible without rebuilding the image. Set `LABBY_CONFIG_DIR` to the directory
+containing the selected read-only configuration; Labby-owned runtime state
+lives in the `labby-home` named volume. The image installs pinned Claude,
+Codex, and Gemini CLIs for stdio upstreams that invoke provider tools.
 
 ### Releases
 
 Release Please maintains the version/changelog pull request and creates the
-stable tag plus draft GitHub release when that pull request merges. Publishing
-the release triggers the heavy GitHub-hosted workflows. They build Linux,
-macOS, and Windows archives with checksums, build and scan the GHCR image, build and
-smoke the Incus image, publish the npm launcher, and publish Labby's
-`server.json` metadata to the official MCP Registry.
+stable tag plus draft GitHub release when that pull request merges. The stable
+tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux,
+macOS, and Windows archives with checksums, builds and scans the GHCR image,
+builds and smokes the Incus image, publishes the npm launcher, and publishes Labby's
+`server.json` metadata to the official MCP Registry. Only after qualification
+and publication succeed does the workflow promote the draft GitHub release.
 
 ### Plugin Setup
 

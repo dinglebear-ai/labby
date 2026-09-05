@@ -5,6 +5,8 @@ use crate::dispatch::error::ToolError;
 use super::params::ProxyCheckParams;
 use super::types::{Finding, Report, Severity};
 
+const DOCTOR_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
 pub async fn check_proxy(params: ProxyCheckParams<'_>) -> Result<Report, ToolError> {
     // See api/state.rs::build_protected_mcp_http_client for why this call is
     // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
@@ -119,7 +121,16 @@ async fn check_resource_metadata(
     );
     match client.get(url).send().await {
         Ok(response) if response.status().is_success() => {
-            match response.json::<serde_json::Value>().await {
+            match labby_runtime::response_body::read_response_body_capped(
+                response,
+                DOCTOR_RESPONSE_MAX_BYTES,
+            )
+            .await
+            .and_then(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+                    labby_runtime::response_body::CappedResponseBodyError::Decode(error.to_string())
+                })
+            }) {
                 Ok(json) => {
                     let resource = json.get("resource").and_then(serde_json::Value::as_str);
                     let has_expected_issuer = json
@@ -289,9 +300,21 @@ async fn check_backend_leak(
     match client.get(url).send().await {
         Ok(response) => {
             // Read the body to check for backend URL leakage; limit to 64 KiB.
-            let body = match response.bytes().await {
-                Ok(bytes) => String::from_utf8_lossy(&bytes[..bytes.len().min(65536)]).into_owned(),
-                Err(_) => String::new(),
+            let body = match labby_runtime::response_body::read_response_body_capped(
+                response,
+                DOCTOR_RESPONSE_MAX_BYTES,
+            )
+            .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(_) => {
+                    return Finding {
+                        service: "doctor".to_string(),
+                        check: "proxy:backend-leak".to_string(),
+                        severity: Severity::Fail,
+                        message: "Could not inspect the protected response within the backend-leak probe limits; backend-origin privacy is unverified".to_string(),
+                    };
+                }
             };
             if body.contains(backend_origin) {
                 Finding {
@@ -516,6 +539,34 @@ mod tests {
         .unwrap();
 
         assert_finding_severity(&report, "proxy:backend-leak", Severity::Fail);
+    }
+
+    #[tokio::test]
+    async fn backend_leak_probe_cannot_pass_an_oversized_response() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let backend_url = "http://private-backend.invalid:3100";
+        for prefix in [backend_url, "public error"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/telemetry"))
+                .respond_with(
+                    ResponseTemplate::new(502).set_body_string(format!(
+                        "{prefix}{}",
+                        "x".repeat(DOCTOR_RESPONSE_MAX_BYTES)
+                    )),
+                )
+                .mount(&server)
+                .await;
+            let finding = check_backend_leak(
+                &reqwest::Client::new(),
+                &server.uri(),
+                "/telemetry",
+                backend_url,
+            )
+            .await;
+            assert!(matches!(finding.severity, Severity::Fail));
+            assert!(!finding.message.contains(backend_url));
+        }
     }
 
     #[tokio::test]

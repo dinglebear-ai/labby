@@ -4,6 +4,8 @@
 //! `ensure.rs` calls it across the module boundary (plan §3.0/§2.1).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -19,7 +21,9 @@ use super::UpstreamPool;
 use super::entries::{
     resolve_request_exposure_policy, resolve_request_resource_exposure_policy, resource_exposed,
 };
-use super::helpers::{SUBJECT_CONN_IDLE_TTL, UpstreamCachedSummary, cached_upstream_tool};
+use super::helpers::{
+    SUBJECT_CONN_IDLE_TTL, UpstreamCachedSummary, cached_upstream_tool, max_response_bytes,
+};
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
 ///
@@ -33,6 +37,26 @@ pub(crate) const MAX_UPSTREAM_RESOURCES: usize = 1000;
 
 /// Hard cap on the total number of prompts returned by `collect_upstream_prompts()`.
 pub(crate) const MAX_UPSTREAM_PROMPTS: usize = 1000;
+const MAX_SUBJECT_SCOPED_UPSTREAMS: usize = 256;
+const SUBJECT_SCOPED_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+struct SerializedByteCounter(usize);
+
+impl Write for SerializedByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn tool_catalog_bytes(tool: &UpstreamTool) -> usize {
+    let mut counter = SerializedByteCounter(tool.upstream_name.len());
+    serde_json::to_writer(&mut counter, &tool.tool).map_or(usize::MAX, |()| counter.0)
+}
 
 fn upstream_allowed(allowed: Option<&BTreeSet<String>>, upstream: &str) -> bool {
     allowed.is_none_or(|names| names.contains(upstream))
@@ -165,23 +189,50 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
-        let mut tools = Vec::new();
+        let mut candidates = Vec::new();
         let mut candidate_count = 0usize;
         for tool in catalog
             .iter()
             .filter(|(name, _)| upstream_allowed(allowed, name))
             .filter(|(_, entry)| entry.tool_health.is_routable())
             .flat_map(|(_, entry)| {
-                entry.tools.values().filter_map(|tool| {
-                    entry
-                        .exposure_policy
-                        .matches(tool.tool.name.as_ref())
-                        .then(|| tool.clone())
-                })
+                entry
+                    .tools
+                    .values()
+                    .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
             })
         {
             candidate_count = candidate_count.saturating_add(1);
-            insert_bounded_upstream_tool(&mut tools, tool, MAX_UPSTREAM_TOOLS);
+            let insert_at = candidates
+                .binary_search_by(|existing: &&UpstreamTool| {
+                    existing
+                        .tool
+                        .name
+                        .cmp(&tool.tool.name)
+                        .then_with(|| existing.upstream_name.cmp(&tool.upstream_name))
+                })
+                .unwrap_or_else(std::convert::identity);
+            if insert_at < MAX_UPSTREAM_TOOLS {
+                candidates.insert(insert_at, tool);
+                if candidates.len() > MAX_UPSTREAM_TOOLS {
+                    candidates.pop();
+                }
+            }
+        }
+        let byte_limit = max_response_bytes();
+        let mut candidate_bytes = 0usize;
+        let mut tools = Vec::with_capacity(candidates.len());
+        for tool in candidates {
+            let tool_bytes = tool_catalog_bytes(&tool);
+            if candidate_bytes.saturating_add(tool_bytes) > byte_limit {
+                tracing::warn!(
+                    limit = byte_limit,
+                    "upstream tool catalog exceeds serialized byte limit — truncating to cap"
+                );
+                break;
+            }
+            candidate_bytes = candidate_bytes.saturating_add(tool_bytes);
+            tools.push(tool.clone());
         }
         if candidate_count > MAX_UPSTREAM_TOOLS {
             tracing::warn!(
@@ -636,6 +687,19 @@ impl UpstreamPool {
         subject: &str,
         limit: Option<usize>,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
+        let eligible_count = configs
+            .iter()
+            .filter(|config| config.enabled && config.oauth.is_some())
+            .count();
+        if eligible_count > MAX_SUBJECT_SCOPED_UPSTREAMS {
+            tracing::warn!(
+                eligible_count,
+                limit = MAX_SUBJECT_SCOPED_UPSTREAMS,
+                "subject-scoped OAuth upstream registry exceeds limit; failing closed"
+            );
+            return Vec::new();
+        }
+        let deadline = tokio::time::Instant::now() + SUBJECT_SCOPED_ENUMERATION_TIMEOUT;
         let mut futures = FuturesUnordered::new();
         for config in configs
             .iter()
@@ -665,7 +729,18 @@ impl UpstreamPool {
         let mut discovered = Vec::new();
         let mut bounded = Vec::new();
         let mut exposed_count = 0usize;
-        while let Some((name, exposure_policy, result)) = futures.next().await {
+        let mut exposed_bytes = 0usize;
+        loop {
+            let next = match tokio::time::timeout_at(deadline, futures.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    tracing::warn!("subject-scoped OAuth registry enumeration timed out");
+                    return Vec::new();
+                }
+            };
+            let Some((name, exposure_policy, result)) = next else {
+                break;
+            };
             match result {
                 Ok((_peer, tools)) => {
                     let discovered_count = tools.len();
@@ -674,6 +749,19 @@ impl UpstreamPool {
                         .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
                         .collect();
                     exposed.sort_by(|left, right| left.name.cmp(&right.name));
+                    for tool in &exposed {
+                        exposed_bytes = exposed_bytes.saturating_add(
+                            serde_json::to_vec(tool).map_or(usize::MAX, |value| value.len()),
+                        );
+                        if exposed_bytes > max_response_bytes() {
+                            tracing::warn!(
+                                candidate_bytes = exposed_bytes,
+                                limit = max_response_bytes(),
+                                "subject-scoped OAuth registry exceeds byte budget; failing closed"
+                            );
+                            return Vec::new();
+                        }
+                    }
                     let hidden_count = discovered_count - exposed.len();
                     if hidden_count > 0 {
                         tracing::debug!(
@@ -683,12 +771,20 @@ impl UpstreamPool {
                             "subject-scoped upstream tools hidden by exposure policy"
                         );
                     }
+                    exposed_count = exposed_count.saturating_add(exposed.len());
                     if let Some(limit) = limit {
-                        exposed_count = exposed_count.saturating_add(exposed.len());
                         for tool in exposed {
                             insert_bounded_subject_tool(&mut bounded, name.clone(), tool, limit);
                         }
                     } else {
+                        if exposed_count > MAX_UPSTREAM_TOOLS {
+                            tracing::warn!(
+                                candidate_count = exposed_count,
+                                limit = MAX_UPSTREAM_TOOLS,
+                                "subject-scoped OAuth registry exceeds item budget; failing closed"
+                            );
+                            return Vec::new();
+                        }
                         discovered.push((name, exposed));
                     }
                 }
@@ -1131,6 +1227,36 @@ mod tests {
         let pool = UpstreamPool::new();
         assert!(pool.healthy_tools().await.is_empty());
         assert_eq!(pool.upstream_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_registry_rejects_upstream_count_before_fanout() {
+        let pool = UpstreamPool::new();
+        let configs = (0..=MAX_SUBJECT_SCOPED_UPSTREAMS)
+            .map(|index| {
+                let mut config = named_test_upstream_config(&format!("oauth-{index}"));
+                config.oauth = Some(labby_runtime::gateway_config::UpstreamOauthConfig {
+                    mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
+                    registration:
+                        labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
+                            client_id: "client-id".into(),
+                            client_secret_env: None,
+                        },
+                    scopes: None,
+                    credential: Default::default(),
+                    prefer_client_metadata_document: None,
+                });
+                config
+            })
+            .collect::<Vec<_>>();
+        let started = tokio::time::Instant::now();
+
+        assert!(
+            pool.subject_scoped_tools(&configs, "alice")
+                .await
+                .is_empty()
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     #[tokio::test]
@@ -1821,6 +1947,26 @@ mod tests {
             MAX_UPSTREAM_TOOLS,
             "healthy_tools() must not truncate exactly MAX_UPSTREAM_TOOLS tools"
         );
+    }
+
+    #[tokio::test]
+    async fn gateway_upstream_tool_byte_budget_applies_before_result_insertion() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("large-schema-upstream");
+        let mut tools = test_upstream_tools(&upstream_name, &["first", "second"]);
+        tools.get_mut("first").unwrap().tool.description =
+            Some("x".repeat(max_response_bytes()).into());
+        assert!(
+            tool_catalog_bytes(tools.get("first").unwrap()) > max_response_bytes(),
+            "oversized fixture must exceed the configured response-byte cap"
+        );
+        let entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        pool.catalog
+            .write()
+            .await
+            .insert(upstream_name.to_string(), entry);
+
+        assert!(pool.healthy_tools().await.is_empty());
     }
 
     #[tokio::test]

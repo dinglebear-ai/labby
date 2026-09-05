@@ -15,7 +15,7 @@ pub async fn stream_audit_full(
     tx: tokio::sync::mpsc::Sender<Finding>,
 ) {
     // Emit system and auth checks immediately (no network I/O).
-    for finding in super::system::run_system_checks() {
+    for finding in super::system::run_system_checks().await {
         if tx.send(finding).await.is_err() {
             return;
         }

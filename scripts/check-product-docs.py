@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 from urllib.parse import unquote
 
@@ -177,6 +178,104 @@ def validate_instruction_symlinks(failures: list[str]) -> None:
                 )
 
 
+def validate_auth_bypass_guidance(failures: list[str]) -> None:
+    sample = (ROOT / "config/config.example.toml").read_text(encoding="utf-8")
+    marker = "# disable_auth = false"
+    prefix, found, _ = sample.partition(marker)
+    guidance = "\n".join(prefix.splitlines()[-5:]).lower()
+    if not found or not all(
+        phrase in guidance
+        for phrase in ("local development only", "loopback", "must not", "reverse proxy")
+    ):
+        failures.append(
+            "config/config.example.toml: disable_auth must be fenced as loopback-only local development and forbidden behind a reverse proxy"
+        )
+
+
+def validate_install_config_deployment_contracts(failures: list[str]) -> None:
+    upstream = (ROOT / "docs/services/UPSTREAM.md").read_text(encoding="utf-8")
+    if re.search(r"stdio definitions are marked\s+destructive", upstream, re.IGNORECASE):
+        failures.append(
+            "docs/services/UPSTREAM.md: stdio administration must not be described as destructive solely because it spawns or mutates restartable state"
+        )
+
+    skill_root = ROOT / "plugins/labby/skills/using-labby"
+    retired = re.compile(
+        r"\b(?:marketplace|service[ _.-]?deploy|deploy product)\b|"
+        r'\"service\"\s*:\s*\"deploy\"',
+        re.IGNORECASE,
+    )
+    for path in sorted(skill_root.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        match = retired.search(text)
+        if match:
+            line = text.count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{rel(path)}:{line}: shipped operator skill references retired product surface {match.group(0)!r}"
+            )
+
+    host = (ROOT / "docs/runtime/HOST_GATEWAY.md").read_text(encoding="utf-8").lower()
+    for package in ("jq", "ripgrep", "lsof", "rsync", "python3", "ffmpeg", "adb"):
+        if package not in host:
+            failures.append(
+                f"docs/runtime/HOST_GATEWAY.md: default provisioning package summary omits {package}"
+            )
+
+    cicd = (ROOT / "docs/runtime/CICD.md").read_text(encoding="utf-8")
+    for match in re.finditer(r"(?<![A-Za-z0-9_-])lab (?:package|binary)", cicd):
+        line = cicd.count("\n", 0, match.start()) + 1
+        failures.append(
+            f"docs/runtime/CICD.md:{line}: release docs must name the labby package/binary; lab is protocol compatibility vocabulary"
+        )
+
+
+def validate_shipped_skill_cli_examples(failures: list[str]) -> None:
+    """Reject single-line Labby examples that use flags absent from Clap help."""
+    help_text = (ROOT / "docs/generated/cli-help.md").read_text(encoding="utf-8")
+    sections = list(re.finditer(r"(?m)^## `(?P<command>labby(?: [^`]+)?)`\n", help_text))
+    commands: dict[tuple[str, ...], set[str]] = {}
+    for index, section in enumerate(sections):
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(help_text)
+        body = help_text[section.end() : end]
+        commands[tuple(section.group("command").split())] = set(
+            re.findall(r"(?m)^\s+(--[a-z0-9][a-z0-9-]*)(?:\s|$)", body)
+        ) | set(re.findall(r"(?m)^\s+(-[A-Za-z0-9])(?:,|\s|$)", body))
+
+    skill_root = ROOT / "plugins/labby/skills/using-labby"
+    for path in sorted(skill_root.rglob("*.md")):
+        in_bash = False
+        for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = raw_line.strip()
+            if stripped == "```bash":
+                in_bash = True
+                continue
+            if stripped == "```" and in_bash:
+                in_bash = False
+                continue
+            if not in_bash or not stripped.startswith("labby ") or stripped.endswith("\\"):
+                continue
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError as error:
+                failures.append(f"{rel(path)}:{line_number}: invalid shell example: {error}")
+                continue
+            command = max(
+                (candidate for candidate in commands if tokens[: len(candidate)] == list(candidate)),
+                key=len,
+                default=None,
+            )
+            if command is None:
+                failures.append(f"{rel(path)}:{line_number}: unknown Labby CLI command")
+                continue
+            allowed = commands[command]
+            for token in tokens[len(command) :]:
+                option = token.split("=", 1)[0]
+                if option.startswith("-") and option not in allowed:
+                    failures.append(
+                        f"{rel(path)}:{line_number}: {option} is not accepted by {' '.join(command)}"
+                    )
+
+
 def main() -> int:
     failures: list[str] = []
     paths = canonical_docs()
@@ -191,6 +290,9 @@ def main() -> int:
 
     validate_duplicates(paths, failures)
     validate_instruction_symlinks(failures)
+    validate_auth_bypass_guidance(failures)
+    validate_install_config_deployment_contracts(failures)
+    validate_shipped_skill_cli_examples(failures)
 
     if failures:
         print(f"product docs check failed ({len(failures)} issue(s)):", file=sys.stderr)

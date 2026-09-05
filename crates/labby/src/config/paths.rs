@@ -6,31 +6,31 @@ use anyhow::Result;
 
 use super::LabConfig;
 
-pub fn toml_candidates() -> Vec<PathBuf> {
-    toml_candidates_for(lab_home_override(), home_dir())
+pub fn toml_candidates() -> Result<Vec<PathBuf>> {
+    Ok(toml_candidates_for(lab_home_override()?, home_dir()))
 }
 
 fn toml_candidates_for(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from("config.toml")];
     if let Some(lab_home) = lab_home {
-        paths.push(lab_home.join("config.toml"));
-    } else if let Some(home) = home {
-        paths.push(home.join(".labby/config.toml"));
-        paths.push(home.join(".config/labby/config.toml"));
+        return vec![lab_home.join("config.toml")];
     }
-    paths
+    home.map(|home| vec![home.join(".labby/config.toml")])
+        .unwrap_or_default()
 }
 
-fn lab_home_override() -> Option<PathBuf> {
-    crate::installation::InstallationPaths::resolve()
-        .ok()
-        .map(|paths| paths.root().to_path_buf())
+fn lab_home_override() -> Result<Option<PathBuf>> {
+    std::env::var_os("LABBY_HOME")
+        .filter(|root| !root.is_empty())
+        .map(crate::installation::InstallationPaths::from_root)
+        .transpose()
+        .map(|paths| paths.map(|paths| paths.root().to_path_buf()))
+        .map_err(Into::into)
 }
 
-fn lab_home_dir() -> Option<PathBuf> {
-    crate::installation::InstallationPaths::resolve()
-        .ok()
-        .map(|paths| paths.root().to_path_buf())
+fn lab_home_dir() -> Result<PathBuf> {
+    Ok(crate::installation::InstallationPaths::resolve()?
+        .root()
+        .to_path_buf())
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
@@ -54,9 +54,7 @@ pub fn workspace_root_path(config: &LabConfig) -> Result<PathBuf> {
         let home = home_dir().ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?;
         return Ok(expand_home_path(root, &home));
     }
-    Ok(lab_home_dir()
-        .ok_or_else(|| anyhow::anyhow!("neither LABBY_HOME nor HOME is set"))?
-        .join("workspace"))
+    Ok(lab_home_dir()?.join("workspace"))
 }
 
 fn expand_home_path(path: &Path, home: &Path) -> PathBuf {
@@ -70,11 +68,30 @@ fn expand_home_path(path: &Path, home: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-pub fn dotenv_path() -> Option<PathBuf> {
-    lab_home_dir().map(|home| home.join(".env"))
+pub fn dotenv_path() -> Result<PathBuf> {
+    Ok(lab_home_dir()?.join(".env"))
 }
 
-pub fn config_toml_path() -> Option<PathBuf> {
+pub(super) fn dotenv_candidates() -> Result<Vec<PathBuf>> {
+    Ok(vec![
+        crate::installation::InstallationPaths::resolve()?.dotenv(),
+    ])
+}
+
+#[cfg(test)]
+fn dotenv_candidates_for(
+    lab_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    _cwd: PathBuf,
+) -> Vec<PathBuf> {
+    if let Some(lab_home) = lab_home {
+        return vec![lab_home.join(".env")];
+    }
+    home.map(|home| vec![home.join(".labby/.env")])
+        .unwrap_or_default()
+}
+
+pub fn config_toml_path() -> Result<PathBuf> {
     #[cfg(test)]
     if let Some(path) = super::TEST_CONFIG_TOML_PATH
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -82,27 +99,17 @@ pub fn config_toml_path() -> Option<PathBuf> {
         .expect("test config path lock")
         .clone()
     {
-        return Some(path);
+        return Ok(path);
     }
-    toml_candidates()
+    let candidates = toml_candidates()?;
+    Ok(candidates
         .into_iter()
         .find(|path| path.exists())
-        .or_else(|| {
-            lab_home_override()
-                .map(|home| home.join("config.toml"))
-                .or_else(|| home_dir().map(|home| home.join(".config/labby/config.toml")))
-        })
+        .unwrap_or(lab_home_dir()?.join("config.toml")))
 }
 
-fn labby_db(name: &str) -> PathBuf {
-    labby_db_for(lab_home_override(), home_dir(), name)
-}
-
-fn labby_db_for(lab_home: Option<PathBuf>, home: Option<PathBuf>, name: &str) -> PathBuf {
-    lab_home
-        .or_else(|| home.map(|home| home.join(".labby")))
-        .unwrap_or_else(|| PathBuf::from(".labby"))
-        .join(name)
+fn labby_db(name: &str) -> Result<PathBuf> {
+    Ok(lab_home_dir()?.join(name))
 }
 
 #[cfg(test)]
@@ -129,10 +136,10 @@ fn access_db_path_from_roots(lab_home: Option<PathBuf>, home: Option<PathBuf>) -
     Ok(state_root.join("access.db"))
 }
 
-pub fn usage_db_path() -> PathBuf {
+pub fn usage_db_path() -> Result<PathBuf> {
     labby_db("usage.db")
 }
-pub fn codemode_journal_db_path() -> PathBuf {
+pub fn codemode_journal_db_path() -> Result<PathBuf> {
     labby_db("codemode_journal.db")
 }
 pub fn codemode_journal_enabled() -> bool {
@@ -160,38 +167,51 @@ mod tests {
     fn explicit_labby_home_replaces_user_config_candidates() {
         assert_eq!(
             toml_candidates_for(Some("/srv/labby".into()), Some("/home/operator".into())),
-            vec![
-                PathBuf::from("config.toml"),
-                PathBuf::from("/srv/labby/config.toml"),
-            ]
+            vec![PathBuf::from("/srv/labby/config.toml")]
         );
     }
 
     #[test]
-    fn default_candidates_keep_legacy_user_paths() {
+    fn default_candidates_use_the_canonical_installation_root_only() {
         assert_eq!(
             toml_candidates_for(None, Some("/home/operator".into())),
-            vec![
-                PathBuf::from("config.toml"),
-                PathBuf::from("/home/operator/.labby/config.toml"),
-                PathBuf::from("/home/operator/.config/labby/config.toml"),
-            ]
+            vec![PathBuf::from("/home/operator/.labby/config.toml")]
+        );
+    }
+
+    #[test]
+    fn explicit_labby_home_excludes_current_directory_dotenv() {
+        assert_eq!(
+            dotenv_candidates_for(
+                Some("/srv/labby".into()),
+                Some("/home/operator".into()),
+                "/worktree".into(),
+            ),
+            vec![PathBuf::from("/srv/labby/.env")]
+        );
+        assert_eq!(
+            dotenv_candidates_for(None, Some("/home/operator".into()), "/worktree".into()),
+            vec![PathBuf::from("/home/operator/.labby/.env")]
         );
     }
 
     #[test]
     fn access_database_uses_explicit_labby_home_and_canonical_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(
-            access_db_path_for(Some("/srv/labby".into()), Some("/home/operator".into())).unwrap(),
-            PathBuf::from("/srv/labby/access.db")
+            access_db_path_for(Some(root.join("labby")), Some(root.join("operator"))).unwrap(),
+            root.join("labby/access.db")
         );
     }
 
     #[test]
     fn access_database_uses_the_default_labby_state_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(
-            access_db_path_for(None, Some("/home/operator".into())).unwrap(),
-            PathBuf::from("/home/operator/.labby/access.db")
+            access_db_path_for(None, Some(home.clone())).unwrap(),
+            home.join(".labby/access.db")
         );
     }
 

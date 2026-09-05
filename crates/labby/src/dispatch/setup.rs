@@ -11,6 +11,7 @@ mod bootstrap;
 mod catalog;
 mod claude_plugins;
 mod client;
+mod constrained_yaml;
 mod dispatch;
 mod draft;
 pub(crate) mod host_service;

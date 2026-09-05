@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::RoleClient;
@@ -38,6 +39,8 @@ pub(super) enum CatalogPaginationError {
     PageLimit { limit: usize },
     #[error("upstream catalog page exceeded the {limit}-item limit")]
     PageItemLimit { limit: usize },
+    #[error("upstream catalogs exceeded the shared {limit}-item limit")]
+    ItemLimit { limit: usize },
     #[error("upstream catalog cursor exceeded the {limit}-byte limit")]
     CursorLimit { limit: usize },
     #[error("upstream catalog exceeded the {limit}-byte serialized limit")]
@@ -52,6 +55,7 @@ impl CatalogPaginationError {
             Self::RepeatedCursor => "pagination_repeated_cursor",
             Self::PageLimit { .. } => "pagination_page_limit",
             Self::PageItemLimit { .. } => "pagination_page_item_limit",
+            Self::ItemLimit { .. } => "pagination_item_limit",
             Self::CursorLimit { .. } => "pagination_cursor_limit",
             Self::ByteLimit { .. } => "response_too_large",
         }
@@ -83,6 +87,49 @@ impl CatalogPaginationError {
     }
 }
 
+pub(super) struct SharedCatalogBudget {
+    item_limit: usize,
+    byte_limit: usize,
+    items: AtomicUsize,
+    bytes: AtomicUsize,
+}
+
+impl SharedCatalogBudget {
+    pub(super) fn new(item_limit: usize, byte_limit: usize) -> Self {
+        Self {
+            item_limit,
+            byte_limit,
+            items: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+        }
+    }
+
+    fn reserve(&self, bytes: usize) -> Result<(), CatalogPaginationError> {
+        self.items
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.item_limit).then_some(current + 1)
+            })
+            .map_err(|_| CatalogPaginationError::ItemLimit {
+                limit: self.item_limit,
+            })?;
+        if self
+            .bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(bytes)
+                    .filter(|next| *next <= self.byte_limit)
+            })
+            .is_err()
+        {
+            self.items.fetch_sub(1, Ordering::AcqRel);
+            return Err(CatalogPaginationError::ByteLimit {
+                limit: self.byte_limit,
+            });
+        }
+        Ok(())
+    }
+}
+
 struct ByteCounter(usize);
 
 impl Write for ByteCounter {
@@ -104,6 +151,20 @@ fn serialized_len<T: Serialize>(value: &T) -> usize {
 async fn collect_bounded<T, F, Fut>(
     deadline: Duration,
     item_limit: usize,
+    fetch: F,
+) -> Result<Vec<T>, CatalogPaginationError>
+where
+    T: Serialize,
+    F: FnMut(Option<PaginatedRequestParams>) -> Fut,
+    Fut: Future<Output = Result<(Vec<T>, Option<String>), ServiceError>>,
+{
+    collect_bounded_with_budget(deadline, item_limit, None, fetch).await
+}
+
+async fn collect_bounded_with_budget<T, F, Fut>(
+    deadline: Duration,
+    item_limit: usize,
+    shared_budget: Option<&SharedCatalogBudget>,
     mut fetch: F,
 ) -> Result<Vec<T>, CatalogPaginationError>
 where
@@ -142,9 +203,13 @@ where
                 );
                 return Ok(items);
             }
-            total_bytes = total_bytes.saturating_add(serialized_len(&item));
+            let item_bytes = serialized_len(&item);
+            total_bytes = total_bytes.saturating_add(item_bytes);
             if total_bytes > byte_limit {
                 return Err(CatalogPaginationError::ByteLimit { limit: byte_limit });
+            }
+            if let Some(shared_budget) = shared_budget {
+                shared_budget.reserve(item_bytes)?;
             }
             items.push(item);
         }
@@ -236,6 +301,19 @@ pub(super) async fn list_prompts(
     .await
 }
 
+pub(super) async fn list_prompts_with_budget(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+    budget: &SharedCatalogBudget,
+) -> Result<Vec<Prompt>, CatalogPaginationError> {
+    collect_bounded_with_budget(deadline, item_limit, Some(budget), |params| async move {
+        let result = peer.list_prompts(params).await?;
+        Ok((result.prompts, result.next_cursor))
+    })
+    .await
+}
+
 pub(super) async fn list_resources(
     peer: &Peer<RoleClient>,
     deadline: Duration,
@@ -248,12 +326,38 @@ pub(super) async fn list_resources(
     .await
 }
 
+pub(super) async fn list_resources_with_budget(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+    budget: &SharedCatalogBudget,
+) -> Result<Vec<Resource>, CatalogPaginationError> {
+    collect_bounded_with_budget(deadline, item_limit, Some(budget), |params| async move {
+        let result = peer.list_resources(params).await?;
+        Ok((result.resources, result.next_cursor))
+    })
+    .await
+}
+
 pub(super) async fn list_resource_templates(
     peer: &Peer<RoleClient>,
     deadline: Duration,
     item_limit: usize,
 ) -> Result<Vec<ResourceTemplate>, CatalogPaginationError> {
     collect_bounded(deadline, item_limit, |params| async move {
+        let result = peer.list_resource_templates(params).await?;
+        Ok((result.resource_templates, result.next_cursor))
+    })
+    .await
+}
+
+pub(super) async fn list_resource_templates_with_budget(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+    budget: &SharedCatalogBudget,
+) -> Result<Vec<ResourceTemplate>, CatalogPaginationError> {
+    collect_bounded_with_budget(deadline, item_limit, Some(budget), |params| async move {
         let result = peer.list_resource_templates(params).await?;
         Ok((result.resource_templates, result.next_cursor))
     })
@@ -316,6 +420,30 @@ mod tests {
 
         assert_eq!(result.len(), 3);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn shared_budget_rejects_before_cross_upstream_item_materialization() {
+        let tool = |name: &str| Tool::new(name.to_string(), "", Arc::new(serde_json::Map::new()));
+        let budget = SharedCatalogBudget::new(3, usize::MAX);
+        let first =
+            collect_bounded_with_budget(Duration::from_secs(1), 10, Some(&budget), |_| async {
+                Ok::<_, ServiceError>((vec![tool("a"), tool("b")], None))
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 2);
+
+        let second =
+            collect_bounded_with_budget(Duration::from_secs(1), 10, Some(&budget), |_| async {
+                Ok::<_, ServiceError>((vec![tool("c"), tool("must-not-materialize")], None))
+            })
+            .await;
+
+        assert!(matches!(
+            second,
+            Err(CatalogPaginationError::ItemLimit { limit: 3 })
+        ));
     }
 
     #[tokio::test]

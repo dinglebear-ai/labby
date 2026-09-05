@@ -36,7 +36,12 @@ launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
-To proxy an upstream server through `lab`, you configure one or more `[[upstream]]` entries in `~/.config/labby/config.toml`, optionally provide bearer-token env vars in `~/.labby/.env`, then start `labby serve` normally.
+To proxy an upstream server through `lab`, prefer `labby gateway add` and
+`labby gateway update`. For offline editing, first identify the selected
+installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
+`config.toml`, optionally provide bearer-token env vars in its `.env`, then
+start `labby serve` normally. Labby does not merge a second XDG or
+current-directory configuration authority.
 
 `lab` will:
 
@@ -102,12 +107,46 @@ args = ["--port", "5000"]
 proxy_resources = false
 ```
 
-Stdio upstreams execute a local child process on the host running `lab`.
-Gateway admin actions that test or reconcile stdio definitions are marked
-destructive — including `gateway.test`, because probing a stdio gateway spawns
-its local command. MCP clients confirm through elicitation when available;
-clients without elicitation run without a parameter gate. See
+Stdio upstreams execute a local child process on the host running `labby`.
+Testing or reconciling a stdio definition requires admin authority and passes
+the spawn guard. Those actions are not destructive solely because they mutate
+restartable configuration or spawn a restartable child; permanent or
+hard-to-recover loss is the separate destructive criterion. Clients must use
+the flags in the generated action catalog as the policy authority. See
 [GATEWAY.md](./GATEWAY.md#stdio-gateways).
+
+The Linux host service requires filesystem isolation for every stdio child.
+Each child receives a private temporary directory and read-only access to the
+system runtime plus its resolved executable and safe absolute arguments. It
+cannot read Labby's home, user credential/configuration trees, `/proc`, or
+another upstream's temporary directory; only `/dev/null` is exposed from
+`/dev`. Other platforms fail closed when this required host-service sandbox is
+requested.
+
+Persistent or additional input paths are explicit, audited opt-ins in the
+upstream's `env` table:
+
+```toml
+[[upstream]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+
+[upstream.env]
+UPSTREAM_STATE_DIR = "/var/lib/labby-upstreams/filesystem"
+UPSTREAM_READ_ONLY_PATHS = "/srv/data"
+```
+
+`UPSTREAM_STATE_DIR` grants that one existing absolute directory read/write
+access; it must not be inside `LABBY_HOME` or the service user's home. Point a
+package runner's cache variable (for example `npm_config_cache`) at the same
+directory when it needs a writable cache. `UPSTREAM_READ_ONLY_PATHS` is a
+platform path-list of existing absolute inputs. It rejects the user/Labby home
+and overlapping credential trees such as `.ssh`, `.aws`, `.gnupg`, `.config`,
+and `.labby`. Absolute command arguments are subject to the same rejection.
+Grant only the narrow directory needed by that upstream; these values expand
+the child filesystem trust boundary and should be reviewed like executable or
+command changes.
 
 ### Config Fields
 
@@ -134,15 +173,13 @@ When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserve
 
 ### Config File Locations
 
-`lab` loads configuration from:
-
-1. process environment
-2. `~/.labby/.env`
-3. `~/.config/labby/config.toml`
+`lab` loads process environment over the selected installation root's `.env`,
+then its `config.toml`, then built-in defaults. `LABBY_HOME` selects that root;
+otherwise it is `~/.labby`.
 
 So a typical gateway setup looks like:
 
-`~/.config/labby/config.toml`
+`$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`)
 
 ```toml
 [mcp]
@@ -164,7 +201,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
 proxy_resources = false
 ```
 
-`~/.labby/.env`
+`$LABBY_HOME/.env` (normally `~/.labby/.env`)
 
 ```bash
 LABBY_UPSTREAM_TOKEN=replace-me
@@ -496,21 +533,29 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); manifest-bound Skills resource reads receive a 24 MiB wire allowance when no environment or config override is set |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); manifest-bound Skills resource responses receive a 24 MiB wire allowance when neither environment nor configuration overrides the cap |
 
-HTTP bodies and WebSocket messages are capped before MCP deserialization. The
-capability-specific semantic check still runs after parsing, so stdio and
-in-process transports rely on that guard and HTTP/WebSocket receive both layers.
-Because one HTTP/WebSocket connection multiplexes ordinary and Skills calls,
-its transport ceiling uses the larger 24 MiB allowance; ordinary capabilities
-are still rejected at 10 MiB after parsing.
+HTTP bodies, WebSocket messages, and stdio JSON lines are capped before MCP
+deserialization. The capability-specific semantic check still runs after parsing;
+in-process transports rely on that semantic guard.
+Because one transport connection multiplexes ordinary and Skills calls,
+its transport ceiling uses the larger 24 MiB default allowance, even without
+Skills support compiled; ordinary capabilities are still rejected at 10 MiB after parsing.
 Isolating the pre-parse ceilings would require a dedicated Skills connection or
 request-aware transport framing.
 
-The ordinary cap applies to `call_tool` and ordinary `read_resource`; the larger
-Skills cap applies to manifest-bound resource reads. `skills/list` and
-`skills/get` use the same transport ceiling and separate manifest validation
-and discovery budgets.
+The upstream HTTP transport also applies a process-wide 80 MiB weighted
+admission budget: a response reserves its transport maximum while a JSON/error
+body is read or for the lifetime of an SSE stream. At the 24 MiB default
+transport ceiling, at most three responses can hold reservations concurrently
+(eight at the ordinary 10 MiB ceiling). Additional reads wait up to one second
+without allocating their bodies, then return `response_budget_exhausted` if
+capacity remains unavailable, even when long-lived SSE streams hold reservations.
+
+The ordinary cap applies to `call_tool` and ordinary `read_resource`; the Skills
+cap applies to manifest-bound resource reads. `skills/list` and `skills/get`
+also have their own validation and discovery budgets. An explicit environment
+or configuration cap overrides both response ceilings.
 
 ## Resource Proxying
 
@@ -651,11 +696,14 @@ Keep this distinction explicit in operator docs:
 
 ### 1. Configure upstreams
 
-Add one or more `[[upstream]]` entries to `~/.config/labby/config.toml`.
+Prefer `labby gateway add`/`update`. For offline editing, add `[[upstream]]`
+entries to the selected `$LABBY_HOME/config.toml` (normally
+`~/.labby/config.toml`).
 
 ### 2. Provide any required secrets
 
-Set bearer-token env vars named by `bearer_token_env` in `~/.labby/.env` or the process environment.
+Set bearer-token env vars named by `bearer_token_env` in the selected
+`$LABBY_HOME/.env` or the process environment.
 
 ### 3. Start `labby`
 
@@ -716,14 +764,14 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
 - Upstream calls preserve the original MCP argument payload rather than forcing it through `lab`'s `action` + `params` wrapper.
 - Upstream errors are normalized into `lab` envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
-- HTTP body and WebSocket message limits apply before MCP deserialization; a
+- HTTP body, WebSocket message, and stdio line limits apply before MCP deserialization; a
   second capability-specific semantic limit applies after parsing.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. Without an environment or config override, manifest-bound Skills resource reads use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit value overrides both limits. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. Without an environment or configuration override, manifest-bound Skills resources use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit cap overrides both limits. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability

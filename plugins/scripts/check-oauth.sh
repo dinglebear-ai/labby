@@ -74,8 +74,11 @@ header "Configuration"
 # Load ~/.labby/.env if it exists and vars aren't already set
 LAB_ENV="${HOME}/.labby/.env"
 if [ -f "$LAB_ENV" ]; then
+    # The operator-selected Labby environment file is intentionally dynamic.
+    set -a
     # shellcheck disable=SC1090
-    set -a; source "$LAB_ENV" 2>/dev/null || true; set +a
+    source "$LAB_ENV" 2>/dev/null || true
+    set +a
 fi
 
 HAS_STATIC_TOKEN=false
@@ -316,9 +319,6 @@ if $HAS_OAUTH || [ -n "${LAB_PUBLIC_URL:-}" ]; then
     # WWW-Authenticate: Bearer resource_metadata=... so clients can discover the server
     STATUS=$(http GET "$BASE_URL/v1/extract/actions")
     if [ "$STATUS" = "401" ]; then
-        WWW_AUTH=$(grep -i 'resource_metadata' "$BODY_FILE" 2>/dev/null || \
-            curl -s -I --max-time 5 "$BASE_URL/v1/extract/actions" 2>/dev/null \
-            | grep -i 'www-authenticate' || echo "")
         # Re-fetch to capture headers
         HEADERS=$(curl -s -I --max-time 5 "$BASE_URL/v1/extract/actions" 2>/dev/null)
         if echo "$HEADERS" | grep -qi 'www-authenticate.*resource_metadata'; then

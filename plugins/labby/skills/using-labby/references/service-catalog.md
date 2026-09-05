@@ -10,15 +10,9 @@ sources are:
 
 ## Services
 
-| Service | Exposure | Surfaces |
-| --- | --- | --- |
-| `gateway` | feature-gated | CLI, MCP, API, web |
-| `fs` | feature-gated | MCP, API, web |
-| `doctor` | always on | CLI, MCP, API |
-| `server_logs` | always on | CLI, MCP, API |
-| `setup` | always on | CLI, MCP, API, web |
-| `snippets` | always on | CLI, MCP, API |
-| `lab_admin` | runtime-conditional | CLI, MCP |
+Read `docs/generated/service-catalog.md` for the complete current service list,
+feature exposure, surfaces, and metadata. Do not copy that inventory into this
+reference; generated discovery changes with the registered product surface.
 
 For an action-based service, call `help` or `schema` before sending complex
 parameters. Destructive metadata and required confirmation come from the shared
@@ -33,6 +27,5 @@ Code Mode also provides catalog search and description for hidden upstream tools
 
 ## Product Boundary
 
-ACP, the ACP Agent Registry, the in-product MCP Registry browser/client,
-Marketplace, Fleet/device runtime, Deploy-product, and Stash are not current
-services. Do not infer availability from historical docs or old release notes.
+Generated discovery is authoritative. Do not infer unavailable services from
+historical docs or old release notes.

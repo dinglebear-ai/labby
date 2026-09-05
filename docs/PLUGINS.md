@@ -10,11 +10,28 @@ The checked-in `plugins/labby` tree ships **no binary**. Hosts install `labby`
 explicitly and the binary owns the setup flow from there:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
+# Download labby-install.sh and its checksum from one explicit vX.Y.Z release,
+# verify `gh attestation verify` plus the SHA-256 sidecar, then:
+LABBY_INSTALL_VERSION=vX.Y.Z sh ./labby-install.sh
 labby setup
 ```
 
-The root `install.sh` is a compatibility entrypoint for the canonical `scripts/install.sh`. The canonical installer downloads the latest Linux x86_64 GitHub release archive, verifies its SHA-256, and installs it into `~/.local/bin/labby`. Source fallback is disabled by default and only occurs when `LABBY_ALLOW_SOURCE_FALLBACK=1` is explicitly set. The installer's only job is bootstrap; everything after first contact (config, credentials, connectivity, repair) is owned by `labby setup`.
+The root `install.sh`, the canonical `scripts/install.sh`, and the web-served
+copy are generated as identical, self-contained scripts. The supported workflow
+downloads the installer from an explicit release, verifies its GitHub attestation
+and SHA-256 sidecar before execution, and then selects the matching immutable
+release containing the platform asset, requires its SHA-256 sidecar, and
+installs it into `~/.local/bin/labby`. Source fallback is disabled by default
+and only occurs when `LABBY_ALLOW_SOURCE_FALLBACK=1` is explicitly set; pinned
+versions remain pinned during fallback. Successful installs retain
+content-addressed artifacts and an owner-only receipt under the install
+directory's `.labby-install/` folder. `LABBY_INSTALL_ROLLBACK=1` restores the
+prior verified executable offline without changing durable Labby state. The
+installer journals the pre-install binary and receipts before activation; its
+next invocation restores an interrupted activation before attempting new work.
+An unrestorable journal is retained and reported rather than discarded. The
+installer's only job is bootstrap; everything after first contact (config,
+credentials, connectivity, repair) is owned by `labby setup`.
 
 ## Checked-in plugin (`plugins/labby`)
 

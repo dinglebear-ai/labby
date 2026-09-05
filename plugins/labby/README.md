@@ -18,17 +18,30 @@ after changing plugin settings.
 ## Installing labby (server host only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh | sh
+version=vX.Y.Z
+base="https://github.com/dinglebear-ai/labby/releases/download/$version"
+curl -fSLO "$base/labby-install.sh"
+curl -fSLO "$base/labby-install.sh.sha256"
+gh attestation verify labby-install.sh \
+  --repo dinglebear-ai/labby \
+  --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
+  --source-ref "refs/tags/$version" \
+  --deny-self-hosted-runners
+shasum -a 256 -c labby-install.sh.sha256
+LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
 labby setup
 ```
 
-The script downloads the latest GitHub release for this platform
-(sha256-verified) into `~/.local/bin/labby`, falling back to
-`cargo install --git https://github.com/dinglebear-ai/labby --bin labby --all-features`
-when no release asset exists. Everything after install — config, credentials,
-connectivity checks, repair — is owned by `labby setup`. Configure the plugin
-with the URL of the Labby server you intend to trust; the plugin never selects
-a shared hosted gateway for you.
+The separately downloaded installer and checksum come from an explicit release.
+`gh` verifies the installer's repository, release workflow, exact tag, and
+hosted-runner provenance before the installer verifies and activates the
+platform archive. Source fallback is disabled by default; opt in explicitly
+with `LABBY_ALLOW_SOURCE_FALLBACK=1`. Successful installs retain owner-only
+receipts and the prior verified artifact beneath
+`~/.local/bin/.labby-install/` for offline rollback. Everything after install —
+config, credentials, connectivity checks, repair — is owned by `labby setup`.
+Configure the plugin with the URL of the Labby server you intend to trust; the
+plugin never selects a shared hosted gateway for you.
 
 The plugin exports its configured `server_url` as
 `CLAUDE_PLUGIN_OPTION_SERVER_URL`. Plugin-launched Labby processes use that same

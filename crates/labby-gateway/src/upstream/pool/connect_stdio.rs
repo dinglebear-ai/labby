@@ -5,6 +5,7 @@
 //! (the `InProcessConnector` IoC seam) — this module no longer imports from
 //! `crate::mcp` (A-M6 fix).
 
+use anyhow::Context as _;
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
@@ -12,6 +13,7 @@ use rmcp::transport::TransportAdapterIdentity;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use super::super::auth::configured_bearer_token;
@@ -32,6 +34,7 @@ use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
 
 static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+static SANDBOX_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 const STDIO_ENV_ALLOWLIST: &[&str] = &[
     "PATH",
@@ -202,6 +205,13 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     allow_cache_repair: bool,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    let command = if std::env::var_os("LABBY_STDIO_SANDBOX_REQUIRED").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        sandboxed_stdio_command(command, std::env::current_exe()?)?
+    } else {
+        command
+    };
     // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
     // into a shared package cache on first cold spawn; two processes installing
     // the same package at once corrupt it. Hold an advisory file lock (keyed on
@@ -296,6 +306,238 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
             }
         }
     }
+}
+
+fn sandboxed_stdio_command(
+    command: StdioCommandSpec,
+    sandbox_binary: PathBuf,
+) -> anyhow::Result<StdioCommandSpec> {
+    let protected = protected_sandbox_roots();
+    sandboxed_stdio_command_against(command, sandbox_binary, &protected)
+}
+
+fn sandboxed_stdio_command_against<P>(
+    command: StdioCommandSpec,
+    sandbox_binary: PathBuf,
+    protected_roots: impl IntoIterator<Item = P> + Clone,
+) -> anyhow::Result<StdioCommandSpec>
+where
+    P: AsRef<std::path::Path>,
+{
+    let mut args = Vec::new();
+    for path in ["/bin", "/usr", "/lib", "/lib64", "/etc"] {
+        if std::path::Path::new(path).exists() {
+            args.extend([OsString::from("--read-only"), OsString::from(path)]);
+        }
+    }
+    for path in ["/dev/null"] {
+        if std::path::Path::new(path).exists() {
+            args.extend([OsString::from("--read-write"), OsString::from(path)]);
+        }
+    }
+    let program_path = std::path::Path::new(&command.program);
+    if program_path.is_absolute() {
+        ensure_not_protected_sandbox_path_against(program_path, protected_roots.clone())?;
+    }
+    let resolved_program = resolve_stdio_program(&command.program)?;
+    ensure_not_protected_sandbox_path_against(&resolved_program, protected_roots.clone())?;
+    args.extend([
+        OsString::from("--read-only"),
+        resolved_program.as_os_str().to_owned(),
+    ]);
+    for argument in &command.args {
+        let path = std::path::Path::new(argument);
+        if path.is_absolute() {
+            ensure_not_protected_sandbox_path_against(path, protected_roots.clone())?;
+            anyhow::ensure!(
+                path.exists(),
+                "sandbox argument path {} does not exist",
+                path.display()
+            );
+            let canonical = std::fs::canonicalize(path)?;
+            ensure_not_protected_sandbox_path_against(&canonical, protected_roots.clone())?;
+            args.extend([OsString::from("--read-only"), canonical.into_os_string()]);
+        }
+    }
+    let private_tmp = std::env::temp_dir()
+        .join("labby-upstreams")
+        .join(std::process::id().to_string())
+        .join(format!(
+            "{}-{:016x}",
+            command
+                .name
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .take(40)
+                .collect::<String>(),
+            xxhash_rust::xxh3::xxh3_64(command.name.as_bytes())
+                ^ SANDBOX_INSTANCE.fetch_add(1, Ordering::Relaxed)
+        ));
+    std::fs::create_dir_all(&private_tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&private_tmp, std::fs::Permissions::from_mode(0o700))?;
+    }
+    args.extend([
+        OsString::from("--read-write"),
+        private_tmp.as_os_str().to_owned(),
+    ]);
+    if let Some(cwd) = &command.cwd {
+        anyhow::ensure!(
+            cwd.is_absolute(),
+            "sandbox cwd {} must be absolute",
+            cwd.display()
+        );
+        ensure_not_protected_sandbox_path_against(cwd, protected_roots.clone())?;
+        anyhow::ensure!(cwd.exists(), "sandbox cwd {} does not exist", cwd.display());
+        let cwd = std::fs::canonicalize(cwd)?;
+        ensure_not_protected_sandbox_path_against(&cwd, protected_roots.clone())?;
+        args.extend([OsString::from("--read-only"), cwd.into_os_string()]);
+    }
+    for (name, value) in &command.env {
+        if name == "UPSTREAM_STATE_DIR" {
+            let path = std::path::Path::new(value);
+            anyhow::ensure!(
+                path.is_absolute(),
+                "sandbox state path {} must be absolute",
+                std::path::Path::new(name).display()
+            );
+            anyhow::ensure!(
+                path.exists(),
+                "sandbox state path {} does not exist",
+                path.display()
+            );
+            ensure_not_protected_sandbox_path_against(path, protected_roots.clone())?;
+            anyhow::ensure!(
+                path.is_dir(),
+                "sandbox state path {} is not a directory",
+                path.display()
+            );
+            let canonical = std::fs::canonicalize(path)?;
+            ensure_not_protected_sandbox_path_against(&canonical, protected_roots.clone())?;
+            args.extend([OsString::from("--read-write"), canonical.into_os_string()]);
+        } else if name == "UPSTREAM_READ_ONLY_PATHS" {
+            for path in std::env::split_paths(value) {
+                anyhow::ensure!(
+                    path.is_absolute(),
+                    "sandbox read path {} must be absolute",
+                    path.display()
+                );
+                let path = std::fs::canonicalize(&path)?;
+                ensure_not_protected_sandbox_path_against(&path, protected_roots.clone())?;
+                args.extend([OsString::from("--read-only"), path.into_os_string()]);
+            }
+        }
+    }
+    let mut env = command.env;
+    env.retain(|(name, _)| name != "TMPDIR" && name != "TMP" && name != "TEMP");
+    env.push((OsString::from("TMPDIR"), private_tmp.as_os_str().to_owned()));
+    args.push(OsString::from("--"));
+    args.push(command.program.clone());
+    args.extend(command.args.iter().cloned());
+    Ok(StdioCommandSpec {
+        program: sandbox_binary.into_os_string(),
+        args,
+        cwd: command.cwd,
+        env,
+        inherit_env: command.inherit_env,
+        display: command.display,
+        name: command.name,
+        runtime_origin: command.runtime_origin,
+        runtime_owner: command.runtime_owner,
+    })
+}
+
+fn resolve_stdio_program(program: &std::ffi::OsStr) -> anyhow::Result<PathBuf> {
+    let path = std::path::Path::new(program);
+    if path.components().count() > 1 {
+        return std::fs::canonicalize(path)
+            .with_context(|| format!("resolve sandboxed stdio executable {}", path.display()));
+    }
+    let search = std::env::var_os("PATH").unwrap_or_default();
+    for directory in std::env::split_paths(&search) {
+        let candidate = directory.join(path);
+        if candidate.is_file() {
+            return std::fs::canonicalize(&candidate).with_context(|| {
+                format!("resolve sandboxed stdio executable {}", candidate.display())
+            });
+        }
+    }
+    anyhow::bail!(
+        "sandboxed stdio executable {} was not found on PATH",
+        std::path::Path::new(program).display()
+    )
+}
+
+fn ensure_not_protected_sandbox_path(path: &std::path::Path) -> anyhow::Result<()> {
+    ensure_not_protected_sandbox_path_against(path, protected_sandbox_roots())
+}
+
+fn protected_sandbox_roots() -> Vec<PathBuf> {
+    [std::env::var_os("LABBY_HOME"), std::env::var_os("HOME")]
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        // Windows commonly has USERPROFILE but no HOME. Protect its native
+        // user directory as well as any explicitly configured Unix-style HOME.
+        .chain(dirs::home_dir())
+        .collect()
+}
+
+fn ensure_not_protected_sandbox_path_against<P>(
+    path: &std::path::Path,
+    protected_roots: impl IntoIterator<Item = P>,
+) -> anyhow::Result<()>
+where
+    P: AsRef<std::path::Path>,
+{
+    for protected in protected_roots {
+        let protected = protected.as_ref();
+        reject_protected_overlap(path, protected)?;
+        if let Ok(canonical_protected) = std::fs::canonicalize(protected)
+            && canonical_protected != protected
+        {
+            reject_protected_overlap(path, &canonical_protected)?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_protected_overlap(
+    path: &std::path::Path,
+    protected: &std::path::Path,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        path != protected && !protected.starts_with(path) && !path.starts_with(protected),
+        "sandbox read path {} would expose protected Labby/user home {}",
+        path.display(),
+        protected.display()
+    );
+    for sensitive in [
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".config",
+        ".labby",
+        ".codex",
+        ".claude",
+        ".gemini",
+        ".bashrc",
+        ".zshrc",
+        ".profile",
+        ".npmrc",
+        ".gitconfig",
+    ] {
+        let sensitive = protected.join(sensitive);
+        anyhow::ensure!(
+            !path.starts_with(&sensitive) && !sensitive.starts_with(path),
+            "sandbox read path {} overlaps credential path {}",
+            path.display(),
+            sensitive.display()
+        );
+    }
+    Ok(())
 }
 
 async fn connect_stdio_upstream_once<H: ClientHandler>(
@@ -526,6 +768,225 @@ mod conformance_tests {
                 .iter()
                 .all(|(name, value)| !name.to_string_lossy().contains("SECRET")
                     && value != "must-not-leak")
+        );
+    }
+
+    #[test]
+    fn required_system_service_sandbox_wraps_stdio_with_explicit_state_only() {
+        let state = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        let executable = package.path().join("upstream-server");
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        let command = StdioCommandSpec {
+            program: executable.as_os_str().to_owned(),
+            args: vec![OsString::from("server.js")],
+            cwd: None,
+            env: vec![(
+                OsString::from("UPSTREAM_STATE_DIR"),
+                state.path().as_os_str().to_owned(),
+            )],
+            inherit_env: Vec::new(),
+            display: "node".to_string(),
+            name: "hostile".to_string(),
+            runtime_origin: None,
+            runtime_owner: None,
+        };
+
+        // The fixture tests explicit path projection independently of the real
+        // host home; Windows temporary directories normally live under it.
+        let wrapped = sandboxed_stdio_command_against(
+            command,
+            "/opt/labby/bin/labby".into(),
+            std::iter::empty::<&PathBuf>(),
+        )
+        .unwrap();
+        assert_eq!(wrapped.program, OsString::from("/opt/labby/bin/labby"));
+        let canonical_state = std::fs::canonicalize(state.path()).unwrap();
+        assert!(wrapped.args.windows(2).any(|pair| {
+            pair == [
+                OsString::from("--read-write"),
+                canonical_state.as_os_str().to_owned(),
+            ]
+        }));
+        assert!(wrapped.args.ends_with(&[
+            OsString::from("--"),
+            executable.as_os_str().to_owned(),
+            OsString::from("server.js"),
+        ]));
+        let canonical_executable = std::fs::canonicalize(&executable).unwrap();
+        assert!(wrapped.args.windows(2).any(|pair| {
+            pair == [
+                OsString::from("--read-only"),
+                canonical_executable.as_os_str().to_owned(),
+            ]
+        }));
+        for forbidden in ["/proc", "/tmp", "/var/tmp", "/dev"] {
+            assert!(
+                !wrapped.args.iter().any(|arg| arg == forbidden),
+                "shared namespace remained exposed: {forbidden}"
+            );
+        }
+        assert_eq!(
+            wrapped.args.windows(2).any(|pair| {
+                pair == [OsString::from("--read-write"), OsString::from("/dev/null")]
+            }),
+            std::path::Path::new("/dev/null").exists(),
+            "only an existing null device belongs in the sandbox projection"
+        );
+        let private_tmp = wrapped
+            .env
+            .iter()
+            .find(|(name, _)| name == "TMPDIR")
+            .map(|(_, value)| value)
+            .expect("private upstream TMPDIR");
+        assert!(std::path::Path::new(private_tmp).is_dir());
+    }
+
+    #[test]
+    fn required_sandbox_rejects_absolute_arguments_in_protected_home_state() {
+        let protected = dirs::home_dir().expect("native user home");
+        assert!(protected.is_dir(), "test requires the process home");
+        #[cfg(unix)]
+        let program = OsString::from("/bin/sh");
+        #[cfg(windows)]
+        let program = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/cmd.exe")
+            .into_os_string();
+        let command = StdioCommandSpec {
+            program,
+            args: vec![protected.into_os_string()],
+            cwd: None,
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            display: "sh".to_string(),
+            name: "protected-argument".to_string(),
+            runtime_origin: None,
+            runtime_owner: None,
+        };
+
+        let result = sandboxed_stdio_command(command, "/opt/labby/bin/labby".into());
+        assert!(
+            result.is_err(),
+            "protected absolute arguments must be rejected"
+        );
+        if let Err(error) = result {
+            assert!(error.to_string().contains("protected Labby/user home"));
+        }
+    }
+
+    #[test]
+    fn required_sandbox_rejects_missing_absolute_arguments_and_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing");
+        let make = |args: Vec<OsString>, cwd: Option<PathBuf>| StdioCommandSpec {
+            program: std::env::current_exe().unwrap().into_os_string(),
+            args,
+            cwd,
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            display: "sh".to_string(),
+            name: "missing-path".to_string(),
+            runtime_origin: None,
+            runtime_owner: None,
+        };
+        for (command, expected) in [
+            (
+                make(vec![missing.clone().into_os_string()], None),
+                "sandbox argument path",
+            ),
+            (make(Vec::new(), Some(missing)), "sandbox cwd"),
+        ] {
+            let error = sandboxed_stdio_command_against(
+                command,
+                std::env::current_exe().unwrap(),
+                std::iter::empty::<&PathBuf>(),
+            )
+            .err()
+            .expect("missing sandbox path must fail")
+            .to_string();
+            assert!(error.contains(expected), "wrong failure boundary: {error}");
+            assert!(error.contains("does not exist"), "wrong failure: {error}");
+        }
+    }
+
+    #[test]
+    fn protected_predicate_rejects_every_home_descendant_and_symlink_target() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let private = home.join("private.txt");
+        std::fs::write(&private, "secret").unwrap();
+        assert!(
+            ensure_not_protected_sandbox_path_against(&private, [&home]).is_err(),
+            "ordinary HOME descendants must be protected"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let alias = outside.join("alias");
+            symlink(&private, &alias).unwrap();
+            assert!(
+                ensure_not_protected_sandbox_path_against(
+                    &std::fs::canonicalize(alias).unwrap(),
+                    [&home]
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_sandbox_rejects_state_symlink_targeting_protected_home() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let alias = outside.join("state");
+        symlink(&home, &alias).unwrap();
+        let command = StdioCommandSpec {
+            program: OsString::from("/bin/sh"),
+            args: Vec::new(),
+            cwd: None,
+            env: vec![(OsString::from("UPSTREAM_STATE_DIR"), alias.into_os_string())],
+            inherit_env: Vec::new(),
+            display: "sh".into(),
+            name: "state-symlink".into(),
+            runtime_origin: None,
+            runtime_owner: None,
+        };
+        assert!(
+            sandboxed_stdio_command_against(command, "/opt/labby/bin/labby".into(), [&home])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn required_sandbox_rejects_executable_under_protected_home() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let executable = home.join("npx");
+        std::fs::write(&executable, "fixture").unwrap();
+        let command = StdioCommandSpec {
+            program: executable.into_os_string(),
+            args: Vec::new(),
+            cwd: None,
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            display: "npx".into(),
+            name: "protected-executable".into(),
+            runtime_origin: None,
+            runtime_owner: None,
+        };
+        assert!(
+            sandboxed_stdio_command_against(command, "/opt/labby/bin/labby".into(), [&home])
+                .is_err()
         );
     }
 }

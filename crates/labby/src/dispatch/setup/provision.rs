@@ -8,9 +8,10 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
@@ -533,77 +534,53 @@ async fn caches_cleaned() -> Result<bool, ToolError> {
 }
 
 fn apt_floor() -> Vec<&'static str> {
-    let packages = parse_image_install_packages(LABBY_IMAGE_YAML);
+    static PACKAGES: OnceLock<Vec<String>> = OnceLock::new();
+    let packages = PACKAGES.get_or_init(|| {
+        parse_image_install_packages(LABBY_IMAGE_YAML)
+            .expect("config/incus/labby-image.yaml must be constrained YAML")
+    });
     assert!(
         !packages.is_empty(),
         "config/incus/labby-image.yaml must declare packages.sets action=install packages"
     );
-    packages
+    packages.iter().map(String::as_str).collect()
 }
 
-fn parse_image_install_packages(yaml: &str) -> Vec<&str> {
-    let mut in_packages_root = false;
-    let mut in_sets = false;
-    let mut in_install_set = false;
-    let mut in_install_packages = false;
-    let mut packages = Vec::new();
+#[derive(Deserialize)]
+struct ImageDocument {
+    #[serde(default)]
+    packages: ImagePackages,
+    #[serde(default)]
+    actions: Vec<ImageAction>,
+}
 
-    for line in yaml.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
+#[derive(Default, Deserialize)]
+struct ImagePackages {
+    #[serde(default)]
+    sets: Vec<ImagePackageSet>,
+}
 
-        match (indent, trimmed) {
-            (0, "packages:") => {
-                in_packages_root = true;
-                in_sets = false;
-                in_install_set = false;
-                in_install_packages = false;
-                continue;
-            }
-            (0, _) => {
-                in_packages_root = false;
-                in_sets = false;
-                in_install_set = false;
-                in_install_packages = false;
-            }
-            (2, "sets:") if in_packages_root => {
-                in_sets = true;
-                continue;
-            }
-            (4, "- action: install") if in_sets => {
-                in_install_set = true;
-                in_install_packages = false;
-                continue;
-            }
-            (4, text) if in_sets && text.starts_with("- action:") => {
-                in_install_set = false;
-                in_install_packages = false;
-                continue;
-            }
-            (6, "packages:") if in_install_set => {
-                in_install_packages = true;
-                continue;
-            }
-            _ => {}
-        }
+#[derive(Deserialize)]
+struct ImagePackageSet {
+    action: String,
+    #[serde(default)]
+    packages: Vec<String>,
+}
 
-        if in_install_packages {
-            if indent == 8 {
-                if let Some(package) = trimmed.strip_prefix("- ") {
-                    packages.push(package.trim_matches('"').trim_matches('\''));
-                    continue;
-                }
-            }
-            if indent <= 6 {
-                in_install_packages = false;
-            }
-        }
-    }
+#[derive(Deserialize)]
+struct ImageAction {
+    action: String,
+}
 
-    packages
+fn parse_image_install_packages(yaml: &str) -> Result<Vec<String>, String> {
+    let document: ImageDocument = super::constrained_yaml::parse(yaml)?;
+    Ok(document
+        .packages
+        .sets
+        .into_iter()
+        .filter(|set| set.action == "install")
+        .flat_map(|set| set.packages)
+        .collect())
 }
 
 async fn run_image_provision_action(name: &str) -> Result<(), ToolError> {
@@ -620,36 +597,18 @@ async fn run_image_provision_action(name: &str) -> Result<(), ToolError> {
 fn image_provision_action(name: &str) -> Option<String> {
     let marker = format!("# LABBY_PROVISION_ACTION: {name}");
     parse_image_action_scripts(LABBY_IMAGE_YAML)
+        .expect("config/incus/labby-image.yaml must be constrained YAML")
         .into_iter()
         .find(|script| script.lines().any(|line| line.trim() == marker))
 }
 
-fn parse_image_action_scripts(yaml: &str) -> Vec<String> {
-    let mut scripts = Vec::new();
-    let mut lines = yaml.lines().peekable();
-
-    while let Some(line) = lines.next() {
-        if line.trim() != "action: |-" {
-            continue;
-        }
-
-        let mut script = String::new();
-        while let Some(next) = lines.peek().copied() {
-            let trimmed = next.trim();
-            let indent = next.len() - next.trim_start().len();
-            if !trimmed.is_empty() && indent <= 4 {
-                break;
-            }
-            let raw = lines.next().expect("peeked line exists");
-            if raw.len() >= 6 {
-                script.push_str(&raw[6..]);
-            }
-            script.push('\n');
-        }
-        scripts.push(script);
-    }
-
-    scripts
+fn parse_image_action_scripts(yaml: &str) -> Result<Vec<String>, String> {
+    let document: ImageDocument = super::constrained_yaml::parse(yaml)?;
+    Ok(document
+        .actions
+        .into_iter()
+        .map(|action| action.action)
+        .collect())
 }
 
 async fn install_and_join_tailscale() -> Result<(), ToolError> {
@@ -1031,7 +990,24 @@ files:
 "#,
         );
 
-        assert_eq!(packages, vec!["curl", "adb"]);
+        assert_eq!(packages.unwrap(), vec!["curl", "adb"]);
+    }
+
+    #[test]
+    fn constrained_yaml_rejects_duplicate_keys() {
+        assert!(
+            parse_image_install_packages("packages:\n  sets: []\npackages:\n  sets: []\n").is_err()
+        );
+    }
+
+    #[test]
+    fn constrained_yaml_rejects_tags_aliases_and_excessive_depth() {
+        assert!(parse_image_install_packages("packages: !unsafe\n  sets: []\n").is_err());
+        assert!(
+            parse_image_install_packages("packages: &shared\n  sets: []\ncopy: *shared\n").is_err()
+        );
+        let deep = format!("{} value\n", "- ".repeat(40));
+        assert!(parse_image_install_packages(&deep).is_err());
     }
 
     #[test]

@@ -249,6 +249,12 @@ pub enum HostServiceCommand {
         #[arg(short = 'y', long, alias = "no-confirm")]
         yes: bool,
     },
+    /// Restore the verified release retained by the last --install-self upgrade.
+    Rollback {
+        /// Confirm release rollback.
+        #[arg(short = 'y', long, alias = "no-confirm")]
+        yes: bool,
+    },
     /// Stop, disable, and remove labby.service.
     Uninstall {
         /// Confirm service removal.
@@ -1308,7 +1314,12 @@ async fn run_host_service_command(args: HostServiceArgs, format: OutputFormat) -
         } => {
             require_host_service_confirmation("install", yes)?;
             if install_self_flag {
-                install_self_system()?;
+                let source = std::env::current_exe()?;
+                run_host_service_logged("host_service.install", format, || async move {
+                    crate::dispatch::setup::host_service::install_self_transaction(&source).await
+                })
+                .await?;
+                return Ok(());
             }
             run_host_service_logged(
                 "host_service.install",
@@ -1337,6 +1348,15 @@ async fn run_host_service_command(args: HostServiceArgs, format: OutputFormat) -
                 "host_service.restart",
                 format,
                 crate::dispatch::setup::host_service::restart,
+            )
+            .await?;
+        }
+        HostServiceCommand::Rollback { yes } => {
+            require_host_service_confirmation("rollback", yes)?;
+            run_host_service_logged(
+                "host_service.rollback",
+                format,
+                crate::dispatch::setup::host_service::rollback_previous_release,
             )
             .await?;
         }
@@ -1744,6 +1764,11 @@ mod tests {
                 "uninstall",
                 Some("-y"),
                 HostServiceCommand::Uninstall { yes: true },
+            ),
+            (
+                "rollback",
+                Some("-y"),
+                HostServiceCommand::Rollback { yes: true },
             ),
             (
                 "restart",

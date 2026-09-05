@@ -245,6 +245,11 @@ the bounded hermetic PR tier with:
 just live-e2e pr 1
 ```
 
+The Bash supervisor and its process-group orchestration tests are Unix-only.
+Native Windows process-tree containment is verified separately through the
+required Windows Job Object tests. The Unix checks do not replace those tests
+or make them advisory.
+
 `nightly` adds the one-worker live browser lane, `collision` runs two isolated
 copies of the stateful HTTP/CLI/API shard, and `repeat10` executes the hermetic
 PR tier ten times with seeds 1 through 10.

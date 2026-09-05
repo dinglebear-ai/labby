@@ -651,8 +651,31 @@ pub(crate) fn write_bytes_atomic_with_faults(
     fault(boundaries[2])?;
     output.commit()?;
     fault(boundaries[3])?;
-    File::open(parent)?.sync_all()?;
+    sync_directory(parent)?;
     Ok(())
+}
+
+/// Flush directory entries on Unix after the caller flushes files and publishes
+/// atomically. Windows has no equivalent supported ordinary-directory flush in
+/// this path: validate the directory, but do not claim Unix crash durability.
+/// File flushes, atomic publication, and transaction fault boundaries still apply.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        File::open(path)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "artifact synchronization target must be a non-reparse directory",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn apply_safe_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), ArtifactError> {
@@ -703,6 +726,40 @@ pub(crate) fn revision_dir(artifact_dir: &Path, revision_id: &str) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn directory_sync_requires_an_existing_directory() {
+        let temp = tempdir().unwrap();
+        sync_directory(temp.path()).unwrap();
+        assert!(sync_directory(&temp.path().join("missing")).is_err());
+        #[cfg(windows)]
+        {
+            let file = temp.path().join("file");
+            std::fs::write(&file, b"sentinel").unwrap();
+            assert!(sync_directory(&file).is_err());
+            assert_eq!(std::fs::read(file).unwrap(), b"sentinel");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_sync_refuses_junction_without_touching_target() {
+        let temp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let junction = temp.path().join("junction");
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "create test junction: {output:?}");
+        assert!(sync_directory(&junction).is_err());
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"unchanged");
+        std::fs::remove_dir(junction).unwrap();
+    }
 
     #[test]
     fn bounded_json_read_rejects_oversized_internal_state() {

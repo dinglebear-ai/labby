@@ -4,6 +4,7 @@
 //! `claude` CLI and reads local setup/env state. `labby-apis` stays pure.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -147,12 +148,12 @@ pub async fn services_status() -> Result<Vec<ServiceStatus>, ToolError> {
     // Preserve the typed command error so callers can render an explicit
     // unknown/error state instead of a dangerously confident false negative.
     let installed = installed_plugins(false).await?;
-    let draft_entries = draft::read_entries(&super::client::draft_path());
+    let draft_entries = read_entries_missing_as_empty(&super::client::draft_path())?;
     let draft_keys: HashSet<&str> = draft_entries
         .iter()
         .map(|entry| entry.key.as_str())
         .collect();
-    let env_entries = draft::read_entries(&env_path());
+    let env_entries = read_entries_missing_as_empty(&env_path())?;
     let env_keys: HashSet<&str> = env_entries.iter().map(|entry| entry.key.as_str()).collect();
 
     let mut out = Vec::new();
@@ -178,6 +179,22 @@ pub async fn services_status() -> Result<Vec<ServiceStatus>, ToolError> {
     }
     out.sort_by(|a, b| a.service.cmp(&b.service));
     Ok(out)
+}
+
+fn read_entries_missing_as_empty(
+    path: &Path,
+) -> Result<Vec<super::DraftEntry>, draft::DraftReadError> {
+    draft::read_entries(path).or_else(|error| {
+        if matches!(
+            error,
+            draft::DraftReadError::Read { ref source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound
+        ) {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        }
+    })
 }
 
 fn cache() -> &'static Mutex<Option<(Instant, Vec<InstalledPlugin>)>> {
@@ -250,7 +267,7 @@ fn ensure_service_configured(service: &str) -> Result<(), ToolError> {
             message: format!("service `{service}` is not registered in this binary"),
         });
     };
-    let env_entries = draft::read_entries(&env_path());
+    let env_entries = draft::read_entries(&env_path()).map_err(ToolError::from)?;
     let env_keys: HashSet<&str> = env_entries.iter().map(|entry| entry.key.as_str()).collect();
     let missing: Vec<&str> = meta
         .required_env
@@ -523,5 +540,23 @@ mod tests {
         assert!(!redacted.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(redacted.contains("token=[redacted]"));
         assert!(redacted.contains("OPENAI_API_KEY=[redacted]"));
+    }
+
+    #[test]
+    fn missing_status_environment_file_is_treated_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = read_entries_missing_as_empty(&dir.path().join("missing.env")).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn malformed_status_environment_file_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("malformed.env");
+        std::fs::write(&path, "NOT AN ASSIGNMENT\n").unwrap();
+        assert!(matches!(
+            read_entries_missing_as_empty(&path),
+            Err(draft::DraftReadError::Malformed { .. })
+        ));
     }
 }

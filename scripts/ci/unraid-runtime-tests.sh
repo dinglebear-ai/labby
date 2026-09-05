@@ -453,7 +453,8 @@ EOF
         export LABBY_SERVICE_DROPIN_DIR="$dropin_dir"
         export SYSTEMCTL_LOG="$tmp/systemctl.log"
         source_init_library
-        # shellcheck disable=SC2329 -- ensure_service_resource_limits invokes this test double indirectly.
+        # ensure_service_resource_limits invokes this test double indirectly.
+        # shellcheck disable=SC2329
         incus_exec() {
             shift
             "$@"

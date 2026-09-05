@@ -612,7 +612,8 @@ ensure_service_active() {
 }
 
 ensure_service_resource_limits() {
-    # shellcheck disable=SC2016 -- this script is intentionally evaluated inside the Incus guest.
+    # This script is intentionally evaluated inside the Incus guest.
+    # shellcheck disable=SC2016
     incus_exec 30 sh -c '
         set -eu
         dropin_dir="$1"

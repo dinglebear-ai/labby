@@ -47,8 +47,7 @@
       "dependencies": [
         "dep:walkdir",
         "dep:globset",
-        "dep:unicode-normalization",
-        "dep:rustix"
+        "dep:unicode-normalization"
       ],
       "included_in_default": false,
       "included_in_all": true,

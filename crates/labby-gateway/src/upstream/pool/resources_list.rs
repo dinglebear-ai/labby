@@ -6,6 +6,7 @@
 //! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -370,18 +371,24 @@ impl UpstreamPool {
         //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
+        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
+            MAX_UPSTREAM_RESOURCES,
+            max_response_bytes(),
+        ));
         for observed in observed_peers {
             let name = observed.upstream().to_string();
             let peer = observed.peer.clone();
             let request_timeout = catalog_listing_timeout(self.request_timeout);
+            let shared_budget = Arc::clone(&shared_budget);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
                 log_upstream_request_start(event);
-                let result = match catalog_pagination::list_resources(
+                let result = match catalog_pagination::list_resources_with_budget(
                     &peer,
                     request_timeout,
                     MAX_UPSTREAM_RESOURCES,
+                    &shared_budget,
                 )
                 .await
                 {
@@ -536,13 +543,19 @@ impl UpstreamPool {
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
         let mut futures = FuturesUnordered::new();
+        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
+            MAX_UPSTREAM_RESOURCES,
+            max_response_bytes(),
+        ));
         for observed in observed_peers {
             let peer = observed.peer.clone();
+            let shared_budget = Arc::clone(&shared_budget);
             futures.push(async move {
-                let result = catalog_pagination::list_resource_templates(
+                let result = catalog_pagination::list_resource_templates_with_budget(
                     &peer,
                     self.request_timeout,
                     MAX_UPSTREAM_RESOURCES,
+                    &shared_budget,
                 )
                 .await;
                 (observed, result)

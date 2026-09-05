@@ -538,8 +538,11 @@ fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
     }
 }
 
-#[tokio::main]
 pub async fn run() -> ExitCode {
+    let argv = std::env::args_os().collect::<Vec<_>>();
+    if let Some(exit_code) = crate::stdio_sandbox::maybe_run(&argv) {
+        return exit_code;
+    }
     // Must happen before any TLS connection is possible (reqwest is built with
     // "rustls-no-provider" specifically so this call site controls the crypto
     // backend instead of reqwest silently defaulting to aws-lc-rs). `ring` is
@@ -554,7 +557,6 @@ pub async fn run() -> ExitCode {
     // which clap cannot express via derive (it would auto-handle `--help` and
     // panics on a duplicate `help`). Every *non-root* help path (`gateway help`,
     // `gateway --help`, `help gateway`) falls through to clap's themed output.
-    let argv = std::env::args_os().collect::<Vec<_>>();
     if let Some(flags) = root_help_request(argv.iter()) {
         return run_root_catalog(&flags);
     }
@@ -590,16 +592,17 @@ pub async fn run() -> ExitCode {
 
     let json_output = cli.json;
     let command_label = cli.command.label();
-    let uses_default_config = matches!(cli.command, cli::Command::Docs(_)) || {
-        #[cfg(feature = "gateway")]
-        {
-            matches!(cli.command, cli::Command::Internal(_))
-        }
-        #[cfg(not(feature = "gateway"))]
-        {
-            false
-        }
-    };
+    let uses_default_config = matches!(cli.command, cli::Command::Docs(_) | cli::Command::State(_))
+        || {
+            #[cfg(feature = "gateway")]
+            {
+                matches!(cli.command, cli::Command::Internal(_))
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                false
+            }
+        };
     if uses_default_config {
         return match cli::dispatch(cli, config::LabConfig::default()).await {
             Ok(code) => code,
@@ -612,7 +615,7 @@ pub async fn run() -> ExitCode {
 
     // 1. Load config.toml first (lightweight, no tracing needed).
     //    eprintln is intentional — tracing isn't initialized yet.
-    let config = match config::load_toml(&config::toml_candidates()) {
+    let config = match config::toml_candidates().and_then(|paths| config::load_toml(&paths)) {
         Ok(cfg) => cfg,
         Err(err) => {
             emit_cli_failure(json_output, command_label, &err, "invalid_param", false);

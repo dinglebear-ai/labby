@@ -1451,6 +1451,7 @@ mod tests {
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
+    #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The

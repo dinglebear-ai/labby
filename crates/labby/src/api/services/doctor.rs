@@ -17,6 +17,51 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::doctor::ACTIONS;
 
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+struct AuditEventStreamState {
+    rx: tokio::sync::mpsc::Receiver<crate::dispatch::doctor::Finding>,
+    request_id: Option<String>,
+    opened_at: std::time::Instant,
+    _producer: AbortTaskOnDrop,
+}
+
+fn audit_event_stream(
+    state: AuditEventStreamState,
+) -> impl futures::Stream<Item = Result<Event, Infallible>> {
+    stream::unfold(state, |mut state| async move {
+        match state.rx.recv().await {
+            Some(finding) => match serde_json::to_string(&finding) {
+                Ok(payload) => Some((Ok(Event::default().data(payload)), state)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to serialize doctor finding; skipping");
+                    Some((
+                        Ok(Event::default().event("error").data(e.to_string())),
+                        state,
+                    ))
+                }
+            },
+            None => {
+                info!(
+                    surface = "api",
+                    service = "doctor",
+                    action = "audit.full",
+                    request_id = state.request_id.as_deref(),
+                    elapsed_ms = state.opened_at.elapsed().as_millis(),
+                    "dispatch finish"
+                );
+                None
+            }
+        }
+    })
+}
+
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
     let mut descriptors = descriptors().into_iter();
@@ -96,7 +141,7 @@ async fn stream_audit_full(
     let clients = Arc::clone(&state.clients);
     let public_relay = state.public_relay.clone();
 
-    tokio::spawn(async move {
+    let producer = tokio::spawn(async move {
         crate::dispatch::doctor::service::stream_audit_full_with_relay(clients, public_relay, tx)
             .await;
     });
@@ -112,37 +157,53 @@ async fn stream_audit_full(
 
     let opened_at = std::time::Instant::now();
 
-    let event_stream = stream::unfold(
-        (rx, request_id, opened_at),
-        move |(mut rx, request_id, opened_at)| async move {
-            match rx.recv().await {
-                Some(finding) => match serde_json::to_string(&finding) {
-                    Ok(payload) => Some((
-                        Ok(Event::default().data(payload)),
-                        (rx, request_id, opened_at),
-                    )),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to serialize doctor finding; skipping");
-                        Some((
-                            Ok(Event::default().event("error").data(e.to_string())),
-                            (rx, request_id, opened_at),
-                        ))
-                    }
-                },
-                None => {
-                    info!(
-                        surface = "api",
-                        service = "doctor",
-                        action = ACTION,
-                        request_id = request_id.as_deref(),
-                        elapsed_ms = opened_at.elapsed().as_millis(),
-                        "dispatch finish"
-                    );
-                    None
-                }
-            }
-        },
-    );
+    let event_stream = audit_event_stream(AuditEventStreamState {
+        rx,
+        request_id,
+        opened_at,
+        _producer: AbortTaskOnDrop(producer.abort_handle()),
+    });
 
     Ok(Sse::new(event_stream).keep_alive(KeepAlive::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_sse_stream_aborts_its_audit_producer() {
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let producer = tokio::spawn(async move {
+            let _notify = NotifyOnDrop(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.expect("producer must start");
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let stream = audit_event_stream(AuditEventStreamState {
+            rx,
+            request_id: None,
+            opened_at: std::time::Instant::now(),
+            _producer: AbortTaskOnDrop(producer.abort_handle()),
+        });
+
+        drop(stream);
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), dropped_rx)
+            .await
+            .expect("dropped SSE stream must promptly abort its producer")
+            .expect("producer drop notification must be delivered");
+    }
 }

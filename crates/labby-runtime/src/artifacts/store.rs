@@ -16,7 +16,7 @@ use super::ArtifactError;
 use super::library::{LibrarySnapshot, MAX_LIBRARY_STATE_BYTES};
 use super::local_io::{
     SnapshotFile, ensure_private_dir, materialize_tree, prepare_empty_internal_dir, read_json,
-    revision_dir, storage_key, write_json_atomic,
+    revision_dir, storage_key, sync_directory, write_json_atomic,
 };
 use super::model::{
     ARTIFACT_INTERCHANGE_SCHEMA, ArtifactInterchange, ArtifactLicenseState, ArtifactProvenance,
@@ -242,12 +242,9 @@ impl ArtifactStore {
         ));
 
         prepare_empty_internal_dir(&staging)?;
-        if let Err(error) = materialize_tree(&staging, files, false).and_then(|()| {
-            File::open(&staging)
-                .map_err(ArtifactError::from)?
-                .sync_all()
-                .map_err(ArtifactError::from)
-        }) {
+        if let Err(error) = materialize_tree(&staging, files, false)
+            .and_then(|()| sync_directory(&staging).map_err(ArtifactError::from))
+        {
             cleanup_recovery_dir(&staging, artifact_id, "staging");
             return Err(error);
         }
@@ -270,7 +267,7 @@ impl ArtifactStore {
                 return Err(error);
             }
         };
-        if let Err(sync_error) = File::open(artifact_dir).and_then(|dir| dir.sync_all()) {
+        if let Err(sync_error) = sync_directory(artifact_dir) {
             rollback_promoted_workspace(&workspace, &previous, &staging, promotion).map_err(
                 |rollback_error| {
                     ArtifactError::Io(std::io::Error::new(
@@ -283,7 +280,7 @@ impl ArtifactStore {
                     ))
                 },
             )?;
-            if let Err(resync_error) = File::open(artifact_dir).and_then(|dir| dir.sync_all()) {
+            if let Err(resync_error) = sync_directory(artifact_dir) {
                 return Err(ArtifactError::Io(std::io::Error::new(
                     resync_error.kind(),
                     format!(
@@ -347,11 +344,11 @@ impl ArtifactStore {
         materialize_tree(&files_root, files, false)?;
         write_json_atomic(&staging.join("revision.json"), revision)?;
         fault(super::library::SkillTransactionBoundary::PromotionFileSync)?;
-        File::open(&staging)?.sync_all()?;
+        sync_directory(&staging)?;
         fault(super::library::SkillTransactionBoundary::PromotionRename)?;
         std::fs::rename(&staging, &final_dir)?;
         fault(super::library::SkillTransactionBoundary::PromotionParentSync)?;
-        File::open(&revisions)?.sync_all()?;
+        sync_directory(&revisions)?;
         Ok(())
     }
 
@@ -537,7 +534,7 @@ impl ArtifactStore {
         output.commit()?;
         self.fail_library_persist_if_injected(LibraryPersistFault::DirectorySync)?;
         fault(super::library::SkillTransactionBoundary::LibraryParentSync)?;
-        File::open(&library_root)?.sync_all()?;
+        sync_directory(&library_root)?;
         Ok(())
     }
 
@@ -803,6 +800,48 @@ mod tests {
             std::fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn acquired_artifact_update_survives_store_reopen() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let root = data.path().join("store");
+        let store = ArtifactStore::new(&root).unwrap();
+        std::fs::write(source.path().join("a.txt"), b"alpha").unwrap();
+        let first = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "restart-demo"),
+                source.path(),
+            )
+            .unwrap();
+        std::fs::write(source.path().join("a.txt"), b"beta").unwrap();
+        let second = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "restart-demo"),
+                source.path(),
+            )
+            .unwrap();
+        assert_ne!(first.current_revision_id, second.current_revision_id);
+        drop(store);
+        let reopened = ArtifactStore::new(&root).unwrap();
+        assert_eq!(reopened.get(&second.descriptor.id).unwrap(), second);
+        assert_eq!(
+            std::fs::read(
+                reopened
+                    .workspace_path(&second.descriptor.id)
+                    .unwrap()
+                    .join("a.txt")
+            )
+            .unwrap(),
+            b"beta"
+        );
+        reopened
+            .read_revision(&second.descriptor.id, &first.current_revision_id)
+            .unwrap();
+        reopened
+            .read_revision(&second.descriptor.id, &second.current_revision_id)
+            .unwrap();
     }
 
     #[test]

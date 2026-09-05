@@ -19,6 +19,7 @@ Commands:
   setup        Bootstrap the supported Incus Labby gateway container
   incus        Manage the supported Incus Labby gateway container
   update       Update labby from the latest GitHub release
+  state        Export, verify, or restore the complete durable installation state offline
   completions  Generate shell completions
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
@@ -776,6 +777,7 @@ Commands:
   install    Install and start labby.service as a system unit
   status     Read labby.service status
   restart    Restart labby.service
+  rollback   Restore the verified release retained by the last --install-self upgrade
   uninstall  Stop, disable, and remove labby.service
   help       Print this message or the help of the given subcommand(s)
 
@@ -884,6 +886,30 @@ Options:
 
   -y, --yes
           Confirm service restart
+
+  -h, --help
+          Print help
+```
+
+## `labby setup host-service rollback`
+
+```text
+Restore the verified release retained by the last --install-self upgrade
+
+Usage: rollback [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+  -y, --yes
+          Confirm release rollback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
 
   -h, --help
           Print help
@@ -1671,6 +1697,9 @@ Options:
       --dry-run
           Print the resolved operation without mutating the container
 
+      --rollback
+          Restore the retained release that preceded the last successful sync
+
   -h, --help
           Print help
 ```
@@ -1735,6 +1764,117 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `labby state`
+
+```text
+Export, verify, or restore the complete durable installation state offline
+
+Usage: state [OPTIONS] <COMMAND>
+
+Commands:
+  export   Export an authenticated disaster-recovery bundle using LABBY_RECOVERY_KEY_PATH
+  verify   Verify a bundle's HMAC, schema, compatibility, paths, sizes, and digests
+  restore  Restore an authenticated bundle offline using LABBY_RECOVERY_KEY_PATH
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby state export`
+
+```text
+Export an authenticated disaster-recovery bundle using LABBY_RECOVERY_KEY_PATH
+
+Usage: export [OPTIONS] --output <OUTPUT>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --output <OUTPUT>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby state verify`
+
+```text
+Verify a bundle's HMAC, schema, compatibility, paths, sizes, and digests
+
+Usage: verify [OPTIONS] --bundle <BUNDLE>
+
+Options:
+      --bundle <BUNDLE>
+
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby state restore`
+
+```text
+Restore an authenticated bundle offline using LABBY_RECOVERY_KEY_PATH
+
+Usage: restore [OPTIONS] --bundle <BUNDLE>
+
+Options:
+      --bundle <BUNDLE>
+
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby state help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
 ```
 
 ## `labby completions`

@@ -3,14 +3,13 @@
 #[path = "support/lib.rs"]
 mod support;
 
-use std::{
-    process::Command,
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::{process::Command, thread};
 
 use support::LiveLabbyBuilder;
 
+#[cfg(unix)]
 #[test]
 fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
     let run_root = tempfile::tempdir().expect("temporary parent");
@@ -37,6 +36,7 @@ fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn orchestration_cleanup_reaps_retained_group_after_leader_exits() {
     let run_root = tempfile::tempdir().expect("temporary parent");
@@ -63,6 +63,7 @@ fn orchestration_cleanup_reaps_retained_group_after_leader_exits() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn orchestration_secret_scan_detects_nested_retained_canary() {
     let run_root = tempfile::tempdir().expect("temporary parent");
@@ -87,6 +88,7 @@ fn orchestration_secret_scan_detects_nested_retained_canary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn orchestration_cancellation_exits_with_signal_status_and_reaps_children() {
     let parent = tempfile::tempdir().expect("temporary parent");
@@ -129,6 +131,7 @@ fn orchestration_cancellation_exits_with_signal_status_and_reaps_children() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn orchestration_exit_cleanup_failure_overrides_success() {
     let parent = tempfile::tempdir().expect("temporary parent");
@@ -147,6 +150,7 @@ fn orchestration_exit_cleanup_failure_overrides_success() {
     assert!(report.contains("\"cleanup\":1"), "{report}");
 }
 
+#[cfg(unix)]
 #[test]
 fn orchestration_listener_audit_is_independent_and_detects_a_listener() {
     let parent = tempfile::tempdir().expect("temporary parent");

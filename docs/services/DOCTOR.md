@@ -23,6 +23,17 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 
 Doctor is diagnostic. It reports structured findings and recovery guidance rather than silently repairing state. Repair belongs to the `setup` service.
 
+Local subprocess probes use one process-wide five-probe admission budget across
+all concurrent audits, plus per-probe and aggregate deadlines. Dropping an HTTP
+SSE audit stream cancels its producer and active subprocess tree; disconnected
+clients do not leave detached diagnostic work running.
+
+`system.checks` includes `config:backup-retention`. A warning means the bounded
+post-commit retention pass could not converge (more than 10 copies or more than
+64 MiB remain). Preserve the newest `config.toml.bak.*` recovery point, verify
+the active configuration, and follow the recovery procedure in
+[Configuration](../runtime/CONFIG.md); doctor never deletes backups.
+
 ## Access-store health
 
 `access.check` returns one agent-safe `access` / `store` finding. It does not expose database paths, SQL, identities, or raw storage errors. Its stable health classifications project to findings as follows:
