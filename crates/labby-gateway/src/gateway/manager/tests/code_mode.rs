@@ -1094,10 +1094,22 @@ async fn palette_execute_binds_oauth_catalog_and_call_to_the_same_subject() {
         .expect("Alice executes against Alice's subject connection");
 
     assert_eq!(response.receipt.request_id, "req-123");
+    assert_eq!(
+        serde_json::to_value(&response.receipt).unwrap()["executionMode"],
+        "exact"
+    );
     assert_eq!(response.receipt.tool_id, id);
     assert_eq!(response.receipt.contract_hash, alice_hash);
     let receipt = serde_json::to_string(&response.receipt).expect("receipt serializes");
-    for forbidden in ["alice", "TOKEN-CANARY", "oauth", "params", "result"] {
+    for forbidden in [
+        "alice",
+        "TOKEN-CANARY",
+        "oauth",
+        "params",
+        "result",
+        "llmInvocations",
+        "auditId",
+    ] {
         assert!(
             !receipt.contains(forbidden),
             "receipt leaked {forbidden}: {receipt}"
@@ -1187,6 +1199,10 @@ async fn palette_execute_rechecks_the_published_config_after_catalog_preview() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "Serialize tracing capture across awaits on this current-thread test runtime"
+)]
 async fn palette_execute_fails_closed_when_the_previewed_contract_changes() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("github")]).await;
@@ -1214,6 +1230,9 @@ async fn palette_execute_fails_closed_when_the_previewed_contract_changes() {
     )
     .await;
 
+    let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let buffer = crate::test_support::SharedBuf::default();
     let subscriber = tracing_subscriber::registry().with(
         tracing_subscriber::fmt::layer()
