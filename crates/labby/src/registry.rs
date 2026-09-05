@@ -813,6 +813,7 @@ mod tests {
     fn registry_and_router_service_sets_are_identical() {
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
+            s.insert("browser");
             #[cfg(feature = "gateway")]
             s.insert("gateway");
             #[cfg(feature = "gateway")]
