@@ -35,8 +35,8 @@ export function LibraryTabs({ active }: { active: 'artifacts' | 'loadouts' | 'sn
     ['loadouts', '/loadouts', 'Loadouts'],
     ['snippets', '/snippets', 'Snippets'],
   ] as const
-  return <nav aria-label="Library sections" className="flex gap-6 border-b border-aurora-border-subtle px-3">
-    {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="border-b-2 border-transparent px-1 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}</a>)}
+  return <nav aria-label="Library sections" className="flex max-w-full gap-5 overflow-x-auto border-b border-aurora-border-subtle px-1 sm:gap-6 sm:px-3">
+    {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="shrink-0 border-b-2 border-transparent px-2 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}</a>)}
   </nav>
 }
 

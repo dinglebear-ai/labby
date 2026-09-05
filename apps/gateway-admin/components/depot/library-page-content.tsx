@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Archive, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, Filter, Grid2X2, Link2, List, Loader2, RefreshCw, Search, ShieldCheck, Table2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -44,7 +44,22 @@ export function LibraryPageContent() {
   const [detail, setDetail] = useState<DepotArtifact | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
-  const [view, setView] = useState<ViewMode>('table')
+  const [view, setViewState] = useState<ViewMode>('table')
+  const viewSelectedByUser = useRef(false)
+  const setView = useCallback((next: ViewMode) => {
+    viewSelectedByUser.current = true
+    setViewState(next)
+  }, [])
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 640px)')
+    const applyResponsiveDefault = () => {
+      if (!viewSelectedByUser.current) setViewState(media.matches ? 'cards' : 'table')
+    }
+    applyResponsiveDefault()
+    media.addEventListener('change', applyResponsiveDefault)
+    return () => media.removeEventListener('change', applyResponsiveDefault)
+  }, [])
 
   const updateUrl = useCallback((values: { artifact?: string | null; kind?: string; q?: string }) => {
     const params = new URLSearchParams(window.location.search)

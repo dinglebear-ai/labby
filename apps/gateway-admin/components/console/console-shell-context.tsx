@@ -17,6 +17,9 @@ type ConsoleShellContextValue = {
   collapsed: boolean
   setSidebarCollapsed: (collapsed: boolean) => void
   toggleCollapsed: () => void
+  mobileNavOpen: boolean
+  setMobileNavOpen: (open: boolean) => void
+  toggleMobileNav: () => void
   crumbSlot: HTMLElement | null
   setCrumbSlot: (node: HTMLElement | null) => void
   actionSlot: HTMLElement | null
@@ -40,6 +43,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
   // The product reference opens with the full workspace/navigation rail.
   // A user's explicit compact-mode choice still wins.
   const [collapsed, setCollapsed] = React.useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false)
   const [crumbSlot, setCrumbSlot] = React.useState<HTMLElement | null>(null)
   const [actionSlot, setActionSlot] = React.useState<HTMLElement | null>(null)
 
@@ -65,17 +69,24 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
     })
   }, [])
 
+  const toggleMobileNav = React.useCallback(() => {
+    setMobileNavOpen((current) => !current)
+  }, [])
+
   const value = React.useMemo<ConsoleShellContextValue>(
     () => ({
       collapsed,
       setSidebarCollapsed: setCollapsed,
       toggleCollapsed,
+      mobileNavOpen,
+      setMobileNavOpen,
+      toggleMobileNav,
       crumbSlot,
       setCrumbSlot,
       actionSlot,
       setActionSlot,
     }),
-    [collapsed, toggleCollapsed, crumbSlot, actionSlot],
+    [collapsed, toggleCollapsed, mobileNavOpen, toggleMobileNav, crumbSlot, actionSlot],
   )
 
   return <ConsoleShellContext.Provider value={value}>{children}</ConsoleShellContext.Provider>

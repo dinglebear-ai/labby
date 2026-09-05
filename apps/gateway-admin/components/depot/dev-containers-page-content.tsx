@@ -53,10 +53,10 @@ function ContainerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
     return { ...current, [step]: next }
   })
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="h-[min(720px,calc(100vh-2rem))] gap-0 border-aurora-border-strong bg-aurora-panel-medium p-0 sm:max-w-[1080px]" showCloseButton>
+    <DialogContent className="h-[100dvh] w-screen max-w-none gap-0 overflow-hidden rounded-none border-aurora-border-strong bg-aurora-panel-medium p-0 sm:h-[min(720px,calc(100vh-2rem))] sm:w-full sm:max-w-[1080px] sm:rounded-lg" showCloseButton>
       <DialogTitle className="sr-only">New container</DialogTitle><DialogDescription className="sr-only">Configure a reusable development container.</DialogDescription>
-      <div className="grid min-h-0 flex-1 grid-cols-[230px_1fr]">
-        <aside className="border-r border-aurora-border-default bg-aurora-panel-strong p-4">
+      <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[230px_1fr] sm:grid-rows-1">
+        <aside className="overflow-x-auto border-b border-aurora-border-default bg-aurora-panel-strong p-3 sm:overflow-visible sm:border-b-0 sm:border-r sm:p-4">
           <p className="text-[10px] font-bold uppercase tracking-[.16em] text-aurora-text-muted">Incus system container</p><h2 className="mt-1 text-lg font-semibold">New Container</h2>
           <ol className="mt-5 space-y-1">{steps.map(([label, detail], index) => <li key={label}><button type="button" onClick={() => setStep(index)} className={cn('flex w-full items-center gap-3 rounded-aurora-1 border px-2 py-2 text-left', step === index ? 'border-aurora-warn bg-aurora-selected-bg shadow-[0_0_0_1px_var(--aurora-warn)]' : 'border-transparent')}><span className={cn('grid size-6 shrink-0 place-items-center rounded-full border text-xs', index < step ? 'border-aurora-success/50 bg-aurora-success/10 text-aurora-success' : step === index ? 'border-aurora-accent-primary bg-aurora-accent-primary text-aurora-page-bg' : 'border-aurora-border-strong text-aurora-text-muted')}>{index < step ? <Check className="size-3"/> : index + 1}</span><span><strong className="block text-sm">{label}</strong><span className="block max-w-[145px] truncate text-[11px] text-aurora-text-muted">{detail}</span></span></button></li>)}</ol>
         </aside>
