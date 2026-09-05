@@ -311,7 +311,7 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = 
     },
 ];
 
-const CODE_MODE_APP_FALLBACK_HTML: &str = include_str!("assets/code_mode_app.html");
+const CODE_MODE_APP_FALLBACK_HTML: &str = crate::app_assets::CODE_MODE_APP_HTML;
 const SERVER_LOGS_APP_FALLBACK_HTML: &str = crate::app_assets::SERVER_LOGS_APP_HTML;
 #[cfg(feature = "skills")]
 const SKILL_LIBRARY_APP_FALLBACK_HTML: &str = crate::app_assets::SKILL_LIBRARY_APP_HTML;
@@ -455,54 +455,17 @@ pub(crate) const MCP_APPS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &
     },
 ];
 
+#[cfg(feature = "skills")]
+use crate::app_catalog::SKILL_LIBRARY_APP_VERSION;
+#[cfg(feature = "gateway")]
+use crate::app_catalog::{
+    ADD_SERVER_APP_VERSION, GATEWAY_STATUS_APP_VERSION, MCP_APPS_APP_VERSION, SETTINGS_APP_VERSION,
+};
 /// FNV-1a over the bundled widget HTML, evaluated at compile time. Changes iff
 /// the HTML bytes change, so it is a stable per-build cache-bust key.
-const fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        i += 1;
-    }
-    hash
-}
-
-/// Cache-bust token for the Code Mode widget URIs.
-///
-/// MCP Apps / OpenAI Apps hosts cache the widget resource by its `resourceUri`,
-/// and the base `ui://lab/code-mode/*` URIs never change between builds — so a
-/// host that cached pre-fix HTML keeps serving it even after labby is rebuilt
-/// and restarted. Appending a content hash of the bundled HTML as `?v=<hash>`
-/// makes the advertised URI change exactly when the widget changes, forcing the
-/// host to refetch. The read path strips this suffix before matching descriptors,
-/// so the base URIs stay directly readable.
-/// Hash the fallback HTML plus the host bridge injected into the served resource.
-fn bridged_app_content_version(html: &str) -> String {
-    let input = format!("{html}\n{}", crate::app_assets::LABBY_APP_HOST_JS);
-    format!("{:016x}", fnv1a_64(input.as_bytes()))
-}
-
-static CODE_MODE_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!("{:016x}", fnv1a_64(CODE_MODE_APP_FALLBACK_HTML.as_bytes()))
-});
-static SERVER_LOGS_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(SERVER_LOGS_APP_FALLBACK_HTML));
-#[cfg(feature = "skills")]
-static SKILL_LIBRARY_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(SKILL_LIBRARY_APP_FALLBACK_HTML));
-#[cfg(feature = "gateway")]
-static ADD_SERVER_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(ADD_SERVER_APP_FALLBACK_HTML));
-#[cfg(feature = "gateway")]
-static GATEWAY_STATUS_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(GATEWAY_STATUS_APP_FALLBACK_HTML));
-#[cfg(feature = "gateway")]
-static SETTINGS_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(SETTINGS_APP_FALLBACK_HTML));
-#[cfg(feature = "gateway")]
-static MCP_APPS_APP_VERSION: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| bridged_app_content_version(MCP_APPS_APP_FALLBACK_HTML));
+use crate::app_catalog::{CODE_MODE_APP_VERSION, SERVER_LOGS_APP_VERSION};
+#[cfg(test)]
+use crate::app_catalog::{bridged_app_content_version, fnv1a_64};
 
 #[derive(Clone, Copy)]
 struct OwnedAppRegistration {
@@ -620,41 +583,6 @@ fn mcp_apps_app() -> OwnedAppRegistration {
         html: MCP_APPS_APP_FALLBACK_HTML,
         version: &MCP_APPS_APP_VERSION,
     }
-}
-
-/// Canonical enabled Labby-owned MCP App identities and content revisions.
-pub(crate) fn execution_loadout_mcp_app_catalog(
-    code_mode_enabled: bool,
-    config: labby_runtime::gateway_config::McpAppsConfig,
-) -> Vec<(String, String)> {
-    let mut rows = Vec::new();
-    let mut add = |id: &str, app: OwnedAppRegistration| {
-        rows.push((id.to_string(), app.version.to_string()));
-    };
-    if code_mode_enabled {
-        add("code-mode", code_mode_app());
-    }
-    if config.server_logs {
-        add("server-logs", server_logs_app());
-    }
-    #[cfg(feature = "skills")]
-    add("skill-library", skill_library_app());
-    #[cfg(feature = "gateway")]
-    {
-        if config.add_server {
-            add("add-server", add_server_app());
-        }
-        if config.gateway_status {
-            add("gateway-status", gateway_status_app());
-        }
-        if config.settings {
-            add("settings", settings_app());
-        }
-        if config.manager {
-            add("mcp-apps", mcp_apps_app());
-        }
-    }
-    rows
 }
 
 /// Strip the `?v=<hash>` cache-bust suffix so a versioned URI matches its base

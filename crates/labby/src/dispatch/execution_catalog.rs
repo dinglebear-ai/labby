@@ -84,7 +84,7 @@ impl ExecutionCapabilityCatalogProvider for CanonicalExecutionCatalogProvider {
             }
 
             let config = manager.current_config().await;
-            for (id, revision) in crate::mcp::handlers_resources::execution_loadout_mcp_app_catalog(
+            for (id, revision) in crate::app_catalog::enabled_versions(
                 config.code_mode.mcp_ui_enabled,
                 config.mcp_apps,
             ) {

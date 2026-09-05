@@ -1,5 +1,7 @@
 //! Shared small app shells served by both MCP widget resources and HTTP routes.
 
+pub(crate) const CODE_MODE_APP_HTML: &str = include_str!("mcp/assets/code_mode_app.html");
+
 /// URI namespace reserved for Labby's own server-log viewer app resources.
 pub(crate) const SERVER_LOGS_APP_URI_PREFIX: &str = "ui://lab/server-logs/";
 pub(crate) const SERVER_LOGS_APP_URI: &str = "ui://lab/server-logs/viewer";
