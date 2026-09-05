@@ -96,6 +96,16 @@ pub struct ProviderStatus {
     pub enabled: bool,
     pub health: HealthView,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAdminStatus {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub enabled: bool,
+    pub credential_configured: bool,
+    pub health: HealthView,
+}
 
 pub struct Manager {
     topology: RwLock<Arc<Topology>>,
@@ -173,6 +183,21 @@ impl Manager {
                 id: provider.view.id.clone(),
                 name: provider.view.name.clone(),
                 enabled: provider.view.enabled,
+                health: provider.runtime.health.view(),
+            })
+            .collect()
+    }
+    pub fn admin_status(&self) -> Vec<ProviderAdminStatus> {
+        self.snapshot()
+            .providers
+            .values()
+            .map(|provider| ProviderAdminStatus {
+                id: provider.view.id.clone(),
+                name: provider.view.name.clone(),
+                endpoint: provider.view.endpoint.clone(),
+                enabled: provider.view.enabled,
+                credential_configured: provider.view.auth_mode
+                    == crate::config::depot::AuthMode::Bearer,
                 health: provider.runtime.health.view(),
             })
             .collect()

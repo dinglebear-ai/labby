@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::{AuthContext, Authenticator, PrincipalLink, VerifiedIdentity};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -12,6 +13,7 @@ use crate::api::{
     route_registry::{RouteAuth, RouteDescriptor, RouteGroup},
     state::AppState,
 };
+use crate::dispatch::depot::discovery::{self, DiscoveryError, DiscoveryRequest};
 use crate::dispatch::depot::{DepotError, error_body};
 
 #[derive(Deserialize)]
@@ -32,6 +34,9 @@ pub fn routes(_state: AppState) -> RouteGroup {
             get(operations),
         )
         .route(routes.next().expect("call descriptor"), post(call))
+        .route(routes.next().expect("discover descriptor"), post(discover))
+        .route(routes.next().expect("detail descriptor"), post(detail))
+        .route(routes.next().expect("providers descriptor"), get(providers))
 }
 
 pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
@@ -44,7 +49,115 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
         RouteDescriptor::new("POST", "/operations", "call", "depot", RouteAuth::V1)
             .private_no_store()
             .side_effects("bounded canonical Depot operation"),
+        RouteDescriptor::new("POST", "/discover", "discover_v2", "depot", RouteAuth::V1)
+            .private_no_store(),
+        RouteDescriptor::new(
+            "POST",
+            "/artifacts/detail",
+            "detail_v2",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store(),
+        RouteDescriptor::new("GET", "/providers", "providers", "depot", RouteAuth::V1)
+            .private_no_store(),
     ]
+}
+
+async fn discover(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Json(request): Json<DiscoveryRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    discovery::discover(
+        &state.depot_manager,
+        &authority,
+        &request,
+        tokio::time::Instant::now(),
+    )
+    .await
+    .and_then(|response| {
+        serde_json::to_value(response).map_err(|_| DiscoveryError::InvalidProvider)
+    })
+    .map(Json)
+    .map_err(map_discovery_error)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailRequest {
+    provider_id: String,
+    artifact_id: String,
+}
+
+async fn detail(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Json(request): Json<DetailRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    discovery::detail(
+        &state.depot_manager,
+        &authority,
+        &request.provider_id,
+        &request.artifact_id,
+        tokio::time::Instant::now(),
+    )
+    .await
+    .and_then(|response| {
+        serde_json::to_value(response).map_err(|_| DiscoveryError::InvalidProvider)
+    })
+    .map(Json)
+    .map_err(map_discovery_error)
+}
+
+async fn providers(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
+    if !grant.has_scope("lab:admin") {
+        return Err(forbidden());
+    }
+    serde_json::to_value(state.depot_manager.admin_status())
+        .map(Json)
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"kind":"internal","message":"provider status unavailable"})),
+            )
+        })
+}
+
+fn map_discovery_error(error: DiscoveryError) -> (StatusCode, Json<Value>) {
+    let (status, kind, message) = match error {
+        DiscoveryError::InvalidQuery
+        | DiscoveryError::InvalidLimit
+        | DiscoveryError::InvalidProvider => (
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+            error.to_string(),
+        ),
+        DiscoveryError::CursorExpired => {
+            (StatusCode::CONFLICT, "cursor_expired", error.to_string())
+        }
+        DiscoveryError::ProviderUnavailable => {
+            (StatusCode::NOT_FOUND, "not_found", error.to_string())
+        }
+        DiscoveryError::Capacity => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capacity",
+            error.to_string(),
+        ),
+        DiscoveryError::ResponseTooLarge => (
+            StatusCode::BAD_GATEWAY,
+            "upstream_invalid",
+            error.to_string(),
+        ),
+    };
+    (
+        status,
+        Json(json!({"kind":kind,"message":message,"recovery":{"action":"restart_discovery"}})),
+    )
 }
 
 async fn status(
@@ -136,6 +249,23 @@ mod tests {
                 email: None,
             };
             assert!(actor(Some(Extension(auth)), Some(Extension(identity))).is_err());
+        }
+    }
+
+    #[test]
+    fn v2_federation_routes_are_literal_private_browser_contracts() {
+        let routes = descriptors();
+        for (method, path) in [
+            ("POST", "/discover"),
+            ("POST", "/artifacts/detail"),
+            ("GET", "/providers"),
+        ] {
+            let route = routes
+                .iter()
+                .find(|route| route.method == method && route.path == path)
+                .unwrap();
+            assert_eq!(route.auth, RouteAuth::V1);
+            assert_eq!(route.cache_posture, "private, no-store");
         }
     }
 }
