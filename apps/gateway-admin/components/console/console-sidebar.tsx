@@ -623,7 +623,8 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
 export function ConsoleSidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const { collapsed, toggleCollapsed } = useConsoleShell()
+  const { collapsed, toggleCollapsed, mobileNavOpen, setMobileNavOpen } = useConsoleShell()
+  const [isMobile, setIsMobile] = React.useState(false)
 
   const [pinned, setPinned] = React.useState<string[]>([])
   const [folded, setFolded] = React.useState<Record<string, boolean>>({})
@@ -637,6 +638,29 @@ export function ConsoleSidebar() {
     setFolded(readJson<Record<string, boolean>>(FOLDED_KEY, {}))
     setOrder(readJson<Record<string, string[]>>(ORDER_KEY, {}))
   }, [])
+
+  React.useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px)')
+    const update = () => setIsMobile(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  React.useEffect(() => {
+    setMobileNavOpen(false)
+  }, [pathname, setMobileNavOpen])
+
+  React.useEffect(() => {
+    if (!mobileNavOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [mobileNavOpen, setMobileNavOpen])
+
+  const visuallyCollapsed = collapsed && !isMobile
 
   // ⌘/Ctrl + N jumps to the Nth nav item, matching the mock's accelerators.
   React.useEffect(() => {
@@ -712,11 +736,20 @@ export function ConsoleSidebar() {
   )
 
   return (
+    <>
+    <button
+      type="button"
+      data-mobile-nav-backdrop="1"
+      data-open={mobileNavOpen ? '1' : '0'}
+      aria-label="Close navigation"
+      onClick={() => setMobileNavOpen(false)}
+    />
     <aside
       data-console-sidebar="1"
+      data-mobile-open={mobileNavOpen ? '1' : '0'}
       style={{
         position: 'relative',
-        width: collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
+        width: visuallyCollapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
@@ -741,6 +774,7 @@ export function ConsoleSidebar() {
 
       <button
         type="button"
+        data-sidebar-toggle="1"
         onClick={toggleCollapsed}
         aria-label="Toggle sidebar"
         title="Toggle sidebar"
@@ -768,7 +802,7 @@ export function ConsoleSidebar() {
           boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
         }}
       >
-        {collapsed ? (
+        {visuallyCollapsed ? (
           <ChevronRight size={13} strokeWidth={2} />
         ) : (
           <ChevronLeft size={13} strokeWidth={2} />
@@ -816,7 +850,7 @@ export function ConsoleSidebar() {
           >
             <LabbyIcon size={24} />
           </div>
-          {collapsed ? null : (
+          {visuallyCollapsed ? null : (
             <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
               <div
                 style={{
@@ -852,25 +886,25 @@ export function ConsoleSidebar() {
         </Link>
 
         {/* Workspace switcher */}
-        <div style={{ position: 'relative', padding: collapsed ? '7px 8px 4px' : '7px 6px 4px' }}>
+        <div style={{ position: 'relative', padding: visuallyCollapsed ? '7px 8px 4px' : '7px 6px 4px' }}>
           <button
             type="button"
             aria-label="Switch workspace"
             aria-expanded={workspaceOpen}
             onClick={() => setWorkspaceOpen((value) => !value)}
             style={{
-              width: '100%', minHeight: collapsed ? 40 : 38, borderRadius: 10,
+              width: '100%', minHeight: visuallyCollapsed ? 40 : 38, borderRadius: 10,
               border: workspaceOpen ? '1px solid var(--aurora-warn)' : '1px solid color-mix(in srgb, var(--aurora-border-strong) 75%, transparent)',
               boxShadow: workspaceOpen ? '0 0 0 1px var(--aurora-warn), inset 0 1px 0 rgba(255,255,255,.05)' : 'inset 0 1px 0 rgba(255,255,255,.04)',
               background: 'linear-gradient(180deg,var(--aurora-panel-medium-top),var(--aurora-panel-medium))',
               color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 8,
-              padding: collapsed ? 4 : '4px 8px', cursor: 'pointer', textAlign: 'left',
+              padding: visuallyCollapsed ? 4 : '4px 8px', cursor: 'pointer', textAlign: 'left',
             }}
           >
             <span style={{ width: 27, height: 27, borderRadius: 999, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 45%,transparent)', boxShadow: '0 0 8px rgba(244,114,182,.16)' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span>
-            {collapsed ? null : <><span style={{ minWidth: 0, flex: 1, lineHeight: 1.08 }}><small style={{ display: 'block', fontSize: 8.5, fontWeight: 750, letterSpacing: '.12em', color: 'var(--aurora-text-muted)' }}>WORKSPACE</small><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong></span><ChevronsUpDown size={13} color="var(--aurora-text-muted)"/></>}
+            {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, lineHeight: 1.08 }}><small style={{ display: 'block', fontSize: 8.5, fontWeight: 750, letterSpacing: '.12em', color: 'var(--aurora-text-muted)' }}>WORKSPACE</small><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong></span><ChevronsUpDown size={13} color="var(--aurora-text-muted)"/></>}
           </button>
-          {workspaceOpen && !collapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 51, left: 6, right: 6, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, #173549, #102939)', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
+          {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 51, left: 6, right: 6, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, #173549, #102939)', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
             <button type="button" data-menurow="1" onClick={() => setWorkspaceOpen(false)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: 'var(--aurora-selected-bg)', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your artifacts, agents and loadouts</small></span><Check size={14} color="var(--aurora-accent-strong)"/></button>
             <button type="button" data-menurow="1" onClick={() => setWorkspaceOpen(false)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>TO</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>tootie.tv</strong><small style={{ color: 'var(--aurora-text-muted)' }}>9 members · hosted Labby</small></span></button>
           </div> : null}
@@ -878,7 +912,7 @@ export function ConsoleSidebar() {
 
         {/* Nav */}
         <nav
-          data-collapsed={collapsed ? '1' : '0'}
+          data-collapsed={visuallyCollapsed ? '1' : '0'}
           style={{
             flex: 1,
             display: 'flex',
@@ -897,7 +931,7 @@ export function ConsoleSidebar() {
 
             return (
               <React.Fragment key={section.id}>
-                {collapsed ? null : (
+                {visuallyCollapsed ? null : (
                   <button
                     type="button"
                     onClick={() => toggleFold(section.id)}
@@ -943,14 +977,14 @@ export function ConsoleSidebar() {
                   </button>
                 )}
 
-                {isFolded && !collapsed ? null : (
+                {isFolded && !visuallyCollapsed ? null : (
                   <div
                     style={{
                       position: 'relative',
                       display: 'flex',
                       flexDirection: 'column',
                       gap: 2,
-                      paddingLeft: collapsed ? 0 : 8,
+                      paddingLeft: visuallyCollapsed ? 0 : 8,
                     }}
                   >
                     {items.map((item) => (
@@ -959,7 +993,7 @@ export function ConsoleSidebar() {
                         item={item}
                         sectionId={section.id}
                         active={isNavItemActive(item.href, pathname)}
-                        collapsed={collapsed}
+                        collapsed={visuallyCollapsed}
                         pinned={pinned.includes(item.id)}
                         onTogglePin={togglePin}
                         onDragStart={(id) => {
@@ -979,5 +1013,6 @@ export function ConsoleSidebar() {
 
       </div>
     </aside>
+    </>
   )
 }

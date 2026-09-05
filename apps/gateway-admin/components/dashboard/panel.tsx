@@ -29,7 +29,8 @@ export function DashboardPanel({
   return (
     <div
       data-hovercard="1"
-      className={cn('overflow-hidden', className)}
+      data-dashboard-panel="1"
+      className={cn('min-w-0 overflow-hidden', className)}
       style={{
         borderRadius: 'var(--radius-2)',
         border:
@@ -40,6 +41,7 @@ export function DashboardPanel({
       }}
     >
       <div
+        data-panel-header="1"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -79,10 +81,11 @@ export function DashboardPanel({
             {meta}
           </span>
         ) : null}
-        {action}
+        {action ? <div data-panel-action="1">{action}</div> : null}
       </div>
 
       <div
+        data-panel-body="1"
         className={bodyClassName}
         style={{ display: 'flex', flexDirection: 'column', gap: 9, padding: '12px 14px' }}
       >

@@ -46,6 +46,10 @@ export function LibraryPageContent() {
   const [copied, setCopied] = useState<string>()
   const [view, setView] = useState<ViewMode>('table')
 
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 640px)').matches) setView('cards')
+  }, [])
+
   const updateUrl = useCallback((values: { artifact?: string | null; kind?: string; q?: string }) => {
     const params = new URLSearchParams(window.location.search)
     for (const [key, value] of Object.entries(values)) {

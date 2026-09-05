@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Bell, Search } from 'lucide-react'
+import { Bell, Menu, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
 import { AccountMenu } from '@/components/console/console-sidebar'
@@ -23,7 +23,7 @@ function isMacOS() {
  * into the slots registered here.
  */
 export function ConsoleTopbar() {
-  const { setCrumbSlot, setActionSlot } = useConsoleShell()
+  const { setCrumbSlot, setActionSlot, mobileNavOpen, toggleMobileNav } = useConsoleShell()
   const [searchHovered, setSearchHovered] = React.useState(false)
   const [modKey, setModKey] = React.useState('⌘')
 
@@ -54,6 +54,16 @@ export function ConsoleTopbar() {
         zIndex: 40,
       }}
     >
+      <button
+        type="button"
+        data-mobile-only="1"
+        data-mobile-menu="1"
+        aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+        aria-expanded={mobileNavOpen}
+        onClick={toggleMobileNav}
+      >
+        <Menu size={19} strokeWidth={1.8} />
+      </button>
       <div
         ref={setCrumbSlot}
         style={{
@@ -118,6 +128,7 @@ export function ConsoleTopbar() {
           }}
         />
         <span
+          data-search-label="1"
           style={{
             flex: 1,
             textAlign: 'left',
@@ -129,6 +140,7 @@ export function ConsoleTopbar() {
           Search — {modKey}K
         </span>
         <span
+          data-search-notification="1"
           title="Notifications"
           style={{
             position: 'relative',

@@ -319,21 +319,47 @@ test('mobile gateway cards are touch-sized, overflow-free, and open server detai
   assert.equal(detailOverflow, false)
 })
 
-test('overview, gateways, detail, and usage stay overflow-free on phone and tablet', { concurrency: false }, async (t) => {
+test('every admin route stays overflow-free on narrow phone, phone, and tablet', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
 
   for (const viewport of [
+    { width: 320, height: 700, label: 'narrow phone' },
     { width: 390, height: 844, label: 'phone' },
     { width: 768, height: 1024, label: 'tablet' },
   ]) {
     const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } })
     for (const route of [
       '/',
+      '/agents/',
+      '/create/',
+      '/depot/',
+      '/design-system/',
+      '/dev-containers/',
+      '/docs/',
       '/gateways/',
       '/gateway/?id=gw-2',
+      '/library/',
+      '/loadouts/',
+      '/logs/',
+      '/mcp/code-mode/',
+      '/settings/',
+      '/settings/advanced/',
+      '/settings/core/',
+      '/settings/doctor/',
+      '/settings/extract/',
+      '/settings/features/',
+      '/settings/services/',
+      '/settings/services/adguard/',
+      '/settings/surfaces/',
+      '/skills/',
+      '/snippets/',
+      '/stash/',
+      '/tasks/',
+      '/tools/',
+      '/traces/',
       '/usage/?focus=latency&percentile=p95&outcome=failed',
     ]) {
       await page.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle' })
@@ -343,6 +369,13 @@ test('overview, gateways, detail, and usage stay overflow-free on phone and tabl
       }))
       assert.ok(overflow.document <= 1 && overflow.body <= 1, `${viewport.label} ${route} overflowed horizontally: ${JSON.stringify(overflow)}`)
     }
+    await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+    const menu = page.getByRole('button', { name: 'Open navigation' })
+    const menuBox = await menu.boundingBox()
+    assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44)
+    await menu.click()
+    await assert.doesNotReject(() => page.locator('aside[data-mobile-open="1"]').waitFor())
+    await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })

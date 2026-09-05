@@ -43,6 +43,7 @@ export function ConsoleHero({
 }) {
   return (
     <div
+      data-console-hero="1"
       style={{
         borderRadius: 'var(--radius-3)',
         border:
@@ -53,6 +54,7 @@ export function ConsoleHero({
       }}
     >
       <div
+        data-console-hero-main="1"
         style={{
           display: 'flex',
           alignItems: 'flex-end',
@@ -62,7 +64,7 @@ export function ConsoleHero({
           flexWrap: 'wrap',
         }}
       >
-        <div style={{ minWidth: 0 }}>
+        <div data-console-hero-copy="1" style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span
               style={{
@@ -94,6 +96,7 @@ export function ConsoleHero({
             ) : null}
           </div>
           <h1
+            data-console-hero-title="1"
             style={{
               margin: '8px 0 0',
               fontFamily: 'var(--font-display)',
@@ -114,7 +117,7 @@ export function ConsoleHero({
         </div>
 
         {actions ? (
-          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div data-console-hero-actions="1" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
             {actions}
           </div>
         ) : null}

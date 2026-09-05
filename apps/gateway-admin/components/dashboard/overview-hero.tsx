@@ -267,6 +267,7 @@ export function OverviewHero({
 
   return (
     <div
+      data-console-hero="1"
       style={{
         borderRadius: 'var(--radius-3)',
         border:
@@ -277,6 +278,7 @@ export function OverviewHero({
       }}
     >
       <div
+        data-console-hero-main="1"
         style={{
           display: 'flex',
           alignItems: 'flex-end',
@@ -286,7 +288,7 @@ export function OverviewHero({
           flexWrap: 'wrap',
         }}
       >
-        <div style={{ minWidth: 0 }}>
+        <div data-console-hero-copy="1" style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span
               style={{
@@ -327,6 +329,7 @@ export function OverviewHero({
             }}
           >
             <h1
+              data-console-hero-title="1"
               style={{
                 margin: 0,
                 fontFamily: 'var(--font-display)',
@@ -409,9 +412,10 @@ export function OverviewHero({
           ) : null}
         </div>
 
-        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div data-console-hero-actions="1" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             type="button"
+            data-icon-text-control="1"
             onClick={onRefresh}
             title="Refresh"
             aria-label="Refresh"
