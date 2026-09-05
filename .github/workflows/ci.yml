@@ -1265,7 +1265,7 @@ jobs:
       - name: Run Windows Job Object reaping integration test
         if: matrix.shard == 1
         shell: pwsh
-        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci
+        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only
       - name: Enforce Windows build cache caps
         if: always()
         shell: pwsh
