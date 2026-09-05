@@ -46,7 +46,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
         block = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn(
             "run: cargo nextest run --workspace --all-features --locked --profile ci "
-            "--partition hash:${{ matrix.shard }}/4\n",
+            "--test-threads 4 --partition hash:${{ matrix.shard }}/4\n",
             block,
         )
         self.assertIn(

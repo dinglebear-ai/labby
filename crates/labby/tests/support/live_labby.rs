@@ -13,7 +13,10 @@ use tokio::process::{Child, Command as TokioCommand};
 
 use super::evidence::{EvidenceKind, RunEvidence, sanitize};
 
+#[cfg(not(windows))]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
+#[cfg(windows)]
+const DEFAULT_DEADLINE: Duration = Duration::from_secs(45);
 const LOG_TAIL_BYTES: usize = 32 * 1024;
 const DROP_DEADLINE: Duration = Duration::from_secs(3);
 

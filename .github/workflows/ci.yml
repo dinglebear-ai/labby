@@ -1261,7 +1261,7 @@ jobs:
         run: cargo test --workspace --all-features --locked --no-run
       - name: Run native Windows workspace tests (shard ${{ matrix.shard }}/4)
         shell: pwsh
-        run: cargo nextest run --workspace --all-features --locked --profile ci --partition hash:${{ matrix.shard }}/4
+        run: cargo nextest run --workspace --all-features --locked --profile ci --test-threads 4 --partition hash:${{ matrix.shard }}/4
       - name: Run Windows Job Object reaping integration test
         if: matrix.shard == 1
         shell: pwsh
