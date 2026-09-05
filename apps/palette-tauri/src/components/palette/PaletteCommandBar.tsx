@@ -3,6 +3,7 @@ import { ArrowLeft, CircleHelp, Search, Send, Settings } from "lucide-react";
 import { actionIcon } from "@/components/palette/ActionIcon";
 import { Button } from "@/components/ui/aurora/button";
 import { Input } from "@/components/ui/aurora/input";
+import type { EndpointTone } from "@/lib/endpointStatus";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import { argumentPlaceholder, focusInput } from "@/lib/paletteView";
@@ -12,7 +13,8 @@ interface PaletteCommandBarProps {
   activeDescendantId?: string;
   config: PaletteConfig | null;
   endpointLabel: string;
-  endpointTone: string;
+  endpointTone: EndpointTone;
+  endpointMessage: string;
   hasQuery: boolean;
   listboxOpen: boolean;
   modeAction: LauncherEntry | null;
@@ -31,16 +33,13 @@ interface PaletteCommandBarProps {
   onToggleSettings: () => void;
 }
 
-function endpointStatusLabel(endpointLabel: string): string {
-  return `Server: ${endpointLabel}`;
-}
-
 export function PaletteCommandBar({
   active,
   activeDescendantId,
   config,
   endpointLabel,
   endpointTone,
+  endpointMessage,
   hasQuery,
   listboxOpen,
   modeAction,
@@ -93,10 +92,11 @@ export function PaletteCommandBar({
         aria-label="Reset Labby palette"
       >
         <span className="axon-word">Labby</span>
-        <span className={`axon-status-dot axon-status-${endpointTone}`}>
-          <span className="sr-only">{endpointStatusLabel(endpointLabel)}</span>
-        </span>
+        <span className={`axon-status-dot axon-status-${endpointTone}`} aria-hidden="true" />
       </Button>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {endpointMessage}
+      </span>
       <span className="axon-divider" aria-hidden="true" />
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click-to-focus convenience; the real control is the command input within */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users focus the input directly; this wrapper only expands the pointer target */}
