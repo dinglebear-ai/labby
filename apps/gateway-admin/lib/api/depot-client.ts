@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { getSessionCsrfToken } from '../auth/session-store'
 import { gatewayRequestInit } from './gateway-request'
 
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
@@ -147,7 +148,10 @@ export class DepotClientError extends Error {
 }
 
 async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T>, label: string): Promise<T> {
-  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init })
+  const headers = new Headers(init.headers)
+  const csrfToken = getSessionCsrfToken()
+  if (init.method && init.method !== 'GET' && csrfToken && !headers.has('x-csrf-token')) headers.set('x-csrf-token', csrfToken)
+  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
   const requestId = response.headers.get('x-request-id') ?? undefined
   let body: unknown
   try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { depotCall, depotStatus, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
@@ -45,6 +46,26 @@ test('preserves server error codes', async () => {
 })
 
 const v2Page = { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [{ providerId: 'public', artifactId: 'artifact-1', id: 'artifact-1' }], providerOutcomes: [{ providerId: 'public', state: 'exhausted' }], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null }
+
+test('read-only v2 POST requests carry the authenticated browser CSRF token', async () => {
+  const original = globalThis.fetch
+  const csrfHeaders: Array<string | null> = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-read', isAdmin: false })
+  globalThis.fetch = (async (url, init) => {
+    csrfHeaders.push(new Headers(init?.headers).get('x-csrf-token'))
+    return String(url).endsWith('/discover')
+      ? json(v2Page)
+      : json({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1' } })
+  }) as typeof fetch
+  try {
+    await listArtifacts()
+    await getArtifact('public', 'artifact-1')
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.deepEqual(csrfHeaders, ['csrf-read', 'csrf-read'])
+})
 
 test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', async () => {
   await withFetch(json({ ...v2Page, injected: true }), async () => assert.rejects(listArtifacts(), /unrecognized/i))
