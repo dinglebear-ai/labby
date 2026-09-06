@@ -54,6 +54,8 @@ pub(crate) struct LibraryAccessSnapshot {
     pub(crate) role: ProjectRole,
     pub(crate) global_revision: u64,
     pub(crate) team_ids: Vec<String>,
+    /// Teams where the principal holds the management capability bundle (Owner/Admin).
+    pub(crate) team_management_ids: Vec<String>,
     pub(crate) is_platform_admin: bool,
 }
 
@@ -109,10 +111,10 @@ pub(super) fn authorize_library_in_transaction(
     if !selected.role.permissions().contains(&permission) {
         return Err(AccessStoreError::NotAuthorized);
     }
-    let team_ids = {
+    let (team_ids, team_management_ids) = {
         let mut statement = transaction
             .prepare(
-                "SELECT tm.team_id
+                "SELECT tm.team_id, tm.role
                  FROM team_memberships tm
                  JOIN team_project_assignments assignment
                    ON assignment.organization_id=tm.organization_id
@@ -130,11 +132,22 @@ pub(super) fn authorize_library_in_transaction(
                     selected.principal_id,
                     selected.project_id
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(map_sqlite_error)?
-            .collect::<Result<Vec<String>, _>>()
+            .collect::<Result<Vec<(String, String)>, _>>()
             .map_err(map_sqlite_error)?
+            .into_iter()
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut all, mut management), (id, role)| {
+                    all.push(id.clone());
+                    if matches!(role.as_str(), "owner" | "admin") {
+                        management.push(id);
+                    }
+                    (all, management)
+                },
+            )
     };
     let is_platform_admin = transaction
         .query_row(
@@ -151,6 +164,7 @@ pub(super) fn authorize_library_in_transaction(
         role: selected.role,
         global_revision: selected.global_revision,
         team_ids,
+        team_management_ids,
         is_platform_admin,
     };
     Ok(snapshot)

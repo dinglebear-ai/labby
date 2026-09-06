@@ -494,7 +494,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         };
         let preparation_store = Arc::clone(&self.store);
         let requested_artifact_id = artifact_id.clone();
-        let (candidate_artifact, target_ownership) = self
+        let (mut candidate_artifact, target_ownership) = self
             .blocking
             .run("skill_artifact_prepare", move || {
                 let logical = files
@@ -523,6 +523,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             })
             .await
             .map_err(map_target_lookup)?;
+        if let (Some(expected_id), Some(ownership)) =
+            (artifact_id.as_ref(), target_ownership.as_ref())
+            && candidate_artifact.interchange.descriptor.id != *expected_id
+        {
+            labby_runtime::artifacts::qualify_materialized_skill_owner(
+                &mut candidate_artifact,
+                ownership,
+            )?;
+        }
         if let Some(expected_id) = artifact_id.as_ref()
             && candidate_artifact.interchange.descriptor.id != *expected_id
         {
@@ -562,7 +571,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let (authorization, ownership, audit) = if action == SkillLibraryAction::Create
                     && matches!(create_visibility, CreateVisibility::Shared)
                 {
-                    decision.into_shared_create()
+                    decision.into_shared_create()?
                 } else {
                     (decision.authorization, decision.ownership, decision.audit)
                 };
@@ -3032,10 +3041,15 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(matches!(
-                inaccessible,
-                SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied)
-            ));
+            assert!(
+                matches!(
+                    &inaccessible,
+                    SkillLibraryDispatchError::Authorization(
+                        SkillLibraryAuthorizationError::Denied
+                    )
+                ),
+                "{action}: {inaccessible:?}"
+            );
             assert!(matches!(
                 random,
                 SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied)
