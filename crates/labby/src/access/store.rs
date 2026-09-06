@@ -136,6 +136,60 @@ impl AccessStore {
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
     }
 
+    pub(crate) async fn acquire_agent_task_lease(
+        &self,
+        id: String,
+        attempt: u32,
+        fence: String,
+        expires_at: i64,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?
+                .acquire_lease(&id, attempt, &fence, expires_at, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn settle_agent_task(
+        &self,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        fence: String,
+        settlement: labby_primitives::task::TaskSettlement,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.transition(
+                &id,
+                from,
+                to,
+                &actor,
+                attempt,
+                Some(&fence),
+                Some(&settlement),
+                now,
+            )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn recover_expired_agent_tasks(&self, now: i64) -> AccessStoreResult<usize> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.recover_expired(now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
     pub(crate) async fn put_agent_definition(
         &self,
         definition: labby_primitives::agent::AgentDefinition,
@@ -182,6 +236,26 @@ impl AccessStore {
         let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
             super::agent::AgentDefinitionStore::open(&path)?.session_status(&agent_id, &session_id)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn set_agent_session_status(
+        &self,
+        agent_id: String,
+        session_id: String,
+        expected: String,
+        next: String,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.set_session_status(
+                &agent_id,
+                &session_id,
+                &expected,
+                &next,
+            )
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?

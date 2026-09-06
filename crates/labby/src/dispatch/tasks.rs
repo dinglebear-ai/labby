@@ -1,6 +1,9 @@
 //! Authenticated, owner-scoped Agent Task surface shared by HTTP and MCP.
 
-use crate::access::{ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action};
+use crate::access::{
+    ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+    refresh_authority_epochs,
+};
 use crate::dispatch::error::ToolError;
 use labby_auth::VerifiedIdentity;
 use labby_primitives::{
@@ -9,11 +12,23 @@ use labby_primitives::{
         ResourceId, ResourceRef, TeamId,
     },
     action::{ActionSpec, ParamSpec},
-    task::{TaskIntent, TaskState},
+    agent::AgentSessionBinding,
+    task::{TaskIntent, TaskSettlement, TaskState},
 };
-use labby_runtime::authority::AuthoritySafeBoundary;
+use labby_runtime::{
+    agent_runtime::{
+        AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor,
+        AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard,
+    },
+    authority::{AuthorityEpochVector, AuthoritySafeBoundary},
+    task_runtime::{ScheduledTask, TaskLedger, TaskRuntimeError, TaskScheduler, execute_task},
+};
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TASK_SCHEDULER: LazyLock<TaskScheduler> =
+    LazyLock::new(|| TaskScheduler::new(4).expect("valid fixed task quota"));
 
 const fn param(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -176,7 +191,7 @@ pub(crate) async fn dispatch(
         }
         "tasks.queue" | "tasks.cancel" => {
             let record = load(&context, &params).await?;
-            authorize(
+            let authority_lease = authorize(
                 &context,
                 name,
                 &record.intent.owner,
@@ -202,7 +217,25 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map)?;
-            Ok(json!({"task_id":record.intent.id,"state":next.wire()}))
+            if name == "tasks.queue" {
+                execute_queued(&context, &record, authority_lease, now).await?;
+            } else {
+                context
+                    .store
+                    .transition_agent_task(
+                        record.intent.id.clone(),
+                        TaskState::Cancelling,
+                        TaskState::Cancelled,
+                        context.identity.safe_fingerprint(),
+                        record.attempt,
+                        i64::try_from(now).map_err(|_| internal())?,
+                    )
+                    .await
+                    .map_err(map)?;
+            }
+            Ok(
+                json!({"task_id":record.intent.id,"state":if name == "tasks.cancel" { "cancelled" } else { next.wire() }}),
+            )
         }
         _ => Err(unknown(name)),
     }
@@ -226,7 +259,7 @@ async fn authorize(
     id: String,
     capability: Capability,
     now: u64,
-) -> Result<(), ToolError> {
+) -> Result<labby_runtime::authority::AuthorityLease, ToolError> {
     let action = ActionRef::new("tasks", name).map_err(|_| invalid("action"))?;
     authorize_action(
         &context.store,
@@ -254,8 +287,177 @@ async fn authorize(
         ),
     )
     .await
-    .map(|_| ())
     .map_err(map)
+}
+
+async fn execute_queued(
+    context: &TaskDispatchContext,
+    record: &crate::access::TaskRecord,
+    lease: labby_runtime::authority::AuthorityLease,
+    now: u64,
+) -> Result<(), ToolError> {
+    use sha2::{Digest as _, Sha256};
+    let definition = context
+        .store
+        .get_agent_definition(record.intent.agent_id.clone())
+        .await
+        .map_err(map)?
+        .ok_or_else(denied)?;
+    let epochs = refresh_authority_epochs(
+        &context.store,
+        context.identity.clone(),
+        record.intent.owner.clone(),
+        Capability::ScopeOperate,
+    )
+    .await
+    .map_err(map)?;
+    let attempt = record.attempt.saturating_add(1);
+    let fence = hex::encode(Sha256::digest(format!(
+        "{}:{attempt}:{now}",
+        record.intent.id
+    )));
+    let expires = now.saturating_add(30_000);
+    let request = AgentExecutionRequest {
+        definition: definition.clone(),
+        session: AgentSessionBinding {
+            session_id: format!("task-{}-{attempt}", record.intent.id),
+            agent_id: definition.id.clone(),
+            agent_version: definition.revision.version,
+            principal: PrincipalId::new(context.identity.safe_fingerprint())
+                .map_err(|_| invalid("principal"))?,
+            owner: record.intent.owner.clone(),
+            catalog_generation: definition.revision.catalog_generation.clone(),
+            authority_fingerprint: epochs.fingerprint().as_str().into(),
+            lease_expires_at: i64::try_from(lease.expires_at_millis()).map_err(|_| internal())?,
+        },
+        lease,
+        bounds: AgentResourceBounds {
+            max_runtime_millis: 300_000,
+            max_output_bytes: 16 * 1024 * 1024,
+            max_external_effects: 1_000,
+        },
+    };
+    let task = ScheduledTask {
+        task_id: record.intent.id.clone(),
+        owner: record.intent.owner.clone(),
+        attempt,
+        fencing_token: fence,
+        lease_expires_at: expires,
+        agent_request: request,
+    };
+    let ledger = StoreLedger {
+        store: context.store.clone(),
+        actor: context.identity.safe_fingerprint(),
+        now,
+    };
+    let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
+    match execute_task(
+        &TASK_SCHEDULER,
+        &ledger,
+        &FixedAuthority(epochs),
+        &DisabledExecutor,
+        task,
+        Cancellation::new(),
+        now,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(_) => Err(ToolError::Sdk {
+            sdk_kind: "service_unavailable".into(),
+            message: "Agent Task execution backend is not configured".into(),
+        }),
+    }
+}
+
+struct FixedAuthority(AuthorityEpochVector);
+impl AgentAuthority for FixedAuthority {
+    async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+        Ok(self.0.clone())
+    }
+}
+struct DisabledExecutor;
+impl AgentExecutor for DisabledExecutor {
+    async fn execute(
+        &self,
+        _: AgentExecutionRequest,
+        _: ExecutionGuard<'_>,
+    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+        Err(AgentRuntimeError::ExecutorFailed)
+    }
+}
+struct StoreLedger {
+    store: crate::access::AccessStore,
+    actor: String,
+    now: u64,
+}
+impl TaskLedger for StoreLedger {
+    async fn acquire(&self, task: &ScheduledTask) -> Result<(), TaskRuntimeError> {
+        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+        self.store
+            .acquire_agent_task_lease(
+                task.task_id.clone(),
+                task.attempt,
+                task.fencing_token.clone(),
+                i64::try_from(task.lease_expires_at).map_err(|_| TaskRuntimeError::Unavailable)?,
+                now,
+            )
+            .await
+            .map_err(|_| TaskRuntimeError::FencedConflict)?;
+        self.store
+            .settle_agent_task(
+                task.task_id.clone(),
+                TaskState::Queued,
+                TaskState::Running,
+                self.actor.clone(),
+                task.attempt,
+                task.fencing_token.clone(),
+                TaskSettlement {
+                    state: TaskState::Running,
+                    output_digest: None,
+                    error_code: None,
+                    settled_at: now,
+                },
+                now,
+            )
+            .await
+            .map_err(|_| TaskRuntimeError::FencedConflict)
+    }
+    async fn settle(
+        &self,
+        task: &ScheduledTask,
+        state: TaskState,
+        output: Option<&AgentExecutionOutput>,
+        reason: Option<&str>,
+    ) -> Result<(), TaskRuntimeError> {
+        let now = i64::try_from(self.now).map_err(|_| TaskRuntimeError::Unavailable)?;
+        self.store
+            .settle_agent_task(
+                task.task_id.clone(),
+                TaskState::Running,
+                state,
+                self.actor.clone(),
+                task.attempt,
+                task.fencing_token.clone(),
+                TaskSettlement {
+                    state,
+                    output_digest: output.map(|v| v.digest.clone()),
+                    error_code: reason.map(str::to_owned),
+                    settled_at: now,
+                },
+                now,
+            )
+            .await
+            .map_err(|_| TaskRuntimeError::FencedConflict)
+    }
+    async fn recover_expired(&self, now: u64) -> Result<usize, TaskRuntimeError> {
+        self.store
+            .recover_expired_agent_tasks(
+                i64::try_from(now).map_err(|_| TaskRuntimeError::Unavailable)?,
+            )
+            .await
+            .map_err(|_| TaskRuntimeError::Unavailable)
+    }
 }
 fn owner(params: &Value) -> Result<OwnerScope, ToolError> {
     let id = required(params, "owner_id")?;

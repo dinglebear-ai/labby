@@ -142,6 +142,36 @@ impl AgentDefinitionStore {
             .optional()
             .map_err(super::store::map_sqlite_error)
     }
+
+    pub(crate) fn set_session_status(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        expected: &str,
+        next: &str,
+    ) -> AccessStoreResult<()> {
+        const VALID: &[&str] = &[
+            "admitted",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "revoked",
+            "interrupted",
+        ];
+        if !VALID.contains(&expected) || !VALID.contains(&next) {
+            return Err(AccessStoreError::MalformedVocabulary);
+        }
+        let changed = self.connection.execute(
+            "UPDATE agent_sessions SET status=?4 WHERE agent_id=?1 AND session_id=?2 AND status=?3",
+            params![agent_id, session_id, expected, next],
+        ).map_err(super::store::map_sqlite_error)?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(AccessStoreError::NotAuthorized)
+        }
+    }
 }
 
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> {

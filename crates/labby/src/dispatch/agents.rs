@@ -14,9 +14,17 @@ use labby_primitives::{
         ResourceId, ResourceRef, TeamId,
     },
     action::{ActionSpec, ParamSpec},
-    agent::{AgentDefinition, AgentRevision, AgentState, RunningRevocationPolicy},
+    agent::{
+        AgentDefinition, AgentRevision, AgentSessionBinding, AgentState, RunningRevocationPolicy,
+    },
 };
-use labby_runtime::authority::AuthoritySafeBoundary;
+use labby_runtime::{
+    agent_runtime::{
+        AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor,
+        AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard, execute_agent,
+    },
+    authority::{AuthorityEpochVector, AuthoritySafeBoundary},
+};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -232,6 +240,7 @@ pub(crate) async fn dispatch(
                 .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
                 .map_err(|_| denied())?;
             let session_id = format!("{}-{now}", definition.id);
+            let lease_expires_at = lease.expires_at_millis();
             context
                 .store
                 .create_agent_session(
@@ -244,9 +253,69 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map)?;
-            Ok(
-                json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":session_id,"status":"admitted","authority_expires_at":lease.expires_at_millis()}),
+            context
+                .store
+                .set_agent_session_status(
+                    definition.id.clone(),
+                    session_id.clone(),
+                    "admitted".into(),
+                    "running".into(),
+                )
+                .await
+                .map_err(map)?;
+            let request = AgentExecutionRequest {
+                definition: definition.clone(),
+                session: AgentSessionBinding {
+                    session_id: session_id.clone(),
+                    agent_id: definition.id.clone(),
+                    agent_version: definition.revision.version,
+                    principal: PrincipalId::new(context.identity.safe_fingerprint())
+                        .map_err(|_| invalid("principal"))?,
+                    owner: definition.owner.clone(),
+                    catalog_generation: definition.revision.catalog_generation.clone(),
+                    authority_fingerprint: epochs.fingerprint().as_str().into(),
+                    lease_expires_at: i64::try_from(lease_expires_at).map_err(|_| internal())?,
+                },
+                lease,
+                bounds: AgentResourceBounds {
+                    max_runtime_millis: 300_000,
+                    max_output_bytes: 16 * 1024 * 1024,
+                    max_external_effects: 1_000,
+                },
+            };
+            let result = execute_agent(
+                &FixedAuthority(epochs),
+                &DisabledExecutor,
+                request,
+                Cancellation::new(),
+                now,
             )
+            .await;
+            let next = match result {
+                Ok(_) => "completed",
+                Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
+                Err(AgentRuntimeError::Cancelled) => "cancelled",
+                Err(_) => "failed",
+            };
+            context
+                .store
+                .set_agent_session_status(
+                    definition.id.clone(),
+                    session_id.clone(),
+                    "running".into(),
+                    next.into(),
+                )
+                .await
+                .map_err(map)?;
+            match result {
+                Ok(output) => Ok(
+                    json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":session_id,"status":next,"output_digest":output.digest,"authority_expires_at":lease_expires_at}),
+                ),
+                Err(_) => Err(ToolError::Sdk {
+                    sdk_kind: "service_unavailable".into(),
+                    message: "Agent execution backend is not configured".into(),
+                }),
+            }
         }
         "agents.session.status" => {
             let definition = load(&context, &params).await?;
@@ -269,6 +338,23 @@ pub(crate) async fn dispatch(
             Ok(json!({"agent_id":definition.id,"session_id":session_id,"status":status}))
         }
         _ => Err(unknown(name)),
+    }
+}
+
+struct FixedAuthority(AuthorityEpochVector);
+impl AgentAuthority for FixedAuthority {
+    async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+        Ok(self.0.clone())
+    }
+}
+struct DisabledExecutor;
+impl AgentExecutor for DisabledExecutor {
+    async fn execute(
+        &self,
+        _: AgentExecutionRequest,
+        _: ExecutionGuard<'_>,
+    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+        Err(AgentRuntimeError::ExecutorFailed)
     }
 }
 

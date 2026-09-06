@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Bot, Box, CheckCircle2, CirclePlus, Clock3, ExternalLink,
   FileCode2, FileText, Grid2X2, Layers3, List,
@@ -19,6 +19,7 @@ import { ArtifactComposer } from './artifact-composer'
 import { DevContainersPageContent } from './dev-containers-page-content'
 import { NewAgentSessionWizard } from './new-agent-session-wizard'
 import { AlpineMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
+import { listAgents, listTasks } from '@/lib/agent-tasks/client'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -66,17 +67,14 @@ export function CreatePage() {
   return <ArtifactComposer />
 }
 
-const agents = [
-  ['Running', 'Reconcile the gateway catalog', 'operator-console', 'platform-base', 'Claude Code', '12m'],
-  ['Running', 'Research Depot publishing contracts', 'research-workbench', 'rust-heavy', 'Codex', '4m'],
-  ['Completed', 'Verify Skills build matrix', 'operator-console', 'platform-base', 'Codex', '2m'],
-  ['Failed', 'Draft plugin manifest', 'research-workbench', 'edge-minimal', 'Claude Code', '41s'],
-]
-
 export function AgentsPage() {
+  const [agents, setAgents] = useState<string[][]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[] | null>(null)
   const [creating, setCreating] = useState(false)
-  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New session</Button>} stats={[{label:'Running',value:2,icon:<Play size={12}/>,tone:'var(--aurora-success)'},{label:'Completed',value:1,icon:<CheckCircle2 size={12}/>},{label:'Failed',value:1,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'},{label:'Median',value:<><span>4m 12s</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">per session</small></>,icon:<Clock3 size={12}/>} ]}/><AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
+  useEffect(() => { const controller = new AbortController(); void listAgents(controller.signal).then(items => { setAgents(items.map(item => [item.state, item.agent_id, `${item.owner_kind}:${item.owner_id}`, `v${item.version}`, 'Labby', item.catalog_generation])); setLoadError(null) }).catch(error => { if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Agent service unavailable') }); return () => controller.abort() }, [])
+  const active = agents.filter(row => row[0] === 'active').length
+  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New session</Button>} stats={[{label:'Active',value:active,icon:<Play size={12}/>,tone:'var(--aurora-success)'},{label:'Suspended',value:agents.filter(row=>row[0]==='suspended').length,icon:<Pause size={12}/>},{label:'Definitions',value:agents.length,icon:<Bot size={12}/>},{label:'Authority',value:'Live',icon:<CheckCircle2 size={12}/>} ]}/>{loadError?<div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{loadError}</div>:null}<AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
     <AgentSessionSheet session={selected} onOpenChange={(open) => !open && setSelected(null)} />
     <NewAgentSessionWizard open={creating} onOpenChange={setCreating} />
   </>
@@ -114,20 +112,15 @@ function AgentSessionSheet({ session, onOpenChange }: { session: string[] | null
 
 function ActivitySpinner() { return <span className="size-3 animate-pulse rounded-full bg-aurora-error" /> }
 
-const tasks = [
-  ['Armed', 'Loadout Scope Audit', 'Daily · 02:00', 'project-a', 'in 6h', 'Flag write-capable tools added since the last run.', 'passed'],
-  ['Armed', 'Error Forensics Digest', 'Mon, Thu · 07:00', 'platform', 'in 2d', 'Cluster gateway errors and post a concise digest to Activity.', 'passed'],
-  ['Armed', 'Upstream Drift Sweep', 'Weekly · Sun 03:00', 'shared', 'in 4d', 'Merge clean upstream updates and open reviewable diffs for the rest.', 'partial'],
-  ['Armed', 'Container Rebuild', 'Weekly · Sat 01:00', 'platform', 'in 3d', 'Rebuild every image against the pinned toolchain set.', 'passed'],
-  ['Paused', 'Dependency Bump PR', 'Daily · 05:00', 'project-b', 'paused', 'Open one safe dependency update pull request per repository.', 'failed'],
-]
 export function TasksPage() {
-  const [rows, setRows] = useState(tasks)
+  const [rows, setRows] = useState<string[][]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[] | null>(null)
   const [creating, setCreating] = useState(false)
   const [name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console')
-  const create=()=>{if(!name.trim()||!definition.trim())return;setRows(c=>[['Armed',name.trim(),schedule,loadout,'tomorrow',definition.trim(),'pending'],...c]);setName('');setDefinition('');setCreating(false)}
-  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Team · Schedules" title="Tasks" description="Recurring agent runs. Each task carries its own loadout, container and repository, and reports back into Activity when it finishes." actions={<Button onClick={()=>setCreating(true)}><CirclePlus/>New Task</Button>} stats={[{label:'Scheduled',value:rows.length,icon:<Clock3 size={12}/>},{label:'Armed',value:rows.filter(row=>row[0]==='Armed').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},{label:'Next run',value:<><span className="text-aurora-accent-primary">02:00</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">Scope Audit</small></>,icon:<Play size={12}/>},{label:'Failures',value:<><span>1</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">last 7 days</small></>,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'}]}/><TasksCollection rows={rows} setRows={setRows} onSelect={setSelected}/></PageFrame>
+  useEffect(() => { const controller = new AbortController(); void listTasks(controller.signal).then(items => { setRows(items.map(item => [item.state, item.task_id, `attempt ${item.attempt}`, `${item.owner_kind}:${item.owner_id}`, item.agent_id, `Agent revision ${item.agent_version}`, item.error_code ? 'failed' : item.output_digest ? 'passed' : 'pending'])); setLoadError(null) }).catch(error => { if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Task service unavailable') }); return () => controller.abort() }, [])
+  const create=()=>{setLoadError('Task creation requires an immutable Agent revision and is not available from this form yet.');setCreating(false)}
+  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Team · Agent Tasks" title="Tasks" description="Durable, owner-scoped agent tasks from Labby’s authoritative task ledger." actions={<Button onClick={()=>setCreating(true)}><CirclePlus/>New Task</Button>} stats={[{label:'Tasks',value:rows.length,icon:<Clock3 size={12}/>},{label:'Queued',value:rows.filter(row=>row[0]==='queued').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},{label:'Running',value:rows.filter(row=>row[0]==='running').length,icon:<Play size={12}/>},{label:'Failed',value:rows.filter(row=>row[0]==='failed').length,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'}]}/>{loadError?<div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{loadError}</div>:null}<TasksCollection rows={rows} onSelect={setSelected}/></PageFrame>
     <TaskDialog row={selected} onOpenChange={open=>!open&&setSelected(null)} onSave={updated=>{setRows(c=>c.map(row=>row===selected?updated:row));setSelected(updated)}}/>
     <Dialog open={creating} onOpenChange={setCreating}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>New task</DialogTitle><DialogDescription>Schedule a reusable agent run.</DialogDescription><TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/><Button onClick={create} disabled={!name.trim()||!definition.trim()}><CirclePlus/>Create task</Button></DialogContent></Dialog>
   </>
@@ -138,7 +131,7 @@ function SortHead({children,onClick}:{children:React.ReactNode;onClick:()=>void}
 function AgentsCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
   const [filter,setFilter]=useState('All'),[sort,setSort]=useState(1),[view,setView]=useState<ViewMode>('table')
   const shown=[...rows].filter(row=>filter==='All'||row[0]===filter).sort((a,b)=>a[sort].localeCompare(b[sort]))
-  return <DashboardPanel title="Sessions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','Running','Completed','Failed'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
+  return <DashboardPanel title="Definitions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','active','suspended'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
     {view==='table'?<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Session','Loadout','Container','Harness','Elapsed'].map((head,index)=><SortHead key={head} onClick={()=>setSort(index)}>{head}</SortHead>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} tabIndex={0} onClick={()=>onSelect(row)} onKeyDown={event=>event.key==='Enter'&&onSelect(row)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={row[0]}/></td><td className="px-3 py-3 font-semibold text-aurora-text-primary">{row[1]}</td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{row[2]}</Badge></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[3]}/>{row[3]}</span></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[4]}/>{row[4]}</span></td><td className="px-3 py-3 text-aurora-text-muted">{row[5]}</td></tr>)}</tbody></table></div>:<div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(row=><button key={row[1]} onClick={()=>onSelect(row)} className="w-full rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left"><StatusDot status={row[0]}/><strong className="mt-2 block text-aurora-text-primary">{row[1]}</strong><span className="mt-1 block text-xs text-aurora-text-muted">{row.slice(2).join(' · ')}</span></button>)}</div>}
   </DashboardPanel>
 }
@@ -154,10 +147,10 @@ function ProductMark({kind}:{kind:string}){
   return <span aria-label="Gemini" className="grid size-5 place-items-center rounded bg-white/5 text-sm text-aurora-text-primary">✦</span>
 }
 
-function TasksCollection({rows,setRows,onSelect}:{rows:string[][];setRows:React.Dispatch<React.SetStateAction<string[][]>>;onSelect:(row:string[])=>void}){
+function TasksCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
   const [filter,setFilter]=useState('All')
   const shown=rows.filter(row=>filter==='All'||row[0]===filter)
-  const toggle=(target:string[])=>setRows(current=>current.map(row=>row===target?[row[0]==='Armed'?'Paused':'Armed',...row.slice(1)]:row))
+  const toggle=(target:string[])=>target
   return <DashboardPanel title="Scheduled" action={<div className="flex gap-1">{['All','Armed','Paused'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['On','Task','Schedule','Loadout','Last run','Next',''].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} className="border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-2"><button type="button" role="switch" aria-checked={row[0]==='Armed'} aria-label={`${row[0]==='Armed'?'Pause':'Arm'} ${row[1]}`} onClick={()=>toggle(row)} className="relative h-5 w-9 rounded-full border border-aurora-border-strong bg-aurora-control-surface aria-checked:border-aurora-accent-primary aria-checked:bg-aurora-accent-primary"><span className="absolute left-0.5 top-0.5 size-3.5 rounded-full bg-aurora-text-muted transition-transform [[aria-checked=true]_&]:translate-x-4 [[aria-checked=true]_&]:bg-aurora-page-bg"/></button></td><td className="px-3 py-2"><button onClick={()=>onSelect(row)} className="text-left"><strong className="block text-xs text-aurora-text-primary">{row[1]}</strong><span className="block max-w-[30rem] truncate text-[10px] text-aurora-text-muted">{row[5]}</span></button></td><td className="px-3 py-2 text-xs text-aurora-text-muted">◷ {row[2]}</td><td className="px-3 py-2"><Badge variant="outline" className="text-aurora-accent-primary">#{row[3]}</Badge></td><td className="px-3 py-2"><span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold ${row[6]==='failed'?'text-aurora-error':row[6]==='partial'?'text-aurora-warn':'text-aurora-success'}`}><span className="size-1.5 rounded-full bg-current"/>{row[6]}</span></td><td className="px-3 py-2 text-xs text-aurora-text-muted">{row[4]}</td><td className="px-3 py-2"><Button variant="ghost" size="icon-sm" aria-label={`View logs for ${row[1]}`} asChild><a href="/logs"><ScrollText className="size-4"/></a></Button></td></tr>)}</tbody></table></div></DashboardPanel>
 }
 
