@@ -592,7 +592,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     }
 
     #[cfg(feature = "skills")]
-    reg.register(RegisteredService::bootstrap_operator(
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
         crate::dispatch::artifacts::META.name,
         crate::dispatch::artifacts::META.description,
         "bootstrap",
@@ -932,6 +932,28 @@ mod tests {
             .services()
             .iter()
             .any(|service| service.name == name)
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn artifacts_require_caller_bound_dispatch_for_local_and_remote_actions() {
+        let registry = build_default_registry();
+        assert_eq!(
+            registry.dispatch_capability("artifacts"),
+            Some(super::DispatchCapability::CallerBound)
+        );
+        assert!(!registry.supports_context_free_dispatch("artifacts"));
+        assert!(registry.supports_mcp_dispatch("artifacts"));
+        #[cfg(feature = "gateway")]
+        {
+            use labby_gateway::registry::InProcessServiceRegistry as _;
+            assert!(
+                registry
+                    .in_process_services()
+                    .iter()
+                    .all(|service| service.service_name() != "artifacts")
+            );
+        }
     }
 
     #[cfg(not(feature = "gateway"))]
