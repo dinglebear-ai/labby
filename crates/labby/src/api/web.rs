@@ -92,6 +92,7 @@ fn is_web_navigation(path: &str) -> bool {
         "/",
         "/404",
         "/agents",
+        "/administration",
         "/create",
         "/design-system",
         "/depot",

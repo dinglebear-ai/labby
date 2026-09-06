@@ -22,6 +22,8 @@ docs-check:
     cargo run --package labby --bin labby --all-features -- docs check
     python3 scripts/check-doc-links.py
     python3 scripts/check-product-docs.py
+    python3 scripts/check-depot-control-plane-contract.py
+    python3 -m unittest scripts/ci/test_depot_control_plane_contract.py
 
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:

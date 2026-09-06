@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-03
+updated: 2026-09-06
 ---
 
 # Depot control-plane compatibility contract
@@ -12,12 +12,16 @@ relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.
 
-The checked federated manifest at
-[`fixtures/depot-control-plane/compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
-is the release denominator. A UI action is available only when its required
-operation and contract fingerprint are present. Missing or unknown required
-contracts render `incompatible`; they never fall back to a generic operation
-console.
+The release denominator is the joint pair of checked manifests:
+[`compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
+defines the authenticated exact-import and Administration contract, while
+[`compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
+defines federated discovery. Both must pass `just docs-check`. A UI action is available only when its required
+operation and contract fingerprint are present. Administration renders Depot's
+published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
+cardinality limits, authority states, fingerprint binding, and fail-closed
+`incompatible` behavior are machine-readable in compatibility-v1. Missing, oversized, or unknown required contracts
+render `incompatible`; Labby never invents an unadvertised operation.
 
 ## Actor and mount policy
 
@@ -25,9 +29,10 @@ console.
   mutation and import routes.
 - `none`, `web_ui_auth_disabled`, synthetic development identity, and the
   static-bearer browser shell do not establish a Depot actor.
-- A shared Depot service credential is read-only unless the manifest explicitly
-  records an approved service-actor policy. Multi-user mutation requires Depot
-  delegated actor enforcement.
+- A shared Depot service credential may mutate only when the browser principal
+  currently holds `lab:admin`, the request carries valid session CSRF, and the
+  credential itself carries Depot's required write authority. Depot remains the
+  final scope and resource-policy authority.
 - Effective permission is the intersection of current Labby permission,
   configured connection ACL, Depot delegated scope, and Depot resource policy.
 
@@ -39,18 +44,20 @@ and principal, the Depot operation fingerprint, and the selected local
 destination generation. Cursors, jobs, uploads, intents, confirmations, cache
 entries, and receipts are invalid outside that epoch.
 
-## Operational slice
+## Operational surface
 
-The first release contains only:
+The Administration surface consumes Depot's authorization-filtered canonical
+operation catalog. It covers Artifact and Skill lifecycle, sources, ingestion,
+uploads, bundles, token administration, and privileged maintenance. Labby keeps
+provider connection management beside those operations while Depot remains the
+authority for the operation schemas, visibility, revisions, and execution.
 
-1. session and compatibility bootstrap;
-2. bounded Artifact list and bounded current-revision detail;
-3. operator-configured connection status.
-
-Exact import, create/ingest, lifecycle management, jobs/uploads, and browser
-credential administration are expansion capabilities. Each is absent until its
-manifest entry is `supported` and its required operation schemas pass drift
-checks.
+Discovery's **Send to Labby** action resolves the selected provider to an
+Artifact acquisition connection with the same ID, requests the exact selected
+Artifact revision through Depot's `/api/artifacts/exact` contract, verifies its
+components, and commits the result through Labby's `artifacts.import` action.
+It fails closed when the matching acquisition connection or exact revision is
+missing; it never substitutes another configured Depot.
 
 ## Bounded transport
 

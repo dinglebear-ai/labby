@@ -2954,14 +2954,14 @@ mod tests {
 [[artifacts.sources]]
 id = "primary"
 kind = "depot"
-endpoint = "https://depot.example/v1/artifacts/exact"
+endpoint = "https://depot.example/api/artifacts/exact"
 control_plane_url = "https://depot.example"
 pinned_addresses = ["8.8.8.8"]
 bearer_token_env = "LABBY_DEPOT_TOKEN"
 "#,
         );
         let source = &cfg.artifacts.sources[0];
-        assert_eq!(source.endpoint, "https://depot.example/v1/artifacts/exact");
+        assert_eq!(source.endpoint, "https://depot.example/api/artifacts/exact");
         assert_eq!(
             source.control_plane_url.as_deref(),
             Some("https://depot.example")
