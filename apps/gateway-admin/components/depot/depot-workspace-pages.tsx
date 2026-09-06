@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import {
   Bot, Box, CheckCircle2, CirclePlus, Clock3,
   FileCode2, Grid2X2, Layers3, List,
-  Pause, Play, Search, Table2, ChevronDown, ArrowUpDown, ScrollText,
+  Pause, Play, Search, Table2, ChevronDown, ArrowUpDown,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
