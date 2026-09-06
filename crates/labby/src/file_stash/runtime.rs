@@ -187,6 +187,13 @@ impl FileStashRuntime {
             FileStashStatus::Shutdown => Err(FileStashBlockedReason::Unavailable),
         }
     }
+    #[cfg(test)]
+    pub(crate) async fn stop_janitor_for_test(&self) {
+        self.janitor_cancel.cancel();
+        if let Some(task) = self.janitor_task.lock().await.take() {
+            let _unused = task.await;
+        }
+    }
     pub(crate) async fn shutdown(&self) {
         let store = match &*self.state.lock().await {
             State::Ready(store) => Some(store.clone()),

@@ -229,17 +229,11 @@ impl LabMcpServer {
                         .await
                     {
                         Ok((id, lease)) => ResolvedStashPrincipal { id, _lease: lease },
-                        Err(
-                            crate::access::FileStashPrincipalResolutionError::IdentityUnavailable,
-                        ) => {
-                            return Ok(Vec::new());
-                        }
-                        Err(_) => {
-                            return Err(ToolError::Sdk {
-                                sdk_kind: "service_unavailable".to_owned(),
-                                message: "File Stash operation failed".to_owned(),
-                            });
-                        }
+                        // Resource listing is additive. A verified identity
+                        // without a durable Stash principal (including a host
+                        // where the access store is not configured) contributes
+                        // no Stash resources without hiding other providers.
+                        Err(_) => return Ok(Vec::new()),
                     }
                 } else {
                     self.file_stash_principal(context, Some(&context.meta))
