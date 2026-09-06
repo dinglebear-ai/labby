@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
+use labby_auth::VerifiedIdentity;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -298,10 +299,39 @@ async fn handle(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     require_gateway_admin(&req.action, request_id, auth.as_ref())?;
+    let auth_context = auth.as_ref().ok_or_else(|| {
+        ApiError::from(ToolError::Forbidden {
+            message: "Gateway operation is not authorized".into(),
+            required_scopes: Vec::new(),
+        })
+    })?;
+    let identity = identity
+        .ok_or_else(|| {
+            ApiError::from(ToolError::Forbidden {
+                message: "Gateway operation is not authorized".into(),
+                required_scopes: Vec::new(),
+            })
+        })?
+        .0;
+    let installation_id = state.installation_id.as_deref().unwrap_or("installation");
+    let team_id = headers
+        .get("x-labby-team-id")
+        .and_then(|value| value.to_str().ok());
+    crate::access::authorize_gateway_action(
+        &state.access_runtime,
+        identity,
+        &auth_context.0,
+        installation_id,
+        team_id,
+        &req.action,
+    )
+    .await
+    .map_err(ApiError::from)?;
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let auth_for_dispatch = auth.clone();
     let manager = state
