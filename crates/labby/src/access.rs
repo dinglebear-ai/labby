@@ -4,6 +4,7 @@ mod bootstrap;
 mod credential_schema;
 mod credential_store;
 mod credential_verifier;
+mod dev_container;
 mod domain;
 mod error;
 #[cfg(feature = "gateway")]
@@ -66,7 +67,7 @@ pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
-pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
+pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionAuthoritySnapshot};
 pub(crate) use runtime::CredentialLifecycleError;
 #[allow(unused_imports)]
 pub(crate) use runtime::{

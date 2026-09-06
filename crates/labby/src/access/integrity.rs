@@ -164,6 +164,9 @@ fn validate_manifest(connection: &Connection) -> AccessStoreResult<()> {
     canonical
         .execute_batch(super::migrations::TEAM_AUTHORITY_SCHEMA)
         .map_err(super::store::map_sqlite_error)?;
+    canonical
+        .execute_batch(super::dev_container::DEV_CONTAINER_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
     let expected = schema_manifest(&canonical)?;
     if actual != expected {
         return Err(integrity("schema_manifest"));
@@ -171,7 +174,10 @@ fn validate_manifest(connection: &Connection) -> AccessStoreResult<()> {
     Ok(())
 }
 
-fn validate_team_authority(connection: &Connection, generation: i64) -> AccessStoreResult<()> {
+pub(super) fn validate_team_authority(
+    connection: &Connection,
+    generation: i64,
+) -> AccessStoreResult<()> {
     let reserved: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM platform_administrators

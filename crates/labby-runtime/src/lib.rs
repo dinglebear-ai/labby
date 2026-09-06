@@ -25,6 +25,8 @@ pub mod catalog_notify;
 pub mod client_registry;
 /// Shared runtime state for the optional Code Mode MCP App surface.
 pub mod code_mode_app;
+/// Dev Container admission and lifecycle validation without host execution.
+pub mod dev_container;
 pub mod error;
 pub mod gateway_config;
 pub mod helpers;

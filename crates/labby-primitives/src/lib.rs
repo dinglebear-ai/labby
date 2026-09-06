@@ -13,6 +13,7 @@
 
 pub mod access;
 pub mod action;
+pub mod dev_container;
 pub mod mcp;
 pub mod plugin;
 pub mod plugin_ui;

@@ -4,9 +4,11 @@ use super::error::{AccessStoreError, AccessStoreResult};
 
 use super::credential_schema;
 
-pub(super) const SCHEMA_VERSION: i64 = 6;
+pub(super) const SCHEMA_VERSION: i64 = 7;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v6-20260905";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
+pub(super) const V6_SCHEMA_VERSION: i64 = 6;
+pub(super) const V6_SCHEMA_FINGERPRINT: &str = "labby-access-v6-20260905";
 pub(super) const V5_SCHEMA_VERSION: i64 = 5;
 pub(super) const V5_SCHEMA_FINGERPRINT: &str = "labby-access-v5-20260827";
 pub(super) const V4_SCHEMA_VERSION: i64 = 4;
@@ -65,6 +67,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             )
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(super::store::map_sqlite_error)?;
@@ -83,6 +86,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         super::integrity::validate_v1_before_migration(&transaction)?;
         rebuild_metadata_from_v1(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -98,6 +102,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         validate_v2_before_migration(&transaction)?;
         rebuild_metadata_from_v2(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -115,7 +120,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v3;
                 CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -150,6 +155,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .execute_batch("DROP TABLE access_metadata_v3;")
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -162,12 +168,13 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(super::store::map_sqlite_error)?;
         validate_v4_before_migration(&transaction)?;
-        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 6), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
+        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 7), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
         transaction.execute("INSERT INTO access_metadata SELECT singleton,?1,?2,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata_v4",params![SCHEMA_VERSION,SCHEMA_FINGERPRINT]).map_err(super::store::map_sqlite_error)?;
         transaction
             .execute_batch("DROP TABLE access_metadata_v4;")
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -185,7 +192,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v5;
                  CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -210,6 +217,54 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .execute_batch("DROP TABLE access_metadata_v5;")
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
+        install_dev_container_schema(&transaction)?;
+        transaction
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .commit()
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    if found == V6_SCHEMA_VERSION {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(super::store::map_sqlite_error)?;
+        validate_v6_before_migration(&transaction)?;
+        let bootstrap_trigger = transaction
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='seed_bootstrap_team_authority'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch("DROP TRIGGER seed_bootstrap_team_authority;")
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch(
+                "ALTER TABLE access_metadata RENAME TO access_metadata_v6;
+                 CREATE TABLE access_metadata (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
+                    schema_fingerprint TEXT NOT NULL,
+                    global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
+                    updated_at INTEGER NOT NULL,
+                    bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)),
+                    bootstrap_identity_fingerprint TEXT,
+                    CHECK ((bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL)
+                      OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL
+                        AND length(trim(bootstrap_identity_fingerprint)) > 0))
+                 ) STRICT;",
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction.execute("INSERT INTO access_metadata SELECT singleton,?1,?2,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata_v6", params![SCHEMA_VERSION, SCHEMA_FINGERPRINT]).map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch("DROP TABLE access_metadata_v6;")
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch(&bootstrap_trigger)
+            .map_err(super::store::map_sqlite_error)?;
+        install_dev_container_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -227,6 +282,7 @@ pub(super) fn validate_migratable(connection: &Connection, version: i64) -> Acce
         V3_SCHEMA_VERSION => validate_v3_before_migration(connection),
         V4_SCHEMA_VERSION => validate_v4_before_migration(connection),
         V5_SCHEMA_VERSION => validate_v5_before_migration(connection),
+        V6_SCHEMA_VERSION => validate_v6_before_migration(connection),
         _ => Err(AccessStoreError::IntegrityViolation {
             check: "schema_metadata",
         }),
@@ -257,6 +313,47 @@ fn validate_v5_before_migration(connection: &Connection) -> AccessStoreResult<()
     validate_pre_migration_integrity(connection)?;
     super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
     Ok(())
+}
+
+fn validate_v6_before_migration(connection: &Connection) -> AccessStoreResult<()> {
+    let metadata = read_legacy_metadata(connection)?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(super::store::map_sqlite_error)?;
+    if metadata.schema_version != V6_SCHEMA_VERSION
+        || metadata.schema_fingerprint != V6_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
+        || application_id != APPLICATION_ID
+    {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        });
+    }
+    let canonical = canonical_v6_schema()?;
+    if schema_manifest(connection)? != schema_manifest(&canonical)? {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_manifest",
+        });
+    }
+    validate_pre_migration_integrity(connection)?;
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
+    super::integrity::validate_team_authority(connection, metadata.bootstrap_generation)
+}
+
+fn canonical_v6_schema() -> AccessStoreResult<Connection> {
+    let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
+    let v6_metadata = SCHEMA_V2_METADATA.replace("schema_version = 7", "schema_version = 6");
+    connection
+        .execute_batch(&v6_metadata)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(DOMAIN_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(TEAM_AUTHORITY_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    Ok(connection)
 }
 
 pub(super) fn canonical_v5_schema() -> AccessStoreResult<Connection> {
@@ -583,7 +680,7 @@ pub(super) const SCHEMA_V2_METADATA: &str = concat!(
     "
 CREATE TABLE access_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
+    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
     schema_fingerprint TEXT NOT NULL,
     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
     updated_at INTEGER NOT NULL,
@@ -817,6 +914,12 @@ fn install_team_schema_and_seed(connection: &Connection) -> AccessStoreResult<()
         connection.execute("INSERT INTO access_audit VALUES('bootstrap-initial-team-audit',?1,NULL,'bootstrap-owner','bootstrap-local',NULL,'access.team.bootstrap','team','bootstrap-initial-team','allow','canonical_bootstrap_principal',0,'{}')", [updated_at]).map_err(super::store::map_sqlite_error)?;
     }
     Ok(())
+}
+
+fn install_dev_container_schema(connection: &Connection) -> AccessStoreResult<()> {
+    connection
+        .execute_batch(super::dev_container::DEV_CONTAINER_SCHEMA)
+        .map_err(super::store::map_sqlite_error)
 }
 
 pub(super) const DOMAIN_SCHEMA: &str = "
@@ -1248,6 +1351,9 @@ mod credential_migration_tests {
         canonical.execute_batch(SCHEMA_V2_METADATA).unwrap();
         canonical.execute_batch(DOMAIN_SCHEMA).unwrap();
         canonical.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
+        canonical
+            .execute_batch(super::super::dev_container::DEV_CONTAINER_SCHEMA)
+            .unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&canonical).unwrap()
@@ -1280,6 +1386,9 @@ mod credential_migration_tests {
         expected.execute_batch(SCHEMA_V2_METADATA).unwrap();
         expected.execute_batch(DOMAIN_SCHEMA).unwrap();
         expected.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
+        expected
+            .execute_batch(super::super::dev_container::DEV_CONTAINER_SCHEMA)
+            .unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&expected).unwrap()
@@ -1300,6 +1409,47 @@ mod credential_migration_tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn canonical_v6_adds_empty_dev_container_ledger_atomically() {
+        let mut connection = canonical_v6_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint) VALUES(1,?1,?2,11,100,0,NULL)",
+                params![V6_SCHEMA_VERSION, V6_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", V6_SCHEMA_VERSION)
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        super::super::integrity::validate(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        for table in [
+            "dev_container_templates",
+            "dev_container_owner_quotas",
+            "dev_container_instances",
+            "dev_container_ledger",
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
     }
 
     #[test]
