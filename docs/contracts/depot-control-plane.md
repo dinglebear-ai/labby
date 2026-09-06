@@ -127,3 +127,22 @@ Release evidence records the Labby commit and binary digest, frontend export
 manifest digest, Depot commit and signed image digest, this manifest digest,
 operation fingerprint, auth/actor mode, and durable schema generation. Source
 checkout combinations are not authoritative release evidence.
+
+## Compatibility rollout and rollback
+
+Depot has exactly one authority mode. `standalone` retains explicit local
+platform authority and cannot accept Labby Team delegation. `labby_managed`
+disables ordinary local Team mutation and requires a healthy signed projection
+plus delegated assertion protocol v1. Missing readiness, a stale watermark, an
+unknown protocol version, or the managed-authority kill switch makes Team
+mutation unavailable; none of these conditions falls back to standalone.
+
+Rollout order is Depot accept-capable, Labby producer, verified watermark,
+then managed enforcement. Mixed versions remain read-compatible, but Team
+writes remain disabled until both peers advertise protocol v1 readiness.
+Rollback before ownership transfer disables the producer and returns Depot to
+explicit standalone mode. After audited ownership transfer, rollback first
+enables the kill switch, drains/reconciles outstanding intents, exports the
+authority snapshot, and performs an audited transfer back to local platform
+authority. Operators must never toggle directly from a degraded managed state
+to standalone while Labby remains a command authority.
