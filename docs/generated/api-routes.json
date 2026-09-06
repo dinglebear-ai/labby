@@ -1415,6 +1415,27 @@
     "notes": "status"
   },
   {
+    "method": "POST",
+    "path": "/v1/dev-containers",
+    "aliases": [],
+    "surface": "api",
+    "handler_group": "dev_containers",
+    "handler_identity": "handle",
+    "feature": null,
+    "runtime_condition": "mounted only when API authentication is configured",
+    "auth_required": true,
+    "bearer_only": false,
+    "bootstrap_proof": false,
+    "session_cookie_allowed": true,
+    "csrf_required": true,
+    "host_validation": false,
+    "master_only": true,
+    "cache_posture": "not cacheable",
+    "failure_disclosure": "standard",
+    "side_effects": "possible",
+    "notes": "handle"
+  },
+  {
     "method": "GET",
     "path": "/v1/docs",
     "aliases": [],

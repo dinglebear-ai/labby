@@ -6,6 +6,35 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `access` | `access.gateway_credential.bind` | false | false | false |  | `team_id*: string`<br>`upstream_name*: string`<br>`binding_id*: string` | `object` | mcp, api |
+| `access` | `access.gateway_credential.list` | false | false | false |  | `team_id*: string` | `object` | mcp, api |
+| `access` | `access.gateway_credential.revoke` | false | false | false |  | `team_id*: string`<br>`upstream_name*: string` | `object` | mcp, api |
+| `access` | `access.platform_admin.grant` | false | false | false |  | `principal_id*: string` | `object` | mcp, api |
+| `access` | `access.platform_admin.revoke` | false | false | false |  | `principal_id*: string` | `object` | mcp, api |
+| `access` | `access.project.effective.list` | false | false | false |  |  | `object` | mcp, api |
+| `access` | `access.team.activate` | false | false | false |  | `team_id*: string` | `object` | mcp, api |
+| `access` | `access.team.create` | false | false | false |  | `team_id*: string`<br>`name*: string` | `object` | mcp, api |
+| `access` | `access.team.list` | false | false | false |  |  | `object` | mcp, api |
+| `access` | `access.team.member.add` | false | false | false |  | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
+| `access` | `access.team.member.remove` | false | false | false |  | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
+| `access` | `access.team.member.role.set` | false | false | false |  | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
+| `access` | `access.team.member.suspend` | false | false | false |  | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
+| `access` | `access.team.suspend` | false | false | false |  | `team_id*: string` | `object` | mcp, api |
+| `access` | `access.team_invitation.accept` | false | false | false |  | `token*: string` | `object` | mcp, api |
+| `access` | `access.team_invitation.create` | false | false | false |  | `team_id*: string`<br>`principal_id*: string`<br>`role*: string`<br>`token*: string`<br>`ttl_seconds*: integer` | `object` | mcp, api |
+| `access` | `access.team_project.assign` | false | false | false |  | `team_id*: string`<br>`project_id*: string`<br>`role*: string` | `object` | mcp, api |
+| `access` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `access` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `agents` | `agents.create` | false | false | false |  | `agent_id*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`content_digest*: string`<br>`repository_digest*: string`<br>`image_digest*: string`<br>`harness_digest*: string`<br>`loadout_digest*: string`<br>`catalog_generation*: string` | `object` | mcp, api |
+| `agents` | `agents.delete` | false | false | false |  | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.get` | false | false | false |  | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.list` | false | false | false |  |  | `object` | mcp, api |
+| `agents` | `agents.run` | false | false | false |  | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.session.status` | false | false | false |  | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
+| `agents` | `agents.suspend` | false | false | false |  | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `agents.update` | false | false | false |  | `agent_id*: string` | `object` | mcp, api |
+| `agents` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `agents` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `artifacts` | `artifacts.activate` | false | false | false |  | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.archive` | false | false | false |  | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.authority_status` | false | false | false |  | `connection_id: string` | `ArtifactAuthorityStatus` | mcp, api, web |
@@ -59,6 +88,14 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
 | `bundles` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
 | `bundles` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `dev_containers` | `dev_containers.create` | false | false | false |  | `instance_id*: string`<br>`template_id*: string`<br>`owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`secret_references: string[]` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.destroy` | false | true | false |  | `instance_id*: string` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.list` | false | false | false |  |  | `object` | mcp, api |
+| `dev_containers` | `dev_containers.reconcile` | false | false | false |  | `instance_id*: string` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.start` | false | false | false |  | `instance_id*: string` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.stop` | false | false | false |  | `instance_id*: string` | `object` | mcp, api |
+| `dev_containers` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `dev_containers` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  | `live: boolean` | `DoctorReport` | cli, mcp, api |
@@ -215,15 +252,23 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `sources` | `sources.refresh` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `SourceRefreshReceipt` | mcp, api, web |
 | `stash` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
 | `stash` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
-| `stash` | `stash.delete` | false | true | false |  | `file_id*: string` | `Deleted` | mcp, api, web |
-| `stash` | `stash.grants.create` | false | false | false |  | `file_id*: string`<br>`grantee_principal_id*: string` | `StashGrant` | mcp, api, web |
-| `stash` | `stash.grants.list` | false | false | false |  | `file_id*: string`<br>`cursor: string`<br>`limit: integer` | `GrantPage` | mcp, api, web |
-| `stash` | `stash.grants.revoke` | false | false | false |  | `file_id*: string`<br>`grant_id*: string` | `Revoked` | mcp, api, web |
-| `stash` | `stash.list` | false | false | false |  | `cursor: string`<br>`limit: integer` | `FilePage` | mcp, api, web |
-| `stash` | `stash.metadata` | false | false | false |  | `file_id*: string` | `StashFile` | mcp, api |
-| `stash` | `stash.rename` | false | false | false |  | `file_id*: string`<br>`display_name*: string` | `StashFile` | mcp, api, web |
-| `stash` | `stash.search` | false | false | false |  | `query*: string`<br>`cursor: string`<br>`limit: integer` | `FilePage` | mcp, api, web |
-| `stash` | `stash.stats` | false | false | false |  |  | `StashStats` | mcp, api, web |
+| `stash` | `stash.delete` | false | true | false |  | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Deleted` | mcp, api, web |
+| `stash` | `stash.grants.create` | false | false | false |  | `file_id*: string`<br>`grantee_principal_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashGrant` | mcp, api, web |
+| `stash` | `stash.grants.list` | false | false | false |  | `file_id*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `GrantPage` | mcp, api, web |
+| `stash` | `stash.grants.revoke` | false | false | false |  | `file_id*: string`<br>`grant_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Revoked` | mcp, api, web |
+| `stash` | `stash.list` | false | false | false |  | `cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.metadata` | false | false | false |  | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api |
+| `stash` | `stash.rename` | false | false | false |  | `file_id*: string`<br>`display_name*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api, web |
+| `stash` | `stash.search` | false | false | false |  | `query*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.stats` | false | false | false |  | `owner_kind: personal\|team`<br>`owner_id: string` | `StashStats` | mcp, api, web |
+| `tasks` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `tasks` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `tasks` | `tasks.cancel` | false | false | false |  | `task_id*: string` | `object` | mcp, api |
+| `tasks` | `tasks.create` | false | false | false |  | `task_id*: string`<br>`idempotency_key*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`agent_id*: string`<br>`input_digest*: string` | `object` | mcp, api |
+| `tasks` | `tasks.get` | false | false | false |  | `task_id*: string` | `object` | mcp, api |
+| `tasks` | `tasks.list` | false | false | false |  |  | `object` | mcp, api |
+| `tasks` | `tasks.queue` | false | false | false |  | `task_id*: string` | `object` | mcp, api |
+| `tasks` | `tasks.result` | false | false | false |  | `task_id*: string` | `object` | mcp, api |
 | `uploads` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
 | `uploads` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `uploads` | `uploads.create` | false | false | true | lab:admin | `connection_id: string`<br>`filename*: string` | `Upload` | mcp, api, web |
