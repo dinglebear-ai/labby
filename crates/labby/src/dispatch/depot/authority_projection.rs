@@ -58,7 +58,7 @@ impl std::fmt::Debug for AuthorityProjectionSender {
             .field("installation_id", &self.installation_id)
             .field("key_id", &self.key_id)
             .field("credentials", &"<redacted>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
