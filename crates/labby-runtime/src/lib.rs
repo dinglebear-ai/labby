@@ -16,6 +16,8 @@
 pub mod agent_error;
 /// Surface-neutral Artifact domain and local runtime implementation.
 pub mod artifacts;
+/// Typed, versioned authority epochs and short-lived execution leases.
+pub mod authority;
 /// Shared retry backoff and deterministic jitter helpers.
 pub mod backoff;
 pub mod caller_auth;

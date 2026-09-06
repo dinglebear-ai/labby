@@ -11,6 +11,7 @@
 //! bottom of that graph: `labby-apis` re-exports from here for backward
 //! compatibility, and `labby-gateway` depends on it directly.
 
+pub mod access;
 pub mod action;
 pub mod mcp;
 pub mod plugin;

@@ -1,3 +1,4 @@
+mod authority;
 mod authorization;
 mod bootstrap;
 mod credential_schema;
@@ -28,6 +29,10 @@ mod team;
 mod test_support;
 mod workflow;
 
+#[allow(unused_imports)]
+pub(crate) use authority::{
+    ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+};
 #[allow(unused_imports)]
 pub(crate) use authorization::{
     AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
