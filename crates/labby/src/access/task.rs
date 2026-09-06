@@ -10,6 +10,15 @@ pub(crate) struct TaskStore {
     connection: Connection,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct TaskRecord {
+    pub intent: TaskIntent,
+    pub state: TaskState,
+    pub attempt: u32,
+    pub output_digest: Option<String>,
+    pub error_code: Option<String>,
+}
+
 impl TaskStore {
     pub(crate) fn open(path: &Path) -> AccessStoreResult<Self> {
         let connection = Connection::open(path).map_err(super::store::map_sqlite_error)?;
@@ -40,6 +49,26 @@ impl TaskStore {
         .map_err(super::store::map_sqlite_error)?;
         tx.commit().map_err(super::store::map_sqlite_error)?;
         Ok(intent.id.clone())
+    }
+
+    pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<TaskRecord>> {
+        self.connection
+            .query_row(
+                "SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks WHERE task_id=?1",
+                [id],
+                decode,
+            )
+            .optional()
+            .map_err(super::store::map_sqlite_error)
+    }
+
+    pub(crate) fn list(&self) -> AccessStoreResult<Vec<TaskRecord>> {
+        let mut statement = self.connection.prepare("SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM agent_tasks ORDER BY owner_kind,owner_id,created_at,task_id").map_err(super::store::map_sqlite_error)?;
+        statement
+            .query_map([], decode)
+            .map_err(super::store::map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(super::store::map_sqlite_error)
     }
 
     pub(crate) fn transition(
@@ -118,6 +147,62 @@ impl TaskStore {
         self.connection.execute("DELETE FROM agent_tasks WHERE task_id IN (SELECT task_id FROM agent_tasks WHERE state IN ('succeeded','failed','cancelled','expired') AND updated_at<?1 ORDER BY updated_at,task_id LIMIT ?2)",params![cutoff,i64::try_from(limit).map_err(|_|AccessStoreError::MalformedVocabulary)?]).map_err(super::store::map_sqlite_error)
     }
 }
+
+fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
+    use labby_primitives::access::{InstallationId, PrincipalId, ProjectId, TeamId};
+    let owner_id: String = row.get(3)?;
+    let owner = match row.get::<_, String>(2)?.as_str() {
+        "installation" => OwnerScope::Installation(
+            InstallationId::new(owner_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ),
+        "team" => {
+            OwnerScope::Team(TeamId::new(owner_id).map_err(|_| rusqlite::Error::InvalidQuery)?)
+        }
+        "project" => OwnerScope::Project(
+            ProjectId::new(owner_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ),
+        "personal" => OwnerScope::Personal(
+            PrincipalId::new(owner_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ),
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    let state = match row.get::<_, String>(12)?.as_str() {
+        "created" => TaskState::Created,
+        "queued" => TaskState::Queued,
+        "running" => TaskState::Running,
+        "cancelling" => TaskState::Cancelling,
+        "succeeded" => TaskState::Succeeded,
+        "failed" => TaskState::Failed,
+        "cancelled" => TaskState::Cancelled,
+        "expired" => TaskState::Expired,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(TaskRecord {
+        intent: TaskIntent {
+            id: row.get(0)?,
+            idempotency_key: row.get(1)?,
+            owner,
+            project: row
+                .get::<_, Option<String>>(4)?
+                .map(|v| ProjectId::new(v).map_err(|_| rusqlite::Error::InvalidQuery))
+                .transpose()?,
+            creator: PrincipalId::new(row.get::<_, String>(5)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            agent_id: row.get(6)?,
+            agent_version: u64::try_from(row.get::<_, i64>(7)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            agent_revision_digest: row.get(8)?,
+            input_digest: row.get(9)?,
+            catalog_generation: row.get(10)?,
+            authority_fingerprint: row.get(11)?,
+        },
+        state,
+        attempt: u32::try_from(row.get::<_, i64>(13)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        output_digest: row.get(14)?,
+        error_code: row.get(15)?,
+    })
+}
 fn owner(v: &OwnerScope) -> (&'static str, &str) {
     match v {
         OwnerScope::Installation(x) => ("installation", x.as_str()),
@@ -155,6 +240,8 @@ mod tests {
         let mut s = TaskStore::open(&dir.path().join("tasks.db")).unwrap();
         assert_eq!(s.create(&intent(), 1).unwrap(), "task-1");
         assert_eq!(s.create(&intent(), 2).unwrap(), "task-1");
+        assert_eq!(s.get("task-1").unwrap().unwrap().state, TaskState::Created);
+        assert_eq!(s.list().unwrap().len(), 1);
         s.transition(
             "task-1",
             TaskState::Created,

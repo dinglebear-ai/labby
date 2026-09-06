@@ -35,5 +35,6 @@ pub(crate) mod skill_library;
 pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+pub(crate) mod tasks;
 #[cfg(feature = "gateway")]
 pub mod upstream;

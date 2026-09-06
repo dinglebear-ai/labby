@@ -31,6 +31,7 @@ mod resolver;
 mod runtime;
 mod store;
 mod task;
+pub(crate) use task::TaskRecord;
 mod team;
 #[cfg(test)]
 mod test_support;

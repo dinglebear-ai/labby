@@ -1672,7 +1672,6 @@ impl LabMcpServer {
                 }
             } else if self.registry.dispatch_capability(&service)
                 == Some(crate::registry::DispatchCapability::CallerBound)
-                && !matches!(action.as_str(), "help" | "schema")
             {
                 self.dispatch_caller_bound_service(
                     &service,

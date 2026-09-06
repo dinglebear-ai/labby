@@ -44,6 +44,7 @@ pub mod access_bootstrap;
 pub mod access_bootstrap_proof;
 pub mod access_credentials;
 pub mod agents;
+pub mod tasks;
 
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;

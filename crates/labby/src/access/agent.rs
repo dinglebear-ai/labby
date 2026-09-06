@@ -14,7 +14,7 @@ pub(crate) struct AgentDefinitionStore {
 impl AgentDefinitionStore {
     pub(crate) fn open(path: &Path) -> AccessStoreResult<Self> {
         let connection = Connection::open(path).map_err(super::store::map_sqlite_error)?;
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS agent_definitions(agent_id TEXT PRIMARY KEY,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),owner_id TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),state TEXT NOT NULL CHECK(state IN ('active','suspended','deleted')),authority_epoch INTEGER NOT NULL CHECK(authority_epoch>=0),publication_epoch INTEGER NOT NULL CHECK(publication_epoch>=0),updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS agent_definitions_owner ON agent_definitions(owner_kind,owner_id,state,agent_id); CREATE TABLE IF NOT EXISTS agent_definition_audit(event_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,actor_principal_id TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('create','update','suspend','delete')),authority_epoch INTEGER NOT NULL,occurred_at INTEGER NOT NULL,FOREIGN KEY(agent_id) REFERENCES agent_definitions(agent_id));").map_err(super::store::map_sqlite_error)?;
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS agent_definitions(agent_id TEXT PRIMARY KEY,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),owner_id TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),state TEXT NOT NULL CHECK(state IN ('active','suspended','deleted')),authority_epoch INTEGER NOT NULL CHECK(authority_epoch>=0),publication_epoch INTEGER NOT NULL CHECK(publication_epoch>=0),updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS agent_definitions_owner ON agent_definitions(owner_kind,owner_id,state,agent_id); CREATE TABLE IF NOT EXISTS agent_definition_audit(event_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,actor_principal_id TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('create','update','suspend','delete')),authority_epoch INTEGER NOT NULL,occurred_at INTEGER NOT NULL,FOREIGN KEY(agent_id) REFERENCES agent_definitions(agent_id)); CREATE TABLE IF NOT EXISTS agent_sessions(session_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,agent_version INTEGER NOT NULL,principal_id TEXT NOT NULL,authority_fingerprint TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('admitted','running','completed','failed','cancelled','revoked','interrupted')),lease_expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,FOREIGN KEY(agent_id) REFERENCES agent_definitions(agent_id)); CREATE INDEX IF NOT EXISTS agent_sessions_agent ON agent_sessions(agent_id,created_at,session_id);").map_err(super::store::map_sqlite_error)?;
         Ok(Self { connection })
     }
 
@@ -113,6 +113,34 @@ impl AgentDefinitionStore {
         )
         .map_err(super::store::map_sqlite_error)?;
         tx.commit().map_err(super::store::map_sqlite_error)
+    }
+
+    pub(crate) fn create_session(
+        &self,
+        session_id: &str,
+        definition: &AgentDefinition,
+        principal: &str,
+        authority_fingerprint: &str,
+        lease_expires_at: i64,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.connection.execute("INSERT INTO agent_sessions(session_id,agent_id,agent_version,principal_id,authority_fingerprint,status,lease_expires_at,created_at) VALUES(?1,?2,?3,?4,?5,'admitted',?6,?7)", params![session_id,definition.id,i64::try_from(definition.revision.version).map_err(|_|AccessStoreError::MalformedVocabulary)?,principal,authority_fingerprint,lease_expires_at,now]).map_err(super::store::map_sqlite_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn session_status(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> AccessStoreResult<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT status FROM agent_sessions WHERE agent_id=?1 AND session_id=?2",
+                params![agent_id, session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(super::store::map_sqlite_error)
     }
 }
 
@@ -235,5 +263,14 @@ mod tests {
         assert!(store.put(&definition(4), "p-1", 3).is_err());
         let counts:(i64,i64)=store.connection.query_row("SELECT (SELECT count(*) FROM agent_definitions),(SELECT count(*) FROM agent_definition_audit)",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
         assert_eq!(counts, (1, 2));
+        let current = definition(2);
+        store
+            .create_session("session-1", &current, "p-1", "authority-1", 100, 4)
+            .unwrap();
+        assert_eq!(
+            store.session_status("agent-1", "session-1").unwrap(),
+            Some("admitted".to_owned())
+        );
+        assert_eq!(store.session_status("agent-1", "guessed").unwrap(), None);
     }
 }

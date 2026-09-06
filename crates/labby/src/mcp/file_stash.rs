@@ -33,6 +33,51 @@ impl LabMcpServer {
         meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<serde_json::Value, ToolError> {
         match service {
+            "agents" | "tasks" => {
+                let identity = context
+                    .extensions
+                    .get::<labby_auth::VerifiedIdentity>()
+                    .cloned()
+                    .or_else(|| {
+                        context
+                            .extensions
+                            .get::<Parts>()
+                            .and_then(|parts| {
+                                parts.extensions.get::<labby_auth::VerifiedIdentity>()
+                            })
+                            .cloned()
+                    })
+                    .ok_or_else(forbidden)?;
+                let store = self.access_runtime.store().await.map_err(|_| forbidden())?;
+                let auth = auth_context_from_extensions(&context.extensions);
+                let ceiling = auth.map_or_else(
+                    crate::access::AuthorityCeiling::trusted_local,
+                    crate::access::AuthorityCeiling::from_auth_context,
+                );
+                if service == "agents" {
+                    crate::dispatch::agents::dispatch(
+                        crate::dispatch::agents::AgentDispatchContext {
+                            store,
+                            identity,
+                            ceiling,
+                        },
+                        action,
+                        params,
+                    )
+                    .await
+                } else {
+                    crate::dispatch::tasks::dispatch(
+                        crate::dispatch::tasks::TaskDispatchContext {
+                            store,
+                            identity,
+                            ceiling,
+                        },
+                        action,
+                        params,
+                    )
+                    .await
+                }
+            }
             "stash" => {
                 let principal = self.file_stash_principal(context, meta).await?;
                 crate::dispatch::file_stash::dispatch_for_principal(

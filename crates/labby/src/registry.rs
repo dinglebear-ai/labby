@@ -521,12 +521,20 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         dispatch_fn!(crate::dispatch::access::dispatch_unbound),
     ));
 
-    reg.register(RegisteredService::bootstrap_operator(
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
         "agents",
         "Create, manage, and run owner-scoped Agents",
         "automation",
         crate::dispatch::agents::ACTIONS,
         dispatch_fn!(crate::dispatch::agents::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "tasks",
+        "Create and operate owner-scoped Agent Tasks",
+        "automation",
+        crate::dispatch::tasks::ACTIONS,
+        dispatch_fn!(crate::dispatch::tasks::dispatch_unbound),
     ));
 
     reg.register(RegisteredService::bootstrap_operator(

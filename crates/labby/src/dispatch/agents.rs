@@ -231,8 +231,21 @@ pub(crate) async fn dispatch(
             lease
                 .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
                 .map_err(|_| denied())?;
+            let session_id = format!("{}-{now}", definition.id);
+            context
+                .store
+                .create_agent_session(
+                    session_id.clone(),
+                    definition.clone(),
+                    context.identity.safe_fingerprint(),
+                    epochs.fingerprint().as_str().to_owned(),
+                    i64::try_from(lease.expires_at_millis()).map_err(|_| internal())?,
+                    i64::try_from(now).map_err(|_| internal())?,
+                )
+                .await
+                .map_err(map)?;
             Ok(
-                json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":format!("{}-{now}",definition.id),"status":"admitted","authority_expires_at":lease.expires_at_millis()}),
+                json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":session_id,"status":"admitted","authority_expires_at":lease.expires_at_millis()}),
             )
         }
         "agents.session.status" => {
@@ -246,9 +259,14 @@ pub(crate) async fn dispatch(
                 now,
             )
             .await?;
-            Ok(
-                json!({"agent_id":definition.id,"session_id":required(&params,"session_id")?,"status":"unknown"}),
-            )
+            let session_id = required(&params, "session_id")?;
+            let status = context
+                .store
+                .get_agent_session_status(definition.id.clone(), session_id.clone())
+                .await
+                .map_err(map)?
+                .ok_or_else(denied)?;
+            Ok(json!({"agent_id":definition.id,"session_id":session_id,"status":status}))
         }
         _ => Err(unknown(name)),
     }

@@ -43,6 +43,54 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    pub(crate) async fn create_agent_task(
+        &self,
+        intent: labby_primitives::task::TaskIntent,
+        now: i64,
+    ) -> AccessStoreResult<String> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.create(&intent, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn get_agent_task(
+        &self,
+        id: String,
+    ) -> AccessStoreResult<Option<super::task::TaskRecord>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::task::TaskStore::open(&path)?.get(&id))
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn list_agent_tasks(&self) -> AccessStoreResult<Vec<super::task::TaskRecord>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::task::TaskStore::open(&path)?.list())
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn transition_agent_task(
+        &self,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?
+                .transition(&id, from, to, &actor, attempt, None, None, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
     pub(crate) async fn put_agent_definition(
         &self,
         definition: labby_primitives::agent::AgentDefinition,
@@ -52,6 +100,43 @@ impl AccessStore {
         let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
             super::agent::AgentDefinitionStore::open(&path)?.put(&definition, &actor, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn create_agent_session(
+        &self,
+        session_id: String,
+        definition: labby_primitives::agent::AgentDefinition,
+        principal: String,
+        authority_fingerprint: String,
+        lease_expires_at: i64,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.create_session(
+                &session_id,
+                &definition,
+                &principal,
+                &authority_fingerprint,
+                lease_expires_at,
+                now,
+            )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn get_agent_session_status(
+        &self,
+        agent_id: String,
+        session_id: String,
+    ) -> AccessStoreResult<Option<String>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.session_status(&agent_id, &session_id)
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
