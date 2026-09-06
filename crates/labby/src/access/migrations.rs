@@ -4,9 +4,11 @@ use super::error::{AccessStoreError, AccessStoreResult};
 
 use super::credential_schema;
 
-pub(super) const SCHEMA_VERSION: i64 = 5;
+pub(super) const SCHEMA_VERSION: i64 = 6;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v5-20260827";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v6-20260905";
+pub(super) const V5_SCHEMA_VERSION: i64 = 5;
+pub(super) const V5_SCHEMA_FINGERPRINT: &str = "labby-access-v5-20260827";
 pub(super) const V4_SCHEMA_VERSION: i64 = 4;
 pub(super) const V4_SCHEMA_FINGERPRINT: &str = "labby-access-v4-20260827";
 pub(super) const V3_SCHEMA_VERSION: i64 = 3;
@@ -62,6 +64,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
                 params![SCHEMA_VERSION, SCHEMA_FINGERPRINT],
             )
             .map_err(super::store::map_sqlite_error)?;
+        install_team_schema_and_seed(&transaction)?;
         transaction
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(super::store::map_sqlite_error)?;
@@ -79,6 +82,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         super::integrity::validate_v1_before_migration(&transaction)?;
         rebuild_metadata_from_v1(&transaction)?;
+        install_team_schema_and_seed(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -93,6 +97,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         validate_v2_before_migration(&transaction)?;
         rebuild_metadata_from_v2(&transaction)?;
+        install_team_schema_and_seed(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -110,7 +115,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v3;
                 CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 5),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -144,6 +149,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         transaction
             .execute_batch("DROP TABLE access_metadata_v3;")
             .map_err(super::store::map_sqlite_error)?;
+        install_team_schema_and_seed(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -156,11 +162,54 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(super::store::map_sqlite_error)?;
         validate_v4_before_migration(&transaction)?;
-        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 5), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
+        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 6), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
         transaction.execute("INSERT INTO access_metadata SELECT singleton,?1,?2,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata_v4",params![SCHEMA_VERSION,SCHEMA_FINGERPRINT]).map_err(super::store::map_sqlite_error)?;
         transaction
             .execute_batch("DROP TABLE access_metadata_v4;")
             .map_err(super::store::map_sqlite_error)?;
+        install_team_schema_and_seed(&transaction)?;
+        transaction
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .commit()
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    if found == V5_SCHEMA_VERSION {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(super::store::map_sqlite_error)?;
+        validate_v5_before_migration(&transaction)?;
+        transaction
+            .execute_batch(
+                "ALTER TABLE access_metadata RENAME TO access_metadata_v5;
+                 CREATE TABLE access_metadata (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
+                    schema_fingerprint TEXT NOT NULL,
+                    global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
+                    updated_at INTEGER NOT NULL,
+                    bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)),
+                    bootstrap_identity_fingerprint TEXT,
+                    CHECK ((bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL)
+                      OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL
+                        AND length(trim(bootstrap_identity_fingerprint)) > 0))
+                 ) STRICT;",
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO access_metadata
+                 SELECT singleton,?1,?2,global_revision,updated_at,
+                        bootstrap_generation,bootstrap_identity_fingerprint
+                 FROM access_metadata_v5",
+                params![SCHEMA_VERSION, SCHEMA_FINGERPRINT],
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch("DROP TABLE access_metadata_v5;")
+            .map_err(super::store::map_sqlite_error)?;
+        install_team_schema_and_seed(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -177,10 +226,66 @@ pub(super) fn validate_migratable(connection: &Connection, version: i64) -> Acce
         V2_SCHEMA_VERSION => validate_v2_before_migration(connection),
         V3_SCHEMA_VERSION => validate_v3_before_migration(connection),
         V4_SCHEMA_VERSION => validate_v4_before_migration(connection),
+        V5_SCHEMA_VERSION => validate_v5_before_migration(connection),
         _ => Err(AccessStoreError::IntegrityViolation {
             check: "schema_metadata",
         }),
     }
+}
+
+fn validate_v5_before_migration(connection: &Connection) -> AccessStoreResult<()> {
+    let metadata = read_legacy_metadata(connection)?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(super::store::map_sqlite_error)?;
+    if metadata.schema_version != V5_SCHEMA_VERSION
+        || metadata.schema_fingerprint != V5_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
+        || application_id != APPLICATION_ID
+    {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        });
+    }
+    let canonical = canonical_v5_schema()?;
+    if schema_manifest(connection)? != schema_manifest(&canonical)? {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_manifest",
+        });
+    }
+    validate_pre_migration_integrity(connection)?;
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
+    Ok(())
+}
+
+pub(super) fn canonical_v5_schema() -> AccessStoreResult<Connection> {
+    let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(SCHEMA_V2_METADATA)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(DOMAIN_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(
+            "ALTER TABLE access_metadata RENAME TO access_metadata_v6;
+             CREATE TABLE access_metadata (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                schema_version INTEGER NOT NULL CHECK(schema_version = 5),
+                schema_fingerprint TEXT NOT NULL,
+                global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
+                updated_at INTEGER NOT NULL,
+                bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)),
+                bootstrap_identity_fingerprint TEXT,
+                CHECK ((bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL)
+                  OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL
+                    AND length(trim(bootstrap_identity_fingerprint)) > 0))
+             ) STRICT;
+             DROP TABLE access_metadata_v6;",
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    Ok(connection)
 }
 
 fn validate_v4_before_migration(connection: &Connection) -> AccessStoreResult<()> {
@@ -478,7 +583,7 @@ pub(super) const SCHEMA_V2_METADATA: &str = concat!(
     "
 CREATE TABLE access_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_version INTEGER NOT NULL CHECK(schema_version = 5),
+    schema_version INTEGER NOT NULL CHECK(schema_version = 6),
     schema_fingerprint TEXT NOT NULL,
     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
     updated_at INTEGER NOT NULL,
@@ -505,6 +610,160 @@ CREATE TABLE access_metadata (
     updated_at INTEGER NOT NULL
 ) STRICT;
 ";
+
+pub(super) const TEAM_AUTHORITY_SCHEMA: &str = "
+CREATE TABLE platform_administrators (
+    principal_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('active', 'suspended', 'revoked')),
+    authority_epoch INTEGER NOT NULL CHECK(authority_epoch > 0),
+    granted_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+    FOREIGN KEY (principal_id) REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    FOREIGN KEY (granted_by) REFERENCES principals(principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX platform_administrators_status
+    ON platform_administrators(status, authority_epoch, principal_id);
+
+CREATE TABLE groups (
+    group_id TEXT PRIMARY KEY CHECK(length(trim(group_id)) > 0),
+    organization_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind = 'team'),
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 128),
+    status TEXT NOT NULL CHECK(status IN
+      ('active', 'suspended', 'deletion_pending', 'deleted')),
+    policy_epoch INTEGER NOT NULL CHECK(policy_epoch > 0),
+    membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    CHECK ((status = 'deleted') = (deleted_at IS NOT NULL)),
+    UNIQUE (organization_id, group_id),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, created_by)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX groups_organization_status
+    ON groups(organization_id, status, group_id);
+
+CREATE TABLE team_memberships (
+    membership_id TEXT PRIMARY KEY CHECK(length(trim(membership_id)) > 0),
+    organization_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+    status TEXT NOT NULL CHECK(status IN ('active', 'suspended', 'revoked')),
+    membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+    UNIQUE (organization_id, team_id, principal_id),
+    FOREIGN KEY (organization_id, team_id)
+      REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, principal_id)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, created_by)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX team_memberships_principal
+    ON team_memberships(organization_id, principal_id, status, team_id);
+CREATE INDEX team_memberships_team
+    ON team_memberships(organization_id, team_id, status, role, principal_id);
+
+CREATE TRIGGER team_memberships_keep_last_owner_delete
+BEFORE DELETE ON team_memberships
+WHEN OLD.role = 'owner' AND OLD.status = 'active'
+ AND EXISTS(SELECT 1 FROM groups
+            WHERE organization_id=OLD.organization_id AND group_id=OLD.team_id
+              AND status != 'deleted')
+ AND NOT EXISTS(SELECT 1 FROM team_memberships
+                WHERE organization_id=OLD.organization_id AND team_id=OLD.team_id
+                  AND role='owner' AND status='active'
+                  AND membership_id != OLD.membership_id)
+BEGIN
+  SELECT RAISE(ABORT, 'team requires an active owner');
+END;
+
+CREATE TRIGGER team_memberships_keep_last_owner_update
+BEFORE UPDATE OF role, status ON team_memberships
+WHEN OLD.role = 'owner' AND OLD.status = 'active'
+ AND NOT (NEW.role = 'owner' AND NEW.status = 'active')
+ AND EXISTS(SELECT 1 FROM groups
+            WHERE organization_id=OLD.organization_id AND group_id=OLD.team_id
+              AND status != 'deleted')
+ AND NOT EXISTS(SELECT 1 FROM team_memberships
+                WHERE organization_id=OLD.organization_id AND team_id=OLD.team_id
+                  AND role='owner' AND status='active'
+                  AND membership_id != OLD.membership_id)
+BEGIN
+  SELECT RAISE(ABORT, 'team requires an active owner');
+END;
+
+CREATE TRIGGER seed_bootstrap_team_authority
+AFTER UPDATE OF bootstrap_generation ON access_metadata
+WHEN OLD.bootstrap_generation = 0 AND NEW.bootstrap_generation = 1
+BEGIN
+  INSERT INTO platform_administrators(
+    principal_id,status,authority_epoch,granted_by,created_at,updated_at,revoked_at)
+  VALUES('bootstrap-owner','active',1,'bootstrap-owner',NEW.updated_at,NEW.updated_at,NULL);
+  INSERT INTO groups(
+    group_id,organization_id,kind,name,status,policy_epoch,membership_epoch,
+    created_by,created_at,updated_at,deleted_at)
+  VALUES('bootstrap-initial-team','bootstrap-local','team','Initial Team','active',1,1,
+         'bootstrap-owner',NEW.updated_at,NEW.updated_at,NULL);
+  INSERT INTO team_memberships(
+    membership_id,organization_id,team_id,principal_id,role,status,membership_epoch,
+    created_by,created_at,updated_at,revoked_at)
+  VALUES('bootstrap-initial-team-owner','bootstrap-local','bootstrap-initial-team',
+         'bootstrap-owner','owner','active',1,'bootstrap-owner',
+         NEW.updated_at,NEW.updated_at,NULL);
+  INSERT INTO access_audit(
+    event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,
+    action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
+  VALUES('bootstrap-platform-admin-audit',NEW.updated_at,NULL,'bootstrap-owner',
+         'bootstrap-local',NULL,'access.platform_admin.bootstrap','principal',
+         'bootstrap-owner','allow','canonical_bootstrap_principal',0,'{}');
+  INSERT INTO access_audit(
+    event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,
+    action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
+  VALUES('bootstrap-initial-team-audit',NEW.updated_at,NULL,'bootstrap-owner',
+         'bootstrap-local',NULL,'access.team.bootstrap','team',
+         'bootstrap-initial-team','allow','canonical_bootstrap_principal',0,'{}');
+END;
+";
+
+fn install_team_schema_and_seed(connection: &Connection) -> AccessStoreResult<()> {
+    connection
+        .execute_batch(TEAM_AUTHORITY_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    let generation = connection
+        .query_row(
+            "SELECT bootstrap_generation FROM access_metadata WHERE singleton=1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    if generation == 1 {
+        let updated_at = connection
+            .query_row(
+                "SELECT updated_at FROM access_metadata WHERE singleton=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        connection.execute("INSERT INTO platform_administrators VALUES('bootstrap-owner','active',1,'bootstrap-owner',?1,?1,NULL)", [updated_at]).map_err(super::store::map_sqlite_error)?;
+        connection.execute("INSERT INTO groups VALUES('bootstrap-initial-team','bootstrap-local','team','Initial Team','active',1,1,'bootstrap-owner',?1,?1,NULL)", [updated_at]).map_err(super::store::map_sqlite_error)?;
+        connection.execute("INSERT INTO team_memberships VALUES('bootstrap-initial-team-owner','bootstrap-local','bootstrap-initial-team','bootstrap-owner','owner','active',1,'bootstrap-owner',?1,?1,NULL)", [updated_at]).map_err(super::store::map_sqlite_error)?;
+        connection.execute("INSERT INTO access_audit VALUES('bootstrap-platform-admin-audit',?1,NULL,'bootstrap-owner','bootstrap-local',NULL,'access.platform_admin.bootstrap','principal','bootstrap-owner','allow','canonical_bootstrap_principal',0,'{}')", [updated_at]).map_err(super::store::map_sqlite_error)?;
+        connection.execute("INSERT INTO access_audit VALUES('bootstrap-initial-team-audit',?1,NULL,'bootstrap-owner','bootstrap-local',NULL,'access.team.bootstrap','team','bootstrap-initial-team','allow','canonical_bootstrap_principal',0,'{}')", [updated_at]).map_err(super::store::map_sqlite_error)?;
+    }
+    Ok(())
+}
 
 pub(super) const DOMAIN_SCHEMA: &str = "
 CREATE TABLE organizations (
@@ -626,6 +885,7 @@ CREATE TABLE access_audit (
 #[cfg(test)]
 mod credential_migration_tests {
     use super::*;
+    use labby_auth::{Authenticator, VerifiedIdentity};
     use sha2::{Digest, Sha256};
 
     #[test]
@@ -709,6 +969,23 @@ mod credential_migration_tests {
         connection
     }
 
+    fn canonical_v5() -> Connection {
+        let connection = canonical_v5_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,?1,?2,13,123,0,NULL)",
+                params![V5_SCHEMA_VERSION, V5_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", V5_SCHEMA_VERSION)
+            .unwrap();
+        connection
+    }
+
     fn production_shaped_v4() -> Connection {
         let connection = canonical_v4();
         connection
@@ -743,8 +1020,30 @@ mod credential_migration_tests {
     }
 
     fn production_shaped_v5() -> Connection {
-        let mut connection = production_shaped_v4();
-        migrate(&mut connection).unwrap();
+        let connection = canonical_v5();
+        connection
+            .execute_batch(
+                "INSERT INTO organizations VALUES
+                   ('org-production', 'Production Équipe', 'active', 17, 100, 200);
+                 INSERT INTO principals VALUES
+                   ('principal-owner', 'org-production', 'user', 'active', 'Owner', 100, 200),
+                   ('principal-member', 'org-production', 'user', 'active', 'Member', 101, 201);
+                 INSERT INTO principal_links VALUES
+                   ('link-owner', 'principal-owner', 'external', 'https://issuer.example', 'owner-subject', NULL, 'active', 1, 1, 100, 200),
+                   ('link-member', 'principal-member', 'external', 'https://issuer.example', 'member-subject', NULL, 'active', 1, 2, 101, 201);
+                 INSERT INTO projects VALUES
+                   ('project-alpha', 'org-production', 'Alpha', 'active', 9, 110, 210);
+                 INSERT INTO project_memberships VALUES
+                   ('membership-owner', 'org-production', 'project-alpha', 'principal-owner', 'owner', 'active', 'principal-owner', 120, 220),
+                   ('membership-member', 'org-production', 'project-alpha', 'principal-member', 'member', 'active', 'principal-owner', 121, 221);
+                 INSERT INTO project_loadouts VALUES
+                   ('org-production', 'project-alpha', 'production-default', 'principal-owner', 130, 230);
+                 INSERT INTO access_audit VALUES
+                   ('audit-owner', 140, 'correlation-1', 'principal-owner', 'org-production', 'project-alpha', 'project.read', 'project', 'sha256:alpha', 'allow', 'membership', 17, '{}');
+                 INSERT INTO project_policy_publications VALUES
+                   ('project-alpha', zeroblob(32), 9, 230);",
+            )
+            .unwrap();
         connection
             .execute_batch(
                 "INSERT INTO access_admission_buckets VALUES
@@ -754,7 +1053,7 @@ mod credential_migration_tests {
                     'credential_invalid', zeroblob(32), NULL, '{}');",
             )
             .unwrap();
-        super::super::integrity::validate(&connection).unwrap();
+        validate_migratable(&connection, V5_SCHEMA_VERSION).unwrap();
         connection
     }
 
@@ -894,6 +1193,7 @@ mod credential_migration_tests {
         let canonical = Connection::open_in_memory().unwrap();
         canonical.execute_batch(SCHEMA_V2_METADATA).unwrap();
         canonical.execute_batch(DOMAIN_SCHEMA).unwrap();
+        canonical.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&canonical).unwrap()
@@ -925,6 +1225,7 @@ mod credential_migration_tests {
         let expected = Connection::open_in_memory().unwrap();
         expected.execute_batch(SCHEMA_V2_METADATA).unwrap();
         expected.execute_batch(DOMAIN_SCHEMA).unwrap();
+        expected.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&expected).unwrap()
@@ -944,6 +1245,97 @@ mod credential_migration_tests {
                     .get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn v5_bootstrap_migrates_to_explicit_platform_admin_and_initial_team_owner() {
+        let mut connection = canonical_v5();
+        let identity = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap();
+        let fingerprint = identity.safe_fingerprint();
+        connection
+            .execute_batch(
+                "INSERT INTO organizations VALUES
+                   ('bootstrap-local','Local','active',0,100,100);
+                 INSERT INTO principals VALUES
+                   ('bootstrap-owner','bootstrap-local','user','active',NULL,100,100);
+                 INSERT INTO principal_links VALUES
+                   ('bootstrap-owner-link','bootstrap-owner','local_credential',NULL,NULL,
+                    'static-bearer:primary','active',1,1,100,100);
+                 INSERT INTO projects VALUES
+                   ('bootstrap-default','bootstrap-local','Default','active',0,100,100);
+                 INSERT INTO project_memberships VALUES
+                   ('bootstrap-owner-membership','bootstrap-local','bootstrap-default',
+                    'bootstrap-owner','owner','active','bootstrap-owner',100,100);",
+            )
+            .unwrap();
+        connection.execute("INSERT INTO access_audit VALUES('bootstrap-owner-audit',100,NULL,'bootstrap-owner','bootstrap-local','bootstrap-default','access.bootstrap_owner','project',?1,'allow','explicit_owner_bootstrap',0,'{}')", [&fingerprint]).unwrap();
+        connection.execute("UPDATE access_metadata SET global_revision=1,bootstrap_generation=1,bootstrap_identity_fingerprint=?1,updated_at=100", [&fingerprint]).unwrap();
+
+        migrate(&mut connection).unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT principal_id,status,authority_epoch FROM platform_administrators",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?
+                    )),
+                )
+                .unwrap(),
+            ("bootstrap-owner".into(), "active".into(), 1)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT team_id,principal_id,role,status,membership_epoch
+                     FROM team_memberships",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?
+                    )),
+                )
+                .unwrap(),
+            (
+                "bootstrap-initial-team".into(),
+                "bootstrap-owner".into(),
+                "owner".into(),
+                "active".into(),
+                1
+            )
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM access_audit
+                     WHERE event_id IN ('bootstrap-platform-admin-audit',
+                                        'bootstrap-initial-team-audit')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE team_memberships SET status='revoked',revoked_at=999
+                     WHERE membership_id='bootstrap-initial-team-owner'",
+                    [],
+                )
+                .is_err(),
+            "the last active Team owner must not be revocable"
         );
     }
 
@@ -1017,22 +1409,30 @@ mod credential_migration_tests {
         let directory = tempfile::tempdir().unwrap();
         let checkpoint_path = directory.path().join("production-v5.backup.db");
         let restored_path = directory.path().join("restored-v5.db");
+        let migrated_path = directory.path().join("migrated-v6.db");
         let source = production_shaped_v5();
         let expected = logical_inventory(&source);
         snapshot_into(&source, &checkpoint_path);
         drop(source);
 
         std::fs::copy(&checkpoint_path, &restored_path).unwrap();
+        std::fs::copy(&checkpoint_path, &migrated_path).unwrap();
+        let mut migrated = Connection::open(&migrated_path).unwrap();
+        migrated.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate(&mut migrated).unwrap();
+        super::super::integrity::validate(&migrated).unwrap();
+        drop(migrated);
+
         for _ in 0..2 {
             let restored = Connection::open(&restored_path).unwrap();
             restored.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-            super::super::integrity::validate(&restored).unwrap();
+            validate_migratable(&restored, V5_SCHEMA_VERSION).unwrap();
             assert_eq!(logical_inventory(&restored), expected);
             assert_eq!(
                 restored
                     .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                     .unwrap(),
-                SCHEMA_VERSION
+                V5_SCHEMA_VERSION
             );
         }
     }

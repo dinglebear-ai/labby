@@ -454,6 +454,9 @@ fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
         | AccessStoreError::MissingParent { .. }
         | AccessStoreError::BootstrapConflict
         | AccessStoreError::InvalidBootstrapInput
+        | AccessStoreError::InvalidTeamInput
+        | AccessStoreError::TeamUnavailable
+        | AccessStoreError::LastActiveTeamOwner
         | AccessStoreError::IdentityUnavailable
         | AccessStoreError::ProjectAccessUnavailable
         | AccessStoreError::NotAuthorized

@@ -34,6 +34,12 @@ pub(crate) enum AccessStoreError {
     ProjectAccessUnavailable,
     #[error("not authorized")]
     NotAuthorized,
+    #[error("team access input is invalid")]
+    InvalidTeamInput,
+    #[error("team or membership is unavailable")]
+    TeamUnavailable,
+    #[error("an active team must retain at least one active owner")]
+    LastActiveTeamOwner,
     #[error("project loadout assignment input is invalid")]
     InvalidProjectLoadoutInput,
     #[error("project already has a different loadout assignment")]

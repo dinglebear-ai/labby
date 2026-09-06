@@ -16,6 +16,10 @@ use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
+use super::team::{
+    AddTeamMemberInput, CreateTeamInput, PlatformAdministratorInput, TeamMembershipInput,
+    TeamMembershipSnapshot, TeamSnapshot,
+};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
@@ -108,6 +112,87 @@ impl AccessStore {
     ) -> AccessStoreResult<BootstrapOutcome> {
         self.with_connection(move |connection| bootstrap_owner(connection, &input))
             .await
+    }
+
+    pub(crate) async fn create_team(
+        &self,
+        input: CreateTeamInput,
+    ) -> AccessStoreResult<TeamSnapshot> {
+        self.with_connection(move |connection| super::team::create_team(connection, &input))
+            .await
+    }
+    pub(crate) async fn list_teams(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<TeamSnapshot>> {
+        self.with_connection(move |connection| super::team::list_teams(connection, &identity))
+            .await
+    }
+    pub(crate) async fn add_team_member(
+        &self,
+        input: AddTeamMemberInput,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        self.with_connection(move |connection| super::team::add_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn set_team_member_role(
+        &self,
+        input: AddTeamMemberInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::set_member_role(connection, &input))
+            .await
+    }
+    pub(crate) async fn suspend_team_member(
+        &self,
+        input: TeamMembershipInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::suspend_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn remove_team_member(
+        &self,
+        input: TeamMembershipInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::remove_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn suspend_team(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        team_id: String,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::suspend_team(connection, &identity, &team_id)
+        })
+        .await
+    }
+    pub(crate) async fn activate_team(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        team_id: String,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::activate_team(connection, &identity, &team_id)
+        })
+        .await
+    }
+    pub(crate) async fn grant_platform_administrator(
+        &self,
+        input: PlatformAdministratorInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::grant_platform_admin(connection, &input)
+        })
+        .await
+    }
+    pub(crate) async fn revoke_platform_administrator(
+        &self,
+        input: PlatformAdministratorInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::revoke_platform_admin(connection, &input)
+        })
+        .await
     }
 
     pub(crate) async fn list_accessible_projects(
@@ -781,7 +866,9 @@ mod tests {
                 "access_tombstones",
                 "bootstrap_proofs",
                 "credential_idempotency",
+                "groups",
                 "organizations",
+                "platform_administrators",
                 "principal_links",
                 "principals",
                 "project_credentials",
@@ -789,6 +876,7 @@ mod tests {
                 "project_memberships",
                 "project_policy_publications",
                 "projects",
+                "team_memberships",
             ]
         );
         assert_eq!(

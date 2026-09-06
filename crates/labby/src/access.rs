@@ -23,6 +23,7 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+mod team;
 #[cfg(test)]
 mod test_support;
 mod workflow;
@@ -67,6 +68,11 @@ pub(crate) use runtime::{
 };
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
+#[allow(unused_imports)]
+pub(crate) use team::{
+    AddTeamMemberInput, CreateTeamInput, PlatformAdministratorInput, TeamMembershipInput,
+    TeamMembershipSnapshot, TeamSnapshot,
+};
 #[allow(unused_imports)]
 pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
 
