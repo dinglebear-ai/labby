@@ -278,6 +278,7 @@ pub(crate) struct SkillLibraryAuthorizationDecision {
     team_ids: BTreeSet<LibraryActorId>,
     authority_generation: u64,
     is_admin: bool,
+    is_platform_admin: bool,
 }
 
 impl SkillLibraryAuthorizationDecision {
@@ -332,6 +333,7 @@ impl SkillLibraryAuthorizationDecision {
             self.project_id.clone(),
             self.team_ids.clone(),
             self.is_admin,
+            self.is_platform_admin,
         )
     }
     /// Filter a previously loaded personal-record collection locally after one request snapshot.
@@ -339,7 +341,7 @@ impl SkillLibraryAuthorizationDecision {
     pub(crate) fn permits_personal(&self, ownership: &LibraryOwnership) -> bool {
         ownership.tenant_id == self.tenant_id
             && ownership.owner_kind() == LibraryOwnerKind::Personal
-            && ownership.owner_id == self.actor_id
+            && (ownership.owner_id == self.actor_id || self.is_platform_admin)
     }
 
     /// Privacy-safe ownership relationship for response projection.
@@ -367,15 +369,16 @@ impl SkillLibraryAuthorizationDecision {
             && match ownership.owner_kind() {
                 LibraryOwnerKind::Personal => self.permits_personal(ownership),
                 LibraryOwnerKind::Project => {
-                    ownership.owner_id == self.project_id
+                    (ownership.owner_id == self.project_id || self.is_platform_admin)
                         && (visibility == SkillVisibility::Tenant || self.is_admin)
                         && is_active
                 }
                 LibraryOwnerKind::Team => {
-                    self.team_ids.len() == 1
-                        && self.team_ids.contains(&ownership.owner_id)
-                        && visibility == SkillVisibility::Tenant
-                        && is_active
+                    self.is_platform_admin
+                        || (self.team_ids.len() == 1
+                            && self.team_ids.contains(&ownership.owner_id)
+                            && visibility == SkillVisibility::Tenant)
+                            && is_active
                 }
             }
     }
@@ -561,6 +564,7 @@ fn decision_from_snapshot(
         &actor_id,
         &project_id,
         &team_ids,
+        snapshot.is_platform_admin,
         target,
     )
     .ok_or_else(|| {
@@ -619,6 +623,7 @@ fn decision_from_snapshot(
         team_ids,
         authority_generation: snapshot.global_revision,
         is_admin,
+        is_platform_admin: snapshot.is_platform_admin,
     })
 }
 
@@ -914,6 +919,7 @@ fn resolve_grant(
     actor_id: &LibraryActorId,
     project_id: &LibraryActorId,
     team_ids: &BTreeSet<LibraryActorId>,
+    is_platform_admin: bool,
     target: SkillLibraryTarget<'_>,
 ) -> Option<(LibraryGrant, LibraryOwnership)> {
     if target == SkillLibraryTarget::SharedActive {
@@ -939,6 +945,9 @@ fn resolve_grant(
     };
     if ownership.tenant_id != *tenant_id {
         return None;
+    }
+    if is_platform_admin {
+        return Some((LibraryGrant::Admin, ownership));
     }
     if ownership.owner_kind() == LibraryOwnerKind::Personal && ownership.owner_id == *actor_id {
         return Some((LibraryGrant::Owner, ownership));
@@ -1280,6 +1289,26 @@ mod tests {
         .await
         .unwrap();
         assert!(!admin.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
+
+        let platform = decide(
+            &runtime,
+            browser_caller(_owner.clone(), true),
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            "private-target",
+            SkillLibraryTarget::SharedActive,
+            "visibility-platform-admin",
+        )
+        .await
+        .unwrap();
+        let another_person = ownership("another-person");
+        assert!(platform.permits_record(&another_person, SkillVisibility::Private, false));
+        let another_team = LibraryOwnership::scoped(
+            another_person.tenant_id.clone(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("another-team").unwrap(),
+        );
+        assert!(platform.permits_record(&another_team, SkillVisibility::Private, false));
     }
 
     #[tokio::test]

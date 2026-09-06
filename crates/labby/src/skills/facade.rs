@@ -120,6 +120,7 @@ pub(crate) struct ArtifactAccessSnapshot {
     project_id: LibraryActorId,
     team_ids: BTreeSet<LibraryActorId>,
     is_admin: bool,
+    is_platform_admin: bool,
 }
 
 impl ArtifactAccessSnapshot {
@@ -129,6 +130,7 @@ impl ArtifactAccessSnapshot {
         project_id: LibraryActorId,
         team_ids: BTreeSet<LibraryActorId>,
         is_admin: bool,
+        is_platform_admin: bool,
     ) -> Self {
         Self {
             tenant_id,
@@ -136,6 +138,7 @@ impl ArtifactAccessSnapshot {
             project_id,
             team_ids,
             is_admin,
+            is_platform_admin,
         }
     }
 
@@ -146,15 +149,18 @@ impl ArtifactAccessSnapshot {
     ) -> bool {
         ownership.tenant_id == self.tenant_id
             && match ownership.owner_kind() {
-                LibraryOwnerKind::Personal => ownership.owner_id == self.actor_id,
+                LibraryOwnerKind::Personal => {
+                    ownership.owner_id == self.actor_id || self.is_platform_admin
+                }
                 LibraryOwnerKind::Project => {
-                    ownership.owner_id == self.project_id
+                    (ownership.owner_id == self.project_id || self.is_platform_admin)
                         && (visibility == SkillVisibility::Tenant || self.is_admin)
                 }
                 LibraryOwnerKind::Team => {
-                    self.team_ids.len() == 1
-                        && self.team_ids.contains(&ownership.owner_id)
-                        && visibility == SkillVisibility::Tenant
+                    self.is_platform_admin
+                        || (self.team_ids.len() == 1
+                            && self.team_ids.contains(&ownership.owner_id)
+                            && visibility == SkillVisibility::Tenant)
                 }
             }
     }
@@ -918,6 +924,7 @@ mod tests {
             LibraryActorId::from_canonical_projection("project").unwrap(),
             BTreeSet::new(),
             is_admin,
+            false,
         )
     }
 
