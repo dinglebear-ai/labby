@@ -24,8 +24,10 @@ impl TaskState {
     pub const fn permits(self, next: Self) -> bool {
         matches!(
             (self, next),
-            (Self::Created, Self::Queued)
-                | (Self::Queued, Self::Running)
+            (
+                Self::Created | Self::Failed | Self::Cancelled | Self::Expired,
+                Self::Queued
+            ) | (Self::Queued, Self::Running)
                 | (
                     Self::Created | Self::Queued | Self::Running,
                     Self::Cancelling
@@ -36,7 +38,6 @@ impl TaskState {
                     Self::Queued | Self::Running | Self::Cancelling,
                     Self::Expired
                 )
-                | (Self::Failed | Self::Cancelled | Self::Expired, Self::Queued)
         )
     }
     pub const fn wire(self) -> &'static str {

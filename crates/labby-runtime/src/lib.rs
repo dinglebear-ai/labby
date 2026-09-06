@@ -14,6 +14,7 @@
 //! `labby-auth` and `labby-codemode`, which never touch them.
 
 pub mod agent_error;
+pub mod agent_runtime;
 /// Surface-neutral Artifact domain and local runtime implementation.
 pub mod artifacts;
 /// Typed, versioned authority epochs and short-lived execution leases.
