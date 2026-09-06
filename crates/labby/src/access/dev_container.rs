@@ -337,6 +337,184 @@ fn host_capability_name(capability: HostCapability) -> &'static str {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoveryRecord {
+    pub instance_id: String,
+    pub lifecycle_nonce: String,
+    pub desired_state: DesiredState,
+    pub observed_state: ObservedState,
+}
+
+pub(crate) fn recovery_inventory(
+    connection: &Connection,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT instance_id,lifecycle_nonce,desired_state,observed_state
+             FROM dev_container_instances
+             WHERE observed_state != 'deleted' ORDER BY instance_id",
+        )
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    statement
+        .query_map([], |row| {
+            let desired = desired_state(&row.get::<_, String>(2)?)?;
+            let observed = observed_state(&row.get::<_, String>(3)?)?;
+            Ok(RecoveryRecord {
+                instance_id: row.get(0)?,
+                lifecycle_nonce: row.get(1)?,
+                desired_state: desired,
+                observed_state: observed,
+            })
+        })
+        .map_err(|_| DevContainerLedgerError::Storage)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| DevContainerLedgerError::Storage)
+}
+
+pub(crate) fn set_desired_state(
+    connection: &mut Connection,
+    instance_id: &str,
+    lifecycle_nonce: &str,
+    desired: DesiredState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    if event_id.trim().is_empty() || now < 0 {
+        return Err(DevContainerLedgerError::InvalidInput);
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM dev_container_instances WHERE instance_id=?1 AND lifecycle_nonce=?2",
+            params![instance_id, lifecycle_nonce],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|_| DevContainerLedgerError::Storage)?
+        .ok_or(DevContainerLedgerError::InvalidInput)?
+        .checked_add(1)
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let desired = desired_state_name(desired);
+    transaction
+        .execute(
+            "UPDATE dev_container_instances SET desired_state=?1,revision=?2,updated_at=?3,
+             deleted_at=CASE WHEN ?1='deleted' THEN ?3 ELSE NULL END
+             WHERE instance_id=?4 AND lifecycle_nonce=?5",
+            params![desired, revision, now, instance_id, lifecycle_nonce],
+        )
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    transaction
+        .execute(
+            "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'desired_changed',?5,?6)",
+            params![
+                event_id,
+                instance_id,
+                lifecycle_nonce,
+                revision,
+                now,
+                format!("{{\"desired_state\":\"{desired}\"}}")
+            ],
+        )
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    transaction
+        .commit()
+        .map_err(|_| DevContainerLedgerError::Storage)
+}
+
+pub(crate) fn record_observation(
+    connection: &mut Connection,
+    instance_id: &str,
+    nonce: &labby_primitives::dev_container::LifecycleNonce,
+    next: ObservedState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    let transaction = connection
+        .transaction()
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    let (desired, prior, revision, durable_nonce) = transaction
+        .query_row(
+            "SELECT desired_state,observed_state,revision,lifecycle_nonce FROM dev_container_instances WHERE instance_id=?1",
+            [instance_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
+        )
+        .optional()
+        .map_err(|_| DevContainerLedgerError::Storage)?
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let durable_nonce = labby_primitives::dev_container::LifecycleNonce::new(durable_nonce)
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    labby_runtime::dev_container::validate_observation(
+        &durable_nonce,
+        nonce,
+        desired_state(&desired).map_err(|_| DevContainerLedgerError::Storage)?,
+        observed_state(&prior).map_err(|_| DevContainerLedgerError::Storage)?,
+        next,
+    )
+    .map_err(|_| DevContainerLedgerError::InvalidInput)?;
+    let revision = revision
+        .checked_add(1)
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let next = observed_state_name(next);
+    transaction.execute("UPDATE dev_container_instances SET observed_state=?1,revision=?2,updated_at=?3 WHERE instance_id=?4", params![next,revision,now,instance_id]).map_err(|_| DevContainerLedgerError::Storage)?;
+    transaction
+        .execute(
+            "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'observed_changed',?5,?6)",
+            params![
+                event_id,
+                instance_id,
+                nonce.as_str(),
+                revision,
+                now,
+                format!("{{\"observed_state\":\"{next}\"}}")
+            ],
+        )
+        .map_err(|_| DevContainerLedgerError::Storage)?;
+    transaction
+        .commit()
+        .map_err(|_| DevContainerLedgerError::Storage)
+}
+
+fn desired_state(value: &str) -> rusqlite::Result<DesiredState> {
+    match value {
+        "running" => Ok(DesiredState::Running),
+        "stopped" => Ok(DesiredState::Stopped),
+        "deleted" => Ok(DesiredState::Deleted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+fn observed_state(value: &str) -> rusqlite::Result<ObservedState> {
+    match value {
+        "pending" => Ok(ObservedState::Pending),
+        "starting" => Ok(ObservedState::Starting),
+        "running" => Ok(ObservedState::Running),
+        "stopping" => Ok(ObservedState::Stopping),
+        "stopped" => Ok(ObservedState::Stopped),
+        "failed" => Ok(ObservedState::Failed),
+        "deleted" => Ok(ObservedState::Deleted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+fn desired_state_name(value: DesiredState) -> &'static str {
+    match value {
+        DesiredState::Running => "running",
+        DesiredState::Stopped => "stopped",
+        DesiredState::Deleted => "deleted",
+    }
+}
+fn observed_state_name(value: ObservedState) -> &'static str {
+    match value {
+        ObservedState::Pending => "pending",
+        ObservedState::Starting => "starting",
+        ObservedState::Running => "running",
+        ObservedState::Stopping => "stopping",
+        ObservedState::Stopped => "stopped",
+        ObservedState::Failed => "failed",
+        ObservedState::Deleted => "deleted",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +583,35 @@ mod tests {
                 .unwrap(),
             1
         );
+        assert_eq!(
+            recovery_inventory(&connection).unwrap(),
+            vec![RecoveryRecord {
+                instance_id: "dc-1".into(),
+                lifecycle_nonce: "11111111111111111111111111111111".into(),
+                desired_state: DesiredState::Running,
+                observed_state: ObservedState::Pending,
+            }]
+        );
+        assert_eq!(
+            record_observation(
+                &mut connection,
+                "dc-1",
+                &LifecycleNonce::new("99999999999999999999999999999999").unwrap(),
+                ObservedState::Starting,
+                "stale-event",
+                3,
+            ),
+            Err(DevContainerLedgerError::InvalidInput)
+        );
+        set_desired_state(
+            &mut connection,
+            "dc-1",
+            first.lifecycle_nonce().as_str(),
+            DesiredState::Deleted,
+            "delete-event",
+            3,
+        )
+        .unwrap();
 
         let second = OwnedDevContainer::new(
             DevContainerId::new("dc-2").unwrap(),

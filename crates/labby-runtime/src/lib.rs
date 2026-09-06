@@ -27,6 +27,8 @@ pub mod client_registry;
 pub mod code_mode_app;
 /// Dev Container admission and lifecycle validation without host execution.
 pub mod dev_container;
+/// Pluggable Dev Container execution and restart recovery.
+pub mod dev_container_runtime;
 pub mod error;
 pub mod gateway_config;
 pub mod helpers;
