@@ -1,3 +1,4 @@
+mod agent;
 mod authority;
 mod authorization;
 mod bootstrap;
@@ -7,6 +8,8 @@ mod credential_verifier;
 mod dev_container;
 mod domain;
 mod error;
+#[cfg(feature = "gateway")]
+mod gateway_authority;
 #[cfg(feature = "gateway")]
 mod gateway_loadout;
 mod health;
@@ -58,6 +61,8 @@ pub(crate) use dev_container::{
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};
 pub(crate) use error::AccessStoreError;
+#[cfg(feature = "gateway")]
+pub(crate) use gateway_authority::authorize_gateway_action;
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
 pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_project_loadout};

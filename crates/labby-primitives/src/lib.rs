@@ -13,6 +13,7 @@
 
 pub mod access;
 pub mod action;
+pub mod agent;
 pub mod authority_projection;
 pub mod dev_container;
 pub mod mcp;
