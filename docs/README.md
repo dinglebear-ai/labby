@@ -33,6 +33,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `setup` | [services/SETUP.md](./services/SETUP.md) | Bootstrap, settings, repair, plugin lifecycle, proxy setup, host provisioning |
 | `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
 | `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
+| `stash` | [services/STASH.md](./services/STASH.md) | Linux/Android principal-scoped file upload, download, sharing, and bounded MCP reads |
 | `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
 | `artifacts`, `bundles`, `jobs`, `sources`, `uploads` | [services/SKILLS.md](./services/SKILLS.md) and [artifacts/](./artifacts/) | Durable Artifact library, provider-backed control-plane projections, and native Agent Skills projection |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
@@ -40,11 +41,6 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
-
-[File Stash](./services/STASH.md) is an approved product contract pending
-implementation, not a current registered service. It enters the table above only
-after implementation and end-to-end qualification promote it into the generated
-service and action catalogs.
 
 The browser-only [access owner bootstrap workflow](./services/ACCESS.md) is an
 HTTP route, not a registered multi-surface service.

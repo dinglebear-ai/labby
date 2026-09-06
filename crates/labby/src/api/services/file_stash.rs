@@ -156,6 +156,7 @@ async fn action(
     let response = crate::dispatch::file_stash::dispatch_for_principal(
         &service(&state),
         &principal,
+        "api",
         &action,
         request.params,
     )
@@ -228,13 +229,33 @@ async fn list(
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
     let page = if let Some(query) = q.query {
-        service(&state)
+        let page = service(&state)
             .search(&principal, &query, q.cursor.as_deref(), q.limit)
-            .await?
+            .await?;
+        crate::dispatch::file_stash::observe_operation(
+            "api",
+            "stash.search",
+            "success",
+            None,
+            None,
+            None,
+            false,
+        );
+        page
     } else {
-        service(&state)
+        let page = service(&state)
             .list(&principal, q.cursor.as_deref(), q.limit)
-            .await?
+            .await?;
+        crate::dispatch::file_stash::observe_operation(
+            "api",
+            "stash.list",
+            "success",
+            None,
+            None,
+            None,
+            false,
+        );
+        page
     };
     Ok(result(page))
 }
@@ -243,7 +264,17 @@ async fn stats(
     identity: Option<axum::Extension<VerifiedIdentity>>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    Ok(result(service(&state).stats(&principal).await?))
+    let stats = service(&state).stats(&principal).await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.stats",
+        "success",
+        None,
+        None,
+        Some(stats.owned_committed_bytes),
+        false,
+    );
+    Ok(result(stats))
 }
 async fn recipients(
     State(state): State<AppState>,
@@ -262,7 +293,7 @@ async fn recipients(
     let principal = principal(&state, identity).await?;
     let query = q.query.trim();
     if query.chars().count() < 3 || query.len() > 128 {
-        return Err(stable("validation_failed"));
+        return Err(stable("invalid_param"));
     }
     let store = state
         .access_runtime
@@ -284,9 +315,17 @@ async fn metadata(
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    Ok(result(
-        service(&state).metadata(&principal, &file_id).await?,
-    ))
+    let file = service(&state).metadata(&principal, &file_id).await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.metadata",
+        "success",
+        Some(&file_id),
+        None,
+        Some(file.size_bytes),
+        false,
+    );
+    Ok(result(file))
 }
 async fn rename(
     State(state): State<AppState>,
@@ -298,11 +337,19 @@ async fn rename(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.rename")?;
     let principal = principal(&state, identity).await?;
-    Ok(result(
-        service(&state)
-            .rename(&principal, &file_id, &body.display_name)
-            .await?,
-    ))
+    let file = service(&state)
+        .rename(&principal, &file_id, &body.display_name)
+        .await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.rename",
+        "success",
+        Some(&file_id),
+        None,
+        Some(file.size_bytes),
+        false,
+    );
+    Ok(result(file))
 }
 async fn remove(
     State(state): State<AppState>,
@@ -314,6 +361,15 @@ async fn remove(
     mutation_csrf(&headers, auth.as_ref(), "stash.delete")?;
     let principal = principal(&state, identity).await?;
     service(&state).delete(&principal, &file_id).await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.delete",
+        "success",
+        Some(&file_id),
+        None,
+        None,
+        true,
+    );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 async fn create_grant(
@@ -326,15 +382,19 @@ async fn create_grant(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.create")?;
     let principal = principal(&state, identity).await?;
-    Ok((
-        StatusCode::CREATED,
-        result(
-            service(&state)
-                .create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id)
-                .await?,
-        ),
-    )
-        .into_response())
+    let grant = service(&state)
+        .create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id)
+        .await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.grants.create",
+        "success",
+        Some(&file_id),
+        Some(&grant.grant_id),
+        None,
+        false,
+    );
+    Ok((StatusCode::CREATED, result(grant)).into_response())
 }
 async fn list_grants(
     State(state): State<AppState>,
@@ -343,11 +403,19 @@ async fn list_grants(
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    Ok(result(
-        service(&state)
-            .grants(&principal, &file_id, q.cursor.as_deref(), q.limit)
-            .await?,
-    ))
+    let grants = service(&state)
+        .grants(&principal, &file_id, q.cursor.as_deref(), q.limit)
+        .await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.grants.list",
+        "success",
+        Some(&file_id),
+        None,
+        None,
+        false,
+    );
+    Ok(result(grants))
 }
 async fn revoke_grant(
     State(state): State<AppState>,
@@ -361,6 +429,15 @@ async fn revoke_grant(
     service(&state)
         .revoke_grant(&principal, &file_id, &grant_id)
         .await?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.grants.revoke",
+        "success",
+        Some(&file_id),
+        Some(&grant_id),
+        None,
+        false,
+    );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -402,6 +479,15 @@ async fn upload(
     });
     let file_id = upload.await.map_err(|_| stable("service_unavailable"))??;
     guard.0 = None;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.upload",
+        "success",
+        Some(&file_id),
+        None,
+        Some(declared),
+        false,
+    );
     Ok((
         StatusCode::CREATED,
         result(
@@ -421,6 +507,15 @@ async fn download(
         .open_download(&principal, &file_id, false)
         .await?;
     let size = opened.size;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.download",
+        "success",
+        Some(&file_id),
+        None,
+        Some(size),
+        false,
+    );
     let mut response = Response::new(blob_body(opened));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
@@ -898,6 +993,7 @@ mod tests {
             1
         );
         task.abort();
+        drop(task.await);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if service

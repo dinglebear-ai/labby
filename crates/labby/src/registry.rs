@@ -670,14 +670,18 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         dispatch_fn!(crate::mcp::services::fs::dispatch),
     ));
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    reg.register_caller_bound(RegisteredService::bootstrap_operator(
-        crate::dispatch::file_stash::META.0,
-        crate::dispatch::file_stash::META.1,
-        crate::dispatch::file_stash::META.2,
-        crate::dispatch::file_stash::ACTIONS,
-        dispatch_fn!(crate::dispatch::file_stash::dispatch),
-    ));
+    // Static documentation describes every compiled product surface and must
+    // not drift with the host that generated it. The live registry remains
+    // fail-closed on platforms without descriptor-relative filesystem support.
+    if !apply_runtime_conditions || cfg!(any(target_os = "linux", target_os = "android")) {
+        reg.register_caller_bound(RegisteredService::bootstrap_operator(
+            crate::dispatch::file_stash::META.0,
+            crate::dispatch::file_stash::META.1,
+            crate::dispatch::file_stash::META.2,
+            crate::dispatch::file_stash::ACTIONS,
+            dispatch_fn!(crate::dispatch::file_stash::dispatch),
+        ));
+    }
 
     reg
 }

@@ -828,6 +828,7 @@ fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), Conf
     let service_names: std::collections::HashSet<&str> = registry
         .services()
         .iter()
+        .filter(|service| registry.supports_context_free_dispatch(service.name))
         .map(|service| service.name)
         .collect();
     let loadout_names: std::collections::HashSet<&str> = cfg

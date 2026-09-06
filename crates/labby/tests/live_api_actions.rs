@@ -190,7 +190,10 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                         false,
                     )
                     .await;
-                    if intent.service == "bundles" {
+                    if intent.service == "bundles"
+                        || (intent.service == "stash"
+                            && !cfg!(any(target_os = "linux", target_os = "android")))
+                    {
                         assert!(
                             matches!(
                                 denied_status,
@@ -384,6 +387,9 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         // provider integration suite.
         for provider_backed in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             success_capable_services.remove(provider_backed);
+        }
+        if !cfg!(any(target_os = "linux", target_os = "android")) {
+            success_capable_services.remove("stash");
         }
         assert_eq!(
             successes, success_capable_services,

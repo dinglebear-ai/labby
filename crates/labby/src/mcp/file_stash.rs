@@ -38,6 +38,7 @@ impl LabMcpServer {
                 crate::dispatch::file_stash::dispatch_for_principal(
                     &self.file_stash_service(),
                     &principal,
+                    "mcp",
                     action,
                     params,
                 )

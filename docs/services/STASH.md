@@ -1,15 +1,15 @@
 # File Stash
 
-File Stash is Labby's approved built-in contract for principal-scoped arbitrary
+File Stash is Labby's built-in service for principal-scoped arbitrary
 files owned by an authenticated principal. Labby will own the local metadata and
 blob lifecycle, so this capability meets the built-in-service exception. Depot
 is not a dependency and an explicitly configured remote target never falls back
 to File Stash.
 
-This document is the normative v1 contract pending implementation. File Stash
-is not currently registered or usable. The final qualification bead must prove
-every surface and then promote it into current-service prose and generated
-catalogs; until then those catalogs remain authoritative.
+This document is the normative v1 contract. File Stash is registered on Linux
+and Android and is available through authenticated HTTP, generic service
+dispatch, MCP resources, and the web UI. Unsupported platforms omit the service
+rather than advertising handlers that cannot honor its filesystem contract.
 
 ## Boundary and non-goals
 
@@ -167,12 +167,11 @@ frames, or previews uploaded content inline.
 
 ## Surfaces and errors
 
-When implemented and qualified, File Stash is default `gateway-host`
-functionality with authenticated HTTP, generic service action metadata/tool
-dispatch, MCP resource reads, and the web UI. It has no bespoke clap tree. Until
-qualification promotes it, it is not registered or usable. Feature slices must
-agree: a surface is absent when its owning runtime is not compiled or available,
-rather than advertising a handler that fails later.
+File Stash is default `gateway-host` functionality on supported platforms with
+authenticated HTTP, generic service action metadata/tool dispatch, MCP resource
+reads, and the web UI. It has no bespoke clap tree. Feature slices agree: a
+surface is absent when its owning runtime is not compiled or available, rather
+than advertising a handler that fails later.
 
 The v1 durable runtime is available only where Labby can anchor SQLite and blob
 operations to verified directory handles. Linux and Android satisfy that

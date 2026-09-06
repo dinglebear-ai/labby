@@ -996,4 +996,115 @@ mod tests {
         store.cancel_upload(reused.upload_id).await.unwrap();
         store.cancel_upload(pending.upload_id).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn scale_queries_are_cardinality_bounded_and_use_authority_indexes() {
+        const FILES: usize = 5_000;
+        const PENDING: usize = 1_000;
+        let (_temp, store) = store().await;
+        store
+            .with_connection(|connection| {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(FileStashStoreError::sqlite)?;
+                {
+                    let mut files = transaction.prepare("INSERT INTO files(file_id,owner_principal_id,display_name,collision_key,size_bytes,blob_key,ready,created_at,updated_at) VALUES(?1,?2,?3,?4,1,?5,1,?6,?6)").map_err(FileStashStoreError::sqlite)?;
+                    let mut grants = transaction.prepare("INSERT INTO grants(grant_id,file_id,grantee_principal_id,state,created_at,revoked_at) VALUES(?1,?2,'reader','active',?3,NULL)").map_err(FileStashStoreError::sqlite)?;
+                    for index in 0..FILES {
+                        let ordinal = i64::try_from(index).unwrap();
+                        let id = format!("file-{index:05}");
+                        let owner = if index % 2 == 0 { "owner" } else { "other" };
+                        let name = if index % 100 == 0 {
+                            format!("needle-{index:05}")
+                        } else {
+                            format!("ordinary-{index:05}")
+                        };
+                        files.execute(params![id, owner, name, name, format!("blob-{index:05}"), ordinal]).map_err(FileStashStoreError::sqlite)?;
+                        grants.execute(params![format!("grant-{index:05}"), id, ordinal]).map_err(FileStashStoreError::sqlite)?;
+                    }
+                    let mut pending = transaction.prepare("INSERT INTO pending_uploads(upload_id,owner_principal_id,display_name,collision_key,reserved_bytes,state,expires_at,created_at,updated_at) VALUES(?1,'owner',?2,?2,1,'pending',?3,?3,?3)").map_err(FileStashStoreError::sqlite)?;
+                    for index in 0..PENDING {
+                        let ordinal = i64::try_from(index).unwrap();
+                        let id = format!("pending-{index:05}");
+                        pending.execute(params![id, format!("pending-name-{index:05}"), ordinal]).map_err(FileStashStoreError::sqlite)?;
+                    }
+                }
+                transaction.commit().map_err(FileStashStoreError::sqlite)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .list_files("owner".into(), None, None, 37)
+                .await
+                .unwrap()
+                .len(),
+            37
+        );
+        assert_eq!(
+            store
+                .list_files("owner".into(), Some("needle".into()), None, 13)
+                .await
+                .unwrap()
+                .len(),
+            13
+        );
+        let usage = store.usage("owner".into()).await.unwrap();
+        assert_eq!(usage.live_files, (FILES / 2) as u64);
+        assert_eq!(usage.committed_bytes, (FILES / 2) as u64);
+        assert_eq!(usage.reserved_bytes, PENDING as u64);
+        assert_eq!(usage.owned_shared_file_count, (FILES / 2) as u64);
+        assert_eq!(
+            store
+                .list_grants("owner".into(), "file-00000".into(), String::new(), 7)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let expired = store.expired_pending(10_000, 19).await.unwrap();
+        assert_eq!(expired.len(), 19);
+        assert_eq!(expired.first().unwrap().upload_id, "pending-00000");
+        assert_eq!(expired.last().unwrap().upload_id, "pending-00018");
+
+        let plans = store
+            .with_connection(|connection| {
+                let statements = [
+                    ("list", "EXPLAIN QUERY PLAN SELECT f.file_id FROM files f WHERE f.ready=1 AND (f.owner_principal_id='owner' OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id='owner' AND g.state='active')) AND (f.created_at<99999 OR (f.created_at=99999 AND f.file_id<'z')) ORDER BY f.created_at DESC,f.file_id DESC LIMIT 51"),
+                    ("stats", "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM files f WHERE f.owner_principal_id='owner' AND f.ready=1 AND EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.state='active')"),
+                    ("grants", "EXPLAIN QUERY PLAN SELECT grant_id FROM grants WHERE file_id='file-00000' AND state='active' AND grant_id>'' ORDER BY grant_id LIMIT 51"),
+                    ("janitor", "EXPLAIN QUERY PLAN SELECT upload_id FROM pending_uploads WHERE expires_at<=10000 ORDER BY expires_at,upload_id LIMIT 51"),
+                ];
+                statements.into_iter().map(|(name, sql)| {
+                    let mut statement=connection.prepare(sql).map_err(FileStashStoreError::sqlite)?;
+                    let rows=statement.query_map([],|row|row.get::<_,String>(3)).map_err(FileStashStoreError::sqlite)?;
+                    let detail=rows.collect::<std::result::Result<Vec<_>,_>>().map_err(FileStashStoreError::sqlite)?.join(" | ");
+                    Ok((name.to_owned(),detail))
+                }).collect::<Result<Vec<_>>>()
+            })
+            .await
+            .unwrap();
+        let detail = |name: &str| plans.iter().find(|plan| plan.0 == name).unwrap().1.as_str();
+        assert!(
+            detail("list").contains("stash_grants_active_unique")
+                || detail("list").contains("stash_grants_file_grantee")
+                || detail("list").contains("stash_grants_grantee_files"),
+            "unexpected list plan: {}",
+            detail("list")
+        );
+        assert!(detail("stats").contains("stash_files_owner_list"));
+        assert!(
+            detail("stats").contains("stash_grants_active_unique")
+                || detail("stats").contains("stash_grants_file_grantee")
+                || detail("stats").contains("stash_grants_grantee_files")
+                || detail("stats").contains("stash_grants_active_page"),
+            "unexpected stats plan: {}",
+            detail("stats")
+        );
+        assert!(detail("grants").contains("stash_grants_active_page"));
+        assert!(!detail("grants").contains("USE TEMP B-TREE"));
+        assert!(detail("janitor").contains("stash_pending_janitor"));
+        assert!(!detail("janitor").contains("USE TEMP B-TREE"));
+    }
 }

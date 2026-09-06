@@ -69,7 +69,7 @@ Marketplace product commands, Fleet/node enrollment, Deploy-product commands, or
 old Agent Artifact Manager workspaces. Historical command contracts are archived
 under [../archive/retired-labby](../archive/retired-labby/).
 
-When implemented, File Stash uses the generated generic service dispatch shape;
-no bespoke component/revision/provider/deploy command tree is permitted. It is
-not currently available. Implementation and qualification must add it to the
-generated CLI catalog before current-service docs advertise it.
+On Linux and Android, File Stash uses the generated generic service dispatch
+shape; no bespoke component/revision/provider/deploy command tree is permitted.
+Unsupported platforms omit it from the service catalog. File bytes use the HTTP
+upload/download routes rather than a bespoke clap command tree.

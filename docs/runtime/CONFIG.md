@@ -345,6 +345,25 @@ identity, and the configured signing/encryption material described in
 The web-auth bypass is development-only. Do not enable it on a publicly reachable
 host or use it as a substitute for reverse-proxy authentication.
 
+## File Stash
+
+On Linux and Android, `[file_stash]` configures the principal-scoped File Stash.
+`root` defaults to `$LABBY_HOME/file-stash`; keeping it beneath `LABBY_HOME`
+allows `labby state export` to include its metadata and blobs. An explicitly
+configured external root is supported at runtime but state export rejects it so
+an operator cannot accidentally create an incomplete backup.
+
+The remaining keys are bounded resource controls: `max_file_bytes`,
+`principal_quota_bytes`, `instance_quota_bytes`,
+`max_live_files_per_principal`, `page_size`, `max_query_bytes`,
+`max_header_bytes`, `grant_recipients_page_size`, `max_mcp_read_bytes`,
+`queue_capacity`, `database_deadline_ms`, upload/download/MCP concurrency
+limits, upload deadlines, pending-upload TTL, and janitor batch/backoff/interval
+limits. Defaults and accepted maxima are defined in
+[the File Stash service contract](../services/STASH.md). Invalid or internally
+inconsistent values fail configuration validation; there are no environment
+aliases for these settings.
+
 ## Removed Configuration
 
 Current Labby does not accept MCP Registry browser settings, ACP providers or

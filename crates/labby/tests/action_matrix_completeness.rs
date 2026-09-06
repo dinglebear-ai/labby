@@ -245,7 +245,7 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
-    let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
+    let base = BTreeSet::from(["doctor", "server_logs", "setup", "stash"]);
     let gateway = BTreeSet::from([
         "artifacts",
         "browser",
@@ -257,6 +257,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "setup",
         "snippets",
         "sources",
+        "stash",
         "uploads",
     ]);
     let shapes = BTreeMap::from([
@@ -267,7 +268,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ("gateway-host", gateway),
         (
             "fs",
-            BTreeSet::from(["doctor", "fs", "server_logs", "setup"]),
+            BTreeSet::from(["doctor", "fs", "server_logs", "setup", "stash"]),
         ),
         (
             "skills",
@@ -279,12 +280,13 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "server_logs",
                 "setup",
                 "sources",
+                "stash",
                 "uploads",
             ]),
         ),
         (
             "lab-admin",
-            BTreeSet::from(["doctor", "lab_admin", "server_logs", "setup"]),
+            BTreeSet::from(["doctor", "lab_admin", "server_logs", "setup", "stash"]),
         ),
         (
             "all",
@@ -301,6 +303,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "jobs",
                 "snippets",
                 "sources",
+                "stash",
                 "uploads",
             ]),
         ),
@@ -372,7 +375,7 @@ fn security_invariants_are_independent_of_execution_intent() {
         (
             (false, true),
             Invariant {
-                allowed: false,
+                allowed: true,
                 minimum: EvidenceLevel::LiveStateTransition,
             },
         ),
@@ -461,8 +464,8 @@ fn security_invariants_are_independent_of_execution_intent() {
     }
     assert_eq!(
         observed_combinations,
-        BTreeSet::from([(false, false), (true, false), (true, true)]),
-        "all allowed admin x destructive combinations must remain covered; false/true is forbidden"
+        BTreeSet::from([(false, false), (false, true), (true, false), (true, true)]),
+        "all allowed admin x destructive combinations must remain covered"
     );
     let preview = catalog
         .iter()

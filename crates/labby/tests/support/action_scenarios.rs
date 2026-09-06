@@ -161,6 +161,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/server_logs.json"),
         include_str!("../fixtures/e2e_actions/setup.json"),
         include_str!("../fixtures/e2e_actions/snippets.json"),
+        include_str!("../fixtures/e2e_actions/stash.json"),
         include_str!("../fixtures/e2e_actions/artifacts.json"),
         include_str!("../fixtures/e2e_actions/sources.json"),
         include_str!("../fixtures/e2e_actions/jobs.json"),
@@ -446,6 +447,15 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if surface == Surface::Api
+        && key.starts_with("stash:")
+        && !cfg!(any(target_os = "linux", target_os = "android"))
+    {
+        return Some((
+            "requires_descriptor_relative_filesystem_platform",
+            "route_not_found",
+        ));
+    }
     if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
         return Some(("requires_skills_runtime", "feature_not_compiled"));
     }
