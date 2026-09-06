@@ -265,29 +265,55 @@ impl AuthorityProjectionSender {
         rows: &[crate::access::PendingProjection],
         now: i64,
     ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
+        let current = self
+            .store
+            .authority_snapshot(organization_id.to_owned())
+            .await
+            .map_err(|_| ProjectionSendError::Store)?
+            .into_iter()
+            .map(|record| ((record.resource_type, record.resource_id), record.value))
+            .collect::<BTreeMap<_, _>>();
         let records = rows
             .iter()
             .map(|row| {
                 let value: Value = serde_json::from_str(&row.payload_json)
                     .map_err(|_| ProjectionSendError::Store)?;
+                let resource_type = value
+                    .get("resource_type")
+                    .and_then(Value::as_str)
+                    .ok_or(ProjectionSendError::Store)?
+                    .to_owned();
+                let resource_id = value
+                    .get("resource_id")
+                    .and_then(Value::as_str)
+                    .ok_or(ProjectionSendError::Store)?
+                    .to_owned();
+                let operation = value
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .ok_or(ProjectionSendError::Store)?
+                    .to_owned();
+                let authoritative = if operation == "delete" {
+                    None
+                } else if matches!(
+                    resource_type.as_str(),
+                    "principal" | "team" | "team_membership" | "team_project"
+                ) {
+                    Some(
+                        current
+                            .get(&(resource_type.clone(), resource_id.clone()))
+                            .cloned()
+                            .ok_or(ProjectionSendError::Store)?,
+                    )
+                } else {
+                    value.get("value").cloned().filter(|value| !value.is_null())
+                };
                 Ok(AuthorityProjectionRecord {
                     sequence: row.sequence,
-                    resource_type: value
-                        .get("resource_type")
-                        .and_then(Value::as_str)
-                        .ok_or(ProjectionSendError::Store)?
-                        .to_owned(),
-                    resource_id: value
-                        .get("resource_id")
-                        .and_then(Value::as_str)
-                        .ok_or(ProjectionSendError::Store)?
-                        .to_owned(),
-                    operation: value
-                        .get("operation")
-                        .and_then(Value::as_str)
-                        .ok_or(ProjectionSendError::Store)?
-                        .to_owned(),
-                    value: value.get("value").cloned().filter(|value| !value.is_null()),
+                    resource_type,
+                    resource_id,
+                    operation,
+                    value: authoritative,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

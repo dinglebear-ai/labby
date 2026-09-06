@@ -26,6 +26,29 @@ pub(super) fn snapshot(
     organization_id: &str,
 ) -> AccessStoreResult<Vec<AuthoritySnapshotRecord>> {
     let mut records = Vec::new();
+    let mut administrators = connection
+        .prepare("SELECT p.principal_id,p.status,a.status,a.authority_epoch FROM platform_administrators a JOIN principals p ON p.principal_id=a.principal_id WHERE p.organization_id=?1 AND a.status!='revoked' ORDER BY p.principal_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in administrators
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (principal_id, principal_status, status, authority_epoch) =
+            row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "principal".into(),
+            resource_id: principal_id,
+            value: json!({"principal_status":principal_status,"status":status,"authority_epoch":authority_epoch}),
+        });
+    }
+    drop(administrators);
     let mut teams = connection
         .prepare("SELECT group_id,status,policy_epoch,membership_epoch FROM groups WHERE organization_id=?1 AND kind='team' AND status!='deleted' ORDER BY group_id COLLATE BINARY")
         .map_err(map_sqlite_error)?;

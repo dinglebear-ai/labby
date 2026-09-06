@@ -325,6 +325,18 @@ pub(super) fn create_team(
         1,
         "platform_admin",
     )?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        "access.team_member.add",
+        "team_membership",
+        &format!("{}\0{}", input.team_id, actor.id),
+        1,
+        "implicit_team_owner",
+    )?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(TeamSnapshot {
         organization_id: actor.organization_id,
@@ -436,7 +448,7 @@ pub(super) fn add_member(
         &actor.organization_id,
         "access.team_member.add",
         "team_membership",
-        &input.principal_id,
+        &format!("{}\0{}", input.team_id, input.principal_id),
         membership_epoch,
         "team_manage",
     )?;
@@ -568,7 +580,7 @@ fn mutate_member(
         &tx,
         &actor.organization_id,
         team_id,
-        principal_id,
+        &format!("{team_id}\0{principal_id}"),
         role,
         status,
     )?;
@@ -779,7 +791,7 @@ fn accept_invitation_at(
         &tx,
         revision,
         now,
-        &principal.id,
+        &format!("{team_id}\0{}", principal.id),
         &organization_id,
         "access.team_invitation.accept",
         "team_membership",
@@ -859,8 +871,8 @@ pub(super) fn assign_team_project(
         &actor.id,
         &actor.organization_id,
         "access.team_project.assign",
-        "project",
-        &input.project_id,
+        "team_project",
+        &format!("{}\0{}", input.team_id, input.project_id),
         epoch(assignment_epoch)?,
         "team_manage",
     )?;
@@ -925,24 +937,44 @@ pub(super) fn list_managed_projects(
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
     let actor = resolve_principal(&tx, identity)?;
-    let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch,m.role FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id JOIN team_memberships m ON m.organization_id=a.organization_id AND m.team_id=a.team_id WHERE p.organization_id=?1 AND m.principal_id=?2 AND m.status='active' AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
-    let values = statement
-        .query_map(params![actor.organization_id, actor.id], |r| {
-            Ok(ManagedProjectSnapshot {
-                project_id: r.get(0)?,
-                team_id: r.get(1)?,
-                name: r.get(2)?,
-                status: r.get(3)?,
-                role: r.get(4)?,
-                policy_epoch: u64::try_from(r.get::<_, i64>(5)?)
-                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                can_manage: matches!(r.get::<_, String>(6)?.as_str(), "owner" | "admin"),
+    let platform = is_platform_admin(&tx, &actor.id)?;
+    let values = if platform {
+        let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
+        statement
+            .query_map([actor.organization_id], |r| {
+                Ok(ManagedProjectSnapshot {
+                    project_id: r.get(0)?,
+                    team_id: r.get(1)?,
+                    name: r.get(2)?,
+                    status: r.get(3)?,
+                    role: r.get(4)?,
+                    policy_epoch: u64::try_from(r.get::<_, i64>(5)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    can_manage: true,
+                })
             })
-        })
-        .map_err(map_sqlite_error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(map_sqlite_error)?;
-    drop(statement);
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)?
+    } else {
+        let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch,m.role FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id JOIN team_memberships m ON m.organization_id=a.organization_id AND m.team_id=a.team_id WHERE p.organization_id=?1 AND m.principal_id=?2 AND m.status='active' AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
+        statement
+            .query_map(params![actor.organization_id, actor.id], |r| {
+                Ok(ManagedProjectSnapshot {
+                    project_id: r.get(0)?,
+                    team_id: r.get(1)?,
+                    name: r.get(2)?,
+                    status: r.get(3)?,
+                    role: r.get(4)?,
+                    policy_epoch: u64::try_from(r.get::<_, i64>(5)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    can_manage: matches!(r.get::<_, String>(6)?.as_str(), "owner" | "admin"),
+                })
+            })
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)?
+    };
     tx.commit().map_err(map_sqlite_error)?;
     Ok(values)
 }
@@ -1229,7 +1261,8 @@ fn audit(
     policy_epoch: u64,
     reason: &str,
 ) -> AccessStoreResult<()> {
-    tx.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,NULL,?5,?6,?7,'allow',?8,?9,'{}')",params![format!("team-authority-{revision}"),now,actor,organization,action,target_kind,target,reason,i64::try_from(policy_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?]).map_err(map_sqlite_error)?;
+    let identity = hex::encode(Sha256::digest(format!("{target_kind}\0{target}")));
+    tx.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,NULL,?5,?6,?7,'allow',?8,?9,'{}')",params![format!("team-authority-{revision}-{}",&identity[..16]),now,actor,organization,action,target_kind,target,reason,i64::try_from(policy_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?]).map_err(map_sqlite_error)?;
     Ok(())
 }
 fn immediate(connection: &mut Connection) -> AccessStoreResult<Transaction<'_>> {
@@ -1494,6 +1527,44 @@ mod tests {
                 .is_empty(),
             "archive invalidates future selection/listing"
         );
+    }
+
+    #[tokio::test]
+    async fn platform_admin_lists_organization_projects_without_team_membership() {
+        let (_directory, store, owner) = store().await;
+        let platform = identity("project-platform");
+        seed_principal(&store, "project-platform-principal", "project-platform").await;
+        store
+            .grant_platform_administrator(
+                PlatformAdministratorInput::new(owner.clone(), "project-platform-principal")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .create_team(
+                CreateTeamInput::new(owner.clone(), "platform-project-team", "Project Team")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .create_managed_project(
+                ManageTeamProjectInput::new(
+                    owner,
+                    "platform-project-team",
+                    "platform-visible-project",
+                    Some("Visible to Platform".into()),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let visible = store.list_managed_projects(platform).await.unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].project_id, "platform-visible-project");
+        assert!(visible[0].can_manage);
     }
 
     #[tokio::test]
