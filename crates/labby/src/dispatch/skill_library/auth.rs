@@ -1609,8 +1609,16 @@ mod tests {
                     SkillLibraryTarget::Personal(&own)
                 };
                 assert!(
-                    resolve_grant(&role, &tenant, &actor, &actor, &BTreeSet::new(), own_target,)
-                        .is_some()
+                    resolve_grant(
+                        &role,
+                        &tenant,
+                        &actor,
+                        &actor,
+                        &BTreeSet::new(),
+                        false,
+                        own_target,
+                    )
+                    .is_some()
                 );
 
                 let other_target = if action.is_mutation() {
@@ -1625,6 +1633,7 @@ mod tests {
                         &actor,
                         &actor,
                         &BTreeSet::new(),
+                        false,
                         other_target,
                     )
                     .is_none(),
@@ -1643,6 +1652,7 @@ mod tests {
                         &actor,
                         &actor,
                         &BTreeSet::new(),
+                        false,
                         cross_target,
                     )
                     .is_none()
