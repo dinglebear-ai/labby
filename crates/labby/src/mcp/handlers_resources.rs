@@ -798,11 +798,20 @@ impl LabMcpServer {
         let mut resources = CatalogSnapshotCollector::new(page_collector);
         let mut regular_resource_provenance = Vec::new();
 
-        resources.accept(
-            Resource::new("lab://catalog", "catalog")
-                .with_description("Full discovery document for all services")
-                .with_mime_type("application/json"),
-        );
+        for resource in self.file_stash_resources(&context).await {
+            resources.accept(resource);
+            if resources.finished() {
+                break;
+            }
+        }
+
+        if !resources.finished() {
+            resources.accept(
+                Resource::new("lab://catalog", "catalog")
+                    .with_description("Full discovery document for all services")
+                    .with_mime_type("application/json"),
+            );
+        }
 
         // Error-contract schemas: always listed so agents can discover the
         // envelope contract in-band instead of relying on out-of-band docs.
@@ -996,8 +1005,9 @@ impl LabMcpServer {
                 }
             }
             if !resources.finished()
-                && let Some(oauth_subject) =
-                    oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+                && let Some(oauth_subject) = self.route_oauth_subject(
+                    oauth_upstream_subject_for_request(auth, self.request_subject(&context)),
+                )
             {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let mut scoped_resources = pool
@@ -1253,6 +1263,15 @@ impl LabMcpServer {
         }
 
         let mut templates = CatalogSnapshotCollector::new(page_collector);
+        if self.file_stash_caller_bound()
+            && self.route_scope.allows_service("stash")
+            && self
+                .file_stash_principal(&context, Some(&context.meta))
+                .await
+                .is_ok()
+        {
+            templates.accept(crate::mcp::file_stash::template());
+        }
         #[cfg(feature = "gateway")]
         let mut regular_template_provenance = Vec::new();
         #[cfg(feature = "gateway")]
@@ -1361,6 +1380,15 @@ impl LabMcpServer {
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
+        if uri.starts_with("stash://") {
+            if !self.file_stash_caller_bound()
+                || !self.route_scope.exposes_resources()
+                || !self.route_scope.allows_service("stash")
+            {
+                return Err(unknown_resource_error(&uri, false));
+            }
+            return self.read_file_stash_resource(&uri, &context).await;
+        }
         #[cfg(feature = "gateway")]
         match project_execution_binding(&context.extensions, SystemTime::now()) {
             ProjectExecutionBinding::Legacy => {}
@@ -1721,13 +1749,15 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        if let Some(oauth_subject) =
-            oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-            && let Some(pool) = self.current_upstream_pool().await
+        if let Some(oauth_subject) = self.route_oauth_subject(oauth_upstream_subject_for_request(
+            auth,
+            self.request_subject(&context),
+        )) && let Some(pool) = self.current_upstream_pool().await
             && let Some(upstream_name) = uri
                 .strip_prefix("lab://upstream/")
                 .and_then(|rest| rest.split('/').next())
             && self.route_scope.allows_upstream(upstream_name)
+            && self.route_team_credential_valid(upstream_name).await
             && let Some(config) = self.oauth_upstream_config(upstream_name).await
         {
             return self
@@ -3141,6 +3171,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         LabMcpServer {
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
             gateway_manager: Some(manager),
             peers: Default::default(),
             code_mode_app_state,
@@ -3261,6 +3292,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         LabMcpServer {
             registry: Arc::new(registry),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
             gateway_manager: Some(manager),
             peers: Default::default(),
             code_mode_app_state: Default::default(),
@@ -3336,6 +3368,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         LabMcpServer {
             registry: Arc::new(registry),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
             gateway_manager: None,
             peers: Default::default(),
             code_mode_app_state,

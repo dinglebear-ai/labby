@@ -1,10 +1,812 @@
 {
   "services": [
     {
+      "name": "access",
+      "description": "Manage teams, memberships, invitations, and project assignments",
+      "category": "administration",
+      "status": "available",
+      "caller_bound": false,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "access.team.create",
+          "description": "Create a team",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.list",
+          "description": "List the caller's teams",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.member.add",
+          "description": "Add a team member",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.member.role.set",
+          "description": "Change a team member role",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.member.suspend",
+          "description": "Suspend a team member",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.member.remove",
+          "description": "Remove a team member",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.suspend",
+          "description": "Suspend a team",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.activate",
+          "description": "Activate a team",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_invitation.create",
+          "description": "Create a team invitation",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "token",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "ttl_seconds",
+              "ty": "integer",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_invitation.accept",
+          "description": "Accept a team invitation",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "token",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_project.assign",
+          "description": "Assign a team to a project",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.gateway_credential.list",
+          "description": "List redacted Team Gateway credential bindings",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.gateway_credential.bind",
+          "description": "Bind a host-custodied credential to a Team upstream",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "upstream_name",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "binding_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.gateway_credential.revoke",
+          "description": "Revoke a Team Gateway credential binding",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "upstream_name",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.project.effective.list",
+          "description": "List effective project roles",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.grant",
+          "description": "Grant platform administrator authority",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.revoke",
+          "description": "Revoke platform administrator authority",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        }
+      ]
+    },
+    {
+      "name": "agents",
+      "description": "Create, manage, and run owner-scoped Agents",
+      "category": "automation",
+      "status": "available",
+      "caller_bound": true,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "agents.create",
+          "description": "Create an Agent definition",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_kind",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "content_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "repository_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "image_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "harness_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "loadout_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "catalog_generation",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.list",
+          "description": "List caller-visible Agents",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "agents.get",
+          "description": "Get a caller-visible Agent",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.update",
+          "description": "Create the next immutable Agent revision",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.suspend",
+          "description": "Suspend an Agent",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.delete",
+          "description": "Delete an Agent",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.run",
+          "description": "Start a pinned Agent session",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "agents.session.status",
+          "description": "Read Agent session status",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "session_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        }
+      ]
+    },
+    {
+      "name": "tasks",
+      "description": "Create and operate owner-scoped Agent Tasks",
+      "category": "automation",
+      "status": "available",
+      "caller_bound": true,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "tasks.create",
+          "description": "Create an immutable Agent Task intent",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "idempotency_key",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_kind",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "agent_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "input_digest",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.list",
+          "description": "List caller-visible Agent Tasks",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.get",
+          "description": "Get a caller-visible Agent Task",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.queue",
+          "description": "Queue an Agent Task",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.cancel",
+          "description": "Cancel an Agent Task",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "tasks.result",
+          "description": "Read an Agent Task result",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "task_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        }
+      ]
+    },
+    {
+      "name": "dev_containers",
+      "description": "Create and manage isolated development containers",
+      "category": "administration",
+      "status": "available",
+      "caller_bound": false,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "dev_containers.create",
+          "description": "Create from an approved template",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "instance_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque Dev Container identifier"
+            },
+            {
+              "name": "template_id",
+              "ty": "string",
+              "required": true,
+              "description": "Administrator-approved template identifier"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "installation|team|project|personal",
+              "required": true,
+              "description": "Single durable owner scope"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owner identifier resolved against caller authority"
+            },
+            {
+              "name": "secret_references",
+              "ty": "string[]",
+              "required": false,
+              "description": "Opaque secret references; secret material is never accepted"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "dev_containers.list",
+          "description": "List Dev Containers visible to the caller",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "dev_containers.start",
+          "description": "Request a stopped Dev Container start",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "instance_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque Dev Container identifier"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "dev_containers.stop",
+          "description": "Request a Dev Container stop",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "instance_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque Dev Container identifier"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "dev_containers.destroy",
+          "description": "Permanently destroy a Dev Container",
+          "destructive": true,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "instance_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque Dev Container identifier"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "dev_containers.reconcile",
+          "description": "Reconcile durable intent with the runtime",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "instance_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque Dev Container identifier"
+            }
+          ],
+          "returns": "object"
+        }
+      ]
+    },
+    {
       "name": "browser",
       "description": "Bridge browser-native WebMCP tools into Labby",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -201,6 +1003,7 @@
       "description": "Manage proxied upstream MCP gateways",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -2001,6 +2804,7 @@
       "description": "Comprehensive health audit: env vars, system, access store, gateway, and OAuth relay checks",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -2139,6 +2943,7 @@
       "description": "First-run + draft-commit configuration flow",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -2632,6 +3437,7 @@
       "description": "Search, import, revise, validate, and activate durable Artifacts",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": true,
       "requires_http_subject": false,
       "actions": [
         {
@@ -3604,6 +4410,7 @@
       "description": "Curate and publish immutable Artifact bundles",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -3837,6 +4644,7 @@
       "description": "Run and inspect durable Artifact ingestion jobs",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -3978,6 +4786,7 @@
       "description": "Manage remote Artifact ingestion sources",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4087,6 +4896,7 @@
       "description": "Manage staged Artifact ingestion uploads",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4168,6 +4978,7 @@
       "description": "Manage executable Code Mode snippets",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4403,6 +5214,7 @@
       "description": "View and filter Labby's own rolling server process logs",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4515,6 +5327,7 @@
       "description": "Internal onboarding audit tool",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4565,6 +5378,7 @@
       "description": "Workspace filesystem browser (read-only, deny-listed)",
       "category": "bootstrap",
       "status": "available",
+      "caller_bound": false,
       "requires_http_subject": false,
       "actions": [
         {
@@ -4582,6 +5396,310 @@
             }
           ],
           "returns": "{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}"
+        }
+      ]
+    },
+    {
+      "name": "stash",
+      "description": "Store and share principal-scoped files",
+      "category": "bootstrap",
+      "status": "available",
+      "caller_bound": true,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "stash.list",
+          "description": "List files available to the caller",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size from 1 to the configured maximum"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "FilePage"
+        },
+        {
+          "name": "stash.search",
+          "description": "Search available files by display name",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "query",
+              "ty": "string",
+              "required": true,
+              "description": "Case-insensitive display-name substring"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size from 1 to the configured maximum"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "FilePage"
+        },
+        {
+          "name": "stash.stats",
+          "description": "Read authoritative owned-file usage",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashStats"
+        },
+        {
+          "name": "stash.metadata",
+          "description": "Read metadata for an available file",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashFile"
+        },
+        {
+          "name": "stash.rename",
+          "description": "Rename an owned file",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "display_name",
+              "ty": "string",
+              "required": true,
+              "description": "New display filename"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashFile"
+        },
+        {
+          "name": "stash.delete",
+          "description": "Permanently delete an owned file",
+          "destructive": true,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "Deleted"
+        },
+        {
+          "name": "stash.grants.create",
+          "description": "Grant one principal read access to an owned file",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "grantee_principal_id",
+              "ty": "string",
+              "required": true,
+              "description": "AccessStore-resolved durable PrincipalId"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashGrant"
+        },
+        {
+          "name": "stash.grants.list",
+          "description": "List active grants for an owned file",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque continuation cursor"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size from 1 to the configured maximum"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "GrantPage"
+        },
+        {
+          "name": "stash.grants.revoke",
+          "description": "Revoke an active grant on an owned file",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque immutable file ID"
+            },
+            {
+              "name": "grant_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque grant ID"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "Revoked"
         }
       ]
     }

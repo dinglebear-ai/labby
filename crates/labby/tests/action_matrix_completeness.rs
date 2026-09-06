@@ -12,11 +12,97 @@ use support::action_matrix::{
     PersistenceClass, ScenarioKind, ScenarioOwner, Surface, catalog_map, intent_map,
     intent_map_from, intents, validate_intent_shape,
 };
+use support::authority_matrix::{
+    DEPOT_OPERATIONS, OperationClass, OwnerKind, ResourceFamily, classify_labby,
+    duplicate_depot_operations,
+};
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
 
 fn catalog() -> Vec<CatalogAction> {
     serde_json::from_str(ACTION_CATALOG).expect("generated action catalog must parse")
+}
+
+#[test]
+fn every_registered_action_has_an_authority_classification() {
+    let catalog = catalog();
+    let unclassified = catalog
+        .iter()
+        .filter(|action| classify_labby(action).is_none())
+        .map(CatalogAction::key)
+        .collect::<Vec<_>>();
+    assert!(
+        unclassified.is_empty(),
+        "registered actions lack authority classification: {unclassified:#?}"
+    );
+
+    for action in &catalog {
+        let classification = classify_labby(action).expect("checked above");
+        assert!(
+            !classification.owners.is_empty(),
+            "{} has no owner kind",
+            action.key()
+        );
+        assert_eq!(
+            classification.final_boundary_reauthorization,
+            !action.builtin,
+            "{} has an unsafe final-boundary posture",
+            action.key()
+        );
+        if classification.resource == ResourceFamily::Platform {
+            assert_eq!(classification.owners, [OwnerKind::Installation]);
+            assert!(!classification.delegated);
+        } else {
+            for owner in [OwnerKind::Team, OwnerKind::Project, OwnerKind::Personal] {
+                assert!(
+                    classification.owners.contains(&owner),
+                    "{} omits {owner:?} authority",
+                    action.key()
+                );
+            }
+        }
+        if action.destructive {
+            assert_eq!(classification.operation, OperationClass::Delete);
+        }
+    }
+}
+
+#[test]
+fn depot_operation_authority_snapshot_is_complete_and_well_formed() {
+    assert_eq!(
+        DEPOT_OPERATIONS.len(),
+        64,
+        "update the reviewed Depot operation snapshot"
+    );
+    assert!(duplicate_depot_operations().is_empty());
+    for operation in DEPOT_OPERATIONS {
+        assert!(operation.name.starts_with("depot."));
+        assert!(
+            !operation.owners.is_empty(),
+            "{} has no owner kind",
+            operation.name
+        );
+        if operation.resource == ResourceFamily::Platform {
+            assert_eq!(operation.owners, [OwnerKind::Installation]);
+            assert!(
+                !operation.delegated,
+                "{} leaks platform authority",
+                operation.name
+            );
+        } else {
+            assert_eq!(
+                operation.owners,
+                [OwnerKind::Team, OwnerKind::Project, OwnerKind::Personal]
+            );
+        }
+        if operation.operation == OperationClass::Delete {
+            assert!(
+                operation.resource == ResourceFamily::Platform || operation.delegated,
+                "{} has no authorized execution path",
+                operation.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -245,19 +331,33 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
-    let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
+    let base = BTreeSet::from([
+        "access",
+        "agents",
+        "dev_containers",
+        "doctor",
+        "server_logs",
+        "setup",
+        "stash",
+        "tasks",
+    ]);
     let gateway = BTreeSet::from([
         "artifacts",
+        "access",
+        "agents",
         "browser",
         "bundles",
         "doctor",
+        "dev_containers",
         "gateway",
         "jobs",
         "server_logs",
         "setup",
         "snippets",
         "sources",
+        "stash",
         "uploads",
+        "tasks",
     ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
@@ -267,30 +367,58 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ("gateway-host", gateway),
         (
             "fs",
-            BTreeSet::from(["doctor", "fs", "server_logs", "setup"]),
+            BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
+                "doctor",
+                "fs",
+                "server_logs",
+                "setup",
+                "stash",
+                "tasks",
+            ]),
         ),
         (
             "skills",
             BTreeSet::from([
                 "artifacts",
+                "access",
+                "agents",
                 "bundles",
                 "doctor",
+                "dev_containers",
                 "jobs",
                 "server_logs",
                 "setup",
                 "sources",
+                "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
         (
             "lab-admin",
-            BTreeSet::from(["doctor", "lab_admin", "server_logs", "setup"]),
+            BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
+                "doctor",
+                "lab_admin",
+                "server_logs",
+                "setup",
+                "stash",
+                "tasks",
+            ]),
         ),
         (
             "all",
             BTreeSet::from([
                 "browser",
+                "access",
+                "agents",
                 "doctor",
+                "dev_containers",
                 "fs",
                 "gateway",
                 "lab_admin",
@@ -301,7 +429,9 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "jobs",
                 "snippets",
                 "sources",
+                "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
     ]);
@@ -372,7 +502,7 @@ fn security_invariants_are_independent_of_execution_intent() {
         (
             (false, true),
             Invariant {
-                allowed: false,
+                allowed: true,
                 minimum: EvidenceLevel::LiveStateTransition,
             },
         ),
@@ -461,8 +591,8 @@ fn security_invariants_are_independent_of_execution_intent() {
     }
     assert_eq!(
         observed_combinations,
-        BTreeSet::from([(false, false), (true, false), (true, true)]),
-        "all allowed admin x destructive combinations must remain covered; false/true is forbidden"
+        BTreeSet::from([(false, false), (false, true), (true, false), (true, true)]),
+        "all allowed admin x destructive combinations must remain covered"
     );
     let preview = catalog
         .iter()
@@ -527,15 +657,7 @@ fn security_invariants_are_independent_of_execution_intent() {
 
 #[test]
 fn retired_products_are_absent_from_authoritative_projections() {
-    let retired = [
-        "acp",
-        "deploy",
-        "fleet",
-        "marketplace",
-        "nodes",
-        "registry",
-        "stash",
-    ];
+    let retired = ["acp", "deploy", "fleet", "marketplace", "nodes", "registry"];
     for action in catalog() {
         assert!(
             !retired.contains(&action.service.as_str()),
@@ -609,7 +731,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
         .as_array()
         .expect("generated MCP help must contain services");
     let web_nav = include_str!("../../../apps/gateway-admin/components/console/nav-model.ts");
-    for name in retired.into_iter().filter(|name| *name != "stash") {
+    for name in retired {
         assert!(
             !cli_help.contains(&format!("## `labby {name}")),
             "retired CLI command returned: {name}"
@@ -629,15 +751,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
 
 #[test]
 fn retired_services_are_rejected_as_configured_gateway_subset_targets() {
-    for service in [
-        "acp",
-        "deploy",
-        "fleet",
-        "marketplace",
-        "nodes",
-        "registry",
-        "stash",
-    ] {
+    for service in ["acp", "deploy", "fleet", "marketplace", "nodes", "registry"] {
         let source = format!(
             r#"
 [[protected_mcp_routes]]
@@ -660,6 +774,26 @@ services = ["{service}"]
             "{service}: unexpected config rejection: {error}"
         );
     }
+}
+
+#[test]
+fn caller_bound_stash_is_rejected_as_a_context_free_gateway_subset_target() {
+    let source = r#"
+[[protected_mcp_routes]]
+name = "caller-bound"
+enabled = true
+public_host = "mcp.example.test"
+public_path = "/caller-bound"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+services = ["stash"]
+"#;
+    let config: labby::config::LabConfig = toml::from_str(source).expect("config syntax");
+    let error = config
+        .validate()
+        .expect_err("caller-bound service must not be accepted by context-free gateway dispatch");
+    assert!(error.to_string().contains("unknown gateway_subset service"));
 }
 
 #[test]

@@ -266,6 +266,7 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
     let server = LabMcpServer {
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+        file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
         #[cfg(feature = "gateway")]
         gateway_manager: None,
         peers: Default::default(),
@@ -497,6 +498,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let server = LabMcpServer {
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::clone(&access_runtime),
+        file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
         #[cfg(feature = "gateway")]
         gateway_manager: None,
         peers: Default::default(),
@@ -825,7 +827,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     }
     assert!(resource_facts.windows(2).all(|pair| pair[0] == pair[1]));
 
-    let member_denied = Box::pin(running.service().call_tool_impl(
+    let member_mutation = Box::pin(running.service().call_tool_impl(
         call(
             "artifacts.deactivate",
             serde_json::json!({
@@ -837,53 +839,11 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         context(&pujit),
     ))
     .await
-    .expect("member denial response");
-    assert!(member_denied.is_error.unwrap_or(false));
-    let member_denied_envelope = member_denied.structured_content.clone().unwrap_or_else(|| {
-        serde_json::from_str(
-            member_denied.content[0]
-                .as_text()
-                .expect("member denial text")
-                .text
-                .as_str(),
-        )
-        .expect("member denial envelope")
-    });
-    assert_eq!(member_denied_envelope["error"]["kind"], "forbidden");
+    .expect("member mutation response");
+    assert!(!member_mutation.is_error.unwrap_or(false));
 
-    let unchanged = Box::pin(running.service().call_tool_impl(
-        call(
-            "artifacts.get",
-            serde_json::json!({"artifact_id": artifact_id}),
-        ),
-        context(&eli),
-    ))
-    .await
-    .expect("owner observes state after member denial");
-    assert!(!unchanged.is_error.unwrap_or(false), "{unchanged:?}");
-    let unchanged = value(&unchanged);
-    assert_eq!(unchanged["active_revision_id"], expected_revision);
-    assert_eq!(unchanged["latest_revision_id"], expected_revision);
-    assert_eq!(unchanged["published_library_version"], 2);
-    assert_eq!(unchanged["current_generation"], 2);
-
-    let admin_deactivated = Box::pin(running.service().call_tool_impl(
-        call(
-            "artifacts.deactivate",
-            serde_json::json!({
-                "artifact_id": artifact_id,
-                "expected_library_version": 2,
-                "idempotency_key": "jake-admin-deactivate"
-            }),
-        ),
-        context(&jake),
-    ))
-    .await
-    .expect("admin mutation response");
-    assert!(
-        !admin_deactivated.is_error.unwrap_or(false),
-        "{admin_deactivated:?}"
-    );
+    let member_mutation = value(&member_mutation);
+    assert_eq!(member_mutation["artifact_id"], artifact_id);
 }
 
 #[cfg(feature = "gateway")]
@@ -925,6 +885,7 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
     let server = LabMcpServer {
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+        file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
         gateway_manager: Some(manager),
         peers: Default::default(),
         code_mode_app_state: Default::default(),

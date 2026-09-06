@@ -1,4 +1,6 @@
+pub(crate) mod access;
 pub(crate) mod access_bootstrap;
+pub(crate) mod agents;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;
 #[cfg(feature = "skills")]
@@ -6,10 +8,12 @@ pub mod artifacts;
 pub mod browser;
 pub mod clients;
 pub mod depot;
+pub(crate) mod dev_containers;
 pub mod doctor;
 pub mod error;
 #[cfg(feature = "gateway")]
 pub(crate) mod execution_catalog;
+pub mod file_stash;
 pub mod fs;
 pub mod fs_atomic;
 #[cfg(feature = "gateway")]
@@ -19,6 +23,7 @@ pub mod lab_admin;
 #[cfg(feature = "gateway")]
 pub mod oauth_subject;
 pub mod path_safety;
+pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]
 pub mod remote_control;
@@ -31,5 +36,6 @@ pub(crate) mod skill_library;
 pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+pub(crate) mod tasks;
 #[cfg(feature = "gateway")]
 pub mod upstream;

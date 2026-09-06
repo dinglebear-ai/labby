@@ -1,5 +1,903 @@
 [
   {
+    "service": "access",
+    "action": "access.gateway_credential.bind",
+    "description": "Bind a host-custodied credential to a Team upstream",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "upstream_name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "binding_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.gateway_credential.list",
+    "description": "List redacted Team Gateway credential bindings",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.gateway_credential.revoke",
+    "description": "Revoke a Team Gateway credential binding",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "upstream_name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.platform_admin.grant",
+    "description": "Grant platform administrator authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.platform_admin.revoke",
+    "description": "Revoke platform administrator authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.project.effective.list",
+    "description": "List effective project roles",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.activate",
+    "description": "Activate a team",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.create",
+    "description": "Create a team",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.list",
+    "description": "List the caller's teams",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.add",
+    "description": "Add a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.remove",
+    "description": "Remove a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.role.set",
+    "description": "Change a team member role",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.suspend",
+    "description": "Suspend a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.suspend",
+    "description": "Suspend a team",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.accept",
+    "description": "Accept a team invitation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "token",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.create",
+    "description": "Create a team invitation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "token",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "ttl_seconds",
+        "ty": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_project.assign",
+    "description": "Assign a team to a project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "access",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "agents",
+    "action": "agents.create",
+    "description": "Create an Agent definition",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "content_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "repository_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "image_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "harness_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "loadout_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "catalog_generation",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.delete",
+    "description": "Delete an Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.get",
+    "description": "Get a caller-visible Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.list",
+    "description": "List caller-visible Agents",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.run",
+    "description": "Start a pinned Agent session",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.status",
+    "description": "Read Agent session status",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.suspend",
+    "description": "Suspend an Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.update",
+    "description": "Create the next immutable Agent revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "agents",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "artifacts",
     "action": "artifacts.activate",
     "description": "Activate an exact stored revision as a new generation",
@@ -2017,6 +2915,232 @@
   },
   {
     "service": "bundles",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.create",
+    "description": "Create from an approved template",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      },
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "installation|team|project|personal",
+        "required": true,
+        "description": "Single durable owner scope"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner identifier resolved against caller authority"
+      },
+      {
+        "name": "secret_references",
+        "ty": "string[]",
+        "required": false,
+        "description": "Opaque secret references; secret material is never accepted"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.destroy",
+    "description": "Permanently destroy a Dev Container",
+    "destructive": true,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.list",
+    "description": "List Dev Containers visible to the caller",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.reconcile",
+    "description": "Reconcile durable intent with the runtime",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.start",
+    "description": "Request a stopped Dev Container start",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.stop",
+    "description": "Request a Dev Container stop",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "dev_containers",
     "action": "schema",
     "description": "Show the schema for a specific action",
     "destructive": false,
@@ -6852,6 +7976,678 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "stash",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "stash",
+    "action": "stash.delete",
+    "description": "Permanently delete an owned file",
+    "destructive": true,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "Deleted",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.grants.create",
+    "description": "Grant one principal read access to an owned file",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "grantee_principal_id",
+        "ty": "string",
+        "required": true,
+        "description": "AccessStore-resolved durable PrincipalId"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashGrant",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.grants.list",
+    "description": "List active grants for an owned file",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "GrantPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.grants.revoke",
+    "description": "Revoke an active grant on an owned file",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "grant_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque grant ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "Revoked",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.list",
+    "description": "List files available to the caller",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "FilePage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.metadata",
+    "description": "Read metadata for an available file",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashFile",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.rename",
+    "description": "Rename an owned file",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "display_name",
+        "ty": "string",
+        "required": true,
+        "description": "New display filename"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashFile",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.search",
+    "description": "Search available files by display name",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Case-insensitive display-name substring"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "FilePage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.stats",
+    "description": "Read authoritative owned-file usage",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashStats",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "tasks",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.cancel",
+    "description": "Cancel an Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.create",
+    "description": "Create an immutable Agent Task intent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.get",
+    "description": "Get a caller-visible Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.list",
+    "description": "List caller-visible Agent Tasks",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.queue",
+    "description": "Queue an Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.result",
+    "description": "Read an Agent Task result",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

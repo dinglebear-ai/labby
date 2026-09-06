@@ -7,7 +7,7 @@ use std::time::Duration;
 use rusqlite::TransactionBehavior;
 #[cfg(test)]
 use rusqlite::types::Value;
-use rusqlite::{Connection, ErrorCode, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 
 use super::authorization::{
     AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
@@ -15,7 +15,13 @@ use super::authorization::{
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
-use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
+use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionAuthoritySnapshot};
+use super::team::{
+    AcceptTeamInvitationInput, AddTeamMemberInput, AssignTeamProjectInput, CreateTeamInput,
+    CreateTeamInvitationInput, EffectiveProjectRoleSnapshot, PlatformAdministratorInput,
+    TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
+    TeamProjectAssignmentSnapshot, TeamSnapshot,
+};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
@@ -37,6 +43,463 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn get_team_gateway_credential_binding(
+        &self,
+        team_id: String,
+        upstream_name: String,
+    ) -> AccessStoreResult<Option<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::get(connection, &team_id, &upstream_name)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn put_team_gateway_credential_binding(
+        &self,
+        input: super::gateway_credential::PutTeamCredentialBinding,
+    ) -> AccessStoreResult<labby_runtime::gateway_authority::TeamCredentialBinding> {
+        self.with_connection(move |connection| super::gateway_credential::put(connection, &input))
+            .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn list_team_gateway_credential_bindings(
+        &self,
+        team_id: String,
+    ) -> AccessStoreResult<Vec<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::list(connection, &team_id)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn revoke_team_gateway_credential_binding(
+        &self,
+        team_id: String,
+        upstream_name: String,
+        now_millis: u64,
+    ) -> AccessStoreResult<Option<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::revoke(connection, &team_id, &upstream_name, now_millis)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_agent_task(
+        &self,
+        intent: labby_primitives::task::TaskIntent,
+        now: i64,
+    ) -> AccessStoreResult<String> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.create(&intent, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn authorize_and_create_agent_task(
+        &self,
+        request: super::AuthorityRequest,
+        mut intent: labby_primitives::task::TaskIntent,
+        now: i64,
+    ) -> AccessStoreResult<String> {
+        self.with_connection(move |connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            if lease.binding().owner_scope() != &intent.owner
+                || lease.binding().resource_id().as_str() != intent.id
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            intent.creator = labby_primitives::access::PrincipalId::new(lease.binding().principal_id().to_owned()).map_err(|_| AccessStoreError::MalformedVocabulary)?;
+            let (owner_kind, owner_id) = match &intent.owner {
+                labby_primitives::access::OwnerScope::Installation(id) => ("installation", id.as_str()),
+                labby_primitives::access::OwnerScope::Team(id) => ("team", id.as_str()),
+                labby_primitives::access::OwnerScope::Project(id) => ("project", id.as_str()),
+                labby_primitives::access::OwnerScope::Personal(id) => ("personal", id.as_str()),
+            };
+            let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_definitions WHERE agent_id=?1 AND owner_kind=?2 AND owner_id=?3 AND version=?4 AND state='active' AND json_extract(definition_json,'$.contentDigest')=?5)", rusqlite::params![intent.agent_id, owner_kind, owner_id, i64::try_from(intent.agent_version).map_err(|_| AccessStoreError::MalformedVocabulary)?, intent.agent_revision_digest], |row| row.get(0)).map_err(map_sqlite_error)?;
+            if !active { return Err(AccessStoreError::NotAuthorized); }
+            let id = super::task::TaskStore::create_in_transaction(&tx, &intent, now)?;
+            tx.commit().map_err(map_sqlite_error)?;
+            Ok(id)
+        }).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn authorize_and_transition_agent_task(
+        &self,
+        request: super::AuthorityRequest,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        now: i64,
+    ) -> AccessStoreResult<labby_runtime::authority::AuthorityLease> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            let task_owner: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT owner_kind,owner_id FROM agent_tasks WHERE task_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            let (owner_kind, owner_id) = task_owner.ok_or(AccessStoreError::NotAuthorized)?;
+            if lease.binding().resource_id().as_str() != id
+                || !owner_matches(lease.binding().owner_scope(), &owner_kind, &owner_id)
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::task::TaskStore::transition_in_transaction(
+                &tx, &id, from, to, &actor, attempt, None, None, now,
+            )?;
+            tx.commit().map_err(map_sqlite_error)?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    pub(crate) async fn get_agent_task(
+        &self,
+        id: String,
+    ) -> AccessStoreResult<Option<super::task::TaskRecord>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::task::TaskStore::open(&path)?.get(&id))
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn list_agent_tasks(&self) -> AccessStoreResult<Vec<super::task::TaskRecord>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::task::TaskStore::open(&path)?.list())
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn transition_agent_task(
+        &self,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?
+                .transition(&id, from, to, &actor, attempt, None, None, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn acquire_agent_task_lease(
+        &self,
+        id: String,
+        attempt: u32,
+        fence: String,
+        expires_at: i64,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?
+                .acquire_lease(&id, attempt, &fence, expires_at, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn settle_agent_task(
+        &self,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        fence: String,
+        settlement: labby_primitives::task::TaskSettlement,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.transition(
+                &id,
+                from,
+                to,
+                &actor,
+                attempt,
+                Some(&fence),
+                Some(&settlement),
+                now,
+            )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn recover_expired_agent_tasks(&self, now: i64) -> AccessStoreResult<usize> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::task::TaskStore::open(&path)?.recover_expired(now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn put_agent_definition(
+        &self,
+        definition: labby_primitives::agent::AgentDefinition,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.put(&definition, &actor, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn authorize_and_put_agent_definition(
+        &self,
+        request: super::AuthorityRequest,
+        definition: labby_primitives::agent::AgentDefinition,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            if lease.binding().owner_scope() != &definition.owner
+                || lease.binding().resource_id().as_str() != definition.id
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::agent::AgentDefinitionStore::put_in_transaction(&tx, &definition, &actor, now)?;
+            tx.commit().map_err(map_sqlite_error)
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_and_set_agent_definition_state(
+        &self,
+        request: super::AuthorityRequest,
+        id: String,
+        state: labby_primitives::agent::AgentState,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            let agent_owner: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT owner_kind,owner_id FROM agent_definitions WHERE agent_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            let (owner_kind, owner_id) = agent_owner.ok_or(AccessStoreError::NotAuthorized)?;
+            if lease.binding().resource_id().as_str() != id
+                || !owner_matches(lease.binding().owner_scope(), &owner_kind, &owner_id)
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::agent::AgentDefinitionStore::set_state_in_transaction(
+                &tx, &id, state, &actor, now,
+            )?;
+            tx.commit().map_err(map_sqlite_error)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_agent_session(
+        &self,
+        session_id: String,
+        definition: labby_primitives::agent::AgentDefinition,
+        principal: String,
+        authority_fingerprint: String,
+        lease_expires_at: i64,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.create_session(
+                &session_id,
+                &definition,
+                &principal,
+                &authority_fingerprint,
+                lease_expires_at,
+                now,
+            )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn get_agent_session_status(
+        &self,
+        agent_id: String,
+        session_id: String,
+    ) -> AccessStoreResult<Option<String>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.session_status(&agent_id, &session_id)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn set_agent_session_status(
+        &self,
+        agent_id: String,
+        session_id: String,
+        expected: String,
+        next: String,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.set_session_status(
+                &agent_id,
+                &session_id,
+                &expected,
+                &next,
+            )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn get_agent_definition(
+        &self,
+        id: String,
+    ) -> AccessStoreResult<Option<labby_primitives::agent::AgentDefinition>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.get(&id)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn list_agent_definitions(
+        &self,
+    ) -> AccessStoreResult<Vec<labby_primitives::agent::AgentDefinition>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::agent::AgentDefinitionStore::open(&path)?.list())
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn set_agent_definition_state(
+        &self,
+        id: String,
+        state: labby_primitives::agent::AgentState,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.set_state(&id, state, &actor, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn claim_authority_projection_batch(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<super::outbox::PendingProjection>> {
+        self.with_connection(move |connection| super::outbox::claim(connection, now, limit))
+            .await
+    }
+    pub(crate) async fn authority_snapshot(
+        &self,
+        organization_id: String,
+    ) -> AccessStoreResult<Vec<super::outbox::AuthoritySnapshotRecord>> {
+        self.with_connection(move |connection| {
+            super::outbox::snapshot(connection, &organization_id)
+        })
+        .await
+    }
+    pub(crate) async fn authority_snapshot_checkpoint(
+        &self,
+        organization_id: String,
+    ) -> AccessStoreResult<super::outbox::AuthoritySnapshotCheckpoint> {
+        self.with_connection(move |connection| {
+            super::outbox::snapshot_checkpoint(connection, &organization_id)
+        })
+        .await
+    }
+    pub(crate) async fn authority_organizations(&self) -> AccessStoreResult<Vec<String>> {
+        self.with_connection(super::outbox::organizations).await
+    }
+    pub(crate) async fn acknowledge_authority_projection(
+        &self,
+        organization_id: String,
+        highest: u64,
+        digest: String,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::acknowledge(connection, &organization_id, highest, &digest, now)
+        })
+        .await
+    }
+    pub(crate) async fn release_failed_authority_projection(
+        &self,
+        organization_id: String,
+        through: u64,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::release_failed(connection, &organization_id, through, now)
+        })
+        .await
+    }
+    pub(crate) async fn retain_authority_projection(
+        &self,
+        older_than: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| super::outbox::retain(connection, older_than))
+            .await
+    }
+    pub(crate) async fn supersede_authority_projection_with_snapshot(
+        &self,
+        organization_id: String,
+        digest: String,
+        through: u64,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::supersede_with_snapshot(
+                connection,
+                &organization_id,
+                &digest,
+                through,
+                now,
+            )
+        })
+        .await
+    }
     pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
         let path = validated_access_path(&path)
             .map_err(|()| AccessStoreError::InsecurePath { path: path.clone() })?;
@@ -110,6 +573,150 @@ impl AccessStore {
             .await
     }
 
+    pub(crate) async fn create_team(
+        &self,
+        input: CreateTeamInput,
+    ) -> AccessStoreResult<TeamSnapshot> {
+        self.with_connection(move |connection| super::team::create_team(connection, &input))
+            .await
+    }
+    pub(crate) async fn list_teams(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<TeamSnapshot>> {
+        self.with_connection(move |connection| super::team::list_teams(connection, &identity))
+            .await
+    }
+    pub(crate) async fn add_team_member(
+        &self,
+        input: AddTeamMemberInput,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        self.with_connection(move |connection| super::team::add_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn set_team_member_role(
+        &self,
+        input: AddTeamMemberInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::set_member_role(connection, &input))
+            .await
+    }
+    pub(crate) async fn suspend_team_member(
+        &self,
+        input: TeamMembershipInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::suspend_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn remove_team_member(
+        &self,
+        input: TeamMembershipInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| super::team::remove_member(connection, &input))
+            .await
+    }
+    pub(crate) async fn suspend_team(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        team_id: String,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::suspend_team(connection, &identity, &team_id)
+        })
+        .await
+    }
+    pub(crate) async fn activate_team(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        team_id: String,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::activate_team(connection, &identity, &team_id)
+        })
+        .await
+    }
+    pub(crate) async fn grant_platform_administrator(
+        &self,
+        input: PlatformAdministratorInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::grant_platform_admin(connection, &input)
+        })
+        .await
+    }
+    pub(crate) async fn revoke_platform_administrator(
+        &self,
+        input: PlatformAdministratorInput,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::team::revoke_platform_admin(connection, &input)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_team_invitation(
+        &self,
+        input: CreateTeamInvitationInput,
+    ) -> AccessStoreResult<TeamInvitationSnapshot> {
+        self.with_connection(move |connection| super::team::create_invitation(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn accept_team_invitation(
+        &self,
+        input: AcceptTeamInvitationInput,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        self.with_connection(move |connection| super::team::accept_invitation(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn assign_team_project(
+        &self,
+        input: AssignTeamProjectInput,
+    ) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
+        self.with_connection(move |connection| super::team::assign_team_project(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn list_effective_projects(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<EffectiveProjectRoleSnapshot>> {
+        self.with_connection(move |connection| {
+            super::team::list_effective_projects(connection, &identity)
+        })
+        .await
+    }
+    pub(crate) async fn create_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::create_managed_project(c, &input))
+            .await
+    }
+    pub(crate) async fn get_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::get_managed_project(c, &input))
+            .await
+    }
+    pub(crate) async fn list_managed_projects(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<super::ManagedProjectSnapshot>> {
+        self.with_connection(move |c| super::team::list_managed_projects(c, &identity))
+            .await
+    }
+    pub(crate) async fn update_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+        archive: bool,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::update_managed_project(c, &input, archive))
+            .await
+    }
+
     pub(crate) async fn list_accessible_projects(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -120,6 +727,87 @@ impl AccessStore {
         .await
     }
 
+    pub(crate) async fn session_authority(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<SessionAuthoritySnapshot> {
+        self.with_connection(move |connection| {
+            super::read::session_authority(connection, &identity)
+        })
+        .await
+    }
+
+    pub(crate) async fn depot_delegation_authority(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+        selected_team_id: Option<String>,
+    ) -> AccessStoreResult<super::authorization::DepotDelegationAuthoritySnapshot> {
+        self.with_connection(move |connection| {
+            super::authorization::depot_delegation_authority(
+                connection,
+                &identity,
+                &project_id,
+                selected_team_id.as_deref(),
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn resolve_file_stash_principal(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<super::AccessPrincipalId> {
+        self.with_connection(move |connection| {
+            super::read::resolve_principal_id(connection, &identity)
+        })
+        .await
+    }
+
+    pub(crate) async fn search_file_stash_recipients(
+        &self,
+        owner: super::AccessPrincipalId,
+        query: String,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<super::FileStashRecipient>> {
+        self.with_connection(move |connection| {
+            let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+            let mut statement = connection.prepare(
+                "SELECT candidate.principal_id, candidate.display_name FROM principals owner JOIN principals candidate ON candidate.organization_id=owner.organization_id WHERE owner.principal_id=?1 AND owner.status='active' AND candidate.status='active' AND candidate.principal_id<>owner.principal_id AND candidate.display_name IS NOT NULL AND candidate.display_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE ORDER BY candidate.display_name,candidate.principal_id LIMIT ?3"
+            ).map_err(map_sqlite_error)?;
+            let rows = statement.query_map(rusqlite::params![owner.as_str(), pattern, i64::try_from(limit).unwrap_or(20)], |row| Ok(super::FileStashRecipient { principal_id: row.get(0)?, display_name: row.get(1)? })).map_err(map_sqlite_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_sqlite_error)
+        }).await
+    }
+
+    pub(crate) async fn lease_active_file_stash_principal(
+        &self,
+        principal: super::AccessPrincipalId,
+    ) -> AccessStoreResult<super::ActiveFileStashPrincipalLease> {
+        let permit = Arc::clone(&self.connection_admission)
+            .acquire_owned()
+            .await
+            .map_err(|_| AccessStoreError::Unavailable("connection admission closed".into()))?;
+        let connection = Arc::clone(&self.connection);
+        let active = tokio::task::spawn_blocking(move || {
+            let connection = connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM principals p JOIN organizations o ON o.organization_id=p.organization_id WHERE p.principal_id=?1 AND p.status='active' AND o.status='active')",
+                    [principal.as_str()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(map_sqlite_error)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
+        if !active {
+            return Err(AccessStoreError::IdentityUnavailable);
+        }
+        Ok(super::ActiveFileStashPrincipalLease { _permit: permit })
+    }
     pub(crate) async fn select_project(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -392,6 +1080,7 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
     validate_store_file(path)?;
     validate_sidecars(path)?;
     super::migrations::migrate(&mut connection)?;
+    backfill_owner_display_labels(&mut connection)?;
     validate_store_file(path)?;
     validate_sidecars(path)?;
     let validation = connection
@@ -429,6 +1118,7 @@ fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection
     connection
         .pragma_update(None, "synchronous", "FULL")
         .map_err(map_sqlite_error)?;
+    backfill_owner_display_labels(&mut connection)?;
     let synchronous = connection
         .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
         .map_err(map_sqlite_error)?;
@@ -486,6 +1176,14 @@ fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection
     validate_sidecars(path)?;
     reject_rollback_journal(path)?;
     Ok(connection)
+}
+
+fn backfill_owner_display_labels(connection: &mut Connection) -> AccessStoreResult<()> {
+    connection.execute(
+        "UPDATE principals AS p SET display_name=(SELECT substr(o.name,1,122)||' owner' FROM organizations o WHERE o.organization_id=p.organization_id AND o.status='active'),updated_at=unixepoch() WHERE p.kind='user' AND p.status='active' AND (p.display_name IS NULL OR trim(p.display_name)='') AND EXISTS(SELECT 1 FROM project_memberships m JOIN projects project ON project.organization_id=m.organization_id AND project.project_id=m.project_id WHERE m.organization_id=p.organization_id AND m.principal_id=p.principal_id AND m.role='owner' AND m.status='active' AND project.status='active') AND EXISTS(SELECT 1 FROM organizations o WHERE o.organization_id=p.organization_id AND o.status='active')",
+        [],
+    ).map_err(map_sqlite_error)?;
+    Ok(())
 }
 
 fn reject_rollback_journal(path: &Path) -> AccessStoreResult<()> {
@@ -742,6 +1440,27 @@ pub(super) fn map_sqlite_error(error: rusqlite::Error) -> AccessStoreError {
     }
 }
 
+fn owner_matches(
+    owner: &labby_primitives::access::OwnerScope,
+    owner_kind: &str,
+    owner_id: &str,
+) -> bool {
+    match owner {
+        labby_primitives::access::OwnerScope::Installation(id) => {
+            owner_kind == "installation" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Team(id) => {
+            owner_kind == "team" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Project(id) => {
+            owner_kind == "project" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Personal(id) => {
+            owner_kind == "personal" && id.as_str() == owner_id
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,9 +1498,17 @@ mod tests {
                 "access_metadata",
                 "access_security_events",
                 "access_tombstones",
+                "authority_outbox_sequences",
+                "authority_projection_outbox",
                 "bootstrap_proofs",
                 "credential_idempotency",
+                "dev_container_instances",
+                "dev_container_ledger",
+                "dev_container_owner_quotas",
+                "dev_container_templates",
+                "groups",
                 "organizations",
+                "platform_administrators",
                 "principal_links",
                 "principals",
                 "project_credentials",
@@ -789,6 +1516,9 @@ mod tests {
                 "project_memberships",
                 "project_policy_publications",
                 "projects",
+                "team_invitations",
+                "team_memberships",
+                "team_project_assignments",
             ]
         );
         assert_eq!(
@@ -1204,5 +1934,130 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = directory.path().join("access.db");
         AccessStore::open(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_stash_identity_is_resolved_from_principal_links_across_transports() {
+        let directory = super::super::test_support::secure_tempdir();
+        let store = AccessStore::open(secure_test_path(&directory))
+            .await
+            .unwrap();
+        store.execute_test_statement("INSERT INTO organizations VALUES('org','Org','active',0,1,1); INSERT INTO principals VALUES('external-principal','org','user','active',NULL,1,1),('local-principal','org','service_account','active',NULL,1,1); INSERT INTO principal_links VALUES('external-link','external-principal','external','https://accounts.google.com','stable-subject',NULL,'active',1,1,1,1),('local-link','local-principal','local_credential',NULL,NULL,'static-credential','active',1,1,1,1);").await.unwrap();
+        let browser = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "stable-subject",
+        )
+        .unwrap();
+        let oauth = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::OauthBearer,
+            "https://accounts.google.com",
+            "stable-subject",
+        )
+        .unwrap();
+        let local = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-credential",
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(browser)
+                .await
+                .unwrap()
+                .as_str(),
+            "external-principal"
+        );
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(oauth)
+                .await
+                .unwrap()
+                .as_str(),
+            "external-principal"
+        );
+        assert_eq!(
+            store
+                .resolve_file_stash_principal(local)
+                .await
+                .unwrap()
+                .as_str(),
+            "local-principal"
+        );
+        let missing = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::UnixPeer,
+            "missing",
+        )
+        .unwrap();
+        assert!(matches!(
+            store.resolve_file_stash_principal(missing).await,
+            Err(AccessStoreError::IdentityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_stash_active_principal_lease_linearizes_deactivation() {
+        let directory = super::super::test_support::secure_tempdir();
+        let store = AccessStore::open(secure_test_path(&directory))
+            .await
+            .unwrap();
+        store.execute_test_statement("INSERT INTO organizations VALUES('org','Org','active',0,1,1); INSERT INTO principals VALUES('recipient','org','user','active',NULL,1,1);").await.unwrap();
+        let lease = store
+            .lease_active_file_stash_principal(super::super::AccessPrincipalId::for_test(
+                "recipient",
+            ))
+            .await
+            .unwrap();
+        let mutation_store = store.clone();
+        let mut mutation = tokio::spawn(async move {
+            mutation_store
+                .execute_test_statement(
+                    "UPDATE principals SET status='disabled' WHERE principal_id='recipient'",
+                )
+                .await
+                .unwrap();
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut mutation)
+                .await
+                .is_err()
+        );
+        drop(lease);
+        mutation.await.unwrap();
+        assert!(matches!(
+            store
+                .lease_active_file_stash_principal(super::super::AccessPrincipalId::for_test(
+                    "recipient"
+                ))
+                .await,
+            Err(AccessStoreError::IdentityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn startup_backfill_labels_only_active_human_project_owners() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path).await.unwrap();
+        store.execute_test_statement("INSERT INTO organizations VALUES('org','Acme','active',0,1,1); INSERT INTO principals VALUES('owner','org','user','active',NULL,1,1),('service','org','service_account','active',NULL,1,1),('disabled','org','user','disabled',NULL,1,1),('viewer','org','user','active',NULL,1,1),('inactive-project-owner','org','user','active',NULL,1,1); INSERT INTO projects VALUES('project','org','Project','active',0,1,1),('inactive-project','org','Inactive','disabled',0,1,1); INSERT INTO project_memberships VALUES('m1','org','project','owner','owner','active','owner',1,1),('m2','org','project','service','owner','active','owner',1,1),('m3','org','project','disabled','owner','active','owner',1,1),('m4','org','project','viewer','viewer','active','owner',1,1),('m5','org','inactive-project','inactive-project-owner','owner','active','owner',1,1);").await.unwrap();
+        store
+            .with_connection(|connection| backfill_owner_display_labels(connection))
+            .await
+            .unwrap();
+        let labels = store.with_connection(|connection| {
+            let mut statement = connection.prepare("SELECT principal_id,display_name FROM principals WHERE organization_id='org' ORDER BY principal_id").map_err(map_sqlite_error)?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).map_err(map_sqlite_error)?;
+            rows.collect::<Result<Vec<_>,_>>().map_err(map_sqlite_error)
+        }).await.unwrap();
+        assert_eq!(
+            labels,
+            vec![
+                ("disabled".into(), None),
+                ("inactive-project-owner".into(), None),
+                ("owner".into(), Some("Acme owner".into())),
+                ("service".into(), None),
+                ("viewer".into(), None)
+            ]
+        );
     }
 }

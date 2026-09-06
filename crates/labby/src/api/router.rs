@@ -424,6 +424,14 @@ fn build_v1_router(
     );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     v1 = v1.nest("/depot", services::depot::routes(state.clone()));
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if api_auth_configured
+        && state.enabled_services.contains("stash")
+        && state.registry.dispatch_capability("stash")
+            == Some(crate::registry::DispatchCapability::CallerBound)
+    {
+        v1 = v1.nest("/stash", services::file_stash::routes(state.clone()));
+    }
     if api_auth_configured && !integrated_trusted_host {
         v1 = v1.nest("/browser", services::browser::routes(state.clone()));
         v1 = v1.nest(
@@ -576,6 +584,16 @@ fn build_v1_router(
         v1 = v1.nest(
             "/access/bootstrap-owner",
             services::access_bootstrap::routes(state.clone()),
+        );
+    }
+    if api_auth_configured {
+        v1 = v1.nest("/access/admin", services::access::routes(state.clone()));
+        v1 = v1.nest("/agents", services::agents::routes(state.clone()));
+        v1 = v1.nest("/tasks", services::tasks::routes(state.clone()));
+        v1 = v1.nest("/projects", services::projects::routes(state.clone()));
+        v1 = v1.nest(
+            "/dev-containers",
+            services::dev_containers::routes(state.clone()),
         );
     }
     v1 = v1
@@ -1355,6 +1373,38 @@ mod tests {
 
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn supported_platform_mounts_caller_bound_stash_only_with_api_auth() {
+        let state = AppState::new();
+        let mounted = build_v1_router(&state, true, false);
+        assert!(
+            mounted
+                .descriptors
+                .iter()
+                .any(|route| route.mount == "stash")
+        );
+        let unauthenticated = build_v1_router(&state, false, false);
+        assert!(
+            unauthenticated
+                .descriptors
+                .iter()
+                .all(|route| route.mount != "stash")
+        );
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[test]
+    fn unsupported_platform_does_not_mount_stash() {
+        let routes = build_v1_router(&AppState::new(), true, false);
+        assert!(
+            routes
+                .descriptors
+                .iter()
+                .all(|route| route.mount != "stash")
+        );
+    }
+
     /// One representative dispatch route for every registry-backed HTTP service.
     ///
     /// The registry is the denominator: adding a service without classifying its
@@ -1364,7 +1414,13 @@ mod tests {
     fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
         let path = match service {
             "lab_admin" => return None,
+            "access" => "/v1/access/admin".to_string(),
+            "agents" => "/v1/agents".to_string(),
+            "dev_containers" => "/v1/dev-containers".to_string(),
             "fs" => "/v1/fs/list".to_string(),
+            "projects" => "/v1/projects".to_string(),
+            "stash" => "/v1/stash/stats".to_string(),
+            "tasks" => "/v1/tasks".to_string(),
             name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
             | "server_logs" | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
@@ -1373,7 +1429,7 @@ mod tests {
                 "registered service `{unknown}` has no reviewed HTTP auth probe; add its mounted dispatch route or explicitly classify it as MCP-only"
             ),
         };
-        let method = if service == "fs" {
+        let method = if matches!(service, "fs" | "stash") {
             Method::GET
         } else {
             Method::POST
@@ -3001,8 +3057,14 @@ mod tests {
 
     #[tokio::test]
     async fn auth_session_returns_browser_identity_and_csrf_token() {
-        let state = AppState::new();
         let auth_state = test_lab_auth_state().await;
+        let identity = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            &auth_state.inbound_provider_binding().identity_issuer,
+            "browser-user",
+        )
+        .unwrap();
+        let state = state_with_test_authority(identity).await;
         let session = seed_browser_session(&auth_state).await;
         let app = build_router(state, None, Some(auth_state), None, &[]);
         let response = app
@@ -3064,7 +3126,12 @@ mod tests {
 
     #[tokio::test]
     async fn auth_session_returns_static_bearer_identity_without_oauth() {
-        let state = AppState::new();
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap();
+        let state = state_with_test_authority(identity).await;
         let app = build_router(state, Some("secret-token".to_string()), None, None, &[]);
         let response = app
             .oneshot(
@@ -3201,8 +3268,15 @@ mod tests {
     async fn auth_session_uses_configured_browser_cookie_name() {
         let mut auth_state = test_lab_auth_state().await;
         Arc::make_mut(&mut auth_state.config).session_cookie_name = "custom_session".to_string();
+        let identity = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            &auth_state.inbound_provider_binding().identity_issuer,
+            "browser-user",
+        )
+        .unwrap();
         let session = seed_browser_session(&auth_state).await;
-        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        let state = state_with_test_authority(identity).await;
+        let app = build_router(state, None, Some(auth_state), None, &[]);
 
         let response = app
             .oneshot(
@@ -5014,6 +5088,30 @@ mod tests {
         assert_eq!(snapshot.auth.modes, ["static_bearer", "oauth2"]);
         assert!(snapshot.auth.credential_generation.is_none());
         assert!(snapshot.auth.principal_cache_scope.is_none());
+    }
+
+    async fn state_with_test_authority(identity: labby_auth::VerifiedIdentity) -> AppState {
+        let directory = tempfile::Builder::new()
+            .prefix("labby-router-access-test-")
+            .tempdir_in(std::env::current_dir().expect("test working directory"))
+            .expect("access tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("secure access tempdir");
+        }
+        let runtime = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.keep().join("access.db")).await,
+        );
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity, "Local", "Default")
+                    .expect("bootstrap input"),
+            )
+            .await
+            .expect("bootstrap access authority");
+        AppState::new().with_access_runtime(runtime)
     }
 
     async fn test_lab_auth_state() -> labby_auth::state::AuthState {

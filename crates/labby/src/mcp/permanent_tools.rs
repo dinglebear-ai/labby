@@ -209,8 +209,14 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
     let derived_destructive = service.actions.iter().any(|action| action.destructive);
     let (read_only, destructive, idempotent, open_world) = match service.name {
         "fs" | "lab_admin" => (true, derived_destructive, true, false),
+        // Stash mutates only Labby-owned local state. Its mixed action set is
+        // neither read-only nor uniformly idempotent, and delete is destructive.
+        "stash" => (false, derived_destructive, false, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
+        "access" | "agents" | "tasks" | "dev_containers" => {
+            (false, derived_destructive, false, false)
+        }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
         | "sources" | "uploads" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
@@ -694,6 +700,10 @@ mod tests {
     /// `every_registry_service_has_a_reviewed_hint_row` turns into a CI failure
     /// rather than a silent conservative default.
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
+        ("access", false, false, false, false),
+        ("agents", false, false, false, false),
+        ("tasks", false, false, false, false),
+        ("dev_containers", false, true, false, false),
         ("doctor", false, false, true, true),
         ("artifacts", false, true, false, true),
         ("browser", false, false, false, true),
@@ -706,6 +716,7 @@ mod tests {
         ("setup", false, true, false, true),
         ("snippets", false, true, false, true),
         ("sources", false, false, false, true),
+        ("stash", false, true, false, false),
         ("uploads", false, false, false, true),
     ];
 
@@ -764,6 +775,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stash_annotations_reflect_its_local_mixed_mutability_action_set() {
+        let registry = crate::registry::build_docs_registry();
+        let stash = registry.service("stash").expect("stash service");
+        let annotations = PermanentToolRegistry::new()
+            .builtin_service_tool(stash, true, SkillLibraryDescriptorMode::Hidden)
+            .annotations
+            .expect("stash annotations");
+
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
+        assert_eq!(annotations.open_world_hint, Some(false));
+        assert!(
+            stash
+                .actions
+                .iter()
+                .any(|action| action.name == "stash.rename" && !action.destructive)
+        );
+        assert!(
+            stash
+                .actions
+                .iter()
+                .any(|action| action.name == "stash.delete" && action.destructive)
+        );
     }
 
     /// The table→registry direction: a row for a renamed or removed service is
@@ -942,6 +980,8 @@ mod tests {
 
         // Reachable by a caller with `can_execute() == false` at hop 2.
         let expected_callable = [
+            "access",
+            "agents",
             "browser",
             "doctor",
             "fs",
@@ -949,6 +989,7 @@ mod tests {
             "lab_admin",
             "mcp_app",
             "sources",
+            "tasks",
             "uploads",
             "gateway_status",
             CODE_MODE_READ_TOOL_NAME,
