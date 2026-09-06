@@ -544,8 +544,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        LauncherExecuteRequest, parse_json_payload, validate_discovered_api_base_url,
-        validate_launcher_request, validate_trusted_discovered_api_base_url,
+        LauncherExecuteRequest, palette_search_url, parse_json_payload,
+        validate_discovered_api_base_url, validate_launcher_request,
+        validate_trusted_discovered_api_base_url,
     };
 
     #[test]
@@ -623,8 +624,13 @@ mod tests {
                 .expect("valid palette search URL");
             assert_eq!(url.path(), "/v1/palette/search");
             assert_eq!(
-                url.query_pairs().collect::<Vec<_>>(),
-                [("q", "owner: foo/bar & baz"), ("limit", "100")]
+                url.query_pairs()
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("q".to_string(), "owner: foo/bar & baz".to_string()),
+                    ("limit".to_string(), "100".to_string()),
+                ]
             );
         }
     }
