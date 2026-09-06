@@ -14,7 +14,10 @@ use crate::{
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde::Serialize;
 use serde_json::Value;
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+};
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 use unicode_casefold::UnicodeCaseFold;
@@ -25,6 +28,31 @@ pub const META: (&str, &str, &str) = (
     "Store and share principal-scoped files",
     "bootstrap",
 );
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ObservationDetails {
+    pub(crate) object_id: Option<String>,
+    pub(crate) grant_id: Option<String>,
+    pub(crate) byte_count: Option<u64>,
+}
+
+tokio::task_local! {
+    static OBSERVATION_DETAILS: Arc<Mutex<ObservationDetails>>;
+}
+
+pub(crate) async fn collect_observation_details<T>(
+    future: impl Future<Output = T>,
+) -> (T, ObservationDetails) {
+    let details = Arc::new(Mutex::new(ObservationDetails::default()));
+    let result = OBSERVATION_DETAILS
+        .scope(Arc::clone(&details), future)
+        .await;
+    let captured = details
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    (result, captured)
+}
 
 pub(crate) fn observe_operation(
     surface: &'static str,
@@ -37,9 +65,21 @@ pub(crate) fn observe_operation(
     elapsed_ms: u64,
     kind: Option<&str>,
 ) {
-    // Callers may attach richer byte/grant detail after a wrapped operation;
-    // zero-duration detail calls are intentionally not separate terminal events.
     if elapsed_ms == 0 {
+        let _ = OBSERVATION_DETAILS.try_with(|details| {
+            let mut details = details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(value) = object_id {
+                details.object_id = Some(value.to_owned());
+            }
+            if let Some(value) = grant_id {
+                details.grant_id = Some(value.to_owned());
+            }
+            if byte_count.is_some() {
+                details.byte_count = byte_count;
+            }
+        });
         return;
     }
     let event = || {
@@ -93,14 +133,14 @@ pub(crate) async fn observe_result<T>(
         return future.await;
     }
     let started = std::time::Instant::now();
-    let result = future.await;
+    let (result, details) = collect_observation_details(future).await;
     observe_operation(
         surface,
         action,
         if result.is_ok() { "success" } else { "error" },
-        object_id,
-        grant_id,
-        byte_count,
+        details.object_id.as_deref().or(object_id),
+        details.grant_id.as_deref().or(grant_id),
+        details.byte_count.or(byte_count),
         destructive,
         u64::try_from(started.elapsed().as_millis())
             .unwrap_or(u64::MAX)

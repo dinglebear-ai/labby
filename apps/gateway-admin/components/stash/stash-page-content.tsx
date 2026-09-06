@@ -112,20 +112,27 @@ export function StashPageContent() {
   const acceptFiles = useCallback((selected: FileList | File[]) => {
     const selectedFiles = Array.from(selected)
     if (!selectedFiles.length) return
-    const activeCount = uploads.filter(item => item.status === 'pending' || item.status === 'uploading').length
-    const accepted = selectedFiles.slice(0, Math.max(0, MAX_QUEUED_UPLOADS - activeCount))
-    const rejected = selectedFiles.length - accepted.length
-    if (rejected) setAnnouncement(`${rejected} file${rejected === 1 ? '' : 's'} not queued; the upload queue holds ${MAX_QUEUED_UPLOADS}.`)
-    const batch = accepted.map((file, index): UploadState => {
-      const invalid = !file.name.trim() || file.name.includes('/') || file.name.includes('\\')
-      return {
-        id: `${Date.now()}-${index}-${file.name}`,
-        file,
-        status: invalid ? 'failed' : 'pending',
-        detail: invalid ? 'Filename cannot be empty or contain path separators.' : undefined,
-      }
+    const announcedAvailable = MAX_QUEUED_UPLOADS - uploads.filter(item => item.status === 'pending' || item.status === 'uploading').length
+    const announcedRejected = Math.max(0, selectedFiles.length - announcedAvailable)
+    if (announcedRejected) setAnnouncement(`${announcedRejected} file${announcedRejected === 1 ? '' : 's'} not queued; the upload queue holds ${MAX_QUEUED_UPLOADS}.`)
+    setUploads(current => {
+      const isActive = (item: UploadState) => item.status === 'pending' || item.status === 'uploading'
+      const activeCount = current.filter(isActive).length
+      const accepted = selectedFiles.slice(0, Math.max(0, MAX_QUEUED_UPLOADS - activeCount))
+      const batch = accepted.map((file, index): UploadState => {
+        const invalid = !file.name.trim() || file.name.includes('/') || file.name.includes('\\')
+        return {
+          id: `${Date.now()}-${index}-${file.name}`,
+          file,
+          status: invalid ? 'failed' : 'pending',
+          detail: invalid ? 'Filename cannot be empty or contain path separators.' : undefined,
+        }
+      })
+      const terminalSlots = MAX_QUEUED_UPLOADS - activeCount - batch.length
+      const terminal = current.filter(item => !isActive(item))
+      const retainedTerminal = terminalSlots > 0 ? new Set(terminal.slice(-terminalSlots)) : new Set<UploadState>()
+      return [...current.filter(item => isActive(item) || retainedTerminal.has(item)), ...batch]
     })
-    setUploads(current => [...current, ...batch])
     if (input.current) input.current.value = ''
   }, [uploads])
 

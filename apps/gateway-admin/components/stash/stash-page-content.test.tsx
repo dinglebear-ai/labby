@@ -159,3 +159,35 @@ test('Stash bounds overlapping upload batches to two workers and rejects overflo
   assert.deepEqual(started, accepted)
   await view.unmount()
 })
+
+test('Stash prunes terminal history so sequential upload batches remain bounded', async () => {
+  document.body.replaceChildren()
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (!url.pathname.endsWith('/uploads')) return Response.json({ files: [], next_cursor: null })
+    const name = decodeURIComponent(new Headers(init?.headers).get('x-labby-stash-filename') || '')
+    return Response.json({ file_id: name, uri: `stash://me/files/${name}` }, { status: 201 })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))
+  assert.ok(dropTarget)
+  const drop = async (prefix: string) => {
+    const event = new window.Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'dataTransfer', { value: { files: Array.from({ length: 8 }, (_, index) => new File([prefix], `${prefix}-${index}.txt`)) } })
+    await act(async () => { dropTarget.dispatchEvent(event); await new Promise(resolve => setTimeout(resolve, 150)) })
+  }
+
+  await drop('first')
+  assert.equal(view.container.querySelector('[aria-label="Upload queue"]')?.children.length, 8)
+  assert.match(view.container.textContent || '', /first-0\.txt — complete/)
+
+  await drop('second')
+  const queue = view.container.querySelector('[aria-label="Upload queue"]')
+  assert.equal(queue?.children.length, 8)
+  assert.doesNotMatch(queue?.textContent || '', /first-/)
+  assert.match(queue?.textContent || '', /second-0\.txt — complete/)
+  assert.match(queue?.textContent || '', /second-7\.txt — complete/)
+  await view.unmount()
+})

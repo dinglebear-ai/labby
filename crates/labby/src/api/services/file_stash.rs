@@ -3,7 +3,10 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{
+        Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -11,6 +14,7 @@ use axum::{
 use std::{
     future::Future,
     pin::Pin,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -108,7 +112,7 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
     .into_iter()
     .map(|(method, path, handler, effects)| {
         RouteDescriptor::new(method, path, handler, "stash", RouteAuth::V1)
-            .when("Linux or Android with API auth configured; operations require runtime readiness")
+            .when("Linux with API auth configured; operations require runtime readiness")
             .private_no_store()
             .non_enumerating()
             .side_effects(effects)
@@ -152,71 +156,182 @@ async fn action(
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
-    request: Json<crate::api::ActionRequest>,
+    request: Result<Json<crate::api::ActionRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let action = request.action.clone();
+    let action = request
+        .as_ref()
+        .map_or("stash.action", |request| request.action.as_str())
+        .to_owned();
     let destructive = action == "stash.delete";
-    observe_api(
-        &action,
-        None,
-        None,
-        destructive,
-        action_impl(state, headers, auth, identity, request),
-    )
+    observe_api(&action, None, None, destructive, async move {
+        let request = request.map_err(|_| stable("invalid_param"))?;
+        action_impl(state, headers, auth, identity, request).await
+    })
     .await
 }
 
 async fn list(
     state: State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
-    query: Query<PageQuery>,
+    query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let action = if query.query.is_some() {
+    let action = if query.as_ref().is_ok_and(|query| query.query.is_some()) {
         "stash.search"
     } else {
         "stash.list"
     };
-    observe_api(action, None, None, false, list_impl(state, identity, query)).await
+    observe_api(action, None, None, false, async move {
+        let query = query.map_err(|_| stable("invalid_param"))?;
+        list_impl(state, identity, query).await
+    })
+    .await
 }
 observed_handler!(stats, stats_impl, "stash.stats", false, (
     state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
 ));
-observed_handler!(recipients, recipients_impl, "stash.recipients.search", false, (
-    state: State<AppState>, headers: HeaderMap,
+async fn recipients(
+    state: State<AppState>,
+    headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
-    identity: Option<axum::Extension<VerifiedIdentity>>, query: Json<RecipientQuery>,
-));
-observed_handler!(metadata, metadata_impl, "stash.metadata", false, (
-    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    query: Result<Json<RecipientQuery>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    observe_api("stash.recipients.search", None, None, false, async move {
+        recipients_impl(
+            state,
+            headers,
+            auth,
+            identity,
+            query.map_err(|_| stable("invalid_param"))?,
+        )
+        .await
+    })
+    .await
+}
+async fn metadata(
+    state: State<AppState>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
     file_id: Path<String>,
-));
-observed_handler!(rename, rename_impl, "stash.rename", false, (
-    state: State<AppState>, headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let object_id = file_id.0.clone();
+    observe_api(
+        "stash.metadata",
+        Some(&object_id),
+        None,
+        false,
+        metadata_impl(state, identity, file_id),
+    )
+    .await
+}
+async fn rename(
+    state: State<AppState>,
+    headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
-    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
-    body: Json<RenameRequest>,
-));
-observed_handler!(remove, remove_impl, "stash.delete", true, (
-    state: State<AppState>, headers: HeaderMap,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>,
+    body: Result<Json<RenameRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let object_id = file_id.0.clone();
+    observe_api("stash.rename", Some(&object_id), None, false, async move {
+        rename_impl(
+            state,
+            headers,
+            auth,
+            identity,
+            file_id,
+            body.map_err(|_| stable("invalid_param"))?,
+        )
+        .await
+    })
+    .await
+}
+async fn remove(
+    state: State<AppState>,
+    headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
-    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
-));
-observed_handler!(create_grant, create_grant_impl, "stash.grants.create", false, (
-    state: State<AppState>, headers: HeaderMap,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>,
+) -> Result<Response, ApiError> {
+    let object_id = file_id.0.clone();
+    observe_api(
+        "stash.delete",
+        Some(&object_id),
+        None,
+        true,
+        remove_impl(state, headers, auth, identity, file_id),
+    )
+    .await
+}
+async fn create_grant(
+    state: State<AppState>,
+    headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
-    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
-    body: Json<GrantRequest>,
-));
-observed_handler!(list_grants, list_grants_impl, "stash.grants.list", false, (
-    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
-    file_id: Path<String>, query: Query<PageQuery>,
-));
-observed_handler!(revoke_grant, revoke_grant_impl, "stash.grants.revoke", false, (
-    state: State<AppState>, headers: HeaderMap,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>,
+    body: Result<Json<GrantRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let object_id = file_id.0.clone();
+    observe_api(
+        "stash.grants.create",
+        Some(&object_id),
+        None,
+        false,
+        async move {
+            create_grant_impl(
+                state,
+                headers,
+                auth,
+                identity,
+                file_id,
+                body.map_err(|_| stable("invalid_param"))?,
+            )
+            .await
+        },
+    )
+    .await
+}
+async fn list_grants(
+    state: State<AppState>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let object_id = file_id.0.clone();
+    observe_api(
+        "stash.grants.list",
+        Some(&object_id),
+        None,
+        false,
+        async move {
+            list_grants_impl(
+                state,
+                identity,
+                file_id,
+                query.map_err(|_| stable("invalid_param"))?,
+            )
+            .await
+        },
+    )
+    .await
+}
+async fn revoke_grant(
+    state: State<AppState>,
+    headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     path: Path<(String, String)>,
-));
+) -> Result<Response, ApiError> {
+    let object_id = path.0.0.clone();
+    let grant_id = path.0.1.clone();
+    observe_api(
+        "stash.grants.revoke",
+        Some(&object_id),
+        Some(&grant_id),
+        false,
+        revoke_grant_impl(state, headers, auth, identity, path),
+    )
+    .await
+}
 observed_handler!(upload, upload_impl, "stash.upload", false, (
     state: State<AppState>, headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -266,14 +381,14 @@ async fn observe_api<T>(
     future: impl Future<Output = Result<T, ApiError>>,
 ) -> Result<T, ApiError> {
     let started = std::time::Instant::now();
-    let result = future.await;
+    let (result, details) = crate::dispatch::file_stash::collect_observation_details(future).await;
     crate::dispatch::file_stash::observe_operation(
         "api",
         action,
         if result.is_ok() { "success" } else { "error" },
-        object_id,
-        grant_id,
-        None,
+        details.object_id.as_deref().or(object_id),
+        details.grant_id.as_deref().or(grant_id),
+        details.byte_count,
         destructive,
         u64::try_from(started.elapsed().as_millis())
             .unwrap_or(u64::MAX)
@@ -684,6 +799,17 @@ async fn upload_impl(
         .map(|value| value.into_owned())
         .ok_or_else(|| stable("validation_failed"))?;
     let declared = exact_content_length(&headers)?;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.upload",
+        "success",
+        None,
+        None,
+        Some(declared),
+        false,
+        0,
+        None,
+    );
     validate_transfer_headers(&headers)?;
     let svc = service(&state);
     let (reservation, admission) = svc
@@ -815,9 +941,9 @@ impl HeldBlob {
         let idle = Box::pin(tokio::time::sleep(blob.idle_timeout));
         Self {
             blob,
-            cancel,
+            cancel: cancel.clone(),
             idle,
-            observation: DownloadObservation::new(file_id, started),
+            observation: DownloadObservation::new(file_id, started, cancel),
         }
     }
 }
@@ -840,6 +966,7 @@ impl AsyncRead for HeldBlob {
         match Pin::new(&mut this.blob.file).poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
                 if buf.filled().len() > before {
+                    this.observation.add_bytes(buf.filled().len() - before);
                     this.idle
                         .as_mut()
                         .reset(tokio::time::Instant::now() + this.blob.idle_timeout);
@@ -867,40 +994,88 @@ impl AsyncRead for HeldBlob {
     }
 }
 
+impl Drop for HeldBlob {
+    fn drop(&mut self) {
+        self.observation.finish("error", Some("cancelled"));
+    }
+}
+
 struct DownloadObservation {
+    state: Arc<Mutex<DownloadObservationState>>,
+}
+
+struct DownloadObservationState {
     file_id: String,
     started: std::time::Instant,
+    transferred_bytes: u64,
     finished: bool,
 }
 
 impl DownloadObservation {
-    fn new(file_id: String, started: std::time::Instant) -> Self {
-        Self {
+    fn new(file_id: String, started: std::time::Instant, cancel: CancellationToken) -> Self {
+        let state = Arc::new(Mutex::new(DownloadObservationState {
             file_id,
             started,
+            transferred_bytes: 0,
             finished: false,
+        }));
+        let watchdog_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            cancel.cancelled().await;
+            finish_download_observation(&watchdog_state, "error", Some("timeout"));
+        });
+        Self { state }
+    }
+
+    fn add_bytes(&self, count: usize) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.finished {
+            state.transferred_bytes = state
+                .transferred_bytes
+                .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
         }
     }
 
-    fn finish(&mut self, result: &'static str, kind: Option<&str>) {
-        if self.finished {
+    fn finish(&self, result: &'static str, kind: Option<&str>) {
+        finish_download_observation(&self.state, result, kind);
+    }
+}
+
+fn finish_download_observation(
+    observation: &Arc<Mutex<DownloadObservationState>>,
+    result: &'static str,
+    kind: Option<&str>,
+) {
+    let terminal = {
+        let mut state = observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.finished {
             return;
         }
-        self.finished = true;
-        crate::dispatch::file_stash::observe_operation(
-            "api",
-            "stash.download",
-            result,
-            Some(&self.file_id),
-            None,
-            Some(0),
-            false,
-            u64::try_from(self.started.elapsed().as_millis())
+        state.finished = true;
+        (
+            state.file_id.clone(),
+            state.transferred_bytes,
+            u64::try_from(state.started.elapsed().as_millis())
                 .unwrap_or(u64::MAX)
                 .max(1),
-            kind,
-        );
-    }
+        )
+    };
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        "stash.download",
+        result,
+        Some(&terminal.0),
+        None,
+        Some(terminal.1),
+        false,
+        terminal.2,
+        kind,
+    );
 }
 
 impl Drop for DownloadObservation {
@@ -1051,19 +1226,90 @@ mod tests {
         let request = tracing::info_span!("http.request", request_id = "request-api-123");
         let _request = request.enter();
 
-        let result = observe_api("stash.upload", None, None, false, async {
-            Err::<(), _>(stable("invalid_param"))
-        })
-        .await;
+        let response = mounted(AppState::new())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stash")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-        assert!(result.is_err());
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let output = crate::test_support::captured_logs(&logs);
         assert_eq!(output.matches("file stash operation").count(), 1);
         assert!(output.contains("\"surface\":\"api\""));
-        assert!(output.contains("\"action\":\"stash.upload\""));
+        assert!(output.contains("\"action\":\"stash.action\""));
         assert!(output.contains("\"result\":\"error\""));
         assert!(output.contains("\"kind\":\"invalid_param\""));
         assert!(output.contains("request-api-123"));
+    }
+
+    #[tokio::test]
+    async fn download_observation_tracks_eof_partial_drop_and_unpolled_timeout_exactly_once() {
+        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let logs = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(logs.clone()),
+        );
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _subscriber = tracing::dispatcher::set_default(&dispatch);
+        crate::test_support::rebuild_tracing_interest_cache();
+
+        let eof_cancel = CancellationToken::new();
+        let eof = DownloadObservation::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+            std::time::Instant::now(),
+            eof_cancel.clone(),
+        );
+        eof.add_bytes(7);
+        eof.finish("success", None);
+        eof_cancel.cancel();
+        drop(eof);
+
+        let partial_cancel = CancellationToken::new();
+        let partial = DownloadObservation::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAW".into(),
+            std::time::Instant::now(),
+            partial_cancel.clone(),
+        );
+        partial.add_bytes(3);
+        drop(partial);
+        partial_cancel.cancel();
+
+        let timeout_cancel = CancellationToken::new();
+        let timeout = DownloadObservation::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAX".into(),
+            std::time::Instant::now(),
+            timeout_cancel.clone(),
+        );
+        timeout_cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if crate::test_support::captured_logs(&logs).contains("\"kind\":\"timeout\"") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(timeout);
+
+        let output = crate::test_support::captured_logs(&logs);
+        assert_eq!(output.matches("file stash operation").count(), 3);
+        assert!(output.contains("\"result\":\"success\""));
+        assert!(output.contains("\"byte_count\":7"));
+        assert!(output.contains("\"kind\":\"cancelled\""));
+        assert!(output.contains("\"byte_count\":3"));
+        assert_eq!(output.matches("\"kind\":\"timeout\"").count(), 1);
     }
 
     #[test]

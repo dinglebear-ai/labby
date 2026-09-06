@@ -103,18 +103,6 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
     ) -> Vec<Resource> {
-        if !self.file_stash_caller_bound()
-            || !self.route_scope.allows_service("stash")
-            || !self.service_visible_on_mcp("stash").await
-        {
-            return Vec::new();
-        }
-        let Ok(principal) = self
-            .file_stash_principal(context, Some(&context.meta))
-            .await
-        else {
-            return Vec::new();
-        };
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resources.list",
@@ -122,11 +110,23 @@ impl LabMcpServer {
             None,
             None,
             false,
-            collect_file_stash_resources(
-                &self.file_stash_service(),
-                &principal,
-                self.file_stash_runtime.page_limit(),
-            ),
+            async {
+                if !self.file_stash_caller_bound()
+                    || !self.route_scope.allows_service("stash")
+                    || !self.service_visible_on_mcp("stash").await
+                {
+                    return Ok(Vec::new());
+                }
+                let principal = self
+                    .file_stash_principal(context, Some(&context.meta))
+                    .await?;
+                collect_file_stash_resources(
+                    &self.file_stash_service(),
+                    &principal,
+                    self.file_stash_runtime.page_limit(),
+                )
+                .await
+            },
         )
         .await
         .unwrap_or_default()
@@ -137,20 +137,20 @@ impl LabMcpServer {
         uri: &str,
         context: &RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
-        let file_id = parse_stash_uri(uri).map_err(|_| unknown(uri))?;
-        let principal = self
-            .file_stash_principal(context, Some(&context.meta))
-            .await
-            .map_err(|_| unknown(uri))?;
-        let stash = self.file_stash_service();
+        let observed_file_id = parse_stash_uri(uri).ok();
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resource.read",
-            Some(&file_id),
+            observed_file_id.as_deref(),
             None,
             None,
             false,
             async {
+                let file_id = parse_stash_uri(uri)?;
+                let principal = self
+                    .file_stash_principal(context, Some(&context.meta))
+                    .await?;
+                let stash = self.file_stash_service();
                 let (_metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
                 let capacity = usize::try_from(blob.size).map_err(|_| ToolError::Sdk {
                     sdk_kind: "quota_exceeded".to_owned(),
@@ -171,6 +171,17 @@ impl LabMcpServer {
                         message: "File Stash operation failed".to_owned(),
                     });
                 }
+                crate::dispatch::file_stash::observe_operation(
+                    "mcp",
+                    "stash.resource.read",
+                    "success",
+                    Some(&file_id),
+                    None,
+                    Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+                    false,
+                    0,
+                    None,
+                );
                 let contents = ResourceContents::blob(
                     base64::engine::general_purpose::STANDARD.encode(bytes),
                     uri.to_owned(),
