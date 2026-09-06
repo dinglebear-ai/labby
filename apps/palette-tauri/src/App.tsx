@@ -41,7 +41,7 @@ export default function App() {
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
   const schemaCacheRef = useRef(new Map<string, unknown>());
 
-  const { actions: catalogActions, loading: catalogLoading, error: catalogError, refresh: refreshCatalog } = useLauncherCatalog();
+  const { actions: catalogActions, loading: catalogLoading, error: catalogError, refresh: refreshCatalog } = useLauncherCatalog(mode === "browse" ? query : "");
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
 
   usePaletteLifecycle(

@@ -138,8 +138,8 @@ export async function dispatchAction(
  * Fetch the unified launcher catalog. HTTP-level failures resolve to the stable
  * payload from the bridge so callers can show Labby error envelopes directly.
  */
-export async function fetchLauncherCatalog(etag?: string | null): Promise<LauncherCatalogResult | PaletteResult> {
-  const result = await invoke<BridgeResult>("fetch_launcher_catalog", { etag: etag ?? null });
+export async function fetchLauncherCatalog(query = "", etag?: string | null): Promise<LauncherCatalogResult | PaletteResult> {
+  const result = await invoke<BridgeResult>("fetch_launcher_catalog", { query, etag: etag ?? null });
   if (result.status === 304) return { notModified: true };
   if (!result.ok) {
     return {

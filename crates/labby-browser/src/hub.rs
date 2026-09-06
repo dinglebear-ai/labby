@@ -77,6 +77,13 @@ impl Drop for CallGuard {
         let Some(audit_id) = self.audit_id.clone() else {
             return;
         };
+        let Some(cleanup_permit) = self.bridge.store.try_acquire_cancellation_cleanup() else {
+            tracing::warn!(
+                audit_id,
+                "cancelled browser call audit cleanup deferred until process restart: backlog full"
+            );
+            return;
+        };
         let store = self.bridge.store.clone();
         let duration = i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -87,6 +94,7 @@ impl Drop for CallGuard {
             return;
         };
         runtime.spawn(async move {
+            let _cleanup_permit = cleanup_permit;
             if let Err(error) = store.abandon_invocation(&audit_id, duration).await {
                 tracing::warn!(
                     audit_id,
@@ -753,6 +761,72 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         assert!(bridge.lock_state().unwrap().pending.is_empty());
         drop(store_permit);
+    }
+
+    #[tokio::test]
+    async fn cancellation_audit_cleanup_backlog_is_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("browser.sqlite3");
+        let bridge = BrowserBridge::open(&database).await.unwrap();
+        let mut audit_ids = Vec::new();
+        for index in 0..=crate::store::MAX_CANCELLATION_AUDIT_CLEANUPS {
+            audit_ids.push(
+                bridge
+                    .store()
+                    .begin_invocation("browser", index as i64, "doc", "tool", 1)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let store_permit = bridge.store().hold_executor_for_test().await;
+        let generation = Uuid::new_v4();
+
+        for (index, audit_id) in audit_ids.iter().enumerate() {
+            drop(CallGuard {
+                bridge: bridge.clone(),
+                call_id: format!("call-{index}"),
+                generation,
+                audit_id: Some(audit_id.clone()),
+                started: Instant::now(),
+                armed: true,
+            });
+        }
+
+        assert_eq!(bridge.store().available_cancellation_cleanups(), 0);
+        drop(store_permit);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while bridge.store().available_cancellation_cleanups()
+                != crate::store::MAX_CANCELLATION_AUDIT_CLEANUPS
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let overflow_id = audit_ids.last().unwrap();
+        assert_eq!(
+            bridge
+                .store()
+                .audit_outcome_for_test(overflow_id)
+                .await
+                .unwrap(),
+            ("started".to_string(), None)
+        );
+        drop(bridge);
+
+        let reopened = BrowserBridge::open(database).await.unwrap();
+        assert_eq!(
+            reopened
+                .store()
+                .audit_outcome_for_test(overflow_id)
+                .await
+                .unwrap(),
+            (
+                "abandoned".to_string(),
+                Some("process_restarted".to_string())
+            )
+        );
     }
 
     #[test]

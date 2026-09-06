@@ -28,9 +28,9 @@ describe("launcher client wrappers", () => {
       },
     });
 
-    const result = await fetchLauncherCatalog("etag-1");
+    const result = await fetchLauncherCatalog("", "etag-1");
 
-    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", { etag: "etag-1" });
+    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", { query: "", etag: "etag-1" });
     expect(result).toEqual({
       notModified: false,
       catalog: {
@@ -103,12 +103,13 @@ describe("launcher client wrappers", () => {
       payload: { kind: "invalid_param", message: "bad params" },
     });
 
-    await expect(fetchLauncherCatalog()).resolves.toEqual({
+    await expect(fetchLauncherCatalog("needle")).resolves.toEqual({
       ok: false,
       status: 422,
       path: "/v1/palette/search",
       method: "GET",
       payload: { kind: "invalid_param", message: "bad params" },
     });
+    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", { query: "needle", etag: null });
   });
 });

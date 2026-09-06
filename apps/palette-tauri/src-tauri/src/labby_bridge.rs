@@ -163,16 +163,14 @@ pub(crate) async fn fetch_launcher_catalog(
     bridge: tauri::State<'_, BridgeClient>,
     oauth_state: tauri::State<'_, crate::oauth::OauthState>,
     etag: Option<String>,
+    query: Option<String>,
 ) -> Result<LabbyHttpResult, String> {
     let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
-    // The desktop palette only renders a bounded shortlist. Exact schemas are
-    // fetched separately after selection, so never pull the full catalog into
-    // renderer memory.
-    let url = format!(
-        "{}/v1/palette/search?q=&limit=100",
-        base_url.trim_end_matches('/')
-    );
+    // The desktop palette only renders a bounded shortlist. Send its debounced
+    // query so matching occurs before server-side catalog caps; exact schemas
+    // are still fetched separately after selection.
+    let url = palette_search_url(&base_url, query.as_deref())?;
     let client = (*bridge).client();
     let static_token = settings
         .static_token
@@ -182,7 +180,7 @@ pub(crate) async fn fetch_launcher_catalog(
 
     let make = |token: Option<&str>| {
         let mut b = client
-            .get(&url)
+            .get(url.as_str())
             .header(reqwest::header::ACCEPT, "application/json");
         if let Some(t) = token {
             b = b.bearer_auth(t);
@@ -199,13 +197,10 @@ pub(crate) async fn fetch_launcher_catalog(
         Ok(result) => Ok(result),
         Err(err) if err == WRONG_API_HOST_HINT => {
             let discovered = discover_api_base_url(client, &base_url).await?;
-            let url = format!(
-                "{}/v1/palette/search?q=&limit=100",
-                discovered.trim_end_matches('/')
-            );
+            let url = palette_search_url(&discovered, query.as_deref())?;
             let make = |token: Option<&str>| {
                 let mut b = client
-                    .get(&url)
+                    .get(url.as_str())
                     .header(reqwest::header::ACCEPT, "application/json");
                 if let Some(t) = token {
                     b = b.bearer_auth(t);
@@ -228,6 +223,18 @@ pub(crate) async fn fetch_launcher_catalog(
         }
         Err(err) => Err(err),
     }
+}
+
+fn palette_search_url(base_url: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/v1/palette/search",
+        base_url.trim_end_matches('/')
+    ))
+    .map_err(|error| format!("invalid palette search URL: {error}"))?;
+    url.query_pairs_mut()
+        .append_pair("q", query.unwrap_or_default())
+        .append_pair("limit", "100");
+    Ok(url)
 }
 
 #[tauri::command]
@@ -607,6 +614,19 @@ mod tests {
             "https://api.example.com"
         );
         assert!(validate_discovered_api_base_url("file:///tmp/labby").is_err());
+    }
+
+    #[test]
+    fn palette_search_url_encodes_query_for_primary_and_discovered_origins() {
+        for base in ["https://labby.example.com", "https://labby.example.com/"] {
+            let url = palette_search_url(base, Some("owner: foo/bar & baz"))
+                .expect("valid palette search URL");
+            assert_eq!(url.path(), "/v1/palette/search");
+            assert_eq!(
+                url.query_pairs().collect::<Vec<_>>(),
+                [("q", "owner: foo/bar & baz"), ("limit", "100")]
+            );
+        }
     }
 
     #[test]

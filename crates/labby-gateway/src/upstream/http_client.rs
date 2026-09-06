@@ -104,8 +104,14 @@ pub struct BodyCappedHttpClient {
     response_weight: u32,
 }
 
-fn sanitized_transport_error(status: reqwest::StatusCode, body: &str) -> String {
-    let normalized = body.to_ascii_lowercase();
+const COMPATIBILITY_MARKER_SCAN_BYTES: usize = 8 * 1024;
+
+fn sanitized_transport_error(status: reqwest::StatusCode, body: &[u8]) -> String {
+    // Compatibility hints are short protocol errors. Inspect only a bounded
+    // prefix so a large upstream error cannot force a second body-sized
+    // allocation merely to produce stable transport metadata.
+    let prefix = &body[..body.len().min(COMPATIBILITY_MARKER_SCAN_BYTES)];
+    let normalized = String::from_utf8_lossy(prefix).to_ascii_lowercase();
     let compatibility_marker = [
         "unsupported mcp-protocol-version",
         "unsupported protocol version",
@@ -206,8 +212,8 @@ fn apply_custom_headers(
     Ok(builder)
 }
 
-fn parse_json_rpc_error(body: &str) -> Option<ServerJsonRpcMessage> {
-    match serde_json::from_str::<ServerJsonRpcMessage>(body) {
+fn parse_json_rpc_error(body: &[u8]) -> Option<ServerJsonRpcMessage> {
+    match serde_json::from_slice::<ServerJsonRpcMessage>(body) {
         Ok(message @ JsonRpcMessage::Error(_)) => Some(message),
         _ => None,
     }
@@ -718,11 +724,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         if !status.is_success() {
             let _permit = self.acquire_response_budget().await?;
             let body_bytes = read_body_capped(response, self.max_bytes).await?;
-            let body = String::from_utf8_lossy(&body_bytes).to_string();
             if content_type
                 .as_deref()
                 .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
-                && let Some(message) = parse_json_rpc_error(&body)
+                && let Some(message) = parse_json_rpc_error(&body_bytes)
             {
                 return Ok(StreamableHttpPostResponse::Json(
                     message,
@@ -734,7 +739,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             // It is parsed above only for a valid JSON-RPC error; every other
             // transport failure exposes stable metadata, never raw body text.
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
-                sanitized_transport_error(status, &body),
+                sanitized_transport_error(status, &body_bytes),
             )));
         }
         match content_type.as_deref() {
@@ -1155,6 +1160,24 @@ mod tests {
         assert!(!text.contains("top-secret"));
         assert!(!text.contains("forged"));
         assert!(!text.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn compatibility_marker_scan_is_bounded_to_a_small_prefix() {
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        let mut body = vec![b'x'; COMPATIBILITY_MARKER_SCAN_BYTES];
+        body.extend_from_slice(b" method not found");
+        assert_eq!(
+            sanitized_transport_error(status, &body),
+            "HTTP 400 Bad Request"
+        );
+
+        let mut body = b"method not found".to_vec();
+        body.resize(COMPATIBILITY_MARKER_SCAN_BYTES * 4, b'x');
+        assert_eq!(
+            sanitized_transport_error(status, &body),
+            "HTTP 400 Bad Request: method not found"
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@
 //! re-resolves the live tool at execution time before validating parameters and
 //! dispatching through the same upstream call helper used by Code Mode.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,101 @@ const MAX_CONTRACT_BYTES: usize = 160 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 1_000;
 const CAPABILITY_CONTRACT_VERSION: u8 = 1;
 const MAX_DESCRIPTION_CHARS: usize = 2_048;
+const MAX_PALETTE_QUERY_CHARS: usize = 256;
+const PALETTE_OAUTH_DISCOVERY_DEADLINE: Duration = Duration::from_secs(2);
+const MAX_PALETTE_SEARCH_INSPECTIONS: usize = 10_000;
+
+#[derive(Debug, Clone)]
+pub struct PaletteSearchQuery {
+    normalized: String,
+}
+
+impl PaletteSearchQuery {
+    pub fn new(query: &str) -> Result<Self, ToolError> {
+        let query = query.trim();
+        if query.chars().count() > MAX_PALETTE_QUERY_CHARS {
+            return Err(ToolError::Sdk {
+                sdk_kind: "invalid_params".to_string(),
+                message: format!(
+                    "palette query exceeds the {MAX_PALETTE_QUERY_CHARS}-character limit"
+                ),
+            });
+        }
+        let normalized = query.to_ascii_lowercase();
+        Ok(Self { normalized })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.normalized
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.normalized.is_empty()
+    }
+
+    fn matches_tool(&self, upstream: &str, tool: &rmcp::model::Tool) -> bool {
+        self.score_tool(upstream, tool) > 0
+    }
+
+    fn score_tool(&self, upstream: &str, tool: &rmcp::model::Tool) -> u16 {
+        let name = tool.name.as_ref();
+        let id = format!("mcp:{upstream}::{name}");
+        let description = sanitize_tool_text(tool.description.as_deref().unwrap_or(""), 512);
+        self.score_fields([id.as_str(), name, description.as_str(), upstream])
+    }
+
+    pub fn score_entry(&self, entry: &LauncherEntryView) -> u16 {
+        match entry {
+            LauncherEntryView::LabbyAction(entry) => self.score_fields([
+                entry.id.as_str(),
+                entry.label.as_str(),
+                entry.description.as_str(),
+                entry.source.as_str(),
+                entry.service.as_str(),
+                entry.action.as_str(),
+            ]),
+            LauncherEntryView::McpTool(entry) => self.score_fields([
+                entry.id.as_str(),
+                entry.label.as_str(),
+                entry.description.as_str(),
+                entry.source.as_str(),
+                entry.upstream.as_str(),
+                entry.tool.as_str(),
+            ]),
+        }
+    }
+
+    fn score_fields<'a>(&self, fields: impl IntoIterator<Item = &'a str>) -> u16 {
+        if self.is_empty() {
+            return 1;
+        }
+        fields
+            .into_iter()
+            .map(|field| palette_field_score(field, &self.normalized))
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+fn palette_field_score(field: &str, needle: &str) -> u16 {
+    let field = field.to_ascii_lowercase();
+    if field == needle {
+        100
+    } else if field.starts_with(needle) {
+        80
+    } else if field
+        .split([' ', ':', '.', '_', '-'])
+        .any(|part| part.starts_with(needle))
+    {
+        60
+    } else if field.contains(needle) {
+        30
+    } else if is_subsequence(needle, &field) {
+        10
+    } else {
+        0
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -405,14 +500,25 @@ impl GatewayManager {
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
-        self.palette_catalog_inner(caller, true, None).await
+        self.palette_catalog_inner(caller, true, None, None).await
     }
 
     pub async fn palette_catalog_snapshot(
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
-        self.palette_catalog_inner(caller, false, None).await
+        self.palette_catalog_inner(caller, false, None, None).await
+    }
+
+    /// Search every bounded upstream catalog before applying the global
+    /// launcher cap, so a match is not hidden merely by upstream ordering.
+    pub async fn palette_catalog_snapshot_matching(
+        &self,
+        caller: &PaletteCaller,
+        query: &PaletteSearchQuery,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner(caller, false, None, Some(query))
+            .await
     }
 
     /// Read one caller-visible tool from the published catalog without connecting
@@ -423,7 +529,7 @@ impl GatewayManager {
         id: &str,
     ) -> Result<LauncherCatalogView, ToolError> {
         let selected = parse_mcp_launcher_id(id)?;
-        self.palette_catalog_inner(caller, false, Some(selected))
+        self.palette_catalog_inner(caller, false, Some(selected), None)
             .await
     }
 
@@ -432,6 +538,7 @@ impl GatewayManager {
         caller: &PaletteCaller,
         refresh: bool,
         selected: Option<(&str, &str)>,
+        query: Option<&PaletteSearchQuery>,
     ) -> Result<LauncherCatalogView, ToolError> {
         if !caller.caller.can_read() {
             return Err(ToolError::Sdk {
@@ -441,6 +548,7 @@ impl GatewayManager {
         }
         let start = Instant::now();
         let mut entries = Vec::new();
+        let mut ranked_entries = Vec::<(LauncherEntryView, u16)>::new();
         let mut truncated = false;
 
         if refresh {
@@ -453,16 +561,67 @@ impl GatewayManager {
         }
         let (cfg, pool) = self.published_config_and_pool().await;
         if let Some(pool) = pool {
-            for upstream in cfg.upstream.iter().filter(|upstream| {
+            let eligible = cfg.upstream.iter().filter(|upstream| {
                 upstream.enabled
                     && upstream.priority > 0.0
                     && selected.is_none_or(|(name, _)| upstream.name == name)
                     && caller
                         .allowed_upstreams()
                         .is_none_or(|allowed| allowed.contains(&upstream.name))
-            }) {
-                let remaining = MAX_CATALOG_ENTRIES.saturating_sub(entries.len());
-                let mut tools = if upstream.oauth.is_some()
+            });
+            let oauth_configs = eligible
+                .clone()
+                .filter(|upstream| upstream.oauth.is_some() && selected.is_none())
+                .cloned()
+                .collect::<Vec<_>>();
+            let (oauth_tools, oauth_inspected, oauth_incomplete) = if oauth_configs.is_empty() {
+                (Vec::new(), 0, false)
+            } else if let Some(query) = query {
+                let result = pool
+                    .subject_scoped_upstream_tools_allowed_matching_bounded(
+                        &oauth_configs,
+                        &caller.oauth_subject,
+                        None,
+                        MAX_PALETTE_SEARCH_INSPECTIONS,
+                        &|upstream, tool| query.matches_tool(upstream, tool),
+                        PALETTE_OAUTH_DISCOVERY_DEADLINE,
+                    )
+                    .await;
+                (result.tools, result.inspected, result.incomplete)
+            } else {
+                (
+                    pool.subject_scoped_upstream_tools_allowed_bounded(
+                        &oauth_configs,
+                        &caller.oauth_subject,
+                        None,
+                        MAX_CATALOG_ENTRIES.saturating_add(1),
+                    )
+                    .await,
+                    0,
+                    false,
+                )
+            };
+            truncated |= oauth_incomplete;
+            let mut oauth_tools = oauth_tools.into_iter().fold(
+                BTreeMap::<String, Vec<UpstreamTool>>::new(),
+                |mut grouped, tool| {
+                    grouped
+                        .entry(tool.upstream_name.to_string())
+                        .or_default()
+                        .push(tool);
+                    grouped
+                },
+            );
+            let mut remaining_inspections =
+                MAX_PALETTE_SEARCH_INSPECTIONS.saturating_sub(oauth_inspected);
+            for upstream in eligible {
+                let remaining = if query.is_some() {
+                    MAX_CATALOG_ENTRIES
+                } else {
+                    MAX_CATALOG_ENTRIES.saturating_sub(entries.len())
+                };
+                let discovery_limit = remaining.saturating_add(1);
+                let tools = if upstream.oauth.is_some()
                     && let Some((_, tool_name)) = selected
                 {
                     pool.subject_scoped_upstream_tool_allowed(
@@ -474,40 +633,61 @@ impl GatewayManager {
                     .into_iter()
                     .collect()
                 } else if upstream.oauth.is_some() {
-                    pool.subject_scoped_upstream_tools_allowed_bounded(
-                        std::slice::from_ref(upstream),
-                        &caller.oauth_subject,
-                        None,
-                        remaining.saturating_add(1),
-                    )
-                    .await
+                    oauth_tools.remove(&upstream.name).unwrap_or_default()
                 } else if let Some((_, tool_name)) = selected {
                     pool.healthy_tool_for_upstream(&upstream.name, tool_name)
                         .await
                         .into_iter()
                         .collect()
+                } else if let Some(query) = query {
+                    if remaining_inspections == 0 {
+                        truncated = true;
+                        continue;
+                    }
+                    let (tools, inspected, exhausted) = pool
+                        .healthy_tools_for_upstream_ranked_bounded(
+                            &upstream.name,
+                            discovery_limit,
+                            remaining_inspections,
+                            |tool| query.score_tool(&upstream.name, &tool.tool),
+                        )
+                        .await;
+                    remaining_inspections = remaining_inspections.saturating_sub(inspected);
+                    truncated |= exhausted;
+                    tools.into_iter().map(|(tool, _)| tool).collect()
                 } else {
-                    pool.healthy_tools_for_upstream_bounded(
-                        &upstream.name,
-                        remaining.saturating_add(1),
-                    )
-                    .await
+                    pool.healthy_tools_for_upstream_bounded(&upstream.name, discovery_limit)
+                        .await
                 };
-                if selected.is_none() && tools.len() > remaining {
+                if query.is_none() && selected.is_none() && tools.len() > remaining {
+                    let mut tools = tools;
                     tools.truncate(remaining);
                     truncated = true;
+                    for tool in tools {
+                        let entry = mcp_entry(&upstream.name, tool)?;
+                        entries.push(LauncherEntryView::McpTool(entry));
+                    }
+                    break;
                 }
                 for tool in tools {
                     if selected.is_some_and(|(_, name)| tool.tool.name.as_ref() != name) {
                         continue;
                     }
                     let entry = mcp_entry(&upstream.name, tool)?;
-                    entries.push(LauncherEntryView::McpTool(entry));
-                }
-                if truncated {
-                    break;
+                    let entry = LauncherEntryView::McpTool(entry);
+                    if let Some(query) = query {
+                        insert_ranked_palette_entry(&mut ranked_entries, entry, query);
+                    } else {
+                        entries.push(entry);
+                    }
                 }
             }
+        }
+
+        if query.is_some() {
+            truncated |= ranked_entries.len() > MAX_CATALOG_ENTRIES;
+            ranked_entries.truncate(MAX_CATALOG_ENTRIES);
+            entries = ranked_entries.into_iter().map(|(entry, _)| entry).collect();
         }
 
         entries.sort_by(|a, b| entry_id(a).cmp(entry_id(b)));
@@ -677,6 +857,39 @@ impl GatewayManager {
         );
         Ok(schema)
     }
+}
+
+fn insert_ranked_palette_entry(
+    entries: &mut Vec<(LauncherEntryView, u16)>,
+    entry: LauncherEntryView,
+    query: &PaletteSearchQuery,
+) {
+    let score = query.score_entry(&entry);
+    let insert_at = entries
+        .binary_search_by(|(existing, existing_score)| {
+            existing_score
+                .cmp(&score)
+                .reverse()
+                .then_with(|| entry_id(existing).cmp(entry_id(&entry)))
+        })
+        .unwrap_or_else(std::convert::identity);
+    if insert_at <= MAX_CATALOG_ENTRIES {
+        entries.insert(insert_at, (entry, score));
+        if entries.len() > MAX_CATALOG_ENTRIES.saturating_add(1) {
+            entries.pop();
+        }
+    }
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut chars = needle.chars();
+    let mut next = chars.next();
+    for character in haystack.chars() {
+        if next == Some(character) {
+            next = chars.next();
+        }
+    }
+    next.is_none()
 }
 
 fn mcp_entry(upstream: &str, tool: UpstreamTool) -> Result<McpToolLauncherEntry, ToolError> {
@@ -1093,6 +1306,14 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn palette_search_query_normalizes_once_and_rejects_oversize_input() {
+        let query = PaletteSearchQuery::new("  DePloY Safe  ").expect("valid query");
+        assert_eq!(query.as_str(), "deploy safe");
+        assert!(query.score_fields(["Deploy Production Safely"]) > 0);
+        assert!(PaletteSearchQuery::new(&"x".repeat(257)).is_err());
+    }
 
     #[test]
     fn palette_schema_projection_redacts_defaults_examples_and_secret_enums() {

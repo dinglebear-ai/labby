@@ -125,7 +125,7 @@ export interface LauncherCatalogState {
   refresh: () => void;
 }
 
-export function useLauncherCatalog(): LauncherCatalogState {
+export function useLauncherCatalog(query: string): LauncherCatalogState {
   const [actions, setActions] = useState<LauncherEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +136,8 @@ export function useLauncherCatalog(): LauncherCatalogState {
     void tick;
     let active = true;
     setLoading(true);
-    fetchLauncherCatalog(etagRef.current)
+    const normalizedQuery = query.trim();
+    const timer = window.setTimeout(() => fetchLauncherCatalog(normalizedQuery, normalizedQuery ? null : etagRef.current)
       .then((result) => {
         if (!active) return;
         if ("ok" in result) {
@@ -156,11 +157,12 @@ export function useLauncherCatalog(): LauncherCatalogState {
       })
       .finally(() => {
         if (active) setLoading(false);
-      });
+      }), normalizedQuery ? 150 : 0);
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
-  }, [tick]);
+  }, [query, tick]);
 
   const refresh = useCallback(() => setTick((value) => value + 1), []);
 

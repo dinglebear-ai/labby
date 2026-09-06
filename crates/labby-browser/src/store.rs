@@ -17,13 +17,14 @@ const CHALLENGE_TTL_SECONDS: i64 = 60;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 32;
 const MAX_SESSIONS_PER_BROWSER: i64 = 256;
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const DEFAULT_SESSION_PAGE_SIZE: usize = 50;
 const MAX_SESSION_PAGE_SIZE: usize = 100;
 // The facade owns one mutex-protected SQLite connection. Admit only one blocking
 // job at a time so contention waits asynchronously instead of occupying extra
 // blocking-pool threads while they wait for the same connection mutex.
 const MAX_BLOCKING_STORE_JOBS: usize = 1;
+pub(crate) const MAX_CANCELLATION_AUDIT_CLEANUPS: usize = 16;
 
 /// Durable paired browser.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -132,6 +133,7 @@ pub(crate) struct AuthChallenge {
 pub struct Store {
     inner: Arc<BlockingStore>,
     permits: Arc<tokio::sync::Semaphore>,
+    cancellation_cleanup_permits: Arc<tokio::sync::Semaphore>,
 }
 
 struct BlockingStore {
@@ -173,7 +175,42 @@ impl Store {
         Self {
             inner: Arc::new(inner),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_BLOCKING_STORE_JOBS)),
+            cancellation_cleanup_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CANCELLATION_AUDIT_CLEANUPS,
+            )),
         }
+    }
+
+    pub(crate) fn try_acquire_cancellation_cleanup(
+        &self,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.cancellation_cleanup_permits)
+            .try_acquire_owned()
+            .ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available_cancellation_cleanups(&self) -> usize {
+        self.cancellation_cleanup_permits.available_permits()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn audit_outcome_for_test(
+        &self,
+        id: &str,
+    ) -> Result<(String, Option<String>)> {
+        let id = id.to_owned();
+        self.call(move |store| {
+            store
+                .lock()?
+                .query_row(
+                    "SELECT outcome,error_kind FROM invocation_audits WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+        })
+        .await
     }
 
     async fn call<T>(
@@ -587,7 +624,7 @@ impl BlockingStore {
         Ok(())
     }
 
-    /// List a bounded, metadata-only page in stable `(last_seen_at,id)` order.
+    /// List a bounded, metadata-only page in stable `(connected_at,id)` order.
     fn sessions(&self, cursor: Option<&str>, limit: Option<usize>) -> Result<SessionPage> {
         let limit = limit.unwrap_or(DEFAULT_SESSION_PAGE_SIZE);
         if limit == 0 || limit > MAX_SESSION_PAGE_SIZE {
@@ -595,34 +632,34 @@ impl BlockingStore {
                 "session page limit must be between 1 and {MAX_SESSION_PAGE_SIZE}"
             )));
         }
-        let (cursor_seen, cursor_id) = cursor
+        let (cursor_connected, cursor_id) = cursor
             .map(decode_session_cursor)
             .transpose()?
             .unwrap_or((i64::MAX, String::from("\u{10ffff}")));
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,json_array_length(catalog_json),enabled,status,last_seen_at FROM document_sessions WHERE (last_seen_at < ?1 OR (last_seen_at = ?1 AND id < ?2)) ORDER BY last_seen_at DESC,id DESC LIMIT ?3",
+            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,json_array_length(catalog_json),enabled,status,last_seen_at,connected_at FROM document_sessions WHERE (connected_at < ?1 OR (connected_at = ?1 AND id < ?2)) ORDER BY connected_at DESC,id DESC LIMIT ?3",
         )?;
         let mut sessions = statement
             .query_map(
                 params![
-                    cursor_seen,
+                    cursor_connected,
                     cursor_id,
                     i64::try_from(limit + 1).unwrap_or(i64::MAX)
                 ],
-                map_session_summary,
+                |row| Ok((map_session_summary(row)?, row.get::<_, i64>(13)?)),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let next_cursor = if sessions.len() > limit {
             sessions.truncate(limit);
             sessions
                 .last()
-                .map(|session| encode_session_cursor(session.last_seen_at, &session.id))
+                .map(|(session, connected_at)| encode_session_cursor(*connected_at, &session.id))
         } else {
             None
         };
         Ok(SessionPage {
-            sessions,
+            sessions: sessions.into_iter().map(|(session, _)| session).collect(),
             next_cursor,
         })
     }
@@ -901,8 +938,8 @@ fn map_session_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSess
     })
 }
 
-fn encode_session_cursor(last_seen_at: i64, id: &str) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{last_seen_at}\n{id}"))
+fn encode_session_cursor(connected_at: i64, id: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{connected_at}\n{id}"))
 }
 
 fn decode_session_cursor(cursor: &str) -> Result<(i64, String)> {
@@ -997,6 +1034,15 @@ fn migrate(connection: &Connection) -> Result<()> {
             connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS document_sessions_page ON document_sessions(last_seen_at DESC,id DESC);",
         )?;
+            connection.execute(
+                "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
+                [2_i64],
+            )?;
+        }
+        if version <= 2 {
+            connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS document_sessions_connected_page ON document_sessions(connected_at DESC,id DESC);",
+            )?;
             connection.execute(
                 "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
                 [CURRENT_SCHEMA_VERSION],
@@ -1311,6 +1357,29 @@ mod tests {
         assert_eq!(first.sessions.len(), 2);
         assert!(first.next_cursor.is_some());
         assert!(serde_json::to_vec(&first).unwrap().len() < 4096);
+        let all_ids = store
+            .sessions(None, Some(100))
+            .await
+            .unwrap()
+            .sessions
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+        let refreshed_id = all_ids
+            .iter()
+            .find(|id| !first.sessions.iter().any(|session| &session.id == *id))
+            .unwrap()
+            .clone();
+        store
+            .call(move |store| {
+                store.lock()?.execute(
+                    "UPDATE document_sessions SET last_seen_at=last_seen_at+1000 WHERE id=?1",
+                    [refreshed_id],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         let second = store
             .sessions(first.next_cursor.as_deref(), Some(2))
             .await
@@ -1322,6 +1391,19 @@ mod tests {
                 .iter()
                 .all(|left| second.sessions.iter().all(|right| left.id != right.id))
         );
+        let third = store
+            .sessions(second.next_cursor.as_deref(), Some(2))
+            .await
+            .unwrap();
+        let traversed = first
+            .sessions
+            .iter()
+            .chain(&second.sessions)
+            .chain(&third.sessions)
+            .map(|session| session.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(traversed.len(), all_ids.len());
+        assert!(all_ids.iter().all(|id| traversed.contains(id.as_str())));
         let detail = store.session(&first.sessions[0].id).await.unwrap();
         assert_eq!(detail.tools.len(), 1);
     }

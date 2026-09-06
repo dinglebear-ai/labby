@@ -8,7 +8,7 @@
 //! never drift again.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use labby_runtime::gateway_config::{
     UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
@@ -22,6 +22,77 @@ use super::testsupport::*;
 const DISCOVERED_TOOLS: [&str; 3] = ["search_repos", "github_create_issue", "delete_repo"];
 const EXPOSE_TOOLS: [&str; 2] = ["search_repos", "github_*"];
 const EXPECTED_EXPOSED: [&str; 2] = ["github_create_issue", "search_repos"];
+
+#[tokio::test]
+async fn matching_subject_catalog_reports_authoritative_inspection_exhaustion() {
+    let pool = static_catalog_pool("alpha").await;
+    let mut tools = Vec::with_capacity(10_001);
+    tools.push(test_tool("needle"));
+    tools.extend((0..10_000).map(|index| test_tool(&format!("ordinary_{index:05}"))));
+    move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", tools).await;
+    let config = UpstreamConfig {
+        expose_tools: None,
+        ..oauth_upstream_config("alpha", &["*"])
+    };
+    let result = pool
+        .subject_scoped_upstream_tools_allowed_matching_bounded(
+            &[config],
+            "alice",
+            None,
+            10_000,
+            &|_, tool| tool.name.as_ref() == "needle",
+            Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(result.inspected, 10_000);
+    assert!(result.incomplete);
+    assert_eq!(result.tools.len(), 1);
+    assert_eq!(result.tools[0].tool.name.as_ref(), "needle");
+}
+
+#[tokio::test]
+async fn matching_many_cached_subject_catalogs_share_one_inspection_budget() {
+    let pool = static_catalog_pool("oauth_000").await;
+    let mut configs = Vec::new();
+    for index in 0..256 {
+        let name = format!("oauth_{index:03}");
+        if index > 0 {
+            let source_pool = static_catalog_pool(&name).await;
+            let mut connections = pool.connections.write().await;
+            let mut source = source_pool.connections.write().await;
+            connections.insert(
+                name.clone(),
+                source.remove(&name).expect("fixture connection"),
+            );
+        }
+        move_connection_to_subject_cache_with_tools(
+            &pool,
+            &name,
+            "alice",
+            (0..50)
+                .map(|tool| test_tool(&format!("ordinary_{index:03}_{tool:02}")))
+                .collect(),
+        )
+        .await;
+        configs.push(UpstreamConfig {
+            expose_tools: None,
+            ..oauth_upstream_config(&name, &["*"])
+        });
+    }
+    let result = pool
+        .subject_scoped_upstream_tools_allowed_matching_bounded(
+            &configs,
+            "alice",
+            None,
+            10_000,
+            &|_, _| false,
+            Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(result.inspected, 10_000);
+    assert!(result.incomplete);
+    assert!(result.tools.is_empty());
+}
 
 fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
     UpstreamConfig {
