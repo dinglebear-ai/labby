@@ -305,6 +305,18 @@ impl AccessStore {
         self.with_connection(move |connection| super::outbox::claim(connection, now, limit))
             .await
     }
+    pub(crate) async fn authority_snapshot(
+        &self,
+        organization_id: String,
+    ) -> AccessStoreResult<Vec<super::outbox::AuthoritySnapshotRecord>> {
+        self.with_connection(move |connection| {
+            super::outbox::snapshot(connection, &organization_id)
+        })
+        .await
+    }
+    pub(crate) async fn authority_organizations(&self) -> AccessStoreResult<Vec<String>> {
+        self.with_connection(super::outbox::organizations).await
+    }
     pub(crate) async fn acknowledge_authority_projection(
         &self,
         organization_id: String,
@@ -334,6 +346,17 @@ impl AccessStore {
     ) -> AccessStoreResult<usize> {
         self.with_connection(move |connection| super::outbox::retain(connection, older_than))
             .await
+    }
+    pub(crate) async fn supersede_authority_projection_with_snapshot(
+        &self,
+        organization_id: String,
+        digest: String,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::supersede_with_snapshot(connection, &organization_id, &digest, now)
+        })
+        .await
     }
     pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
         let path = validated_access_path(&path)

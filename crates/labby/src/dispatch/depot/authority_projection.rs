@@ -178,6 +178,30 @@ impl AuthorityProjectionSender {
         Ok(ack)
     }
 
+    /// Builds a typed snapshot from the current AccessStore state. This is the
+    /// reconnect path; it does not reuse audit fingerprints as resource IDs.
+    pub(crate) async fn send_current_snapshot(
+        &self,
+        organization_id: &str,
+        now: i64,
+    ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
+        let records = self
+            .store
+            .authority_snapshot(organization_id.to_owned())
+            .await
+            .map_err(|_| ProjectionSendError::Store)?
+            .into_iter()
+            .map(|record| AuthorityProjectionRecord {
+                sequence: 0,
+                resource_type: record.resource_type,
+                resource_id: record.resource_id,
+                operation: "upsert".into(),
+                value: Some(record.value),
+            })
+            .collect();
+        self.send_snapshot(organization_id, records, now).await
+    }
+
     /// Performs at most one bounded delivery pass. It is intended for a supervised
     /// background loop; authorization and mutation responses never await this method.
     pub(crate) async fn send_once(&self, now: i64) -> Result<usize, ProjectionSendError> {
@@ -301,6 +325,110 @@ impl AuthorityProjectionSender {
             .await
             .map_err(|_| ProjectionSendError::InvalidResponse)
     }
+}
+
+pub(crate) async fn start_managed_projection(
+    preferences: &crate::config::depot::DepotPreferences,
+) -> Result<Option<tokio::task::JoinHandle<()>>, ProjectionSendError> {
+    use crate::config::depot::DepotControlMode;
+
+    if preferences.control_mode != DepotControlMode::LabbyManaged
+        || preferences.managed_authority_kill_switch
+    {
+        return Ok(None);
+    }
+    let endpoint = preferences
+        .authority_endpoint
+        .as_deref()
+        .ok_or(ProjectionSendError::Configuration)?;
+    let bearer_env = preferences
+        .authority_bearer_token_env
+        .as_deref()
+        .filter(|name| crate::config::depot::allowed_secret_reference(name))
+        .ok_or(ProjectionSendError::Configuration)?;
+    let signing_env = preferences
+        .authority_signing_key_env
+        .as_deref()
+        .filter(|name| crate::config::depot::allowed_secret_reference(name))
+        .ok_or(ProjectionSendError::Configuration)?;
+    let installation_id = preferences
+        .authority_installation_id
+        .as_deref()
+        .ok_or(ProjectionSendError::Configuration)?;
+    let key_id = preferences
+        .authority_key_id
+        .as_deref()
+        .ok_or(ProjectionSendError::Configuration)?;
+    let bearer = std::env::var(bearer_env).map_err(|_| ProjectionSendError::Configuration)?;
+    let encoded_key = std::env::var(signing_env).map_err(|_| ProjectionSendError::Configuration)?;
+    let key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded_key)
+        .map_err(|_| ProjectionSendError::Configuration)?;
+    let secret_key: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| ProjectionSendError::Configuration)?;
+    let path = crate::config::access_db_path().map_err(|_| ProjectionSendError::Configuration)?;
+    let store = AccessStore::open_existing_current(path)
+        .await
+        .map_err(|_| ProjectionSendError::Store)?;
+    let sender = AuthorityProjectionSender::new(
+        Url::parse(endpoint).map_err(|_| ProjectionSendError::Configuration)?,
+        bearer,
+        installation_id,
+        key_id,
+        secret_key,
+        store,
+    )?;
+
+    Ok(Some(tokio::spawn(async move {
+        let now = unix_now();
+        match sender.store.authority_organizations().await {
+            Ok(organizations) => {
+                for organization in organizations {
+                    match sender.send_current_snapshot(&organization, now).await {
+                        Ok(ack) => {
+                            if let Err(error) = sender
+                                .store
+                                .supersede_authority_projection_with_snapshot(
+                                    organization,
+                                    ack.last_envelope_digest,
+                                    now,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    "could not checkpoint initial Depot authority snapshot"
+                                );
+                            }
+                        }
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            "initial Depot authority snapshot failed; managed authority remains stale"
+                        ),
+                    }
+                }
+            }
+            Err(_) => tracing::warn!("could not enumerate authority organizations"),
+        }
+
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(error) = sender.send_once(unix_now()).await {
+                tracing::warn!(error = %error, "Depot authority projection delivery failed");
+            }
+        }
+    })))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

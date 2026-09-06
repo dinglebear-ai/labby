@@ -52,6 +52,14 @@ pub struct DepotPreferences {
     pub providers: Vec<toml::Value>,
     pub tombstones: BTreeSet<String>,
     pub legacy_migrated: bool,
+    /// Managed authority replication target and secret references. The signing
+    /// key and bearer value are resolved from the named environment variables
+    /// only when the daemon starts; they are never serialized into projections.
+    pub authority_endpoint: Option<String>,
+    pub authority_bearer_token_env: Option<String>,
+    pub authority_installation_id: Option<String>,
+    pub authority_key_id: Option<String>,
+    pub authority_signing_key_env: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
 }
@@ -65,6 +73,11 @@ impl Default for DepotPreferences {
             providers: Vec::new(),
             tombstones: BTreeSet::new(),
             legacy_migrated: false,
+            authority_endpoint: None,
+            authority_bearer_token_env: None,
+            authority_installation_id: None,
+            authority_key_id: None,
+            authority_signing_key_env: None,
             extra: BTreeMap::new(),
         }
     }
@@ -82,6 +95,15 @@ impl std::fmt::Debug for DepotPreferences {
             .field("provider_count", &self.providers.len())
             .field("tombstone_count", &self.tombstones.len())
             .field("legacy_migrated", &self.legacy_migrated)
+            .field(
+                "authority_endpoint_configured",
+                &self.authority_endpoint.is_some(),
+            )
+            .field(
+                "authority_credentials_configured",
+                &(self.authority_bearer_token_env.is_some()
+                    && self.authority_signing_key_env.is_some()),
+            )
             .finish_non_exhaustive()
     }
 }

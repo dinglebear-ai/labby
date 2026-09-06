@@ -1,4 +1,5 @@
 use rusqlite::{Connection, TransactionBehavior, params};
+use serde_json::{Value, json};
 
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::store::map_sqlite_error;
@@ -11,6 +12,103 @@ pub(crate) struct PendingProjection {
     pub(crate) sequence: u64,
     pub(crate) payload_json: String,
     pub(crate) previous_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AuthoritySnapshotRecord {
+    pub(crate) resource_type: String,
+    pub(crate) resource_id: String,
+    pub(crate) value: Value,
+}
+
+pub(super) fn snapshot(
+    connection: &mut Connection,
+    organization_id: &str,
+) -> AccessStoreResult<Vec<AuthoritySnapshotRecord>> {
+    let mut records = Vec::new();
+    let mut teams = connection
+        .prepare("SELECT group_id,status,policy_epoch,membership_epoch FROM groups WHERE organization_id=?1 AND kind='team' AND status!='deleted' ORDER BY group_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in teams
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (team_id, status, policy_epoch, membership_epoch) = row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "team".into(),
+            resource_id: team_id,
+            value: json!({"status":status,"policy_epoch":policy_epoch,"membership_epoch":membership_epoch}),
+        });
+    }
+    drop(teams);
+
+    let mut memberships = connection
+        .prepare("SELECT team_id,principal_id,role,status,membership_epoch FROM team_memberships WHERE organization_id=?1 AND status!='revoked' ORDER BY team_id COLLATE BINARY,principal_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in memberships
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (team_id, principal_id, role, status, membership_epoch) =
+            row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "team_membership".into(),
+            resource_id: format!("{team_id}\u{0}{principal_id}"),
+            value: json!({"team_id":team_id,"principal_id":principal_id,"role":role,"status":status,"membership_epoch":membership_epoch}),
+        });
+    }
+    drop(memberships);
+
+    let mut assignments = connection
+        .prepare("SELECT team_id,project_id,role,status,assignment_epoch FROM team_project_assignments WHERE organization_id=?1 AND status='active' ORDER BY team_id COLLATE BINARY,project_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in assignments
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (team_id, project_id, role, status, assignment_epoch) =
+            row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "team_project".into(),
+            resource_id: format!("{team_id}\u{0}{project_id}"),
+            value: json!({"team_id":team_id,"project_id":project_id,"role":role,"status":status,"assignment_epoch":assignment_epoch}),
+        });
+    }
+    Ok(records)
+}
+
+pub(super) fn organizations(connection: &mut Connection) -> AccessStoreResult<Vec<String>> {
+    let mut statement = connection
+        .prepare("SELECT organization_id FROM organizations WHERE status='active' ORDER BY organization_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(map_sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(map_sqlite_error)
 }
 
 pub(super) fn claim(
@@ -89,11 +187,59 @@ pub(super) fn retain(connection: &mut Connection, older_than: i64) -> AccessStor
         .map_err(map_sqlite_error)
 }
 
+pub(super) fn supersede_with_snapshot(
+    connection: &mut Connection,
+    organization_id: &str,
+    digest: &str,
+    now: i64,
+) -> AccessStoreResult<usize> {
+    connection
+        .execute(
+            "UPDATE authority_projection_outbox SET status='sent',sent_at=?2,envelope_digest=?3 WHERE organization_id=?1 AND status IN ('pending','inflight')",
+            params![organization_id, now, digest],
+        )
+        .map_err(map_sqlite_error)
+}
+
 #[cfg(test)]
 mod tests {
     use labby_auth::{Authenticator, VerifiedIdentity};
 
     use crate::access::{AccessStore, BootstrapOwnerInput};
+
+    #[tokio::test]
+    async fn snapshot_uses_typed_collision_safe_team_records() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let store = AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(identity, "Local", "Default").unwrap())
+            .await
+            .unwrap();
+
+        let records = store
+            .authority_snapshot("bootstrap-local".into())
+            .await
+            .unwrap();
+        assert!(records.iter().any(|record| {
+            record.resource_type == "team"
+                && record.resource_id == "bootstrap-initial-team"
+                && record.value["status"] == "active"
+        }));
+        assert!(records.iter().any(|record| {
+            record.resource_type == "team_membership"
+                && record.resource_id == "bootstrap-initial-team\0bootstrap-owner"
+                && record.value["role"] == "owner"
+                && record.value["status"] == "active"
+        }));
+    }
 
     #[tokio::test]
     async fn audit_and_outbox_are_atomic_ordered_and_retryable() {

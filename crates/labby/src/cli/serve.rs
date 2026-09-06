@@ -363,6 +363,10 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    let _authority_projection =
+        crate::dispatch::depot::authority_projection::start_managed_projection(&config.depot)
+            .await
+            .context("start managed Depot authority projection")?;
     let file_stash_runtime = match crate::config::file_stash_root_path(config) {
         Ok(root) => Arc::new(
             crate::file_stash::FileStashRuntime::initialize_with_preferences(
