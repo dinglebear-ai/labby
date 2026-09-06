@@ -3,7 +3,9 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::domain::{Permission, ProjectRole};
 use super::error::{AccessStoreError, AccessStoreResult};
-use super::read::{select_project_in_transaction, select_project_membership_in_transaction};
+use super::read::{
+    resolve_principal, select_project_in_transaction, select_project_membership_in_transaction,
+};
 use super::store::map_sqlite_error;
 
 /// Exact request facts for one Project-scoped authorization decision.
@@ -84,15 +86,36 @@ pub(super) fn depot_delegation_authority(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
-    let selected = select_project_membership_in_transaction(&transaction, identity, project_id)
-        .map_err(collapse_denial)?;
+    let principal = resolve_principal(&transaction, identity).map_err(collapse_denial)?;
     let platform_administrator: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')",
-            [&selected.principal_id],
+            [&principal.id],
             |row| row.get(0),
         )
         .map_err(map_sqlite_error)?;
+    let selected = if platform_administrator {
+        let (organization_id, global_revision) = transaction
+            .query_row(
+                "SELECT p.organization_id,m.global_revision FROM projects p
+                 JOIN organizations o ON o.organization_id=p.organization_id
+                 JOIN access_metadata m ON m.singleton=1
+                 WHERE p.project_id=?1 AND p.status='active' AND o.status='active'",
+                [project_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+        super::read::ProjectMembershipSnapshot {
+            principal_id: principal.id,
+            organization_id,
+            project_id: project_id.to_owned(),
+            role: ProjectRole::Owner,
+            global_revision: epoch_u64(global_revision)?,
+        }
+    } else {
+        select_project_membership_in_transaction(&transaction, identity, project_id)
+            .map_err(collapse_denial)?
+    };
     let (authority_schema, global_revision, organization_policy, project_policy, project_membership) = transaction
         .query_row(
             "SELECT m.schema_version,m.global_revision,o.policy_epoch,p.project_policy_epoch,pm.updated_at
@@ -105,28 +128,44 @@ pub(super) fn depot_delegation_authority(
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<i64>>(4)?)),
         )
         .map_err(map_sqlite_error)?;
-    let team = if platform_administrator {
-        None
-    } else {
-        let team_id = selected_team_id.ok_or(AccessStoreError::NotAuthorized)?;
-        let epochs = transaction
-            .query_row(
-                "SELECT g.membership_epoch,g.policy_epoch FROM team_memberships tm
+    let team = if let Some(team_id) = selected_team_id {
+        if platform_administrator {
+            let policy_epoch = transaction
+                .query_row(
+                    "SELECT g.policy_epoch FROM groups g
+                     JOIN team_project_assignments a ON a.organization_id=g.organization_id
+                       AND a.team_id=g.group_id AND a.project_id=?2
+                     WHERE g.group_id=?1 AND g.organization_id=?3
+                       AND g.status='active' AND a.status='active'",
+                    params![team_id, selected.project_id, selected.organization_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+            Some((team_id.to_owned(), None, policy_epoch))
+        } else {
+            let epochs = transaction
+                .query_row(
+                    "SELECT g.membership_epoch,g.policy_epoch FROM team_memberships tm
              JOIN groups g ON g.organization_id=tm.organization_id AND g.group_id=tm.team_id
              JOIN team_project_assignments a ON a.organization_id=tm.organization_id
                AND a.team_id=tm.team_id AND a.project_id=?3
              WHERE tm.organization_id=?1 AND tm.principal_id=?2 AND tm.team_id=?4
                AND tm.status='active' AND g.status='active' AND a.status='active'",
-                params![
-                    selected.organization_id,
-                    selected.principal_id,
-                    selected.project_id,
-                    team_id
-                ],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
-        Some((team_id.to_owned(), epochs.0, epochs.1))
+                    params![
+                        selected.organization_id,
+                        selected.principal_id,
+                        selected.project_id,
+                        team_id
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+            Some((team_id.to_owned(), Some(epochs.0), epochs.1))
+        }
+    } else if platform_administrator {
+        None
+    } else {
+        return Err(AccessStoreError::NotAuthorized);
     };
     let snapshot = DepotDelegationAuthoritySnapshot {
         principal_id: selected.principal_id,
@@ -138,7 +177,7 @@ pub(super) fn depot_delegation_authority(
         organization_policy: epoch_u64(organization_policy)?,
         team_membership: team
             .as_ref()
-            .map(|value| value.1)
+            .and_then(|value| value.1)
             .map(epoch_u64)
             .transpose()?,
         team_policy: team
@@ -205,14 +244,52 @@ pub(super) fn authorize_library_in_transaction(
     project_id: &str,
     permission: Permission,
 ) -> AccessStoreResult<LibraryAccessSnapshot> {
-    let selected = select_project_membership_in_transaction(&transaction, identity, project_id)
-        .map_err(collapse_denial)?;
-    if !selected.role.permissions().contains(&permission) {
-        return Err(AccessStoreError::NotAuthorized);
-    }
+    let principal = resolve_principal(transaction, identity).map_err(collapse_denial)?;
+    let is_platform_admin = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM platform_administrators
+             WHERE principal_id=?1 AND status='active')",
+            params![principal.id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let selected = if is_platform_admin {
+        let (organization_id, global_revision) = transaction
+            .query_row(
+                "SELECT p.organization_id,m.global_revision FROM projects p
+                 JOIN organizations o ON o.organization_id=p.organization_id
+                 JOIN access_metadata m ON m.singleton=1
+                 WHERE p.project_id=?1 AND p.status='active' AND o.status='active'",
+                [project_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+        super::read::ProjectMembershipSnapshot {
+            principal_id: principal.id,
+            organization_id,
+            project_id: project_id.to_owned(),
+            role: ProjectRole::Owner,
+            global_revision: epoch_u64(global_revision)?,
+        }
+    } else {
+        let selected = select_project_membership_in_transaction(transaction, identity, project_id)
+            .map_err(collapse_denial)?;
+        if !selected.role.permissions().contains(&permission) {
+            return Err(AccessStoreError::NotAuthorized);
+        }
+        selected
+    };
     let (team_ids, team_management_ids) = {
         let mut statement = transaction
-            .prepare(
+            .prepare(if is_platform_admin {
+                "SELECT assignment.team_id, 'owner'
+                 FROM team_project_assignments assignment
+                 JOIN groups g ON g.organization_id=assignment.organization_id
+                   AND g.group_id=assignment.team_id
+                 WHERE assignment.organization_id=?1 AND assignment.status='active'
+                   AND assignment.project_id=?3 AND g.status='active'
+                 ORDER BY assignment.team_id"
+            } else {
                 "SELECT tm.team_id, tm.role
                  FROM team_memberships tm
                  JOIN team_project_assignments assignment
@@ -221,8 +298,8 @@ pub(super) fn authorize_library_in_transaction(
                  WHERE tm.organization_id=?1 AND tm.principal_id=?2
                    AND tm.status='active' AND assignment.status='active'
                    AND assignment.project_id=?3
-                 ORDER BY tm.team_id",
-            )
+                 ORDER BY tm.team_id"
+            })
             .map_err(map_sqlite_error)?;
         statement
             .query_map(
@@ -248,14 +325,6 @@ pub(super) fn authorize_library_in_transaction(
                 },
             )
     };
-    let is_platform_admin = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM platform_administrators
-             WHERE principal_id=?1 AND status='active')",
-            params![selected.principal_id],
-            |row| row.get(0),
-        )
-        .map_err(map_sqlite_error)?;
     let snapshot = LibraryAccessSnapshot {
         principal_id: selected.principal_id,
         organization_id: selected.organization_id,
@@ -450,6 +519,32 @@ mod tests {
         for denial in denials {
             assert!(matches!(denial, Err(AccessStoreError::NotAuthorized)));
         }
+    }
+
+    #[tokio::test]
+    async fn platform_administrator_can_authorize_an_unjoined_project() {
+        let (_directory, store, owner) = fixture().await;
+
+        let library = store
+            .authorize_skill_library(
+                owner.clone(),
+                "other-project".to_owned(),
+                Permission::AssetUse,
+            )
+            .await
+            .unwrap();
+        assert!(library.is_platform_admin);
+        assert_eq!(library.organization_id, "other-org");
+        assert_eq!(library.project_id, "other-project");
+
+        let delegated = store
+            .depot_delegation_authority(owner, "other-project".to_owned(), None)
+            .await
+            .unwrap();
+        assert!(delegated.platform_administrator);
+        assert_eq!(delegated.organization_id, "other-org");
+        assert_eq!(delegated.project_id, "other-project");
+        assert_eq!(delegated.team_id, None);
     }
 
     #[tokio::test]

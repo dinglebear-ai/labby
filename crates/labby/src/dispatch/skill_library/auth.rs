@@ -512,20 +512,7 @@ pub(crate) async fn authorize_at_boundary(
             policy_error
         })?;
 
-    if let Some(selected_team_id) = selected_team_id {
-        if !snapshot.team_ids.iter().any(|id| id == &selected_team_id) {
-            return Err(SkillLibraryAuthorizationError::Denied);
-        }
-        snapshot.team_ids.retain(|id| id == &selected_team_id);
-        snapshot
-            .team_management_ids
-            .retain(|id| id == &selected_team_id);
-    } else {
-        // Absence of an explicit Team context means Project context. Never infer a Team from
-        // membership, since doing so makes ownership change as assignments are added or removed.
-        snapshot.team_ids.clear();
-        snapshot.team_management_ids.clear();
-    }
+    narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref())?;
 
     decision_from_snapshot(snapshot, action, target_id, target, correlation_id, surface)
 }
@@ -652,6 +639,27 @@ fn decision_from_snapshot(
     })
 }
 
+fn narrow_to_selected_team(
+    snapshot: &mut crate::access::LibraryAccessSnapshot,
+    selected_team_id: Option<&str>,
+) -> Result<(), SkillLibraryAuthorizationError> {
+    if let Some(selected_team_id) = selected_team_id {
+        if !snapshot.team_ids.iter().any(|id| id == selected_team_id) {
+            return Err(SkillLibraryAuthorizationError::Denied);
+        }
+        snapshot.team_ids.retain(|id| id == selected_team_id);
+        snapshot
+            .team_management_ids
+            .retain(|id| id == selected_team_id);
+    } else {
+        // Absence of an explicit Team context means Project context. Never infer a Team from
+        // membership, since doing so makes ownership change as assignments are added or removed.
+        snapshot.team_ids.clear();
+        snapshot.team_management_ids.clear();
+    }
+    Ok(())
+}
+
 /// Fail-closed adapter for surfaces where authentication may be absent.
 pub(crate) async fn authorize_optional_at_boundary(
     runtime: &AccessRuntime,
@@ -748,6 +756,7 @@ where
         })
         .map_err(SkillLibraryCommitError::Authorization)?;
     let owned_target = OwnedSkillLibraryTarget::from(target);
+    let selected_team_id = caller.selected_team_id.clone();
     let commit_target_id = target_id.clone();
     let commit_correlation_id = correlation_id.clone();
     let failure_target_id = target_id.clone();
@@ -768,7 +777,8 @@ where
             caller.identity,
             project_id.to_owned(),
             Permission::AssetUse,
-            move |snapshot| {
+            move |mut snapshot| {
+                narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref())?;
                 let decision = decision_from_snapshot(
                     snapshot,
                     action,
@@ -1047,6 +1057,30 @@ mod tests {
             LibraryTenantId::from_canonical_projection("bootstrap-local").unwrap(),
             LibraryActorId::from_canonical_projection(owner).unwrap(),
         )
+    }
+
+    #[test]
+    fn final_authorization_snapshot_is_bounded_to_the_explicit_team_context() {
+        let mut snapshot = crate::access::LibraryAccessSnapshot {
+            principal_id: "member".into(),
+            organization_id: "bootstrap-local".into(),
+            project_id: "project".into(),
+            role: ProjectRole::Member,
+            global_revision: 1,
+            team_ids: vec!["team-a".into(), "team-b".into()],
+            team_management_ids: vec!["team-a".into(), "team-b".into()],
+            is_platform_admin: false,
+        };
+
+        narrow_to_selected_team(&mut snapshot, Some("team-a")).unwrap();
+
+        assert_eq!(snapshot.team_ids, ["team-a"]);
+        assert_eq!(snapshot.team_management_ids, ["team-a"]);
+        assert_eq!(
+            narrow_to_selected_team(&mut snapshot, Some("team-b")),
+            Err(SkillLibraryAuthorizationError::Denied),
+            "a final-boundary snapshot cannot regain a different Team after context selection",
+        );
     }
 
     async fn decide(
