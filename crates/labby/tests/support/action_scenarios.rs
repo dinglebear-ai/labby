@@ -447,10 +447,7 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
-    if surface == Surface::Api
-        && key.starts_with("stash:")
-        && !cfg!(any(target_os = "linux", target_os = "android"))
-    {
+    if surface == Surface::Api && key.starts_with("stash:") && !cfg!(target_os = "linux") {
         return Some((
             "requires_descriptor_relative_filesystem_platform",
             "route_not_found",

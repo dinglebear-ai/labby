@@ -9,6 +9,7 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use std::{
+    future::Future as _,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -229,9 +230,17 @@ async fn list(
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
     let page = if let Some(query) = q.query {
-        let page = service(&state)
-            .search(&principal, &query, q.cursor.as_deref(), q.limit)
-            .await?;
+        let stash = service(&state);
+        let page = crate::dispatch::file_stash::observe_result(
+            "api",
+            "stash.search",
+            None,
+            None,
+            None,
+            false,
+            stash.search(&principal, &query, q.cursor.as_deref(), q.limit),
+        )
+        .await?;
         crate::dispatch::file_stash::observe_operation(
             "api",
             "stash.search",
@@ -240,12 +249,22 @@ async fn list(
             None,
             None,
             false,
+            0,
+            None,
         );
         page
     } else {
-        let page = service(&state)
-            .list(&principal, q.cursor.as_deref(), q.limit)
-            .await?;
+        let stash = service(&state);
+        let page = crate::dispatch::file_stash::observe_result(
+            "api",
+            "stash.list",
+            None,
+            None,
+            None,
+            false,
+            stash.list(&principal, q.cursor.as_deref(), q.limit),
+        )
+        .await?;
         crate::dispatch::file_stash::observe_operation(
             "api",
             "stash.list",
@@ -254,6 +273,8 @@ async fn list(
             None,
             None,
             false,
+            0,
+            None,
         );
         page
     };
@@ -264,7 +285,17 @@ async fn stats(
     identity: Option<axum::Extension<VerifiedIdentity>>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    let stats = service(&state).stats(&principal).await?;
+    let stash = service(&state);
+    let stats = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.stats",
+        None,
+        None,
+        None,
+        false,
+        stash.stats(&principal),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.stats",
@@ -273,6 +304,8 @@ async fn stats(
         None,
         Some(stats.owned_committed_bytes),
         false,
+        0,
+        None,
     );
     Ok(result(stats))
 }
@@ -300,13 +333,30 @@ async fn recipients(
         .store()
         .await
         .map_err(|_| stable("service_unavailable"))?;
-    let values = tokio::time::timeout(
-        std::time::Duration::from_millis(state.config.file_stash.database_deadline_ms),
-        store.search_file_stash_recipients(principal, query.to_owned(), 20),
+    let values = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.recipients.search",
+        None,
+        None,
+        None,
+        false,
+        async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(state.config.file_stash.database_deadline_ms),
+                store.search_file_stash_recipients(principal, query.to_owned(), 20),
+            )
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "busy".into(),
+                message: "File Stash operation failed".into(),
+            })?
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "service_unavailable".into(),
+                message: "File Stash operation failed".into(),
+            })
+        },
     )
-    .await
-    .map_err(|_| stable("busy"))?
-    .map_err(|_| stable("service_unavailable"))?;
+    .await?;
     Ok(result(serde_json::json!({"recipients": values})))
 }
 async fn metadata(
@@ -315,7 +365,17 @@ async fn metadata(
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    let file = service(&state).metadata(&principal, &file_id).await?;
+    let stash = service(&state);
+    let file = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.metadata",
+        Some(&file_id),
+        None,
+        None,
+        false,
+        stash.metadata(&principal, &file_id),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.metadata",
@@ -324,6 +384,8 @@ async fn metadata(
         None,
         Some(file.size_bytes),
         false,
+        0,
+        None,
     );
     Ok(result(file))
 }
@@ -337,9 +399,17 @@ async fn rename(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.rename")?;
     let principal = principal(&state, identity).await?;
-    let file = service(&state)
-        .rename(&principal, &file_id, &body.display_name)
-        .await?;
+    let stash = service(&state);
+    let file = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.rename",
+        Some(&file_id),
+        None,
+        None,
+        false,
+        stash.rename(&principal, &file_id, &body.display_name),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.rename",
@@ -348,6 +418,8 @@ async fn rename(
         None,
         Some(file.size_bytes),
         false,
+        0,
+        None,
     );
     Ok(result(file))
 }
@@ -360,7 +432,17 @@ async fn remove(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.delete")?;
     let principal = principal(&state, identity).await?;
-    service(&state).delete(&principal, &file_id).await?;
+    let stash = service(&state);
+    crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.delete",
+        Some(&file_id),
+        None,
+        None,
+        true,
+        stash.delete(&principal, &file_id),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.delete",
@@ -369,6 +451,8 @@ async fn remove(
         None,
         None,
         true,
+        0,
+        None,
     );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -382,9 +466,17 @@ async fn create_grant(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.create")?;
     let principal = principal(&state, identity).await?;
-    let grant = service(&state)
-        .create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id)
-        .await?;
+    let stash = service(&state);
+    let grant = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.grants.create",
+        Some(&file_id),
+        None,
+        None,
+        false,
+        stash.create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.grants.create",
@@ -393,6 +485,8 @@ async fn create_grant(
         Some(&grant.grant_id),
         None,
         false,
+        0,
+        None,
     );
     Ok((StatusCode::CREATED, result(grant)).into_response())
 }
@@ -403,9 +497,17 @@ async fn list_grants(
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    let grants = service(&state)
-        .grants(&principal, &file_id, q.cursor.as_deref(), q.limit)
-        .await?;
+    let stash = service(&state);
+    let grants = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.grants.list",
+        Some(&file_id),
+        None,
+        None,
+        false,
+        stash.grants(&principal, &file_id, q.cursor.as_deref(), q.limit),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.grants.list",
@@ -414,6 +516,8 @@ async fn list_grants(
         None,
         None,
         false,
+        0,
+        None,
     );
     Ok(result(grants))
 }
@@ -426,9 +530,17 @@ async fn revoke_grant(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.revoke")?;
     let principal = principal(&state, identity).await?;
-    service(&state)
-        .revoke_grant(&principal, &file_id, &grant_id)
-        .await?;
+    let stash = service(&state);
+    crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.grants.revoke",
+        Some(&file_id),
+        Some(&grant_id),
+        None,
+        false,
+        stash.revoke_grant(&principal, &file_id, &grant_id),
+    )
+    .await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
         "stash.grants.revoke",
@@ -437,6 +549,8 @@ async fn revoke_grant(
         Some(&grant_id),
         None,
         false,
+        0,
+        None,
     );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -477,7 +591,21 @@ async fn upload(
         svc.finalize_upload(reservation, admission, reader, cancel)
             .await
     });
-    let file_id = upload.await.map_err(|_| stable("service_unavailable"))??;
+    let file_id = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.upload",
+        None,
+        None,
+        Some(declared),
+        false,
+        async {
+            upload.await.map_err(|_| ToolError::Sdk {
+                sdk_kind: "service_unavailable".into(),
+                message: "File Stash operation failed".into(),
+            })?
+        },
+    )
+    .await?;
     guard.0 = None;
     crate::dispatch::file_stash::observe_operation(
         "api",
@@ -487,6 +615,8 @@ async fn upload(
         None,
         Some(declared),
         false,
+        0,
+        None,
     );
     Ok((
         StatusCode::CREATED,
@@ -503,9 +633,17 @@ async fn download(
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let principal = principal(&state, identity).await?;
-    let (file, opened) = service(&state)
-        .open_download(&principal, &file_id, false)
-        .await?;
+    let stash = service(&state);
+    let (file, opened) = crate::dispatch::file_stash::observe_result(
+        "api",
+        "stash.download",
+        Some(&file_id),
+        None,
+        None,
+        false,
+        stash.open_download(&principal, &file_id, false),
+    )
+    .await?;
     let size = opened.size;
     crate::dispatch::file_stash::observe_operation(
         "api",
@@ -515,6 +653,8 @@ async fn download(
         None,
         Some(size),
         false,
+        0,
+        None,
     );
     let mut response = Response::new(blob_body(opened));
     *response.status_mut() = StatusCode::OK;
@@ -548,9 +688,21 @@ async fn download(
     Ok(response)
 }
 
-/// Async reader that deliberately owns the complete opened blob. The semaphore
-/// permits therefore remain held until the response body reaches EOF or drops.
-struct HeldBlob(crate::file_stash::OpenedBlob);
+/// Async reader that owns the opened blob until EOF/drop, while its independent
+/// watchdog cancels the stream and releases admission at the total deadline.
+struct HeldBlob {
+    blob: crate::file_stash::OpenedBlob,
+    cancel: CancellationToken,
+    idle: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl HeldBlob {
+    fn new(blob: crate::file_stash::OpenedBlob) -> Self {
+        let cancel = blob.cancellation();
+        let idle = Box::pin(tokio::time::sleep(blob.idle_timeout));
+        Self { blob, cancel, idle }
+    }
+}
 
 impl AsyncRead for HeldBlob {
     fn poll_read(
@@ -558,12 +710,37 @@ impl AsyncRead for HeldBlob {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().0.file).poll_read(cx, buf)
+        let this = self.get_mut();
+        if this.cancel.is_cancelled() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "File Stash download exceeded its total deadline",
+            )));
+        }
+        let before = buf.filled().len();
+        match Pin::new(&mut this.blob.file).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    this.idle
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + this.blob.idle_timeout);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => match this.idle.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "File Stash download exceeded its idle deadline",
+                ))),
+                Poll::Pending => Poll::Pending,
+            },
+        }
     }
 }
 
 fn blob_body(opened: crate::file_stash::OpenedBlob) -> Body {
-    Body::from_stream(ReaderStream::new(HeldBlob(opened)))
+    Body::from_stream(ReaderStream::new(HeldBlob::new(opened)))
 }
 
 fn validate_header_budget(headers: &HeaderMap, limit: usize) -> Result<(), ApiError> {

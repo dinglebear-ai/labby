@@ -16,7 +16,7 @@ mod support {
 }
 
 use reqwest::StatusCode;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 use serde_json::Value;
 use state_snapshot::{NarrowStorageObservation, OwnedProcessObservation, PERSISTENCE_CONTRACT};
 
@@ -105,7 +105,7 @@ async fn staged_protected_route_change_is_not_half_published_before_restart() {
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn file_stash_round_trips_across_two_principals_and_restart() {
     use base64::Engine as _;

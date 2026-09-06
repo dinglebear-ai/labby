@@ -7,7 +7,7 @@ is not a dependency and an explicitly configured remote target never falls back
 to File Stash.
 
 This document is the normative v1 contract. File Stash is registered on Linux
-and Android and is available through authenticated HTTP, generic service
+and is available through authenticated HTTP, generic service
 dispatch, MCP resources, and the web UI. Unsupported platforms omit the service
 rather than advertising handlers that cannot honor its filesystem contract.
 
@@ -70,8 +70,9 @@ Uploading a collision returns `conflict`; v1 never overwrites.
 
 V1 supports upload, list/search, metadata read, download, delete, grant create,
 grant list, and grant revoke. Lists are cursor-paginated in stable
-`created_at DESC, file_id DESC` order. Search is a bounded case-insensitive
-substring match over normalized display names only. The stats response defines:
+`created_at DESC, file_id DESC` order. Search applies a bounded case-insensitive
+substring filter over normalized display names on each returned page; clients
+continue with the ordinary page cursor to search later pages. The stats response defines:
 
 - `owned_file_count`: committed, non-deleted files owned by the caller;
 - `owned_shared_file_count`: those owned files with at least one currently
@@ -174,8 +175,8 @@ surface is absent when its owning runtime is not compiled or available, rather
 than advertising a handler that fails later.
 
 The v1 durable runtime is available only where Labby can anchor SQLite and blob
-operations to verified directory handles. Linux and Android satisfy that
-contract. macOS, Windows, and other unsupported targets fail initialization
+operations to verified directory handles. Linux is the currently qualified
+target. Android, macOS, Windows, and other unsupported targets fail initialization
 closed and must not register or advertise File Stash until a sanctioned
 handle-relative implementation exists; the rest of `gateway-host` remains
 available.

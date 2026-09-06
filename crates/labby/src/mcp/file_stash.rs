@@ -134,16 +134,23 @@ impl LabMcpServer {
             .file_stash_principal(context, Some(&context.meta))
             .await
             .map_err(|_| unknown(uri))?;
-        let (_metadata, mut blob) = self
-            .file_stash_service()
-            .open_download(&principal, &file_id, true)
-            .await
-            .map_err(|error| match error.kind() {
-                "quota_exceeded" => quota_exceeded(uri),
-                "not_found" => unknown(uri),
-                "busy" => busy(uri),
-                _ => unavailable(uri),
-            })?;
+        let stash = self.file_stash_service();
+        let (_metadata, mut blob) = crate::dispatch::file_stash::observe_result(
+            "mcp",
+            "stash.resource.read",
+            Some(&file_id),
+            None,
+            None,
+            false,
+            stash.open_download(&principal, &file_id, true),
+        )
+        .await
+        .map_err(|error| match error.kind() {
+            "quota_exceeded" => quota_exceeded(uri),
+            "not_found" => unknown(uri),
+            "busy" => busy(uri),
+            _ => unavailable(uri),
+        })?;
         let capacity = usize::try_from(blob.size).map_err(|_| quota_exceeded(uri))?;
         let mut bytes = Vec::with_capacity(capacity);
         (&mut blob.file)
@@ -173,9 +180,16 @@ async fn collect_file_stash_resources(
     while files.len() < crate::mcp::pagination::MCP_RETAINED_LIST_ITEM_CAP {
         let remaining = crate::mcp::pagination::MCP_RETAINED_LIST_ITEM_CAP - files.len();
         let limit = remaining.min(page_limit);
-        let page = service
-            .list(principal, cursor.as_deref(), Some(limit))
-            .await?;
+        let page = crate::dispatch::file_stash::observe_result(
+            "mcp",
+            "stash.resources.list",
+            None,
+            None,
+            None,
+            false,
+            service.list(principal, cursor.as_deref(), Some(limit)),
+        )
+        .await?;
         files.extend(page.files);
         let Some(next) = page.next_cursor else { break };
         if cursor.as_deref() == Some(next.as_str()) {

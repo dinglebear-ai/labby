@@ -14,7 +14,8 @@ import type { StashFile, StashGrant, StashStats } from '@/lib/stash/types'
 import { acceptGeneration, acceptGrantPage, acceptRecipientSearch, copyUri, mergeFiles, mergeGrants, selectedRecipientId } from '@/lib/stash/view-state'
 
 type ViewMode = 'list' | 'grid'
-type UploadState = { name: string; abort: AbortController }
+type UploadState = { id: string; file: globalThis.File; status: 'uploading' | 'failed' | 'complete' | 'canceled'; abort?: AbortController; detail?: string }
+const MAX_UPLOAD_BATCH = 8
 
 const EMPTY_STATS: StashStats = { owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 }
 
@@ -53,7 +54,7 @@ export function StashPageContent() {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [view, setView] = useState<ViewMode>('list')
-  const [upload, setUpload] = useState<UploadState>()
+  const [uploads, setUploads] = useState<UploadState[]>([])
   const [deleteTarget, setDeleteTarget] = useState<StashFile>()
   const [busyDelete, setBusyDelete] = useState(false)
   const [manageTarget, setManageTarget] = useState<StashFile>()
@@ -81,22 +82,40 @@ export function StashPageContent() {
 
   useEffect(() => { const timer = window.setTimeout(() => void load(query.trim()), 250); return () => { window.clearTimeout(timer); generation.current += 1; loadAbort.current?.abort() } }, [load, query])
 
-  const acceptFiles = useCallback(async (selected: FileList | File[]) => {
-    if (upload) return
-    const file = Array.from(selected)[0]
-    if (!file) return
-    if (!file.name.trim() || file.name.includes('/') || file.name.includes('\\')) { setError(new StashError('Filename cannot be empty or contain path separators.', 422, 'validation_failed')); return }
+  const runUpload = useCallback(async (item: UploadState) => {
     const abort = new AbortController()
-    setError(undefined); setUpload({ name: file.name, abort })
+    setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'uploading', abort, detail: undefined } : value))
     try {
-      await api.uploadFile(file, abort.signal)
-      setAnnouncement(`${file.name} uploaded.`)
+      await api.uploadFile(item.file, abort.signal)
+      setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'complete', abort: undefined } : value))
+      setAnnouncement(`${item.file.name} uploaded.`)
       await load(queryRef.current.trim())
     } catch (reason) {
-      if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason)
-      else setAnnouncement(`${file.name} upload canceled.`)
-    } finally { setUpload(undefined); if (input.current) input.current.value = '' }
-  }, [load, upload])
+      const canceled = reason instanceof DOMException && reason.name === 'AbortError'
+      const detail = canceled ? 'Canceled' : errorCopy(reason).detail
+      setUploads(current => current.map(value => value.id === item.id ? { ...value, status: canceled ? 'canceled' : 'failed', abort: undefined, detail } : value))
+      setAnnouncement(canceled ? `${item.file.name} upload canceled.` : `${item.file.name} upload failed.`)
+    }
+  }, [load])
+
+  const acceptFiles = useCallback((selected: FileList | File[]) => {
+    const selectedFiles = Array.from(selected).slice(0, MAX_UPLOAD_BATCH)
+    if (!selectedFiles.length) return
+    const batch = selectedFiles.map((file, index): UploadState => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      file,
+      status: 'uploading',
+    }))
+    setUploads(current => [...batch, ...current].slice(0, MAX_UPLOAD_BATCH))
+    for (const item of batch) {
+      if (!item.file.name.trim() || item.file.name.includes('/') || item.file.name.includes('\\')) {
+        setUploads(current => current.map(value => value.id === item.id ? { ...value, status: 'failed', detail: 'Filename cannot be empty or contain path separators.' } : value))
+      } else {
+        void runUpload(item)
+      }
+    }
+    if (input.current) input.current.value = ''
+  }, [runUpload])
 
   const remove = async () => {
     if (!deleteTarget) return
@@ -110,17 +129,17 @@ export function StashPageContent() {
   const failure = error ? errorCopy(error) : undefined
   return <>
     <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
-    <ConsoleHero eyebrow="Workspace · Stash" title="Stash" pulse={{ color: failure ? 'var(--aurora-error)' : 'var(--aurora-success)', label: failure ? 'attention needed' : undefined }} actions={<Button onClick={() => input.current?.click()} disabled={Boolean(upload)}><Upload />Upload</Button>} stats={[
+    <ConsoleHero eyebrow="Workspace · Stash" title="Stash" pulse={{ color: failure ? 'var(--aurora-error)' : 'var(--aurora-success)', label: failure ? 'attention needed' : undefined }} actions={<Button onClick={() => input.current?.click()}><Upload />Upload</Button>} stats={[
       { label: 'Files', value: loading ? '—' : stats.owned_file_count, icon: <Inbox size={12}/> },
       { label: 'Size', value: loading ? '—' : bytes(stats.owned_committed_bytes), icon: <FileText size={12}/> },
       { label: 'Shared', value: loading ? '—' : stats.owned_shared_file_count, icon: <Share2 size={12}/> },
     ]}/>
-    <input ref={input} type="file" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={event => void acceptFiles(event.target.files || [])}/>
-    <button type="button" onClick={() => input.current?.click()} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={event => { event.preventDefault(); void acceptFiles(event.dataTransfer.files) }} disabled={Boolean(upload)} className="group w-full rounded-aurora-2 border border-dashed border-aurora-accent-primary/50 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--aurora-accent-primary)_8%,transparent),color-mix(in_srgb,var(--aurora-success)_7%,transparent))] p-7 text-center text-sm text-aurora-text-muted transition-colors hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary disabled:cursor-wait">
+    <input ref={input} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" onChange={event => acceptFiles(event.target.files || [])}/>
+    <button type="button" onClick={() => input.current?.click()} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={event => { event.preventDefault(); acceptFiles(event.dataTransfer.files) }} className="group w-full rounded-aurora-2 border border-dashed border-aurora-accent-primary/50 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--aurora-accent-primary)_8%,transparent),color-mix(in_srgb,var(--aurora-success)_7%,transparent))] p-7 text-center text-sm text-aurora-text-muted transition-colors hover:border-aurora-accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
       <Upload className="mx-auto mb-2 size-6 text-aurora-accent-primary"/><strong className="block text-aurora-text-primary">Drop files here or browse</strong>Available to agents through <code className="text-aurora-success">stash://</code>
     </button>
-    {upload ? <div role="status" aria-live="polite" className="rounded-aurora-2 border border-aurora-accent-primary/30 bg-aurora-panel-low p-4"><div className="flex items-center justify-between gap-4 text-sm"><span className="truncate text-aurora-text-primary">Uploading and finalizing {upload.name}</span><Button variant="ghost" size="sm" onClick={() => upload.abort.abort()}><X/>Cancel</Button></div><div aria-hidden="true" className="mt-3 h-2 overflow-hidden rounded-full bg-aurora-accent-primary/15"><span className="block h-full w-1/3 animate-pulse rounded-full bg-aurora-accent-primary"/></div><p className="mt-2 text-xs text-aurora-text-muted">Lifecycle status only; final storage is confirmed by the service.</p></div> : null}
-    {failure ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4"><div><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div><Button variant="outline" onClick={() => void load()}><RefreshCw/>Retry</Button></div> : null}
+    {uploads.length ? <div aria-label="Upload queue" className="space-y-2 rounded-aurora-2 border border-aurora-accent-primary/30 bg-aurora-panel-low p-3">{uploads.map(item => <div key={item.id} role="status" className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-aurora-text-primary">{item.file.name} — {item.status}{item.detail ? `: ${item.detail}` : ''}</span>{item.status === 'uploading' ? <Button variant="ghost" size="sm" onClick={() => item.abort?.abort()}><X/>Cancel</Button> : item.status === 'failed' || item.status === 'canceled' ? <Button variant="outline" size="sm" onClick={() => void runUpload(item)}><RefreshCw/>Retry upload</Button> : null}</div>)}</div> : null}
+    {failure ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4"><div><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim())}><RefreshCw/>Retry</Button></div> : null}
     <DashboardPanel title="Files" action={<div className="flex items-center gap-2"><label className="relative hidden sm:block"><span className="sr-only">Search current files</span><Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-8 w-44 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface pl-8 pr-2 text-xs text-aurora-text-primary"/></label><ViewToggle value={view} onChange={setView}/></div>}>
       <label className="relative sm:hidden"><span className="sr-only">Search current files</span><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-9 w-full rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface pl-9 pr-3 text-sm"/></label>
       {loading ? <div role="status" className="py-10 text-center text-sm text-aurora-text-muted">Loading your files…</div> : files.length === 0 ? <div className="py-10 text-center"><Inbox className="mx-auto size-8 text-aurora-text-muted"/><strong className="mt-3 block text-aurora-text-primary">{query ? 'No matching files' : 'Your Stash is empty'}</strong><p className="mt-1 text-sm text-aurora-text-muted">{query ? 'Try another filename.' : 'Upload a file to make it available to your agents.'}</p></div> : <><div className={view === 'grid' ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle'}>{files.map(file => <FileRow key={file.file_id} file={file} grid={view === 'grid'} onDelete={() => setDeleteTarget(file)} onManage={() => setManageTarget(file)} onCopy={async () => { const result = await copyUri(value => navigator.clipboard.writeText(value), file.uri); if (result.ok) setAnnouncement(result.announcement); else setError(result.error) }}/>)}</div>{nextCursor ? <Button className="mx-auto mt-3" variant="outline" disabled={loadingMore} onClick={() => void load(query.trim(), nextCursor)}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}</>}

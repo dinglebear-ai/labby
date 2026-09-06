@@ -22,6 +22,7 @@ pub(crate) struct BlobStore {
     downloads: Arc<Semaphore>,
     mcp_reads: Arc<Semaphore>,
     principal_uploads: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
+    principal_downloads: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
     active_uploads: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -39,6 +40,7 @@ impl BlobStore {
             downloads: Arc::new(Semaphore::new(limits.max_concurrent_downloads)),
             mcp_reads: Arc::new(Semaphore::new(limits.max_concurrent_mcp_reads)),
             principal_uploads: Arc::new(Mutex::new(HashMap::new())),
+            principal_downloads: Arc::new(Mutex::new(HashMap::new())),
             active_uploads: Arc::new(Mutex::new(HashSet::new())),
             store,
             limits: Arc::new(limits),
@@ -169,6 +171,7 @@ impl BlobStore {
 
     pub(crate) async fn open_blob(
         &self,
+        principal: &super::PrincipalId,
         blob_key: &str,
         expected_size: u64,
         mcp: bool,
@@ -193,6 +196,31 @@ impl BlobStore {
         } else {
             None
         };
+        let principal_download = {
+            let mut permits = self
+                .principal_downloads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            permits.retain(|_, permit| permit.strong_count() > 0);
+            match permits.get(principal.as_str()).and_then(Weak::upgrade) {
+                Some(permit) => permit,
+                None => {
+                    // Preserve capacity for other callers even when one
+                    // authenticated principal deliberately slow-reads.
+                    let permit =
+                        Arc::new(Semaphore::new(self.limits.max_concurrent_downloads.min(4)));
+                    permits.insert(principal.as_str().to_owned(), Arc::downgrade(&permit));
+                    permit
+                }
+            }
+        };
+        let principal_download = tokio::time::timeout(
+            Duration::from_millis(self.limits.database_deadline_ms),
+            principal_download.acquire_owned(),
+        )
+        .await
+        .map_err(|_| FileStashStoreError::Busy)?
+        .map_err(|_| FileStashStoreError::Unavailable)?;
         let download_permit = tokio::time::timeout(
             Duration::from_millis(self.limits.database_deadline_ms),
             Arc::clone(&self.downloads).acquire_owned(),
@@ -208,11 +236,17 @@ impl BlobStore {
         if size != expected_size {
             return Err(FileStashStoreError::Integrity);
         }
+        let admission = DownloadAdmission::new(
+            download_permit,
+            principal_download,
+            mcp_permit,
+            Duration::from_secs(self.limits.upload_total_seconds),
+        );
         Ok(OpenedBlob {
             file: tokio::fs::File::from_std(file),
             size,
-            _download_permit: download_permit,
-            _mcp_permit: mcp_permit,
+            admission,
+            idle_timeout: Duration::from_secs(self.limits.upload_idle_seconds),
         })
     }
 
@@ -422,8 +456,65 @@ impl Drop for UploadAdmission {
 pub(crate) struct OpenedBlob {
     pub(crate) file: tokio::fs::File,
     pub(crate) size: u64,
-    _download_permit: OwnedSemaphorePermit,
-    _mcp_permit: Option<OwnedSemaphorePermit>,
+    admission: DownloadAdmission,
+    pub(crate) idle_timeout: Duration,
+}
+
+impl OpenedBlob {
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.admission.cancel.clone()
+    }
+}
+
+struct DownloadAdmission {
+    permits: Arc<Mutex<Option<DownloadPermits>>>,
+    cancel: CancellationToken,
+}
+
+struct DownloadPermits {
+    _instance: OwnedSemaphorePermit,
+    _principal: OwnedSemaphorePermit,
+    _mcp: Option<OwnedSemaphorePermit>,
+}
+
+impl DownloadAdmission {
+    fn new(
+        instance: OwnedSemaphorePermit,
+        principal: OwnedSemaphorePermit,
+        mcp: Option<OwnedSemaphorePermit>,
+        total: Duration,
+    ) -> Self {
+        let permits = Arc::new(Mutex::new(Some(DownloadPermits {
+            _instance: instance,
+            _principal: principal,
+            _mcp: mcp,
+        })));
+        let cancel = CancellationToken::new();
+        let watchdog_permits = Arc::downgrade(&permits);
+        let watchdog_cancel = cancel.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = tokio::time::sleep(total) => {
+                    watchdog_cancel.cancel();
+                    if let Some(permits) = watchdog_permits.upgrade() {
+                        permits.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                    }
+                }
+                () = watchdog_cancel.cancelled() => {}
+            }
+        });
+        Self { permits, cancel }
+    }
+}
+
+impl Drop for DownloadAdmission {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.permits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
 }
 
 fn unix_now() -> i64 {
@@ -623,6 +714,34 @@ fn sync_directory(_: &File) -> Result<()> {
     Err(FileStashStoreError::Unavailable)
 }
 
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn total_deadline_cancels_and_releases_all_download_permits() {
+        let instance = Arc::new(Semaphore::new(1));
+        let principal = Arc::new(Semaphore::new(1));
+        let mcp = Arc::new(Semaphore::new(1));
+        let admission = DownloadAdmission::new(
+            Arc::clone(&instance).acquire_owned().await.unwrap(),
+            Arc::clone(&principal).acquire_owned().await.unwrap(),
+            Some(Arc::clone(&mcp).acquire_owned().await.unwrap()),
+            Duration::from_millis(10),
+        );
+        assert_eq!(instance.available_permits(), 0);
+        assert_eq!(principal.available_permits(), 0);
+        assert_eq!(mcp.available_permits(), 0);
+
+        tokio::time::timeout(Duration::from_secs(1), admission.cancel.cancelled())
+            .await
+            .unwrap();
+        assert_eq!(instance.available_permits(), 1);
+        assert_eq!(principal.available_permits(), 1);
+        assert_eq!(mcp.available_permits(), 1);
+    }
+}
+
 #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
 mod tests {
     use super::*;
@@ -816,18 +935,58 @@ mod tests {
             .write_reserved(reservation, admission, &b"x"[..], CancellationToken::new())
             .await
             .unwrap();
-        let held = blobs.open_blob(&id, 1, true).await.unwrap();
+        let held = blobs
+            .open_blob(&super::super::PrincipalId::for_test("owner"), &id, 1, true)
+            .await
+            .unwrap();
         assert!(matches!(
-            blobs.open_blob(&id, 1, false).await,
+            blobs
+                .open_blob(&super::super::PrincipalId::for_test("owner"), &id, 1, false)
+                .await,
             Err(FileStashStoreError::Busy)
         ));
         drop(held);
-        let held = blobs.open_blob(&id, 1, false).await.unwrap();
+        let held = blobs
+            .open_blob(&super::super::PrincipalId::for_test("owner"), &id, 1, false)
+            .await
+            .unwrap();
         assert!(matches!(
-            blobs.open_blob(&id, 1, true).await,
+            blobs
+                .open_blob(&super::super::PrincipalId::for_test("owner"), &id, 1, true)
+                .await,
             Err(FileStashStoreError::Busy)
         ));
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn one_principal_cannot_monopolize_instance_download_capacity() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut limits = preferences();
+        limits.max_concurrent_downloads = 8;
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), limits).await;
+        let blobs = runtime.blob_store().await.unwrap();
+        let (reservation, admission) = blobs
+            .reserve_for_owner("owner", "a".into(), "a".into(), 1)
+            .await
+            .unwrap();
+        let id = blobs
+            .write_reserved(reservation, admission, &b"x"[..], CancellationToken::new())
+            .await
+            .unwrap();
+        let owner = super::super::PrincipalId::for_test("owner");
+        let other = super::super::PrincipalId::for_test("other");
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(blobs.open_blob(&owner, &id, 1, false).await.unwrap());
+        }
+        assert!(matches!(
+            blobs.open_blob(&owner, &id, 1, false).await,
+            Err(FileStashStoreError::Busy)
+        ));
+        held.push(blobs.open_blob(&other, &id, 1, false).await.unwrap());
+        assert_eq!(held.len(), 5);
     }
 
     #[tokio::test]
@@ -840,7 +999,14 @@ mod tests {
         let blobs = runtime.blob_store().await.unwrap();
         let missing = ulid::Ulid::new().to_string();
         assert!(matches!(
-            blobs.open_blob(&missing, 2, true).await,
+            blobs
+                .open_blob(
+                    &super::super::PrincipalId::for_test("owner"),
+                    &missing,
+                    2,
+                    true
+                )
+                .await,
             Err(FileStashStoreError::QuotaExceeded)
         ));
     }
@@ -1065,7 +1231,12 @@ mod tests {
             .await
             .unwrap();
         let opened = blobs
-            .open_blob(&first_snapshot.blob_key, first_snapshot.size_bytes, false)
+            .open_blob(
+                &super::super::PrincipalId::for_test("owner"),
+                &first_snapshot.blob_key,
+                first_snapshot.size_bytes,
+                false,
+            )
             .await
             .unwrap();
         let reached_open = Arc::new(tokio::sync::Barrier::new(2));
@@ -1098,7 +1269,12 @@ mod tests {
             .await
             .unwrap();
         let mut already_open = blobs
-            .open_blob(&owner.blob_key, owner.size_bytes, false)
+            .open_blob(
+                &super::super::PrincipalId::for_test("owner"),
+                &owner.blob_key,
+                owner.size_bytes,
+                false,
+            )
             .await
             .unwrap();
         let blob_key = store.delete_file("owner".into(), file_id).await.unwrap();

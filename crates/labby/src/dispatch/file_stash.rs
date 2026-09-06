@@ -14,7 +14,7 @@ use crate::{
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde::Serialize;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 use unicode_casefold::UnicodeCaseFold;
@@ -34,18 +34,73 @@ pub(crate) fn observe_operation(
     grant_id: Option<&str>,
     byte_count: Option<u64>,
     destructive: bool,
+    elapsed_ms: u64,
+    kind: Option<&str>,
 ) {
-    tracing::info!(
+    // Callers may attach richer byte/grant detail after a wrapped operation;
+    // zero-duration detail calls are intentionally not separate terminal events.
+    if elapsed_ms == 0 {
+        return;
+    }
+    let event = || {
+        tracing::info!(
+            surface,
+            service = "stash",
+            action,
+            result,
+            object_id,
+            grant_id,
+            byte_count,
+            destructive,
+            elapsed_ms,
+            kind,
+            "file stash operation"
+        )
+    };
+    if result == "success" {
+        event()
+    } else {
+        tracing::warn!(
+            surface,
+            service = "stash",
+            action,
+            result,
+            object_id,
+            grant_id,
+            byte_count,
+            destructive,
+            elapsed_ms,
+            kind,
+            "file stash operation"
+        )
+    }
+}
+
+pub(crate) async fn observe_result<T>(
+    surface: &'static str,
+    action: &str,
+    object_id: Option<&str>,
+    grant_id: Option<&str>,
+    byte_count: Option<u64>,
+    destructive: bool,
+    future: impl Future<Output = Result<T, ToolError>>,
+) -> Result<T, ToolError> {
+    let started = std::time::Instant::now();
+    let result = future.await;
+    observe_operation(
         surface,
-        service = "stash",
         action,
-        result,
+        if result.is_ok() { "success" } else { "error" },
         object_id,
         grant_id,
         byte_count,
         destructive,
-        "file stash operation"
+        u64::try_from(started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1),
+        result.as_ref().err().map(ToolError::kind),
     );
+    result
 }
 
 pub const ACTIONS: &[ActionSpec] = &[
@@ -376,7 +431,7 @@ impl FileStashService {
         let cursor = cursor.map(parse_cursor).transpose()?;
         let (store, _) = self.stores().await?;
         let mut rows = store
-            .list_files(principal.as_str().to_owned(), query, cursor, limit + 1)
+            .list_files(principal.as_str().to_owned(), cursor, limit + 1)
             .await
             .map_err(map_error)?;
         let next_cursor = if rows.len() > limit {
@@ -385,6 +440,9 @@ impl FileStashService {
         } else {
             None
         };
+        if let Some(query) = query {
+            rows.retain(|file| search_key(&file.display_name).contains(&query));
+        }
         Ok(FilePage {
             files: rows.into_iter().map(Into::into).collect(),
             next_cursor,
@@ -579,7 +637,7 @@ impl FileStashService {
             .await
             .map_err(map_error)?;
         let opened = blobs
-            .open_blob(&file.blob_key, file.size_bytes, mcp)
+            .open_blob(principal, &file.blob_key, file.size_bytes, mcp)
             .await
             .map_err(map_error)?;
         // Authorization after the regular-file handle is open is the
@@ -635,82 +693,83 @@ pub(crate) async fn dispatch_for_principal(
             })
             .transpose()
     };
-    let result = async {
-        let value = match action {
-            "stash.list" => serde_json::to_value(
-                service
-                    .list(principal, optional_string("cursor")?, optional_limit()?)
-                    .await?,
-            ),
-            "stash.search" => serde_json::to_value(
-                service
-                    .search(
-                        principal,
-                        string("query")?,
-                        optional_string("cursor")?,
-                        optional_limit()?,
-                    )
-                    .await?,
-            ),
-            "stash.stats" => serde_json::to_value(service.stats(principal).await?),
-            "stash.metadata" => {
-                serde_json::to_value(service.metadata(principal, string("file_id")?).await?)
-            }
-            "stash.rename" => serde_json::to_value(
-                service
-                    .rename(principal, string("file_id")?, string("display_name")?)
-                    .await?,
-            ),
-            "stash.delete" => {
-                service.delete(principal, string("file_id")?).await?;
-                Ok(serde_json::json!({"deleted": true}))
-            }
-            "stash.grants.create" => serde_json::to_value(
-                service
-                    .create_grant(
-                        principal,
-                        string("file_id")?,
-                        &PrincipalId::from_propagated(string("grantee_principal_id")?.to_owned())
-                            .ok_or_else(|| invalid("grantee_principal_id"))?,
-                    )
-                    .await?,
-            ),
-            "stash.grants.list" => serde_json::to_value(
-                service
-                    .grants(
-                        principal,
-                        string("file_id")?,
-                        optional_string("cursor")?,
-                        optional_limit()?,
-                    )
-                    .await?,
-            ),
-            "stash.grants.revoke" => {
-                service
-                    .revoke_grant(principal, string("file_id")?, string("grant_id")?)
-                    .await?;
-                Ok(serde_json::json!({"revoked": true}))
-            }
-            _ => {
-                return Err(ToolError::UnknownAction {
-                    message: format!("unknown File Stash action `{action}`"),
-                    valid: ACTIONS.iter().map(|item| item.name.to_owned()).collect(),
-                    hint: None,
-                });
-            }
-        };
-        value.map_err(|_| service_error("internal_error", "File Stash response failed"))
-    }
-    .await;
-    observe_operation(
+    let result = observe_result(
         surface,
         action,
-        if result.is_ok() { "success" } else { "error" },
         object_id.as_deref(),
         grant_id.as_deref(),
         None,
         action == "stash.delete",
-    );
+        async {
+            let value = match action {
+                "stash.list" => serde_json::to_value(
+                    service
+                        .list(principal, optional_string("cursor")?, optional_limit()?)
+                        .await?,
+                ),
+                "stash.search" => serde_json::to_value(
+                    service
+                        .search(
+                            principal,
+                            string("query")?,
+                            optional_string("cursor")?,
+                            optional_limit()?,
+                        )
+                        .await?,
+                ),
+                "stash.stats" => serde_json::to_value(service.stats(principal).await?),
+                "stash.metadata" => {
+                    serde_json::to_value(service.metadata(principal, string("file_id")?).await?)
+                }
+                "stash.rename" => serde_json::to_value(
+                    service
+                        .rename(principal, string("file_id")?, string("display_name")?)
+                        .await?,
+                ),
+                "stash.delete" => {
+                    service.delete(principal, string("file_id")?).await?;
+                    Ok(serde_json::json!({"deleted": true}))
+                }
+                "stash.grants.create" => serde_json::to_value(
+                    service
+                        .create_grant(
+                            principal,
+                            string("file_id")?,
+                            &PrincipalId::from_propagated(
+                                string("grantee_principal_id")?.to_owned(),
+                            )
+                            .ok_or_else(|| invalid("grantee_principal_id"))?,
+                        )
+                        .await?,
+                ),
+                "stash.grants.list" => serde_json::to_value(
+                    service
+                        .grants(
+                            principal,
+                            string("file_id")?,
+                            optional_string("cursor")?,
+                            optional_limit()?,
+                        )
+                        .await?,
+                ),
+                "stash.grants.revoke" => {
+                    service
+                        .revoke_grant(principal, string("file_id")?, string("grant_id")?)
+                        .await?;
+                    Ok(serde_json::json!({"revoked": true}))
+                }
+                _ => {
+                    return Err(ToolError::UnknownAction {
+                        message: format!("unknown File Stash action `{action}`"),
+                        valid: ACTIONS.iter().map(|item| item.name.to_owned()).collect(),
+                        hint: None,
+                    });
+                }
+            };
+            value.map_err(|_| service_error("internal_error", "File Stash response failed"))
+        },
+    )
+    .await;
     result
 }
 
@@ -921,6 +980,8 @@ mod tests {
         let secret_name = "payroll-secret-name.txt";
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         crate::test_support::rebuild_tracing_interest_cache();
+        let request = tracing::info_span!("http.request", request_id = "request-correlation-123");
+        let _request = request.enter();
         let result = dispatch_for_principal(
             &service,
             &principal,
@@ -930,11 +991,27 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+        let api_result = observe_result(
+            "api",
+            "stash.metadata",
+            Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            None,
+            None,
+            false,
+            async { Err::<(), _>(invalid("file_id")) },
+        )
+        .await;
+        assert!(api_result.is_err());
         let output = crate::test_support::captured_logs(&logs);
         assert!(output.contains("\"surface\":\"mcp\""));
+        assert!(output.contains("\"surface\":\"api\""));
         assert!(output.contains("\"service\":\"stash\""));
         assert!(output.contains("\"action\":\"stash.rename\""));
         assert!(output.contains("\"result\":\"error\""));
+        assert!(output.contains("\"elapsed_ms\":"));
+        assert!(output.contains("\"kind\":\"service_unavailable\""));
+        assert!(output.contains("\"kind\":\"invalid_param\""));
+        assert!(output.contains("request-correlation-123"));
         assert!(output.contains("\"object_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\""));
         assert!(output.contains("\"destructive\":false"));
         assert!(!output.contains(secret_name));

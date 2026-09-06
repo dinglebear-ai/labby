@@ -301,13 +301,10 @@ impl FileStashStore {
     pub(crate) async fn list_files(
         &self,
         principal: String,
-        query: Option<String>,
         after: Option<StashCursor>,
         limit: usize,
     ) -> Result<Vec<StashFile>> {
         self.with_connection(move |connection| {
-            let query = query.unwrap_or_default();
-            let pattern = format!("%{}%", escape_like(&query));
             let (after_created, after_id) = after
                 .map(|cursor| (cursor.created_at, cursor.id))
                 .unwrap_or((i64::MAX, String::new()));
@@ -316,12 +313,11 @@ impl FileStashStore {
                  CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END \
                  FROM files f WHERE f.ready=1 \
                  AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active')) \
-                 AND (?2='' OR f.collision_key LIKE ?3 ESCAPE '\\') \
-                 AND (f.created_at<?4 OR (f.created_at=?4 AND (?5='' OR f.file_id<?5))) \
-                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?6"
+                 AND (f.created_at<?2 OR (f.created_at=?2 AND (?3='' OR f.file_id<?3))) \
+                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?4"
             ).map_err(FileStashStoreError::sqlite)?;
             let rows = statement.query_map(
-                params![principal, query, pattern, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                params![principal, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
                 |row| Ok(StashFile {
                     file_id: row.get(0)?, display_name: row.get(1)?,
                     size_bytes: row.get::<_, i64>(2)? as u64, blob_key: row.get(3)?,
@@ -506,13 +502,6 @@ impl FileStashStore {
             Ok(())
         }).await
     }
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
@@ -882,22 +871,9 @@ mod tests {
             .create_grant("other".into(), ids[2].clone(), "owner".into())
             .await
             .unwrap();
-        let available = store
-            .list_files("owner".into(), None, None, 10)
-            .await
-            .unwrap();
+        let available = store.list_files("owner".into(), None, 10).await.unwrap();
         assert_eq!(available.len(), 3);
         assert_eq!(available.iter().filter(|file| file.owned).count(), 2);
-        let matches = store
-            .list_files("owner".into(), Some("ALPHA".into()), None, 10)
-            .await
-            .unwrap();
-        assert_eq!(matches.len(), 2);
-        assert!(
-            matches
-                .iter()
-                .all(|file| file.display_name.to_lowercase().contains("alpha"))
-        );
         assert!(matches!(
             store.delete_file("other".into(), ids[0].clone()).await,
             Err(FileStashStoreError::NotFound)
@@ -1036,7 +1012,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_files("owner".into(), None, None, 37)
+                .list_files("owner".into(), None, 37)
                 .await
                 .unwrap()
                 .len(),
@@ -1044,7 +1020,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .list_files("owner".into(), Some("needle".into()), None, 13)
+                .list_files("owner".into(), None, 13)
                 .await
                 .unwrap()
                 .len(),

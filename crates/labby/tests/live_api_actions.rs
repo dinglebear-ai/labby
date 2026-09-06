@@ -192,7 +192,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                     .await;
                     if intent.service == "bundles"
                         || (intent.service == "stash"
-                            && !cfg!(any(target_os = "linux", target_os = "android")))
+                            && !cfg!(target_os = "linux"))
                     {
                         assert!(
                             matches!(
@@ -388,7 +388,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         for provider_backed in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             success_capable_services.remove(provider_backed);
         }
-        if !cfg!(any(target_os = "linux", target_os = "android")) {
+        if !cfg!(target_os = "linux") {
             success_capable_services.remove("stash");
         }
         assert_eq!(

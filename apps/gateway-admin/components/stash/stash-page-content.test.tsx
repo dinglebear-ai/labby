@@ -51,3 +51,61 @@ test('Stash accessibility gate covers names, status, upload equivalence, and red
   assert.match(css, /transition-duration:\s*1ms !important/)
   await view.unmount()
 })
+
+test('Stash preserves mixed upload outcomes and retries only the failed file', async () => {
+  document.body.replaceChildren()
+  let failedOnce = false
+  const uploaded: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (url.pathname.endsWith('/uploads')) {
+      const name = decodeURIComponent(new Headers(init?.headers).get('x-labby-stash-filename') || '')
+      uploaded.push(name)
+      if (name === 'retry.txt' && !failedOnce) {
+        failedOnce = true
+        return Response.json({ kind: 'conflict', message: 'try again' }, { status: 409 })
+      }
+      return Response.json({ file_id: name, uri: `stash://me/files/${name}` }, { status: 201 })
+    }
+    return Response.json({ files: [], next_cursor: null })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))
+  assert.ok(dropTarget)
+  const event = new window.Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'dataTransfer', { value: { files: [new File(['ok'], 'ok.txt'), new File(['retry'], 'retry.txt')] } })
+  await act(async () => { dropTarget.dispatchEvent(event); await new Promise(resolve => setTimeout(resolve, 50)) })
+  assert.match(view.container.textContent || '', /ok\.txt — complete/)
+  assert.match(view.container.textContent || '', /retry\.txt — failed/)
+  const retry = [...view.container.querySelectorAll('button')].find(button => /retry upload/i.test(button.textContent || ''))
+  assert.ok(retry)
+  await act(async () => { retry.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await new Promise(resolve => setTimeout(resolve, 50)) })
+  assert.deepEqual(uploaded, ['ok.txt', 'retry.txt', 'retry.txt'])
+  assert.match(view.container.textContent || '', /retry\.txt — complete/)
+  await view.unmount()
+})
+
+test('Stash cancellation is scoped to one queued file and remains retryable', async () => {
+  document.body.replaceChildren()
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (!url.pathname.endsWith('/uploads')) return Response.json({ files: [], next_cursor: null })
+    return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('canceled', 'AbortError')), { once: true }))
+  }
+  const view = await renderClient(<StashPageContent />)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))
+  assert.ok(dropTarget)
+  const event = new window.Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'dataTransfer', { value: { files: [new File(['wait'], 'cancel.txt')] } })
+  await act(async () => { dropTarget.dispatchEvent(event); await new Promise(resolve => setTimeout(resolve, 10)) })
+  const cancel = [...view.container.querySelectorAll('button')].find(button => /^Cancel$/.test(button.textContent || ''))
+  assert.ok(cancel)
+  await act(async () => { cancel.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await new Promise(resolve => setTimeout(resolve, 10)) })
+  assert.match(view.container.textContent || '', /cancel\.txt — canceled/)
+  assert.ok([...view.container.querySelectorAll('button')].some(button => /retry upload/i.test(button.textContent || '')))
+  await view.unmount()
+})

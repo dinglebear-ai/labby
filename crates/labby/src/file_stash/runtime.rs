@@ -536,11 +536,22 @@ fn verify_database_identity(_: &File, _: &Path) -> Result<(), FileStashBlockedRe
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn anchored_child_path(
-    _: &File,
-    root_path: &Path,
+    root: &File,
+    _: &Path,
     child: &str,
 ) -> Result<PathBuf, FileStashBlockedReason> {
-    Ok(root_path.join(child))
+    use std::os::fd::AsRawFd as _;
+    if child.is_empty() || child.contains('/') {
+        return Err(FileStashBlockedReason::UnsafeRoot);
+    }
+    // SQLite accepts only pathnames. On Linux, address the child through the
+    // already-verified directory descriptor so renaming or replacing the
+    // configured pathname cannot redirect database or WAL/SHM writes.
+    Ok(PathBuf::from(format!(
+        "/proc/self/fd/{}/{}",
+        root.as_raw_fd(),
+        child
+    )))
 }
 #[cfg(target_os = "macos")]
 fn anchored_child_path(
@@ -653,6 +664,37 @@ mod tests {
             FileStashStatus::Blocked(FileStashBlockedReason::UnsafeRoot)
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"must-not-change");
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn database_open_stays_bound_to_verified_root_after_path_replacement() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let stash_root = root(&temp, "stash");
+        let verified = prepare_root(&stash_root).unwrap();
+        prepare_database_files(&verified.handle).unwrap();
+        let marker = read_or_create_marker(&verified.handle).unwrap();
+
+        let displaced = temp.path().join("verified-root");
+        std::fs::rename(&stash_root, &displaced).unwrap();
+        std::fs::create_dir(&stash_root).unwrap();
+        std::fs::set_permissions(&stash_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = stash_root.join("metadata.sqlite3");
+        std::fs::write(&victim, b"must-not-change").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let database =
+            anchored_child_path(&verified.handle, &verified.path, "metadata.sqlite3").unwrap();
+        let store = FileStashStore::open(database, marker).await.unwrap();
+        store.checkpoint().await.unwrap();
+        store.close();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must-not-change");
+        assert!(!stash_root.join("metadata.sqlite3-wal").exists());
+        assert!(!stash_root.join("metadata.sqlite3-shm").exists());
+        assert!(displaced.join("metadata.sqlite3").metadata().unwrap().len() > 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

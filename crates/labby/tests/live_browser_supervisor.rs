@@ -93,7 +93,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .create_session()
         .await
         .expect("real browser session");
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -161,7 +161,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
             "scan_secrets_path": scan_secrets,
             "restart_request_path": restart_request,
             "restart_complete_path": restart_complete,
-            "stash_supported": cfg!(any(target_os = "linux", target_os = "android")),
+            "stash_supported": cfg!(target_os = "linux"),
             "recipient_principal_id": "browser-stash-recipient",
             "nightly": std::env::var("LABBY_LIVE_BROWSER_NIGHTLY").as_deref() == Ok("true")
         }),

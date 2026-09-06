@@ -183,8 +183,12 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.focus()
   assert.equal(await dropTarget.evaluate(element => element === document.activeElement), true)
   const fileChooser = page.waitForEvent('filechooser')
+  const uploadRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/v1/stash/uploads')
   await dropTarget.press('Enter')
   await (await fileChooser).setFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(contents) })
+  const observedUpload = await uploadRequest
+  assert.equal(observedUpload.headers()['content-length'], String(Buffer.byteLength(contents)))
+  assert.equal(observedUpload.postDataBuffer()?.equals(Buffer.from(contents)), true)
   await page.getByRole('status').filter({ hasText: `${name} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const row = page.getByRole('article').filter({ hasText: name })
   await row.waitFor({ state: 'visible', timeout: 10_000 })
@@ -192,6 +196,20 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.match(uri, /^stash:\/\/me\/files\/[A-Z0-9]+$/)
   await assert.doesNotReject(page.getByText('1', { exact: true }).first().waitFor({ state: 'visible' }))
   await assert.doesNotReject(page.getByText(`${Buffer.byteLength(contents)} B`, { exact: true }).first().waitFor({ state: 'visible' }))
+
+  const emptyName = `browser-stash-empty-${descriptor.run_id}.txt`
+  const emptyRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/v1/stash/uploads')
+  const emptyChooser = page.waitForEvent('filechooser')
+  await dropTarget.press('Enter')
+  await (await emptyChooser).setFiles({ name: emptyName, mimeType: 'text/plain', buffer: Buffer.alloc(0) })
+  const observedEmptyUpload = await emptyRequest
+  assert.equal(observedEmptyUpload.headers()['content-length'], '0')
+  assert.equal(observedEmptyUpload.postDataBuffer()?.length ?? 0, 0)
+  await page.getByRole('status').filter({ hasText: `${emptyName} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
+  const emptyRow = page.getByRole('article').filter({ hasText: emptyName })
+  await emptyRow.getByRole('button', { name: `Delete ${emptyName}` }).click()
+  await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
+  await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
   const download = page.waitForEvent('download')
   await row.getByRole('link', { name: `Download ${name}` }).click()
