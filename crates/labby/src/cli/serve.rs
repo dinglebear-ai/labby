@@ -161,8 +161,11 @@ fn bootstrap_skill_library(
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_config(&config.artifacts)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+            &config.artifacts,
+            &config.depot,
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?,
     );
     let blocking = BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
         .map_err(|_| anyhow::anyhow!("invalid Skill Library blocking executor configuration"))?;

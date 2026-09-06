@@ -53,7 +53,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    const fn provider_name(self) -> &'static str {
+    pub const fn provider_name(self) -> &'static str {
         match self {
             Self::ArtifactsList => "depot.artifacts.list",
             Self::ArtifactsGet => "depot.artifacts.get",
@@ -222,6 +222,17 @@ impl ArtifactControlClient {
     /// Returns the shared API error taxonomy for transport, authorization,
     /// upstream status, or malformed envelopes.
     pub async fn execute(&self, operation: Operation, params: &Value) -> Result<Value, ApiError> {
+        self.execute_with_headers(operation, params, reqwest::header::HeaderMap::new())
+            .await
+    }
+
+    /// Execute one curated operation with exact request-local delegation headers.
+    pub async fn execute_with_headers(
+        &self,
+        operation: Operation,
+        params: &Value,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Value, ApiError> {
         let catalog: OperationCatalog = self
             .http
             .get_json_bounded("/api/operations", MAX_CONTROL_PLANE_RESPONSE_BYTES)
@@ -255,7 +266,12 @@ impl ArtifactControlClient {
         );
         let response: OperationEnvelope = self
             .http
-            .post_json_bounded(&path, params, MAX_CONTROL_PLANE_RESPONSE_BYTES)
+            .post_json_bounded_with_headers(
+                &path,
+                params,
+                headers,
+                MAX_CONTROL_PLANE_RESPONSE_BYTES,
+            )
             .await?;
         Ok(response.result)
     }
@@ -268,13 +284,33 @@ impl ArtifactControlClient {
         content_length: Option<u64>,
         content_type: &str,
     ) -> Result<Value, ApiError> {
+        self.upload_with_headers(
+            upload_id,
+            body,
+            content_length,
+            content_type,
+            reqwest::header::HeaderMap::new(),
+        )
+        .await
+    }
+
+    /// Upload opaque bytes with exact request-local delegation headers.
+    pub async fn upload_with_headers(
+        &self,
+        upload_id: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Value, ApiError> {
         let path = format!("/uploads/{}", HttpClient::encode_path_segment(upload_id));
         self.http
-            .put_body_bounded(
+            .put_body_bounded_with_headers(
                 &path,
                 body,
                 content_length,
                 content_type,
+                headers,
                 MAX_CONTROL_PLANE_RESPONSE_BYTES,
             )
             .await

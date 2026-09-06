@@ -8,6 +8,10 @@ use std::time::Duration;
 use labby_apis::artifact_control::{ArtifactControlClient, Operation};
 use labby_apis::core::{ApiError, Auth, HttpClient};
 use labby_auth::VerifiedIdentity;
+use labby_auth::depot_delegation::{
+    ASSERTION_AUDIENCE, ASSERTION_ISSUER, DelegatedAuthorityEpochs, DepotDelegationClaims,
+    DepotDelegationSigner,
+};
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::Value;
 
@@ -88,35 +92,78 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
 #[derive(Debug, Clone)]
 pub(crate) struct AuthorityContext {
     pub actor_id: String,
+    pub organization_id: String,
+    pub team_id: Option<String>,
     pub project_id: String,
+    pub platform_administrator: bool,
+    pub epochs: DelegatedAuthorityEpochs,
 }
 
 pub(crate) async fn authorize_authority_context(
     runtime: &crate::access::AccessRuntime,
     identity: VerifiedIdentity,
     project_id: &str,
+    selected_team_id: Option<&str>,
     permission: crate::access::Permission,
 ) -> Result<AuthorityContext, ToolError> {
     let store = runtime.store().await.map_err(|_| ToolError::Sdk {
         sdk_kind: "source_unavailable".to_owned(),
         message: "Artifact authorization is unavailable".to_owned(),
     })?;
-    let snapshot = store
-        .authorize_skill_library(identity, project_id.to_owned(), permission)
+    store
+        .authorize_skill_library(identity.clone(), project_id.to_owned(), permission)
         .await
         .map_err(|_| ToolError::Forbidden {
             message: "Remote Artifact operation is not authorized for this project".to_owned(),
             required_scopes: vec!["lab:read".to_owned()],
         })?;
+    let snapshot = store
+        .depot_delegation_authority(
+            identity,
+            project_id.to_owned(),
+            selected_team_id.map(str::to_owned),
+        )
+        .await
+        .map_err(|_| ToolError::Forbidden {
+            message: "Remote Artifact operation requires one explicit authorized team".to_owned(),
+            required_scopes: vec!["lab:read".to_owned()],
+        })?;
     Ok(AuthorityContext {
         actor_id: snapshot.principal_id,
+        organization_id: snapshot.organization_id,
+        team_id: snapshot.team_id,
         project_id: snapshot.project_id,
+        platform_administrator: snapshot.platform_administrator,
+        epochs: DelegatedAuthorityEpochs {
+            authority_schema: snapshot.authority_schema,
+            organization_policy: snapshot.organization_policy,
+            team_membership: snapshot.team_membership,
+            team_policy: snapshot.team_policy,
+            project_membership: Some(snapshot.project_membership),
+            project_policy: Some(snapshot.project_policy),
+            global_revision: snapshot.global_revision,
+        },
     })
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ArtifactControlPlane {
     clients: BTreeMap<String, AuthorityConnection>,
+    delegation: Option<Arc<DelegationConfiguration>>,
+}
+
+struct DelegationConfiguration {
+    signer: DepotDelegationSigner,
+    deployment_id: String,
+}
+
+impl std::fmt::Debug for DelegationConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelegationConfiguration")
+            .field("deployment_id", &self.deployment_id)
+            .field("signer", &self.signer)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +175,15 @@ struct AuthorityConnection {
 }
 
 impl ArtifactControlPlane {
+    #[cfg(test)]
     pub(crate) fn from_config(config: &ArtifactPreferences) -> Result<Self, ToolError> {
+        Self::from_configs(config, &crate::config::depot::DepotPreferences::default())
+    }
+
+    pub(crate) fn from_configs(
+        config: &ArtifactPreferences,
+        depot: &crate::config::depot::DepotPreferences,
+    ) -> Result<Self, ToolError> {
         if config.sources.iter().any(|source| {
             source.kind == ArtifactSourceKind::Repository && source.control_plane_url.is_some()
         }) {
@@ -179,7 +234,11 @@ impl ArtifactControlPlane {
                 },
             );
         }
-        Ok(Self { clients })
+        let delegation = delegation_configuration(depot)?;
+        Ok(Self {
+            clients,
+            delegation,
+        })
     }
 
     pub(crate) async fn execute(
@@ -201,8 +260,9 @@ impl ArtifactControlPlane {
                 message: "Artifact authority connection is unavailable".to_owned(),
             })?;
         let client = connection.client(context)?;
+        let headers = self.delegation_headers(operation, params, context)?;
         let result = client
-            .execute(operation, params)
+            .execute_with_headers(operation, params, headers)
             .await
             .map_err(map_api_error)?;
         Ok(redact_provider_metadata(result))
@@ -229,8 +289,9 @@ impl ArtifactControlPlane {
                 message: "Artifact authority connection is unavailable".to_owned(),
             })?;
         let client = connection.client(Some(context))?;
+        let headers = self.upload_delegation_headers(upload_id, context)?;
         let result = client
-            .upload(upload_id, body, content_length, content_type)
+            .upload_with_headers(upload_id, body, content_length, content_type, headers)
             .await
             .map_err(map_api_error)?;
         Ok(redact_provider_metadata(result))
@@ -264,6 +325,235 @@ impl ArtifactControlPlane {
                 .then(|| self.clients.keys().next().cloned())
                 .flatten(),
         })
+    }
+
+    fn delegation_headers(
+        &self,
+        operation: Operation,
+        params: &Value,
+        context: Option<&AuthorityContext>,
+    ) -> Result<reqwest::header::HeaderMap, ToolError> {
+        let Some(delegation) = self.delegation.as_ref() else {
+            return Ok(reqwest::header::HeaderMap::new());
+        };
+        let context = context.ok_or_else(delegation_unavailable)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| delegation_unavailable())?
+            .as_secs();
+        let intent_id = params
+            .get("idempotencyKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let resource = format!("/api/operations/{}", operation.provider_name());
+        let claims = DepotDelegationClaims {
+            iss: ASSERTION_ISSUER.into(),
+            sub: context.actor_id.clone(),
+            aud: ASSERTION_AUDIENCE.into(),
+            iat: now,
+            nbf: now,
+            exp: now + 30,
+            jti: uuid::Uuid::new_v4().simple().to_string(),
+            deployment_id: delegation.deployment_id.clone(),
+            account_id: context.organization_id.clone(),
+            organization_id: context.organization_id.clone(),
+            team_id: context.team_id.clone(),
+            project_id: Some(context.project_id.clone()),
+            principal_id: context.actor_id.clone(),
+            method: "POST".into(),
+            resource,
+            operation: operation.provider_name().into(),
+            intent_id: intent_id.clone(),
+            scopes: vec!["skills:read".into(), "skills:write".into()],
+            capabilities: operation_capabilities(operation, context.platform_administrator),
+            epochs: context.epochs.clone(),
+            delegation_chain: vec!["labby".into()],
+        };
+        let assertion = delegation
+            .signer
+            .issue(claims)
+            .map_err(|_| delegation_unavailable())?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in [
+            ("x-labby-delegation", assertion.as_str()),
+            ("x-labby-organization-id", context.organization_id.as_str()),
+            ("x-labby-project-id", context.project_id.as_str()),
+            ("idempotency-key", intent_id.as_str()),
+        ] {
+            headers.insert(name, value.parse().map_err(|_| delegation_unavailable())?);
+        }
+        if let Some(team_id) = &context.team_id {
+            headers.insert(
+                "x-labby-team-id",
+                team_id.parse().map_err(|_| delegation_unavailable())?,
+            );
+        }
+        Ok(headers)
+    }
+
+    fn upload_delegation_headers(
+        &self,
+        upload_id: &str,
+        context: &AuthorityContext,
+    ) -> Result<reqwest::header::HeaderMap, ToolError> {
+        let Some(delegation) = self.delegation.as_ref() else {
+            return Ok(reqwest::header::HeaderMap::new());
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| delegation_unavailable())?
+            .as_secs();
+        let intent_id = uuid::Uuid::new_v4().simple().to_string();
+        let resource = format!("/uploads/{}", HttpClient::encode_path_segment(upload_id));
+        let claims = DepotDelegationClaims {
+            iss: ASSERTION_ISSUER.into(),
+            sub: context.actor_id.clone(),
+            aud: ASSERTION_AUDIENCE.into(),
+            iat: now,
+            nbf: now,
+            exp: now + 30,
+            jti: uuid::Uuid::new_v4().simple().to_string(),
+            deployment_id: delegation.deployment_id.clone(),
+            account_id: context.organization_id.clone(),
+            organization_id: context.organization_id.clone(),
+            team_id: context.team_id.clone(),
+            project_id: Some(context.project_id.clone()),
+            principal_id: context.actor_id.clone(),
+            method: "PUT".into(),
+            resource,
+            operation: "depot.uploads.put".into(),
+            intent_id: intent_id.clone(),
+            scopes: vec!["skills:write".into()],
+            capabilities: operation_capabilities(
+                Operation::UploadsCreate,
+                context.platform_administrator,
+            ),
+            epochs: context.epochs.clone(),
+            delegation_chain: vec!["labby".into()],
+        };
+        let assertion = delegation
+            .signer
+            .issue(claims)
+            .map_err(|_| delegation_unavailable())?;
+        delegation_header_map(context, &assertion, &intent_id)
+    }
+}
+
+fn delegation_header_map(
+    context: &AuthorityContext,
+    assertion: &str,
+    intent_id: &str,
+) -> Result<reqwest::header::HeaderMap, ToolError> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in [
+        ("x-labby-delegation", assertion),
+        ("x-labby-organization-id", context.organization_id.as_str()),
+        ("x-labby-project-id", context.project_id.as_str()),
+        ("idempotency-key", intent_id),
+    ] {
+        headers.insert(name, value.parse().map_err(|_| delegation_unavailable())?);
+    }
+    if let Some(team_id) = &context.team_id {
+        headers.insert(
+            "x-labby-team-id",
+            team_id.parse().map_err(|_| delegation_unavailable())?,
+        );
+    }
+    Ok(headers)
+}
+
+fn operation_capabilities(operation: Operation, platform: bool) -> Vec<String> {
+    if platform {
+        return vec!["platform.manage".into()];
+    }
+    let capability = match operation {
+        Operation::ArtifactsList
+        | Operation::ArtifactsSearch
+        | Operation::CandidatesList
+        | Operation::SearchSkillsSh
+        | Operation::SearchArd
+        | Operation::SearchMarketplace
+        | Operation::McpRegistryList
+        | Operation::AcpRegistryList
+        | Operation::AuthorityStatus
+        | Operation::SourcesList
+        | Operation::JobsList
+        | Operation::JobsGet
+        | Operation::UploadsGet
+        | Operation::BundlesList => "scope.read",
+        Operation::ArtifactsGet | Operation::BundlesGet => "scope.use",
+        Operation::CandidatesIntake
+        | Operation::ArtifactsFork
+        | Operation::JobsStart
+        | Operation::UploadsCreate
+        | Operation::BundlesCreate
+        | Operation::BundlesAddArtifact => "scope.create",
+        Operation::JobsCancel
+        | Operation::JobsRetry
+        | Operation::BundlesPublish
+        | Operation::BundlesRemoveArtifact => "scope.operate",
+        _ => "scope.manage",
+    };
+    vec![capability.into()]
+}
+
+fn delegation_configuration(
+    depot: &crate::config::depot::DepotPreferences,
+) -> Result<Option<Arc<DelegationConfiguration>>, ToolError> {
+    use base64::Engine as _;
+    if depot.control_mode != crate::config::depot::DepotControlMode::LabbyManaged {
+        return Ok(None);
+    }
+    let configured = [
+        depot.authority_installation_id.as_ref(),
+        depot.authority_key_id.as_ref(),
+        depot.authority_signing_key_env.as_ref(),
+    ];
+    if configured.iter().all(|value| value.is_none()) {
+        return Err(delegation_unavailable());
+    }
+    let [deployment_id, key_id, key_env] = configured;
+    let Some(deployment_id) = deployment_id else {
+        return Err(delegation_unavailable());
+    };
+    let Some(key_id) = key_id else {
+        return Err(delegation_unavailable());
+    };
+    let Some(key_env) = key_env else {
+        return Err(delegation_unavailable());
+    };
+    let encoded = std::env::var(key_env).map_err(|_| delegation_unavailable())?;
+    let seed = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded.trim())
+        .map_err(|_| delegation_unavailable())?;
+    let seed: [u8; 32] = seed.try_into().map_err(|_| delegation_unavailable())?;
+    delegation_configuration_from_seed(deployment_id, key_id, seed).map(Some)
+}
+
+fn delegation_configuration_from_seed(
+    deployment_id: &str,
+    key_id: &str,
+    seed: [u8; 32],
+) -> Result<Arc<DelegationConfiguration>, ToolError> {
+    const PKCS8_PREFIX: &[u8] = &[
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+        0x20,
+    ];
+    let mut der = PKCS8_PREFIX.to_vec();
+    der.extend_from_slice(&seed);
+    let signer = DepotDelegationSigner::new(key_id.to_owned(), [(key_id.to_owned(), der)])
+        .map_err(|_| delegation_unavailable())?;
+    Ok(Arc::new(DelegationConfiguration {
+        signer,
+        deployment_id: deployment_id.to_owned(),
+    }))
+}
+
+fn delegation_unavailable() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "source_unavailable".to_owned(),
+        message: "Managed Depot delegation authority is unavailable".to_owned(),
     }
 }
 
@@ -399,9 +689,10 @@ fn redact_provider_metadata(value: Value) -> Value {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
+    use base64::Engine as _;
     use serde_json::json;
 
-    use super::{ArtifactControlPlane, redact_provider_metadata};
+    use super::{ArtifactControlPlane, AuthorityContext, Operation, redact_provider_metadata};
     use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
     #[test]
@@ -529,5 +820,69 @@ mod tests {
         let encoded = value.to_string();
         assert!(!encoded.contains("depot.example"));
         assert!(!encoded.contains("PRIVATE_REMOTE_TOKEN"));
+    }
+
+    #[test]
+    fn managed_delegation_is_fresh_and_exactly_request_bound() {
+        let controls = ArtifactControlPlane {
+            clients: Default::default(),
+            delegation: Some(
+                super::delegation_configuration_from_seed("deployment-1", "current", [7_u8; 32])
+                    .unwrap(),
+            ),
+        };
+        let context = AuthorityContext {
+            actor_id: "principal-1".into(),
+            organization_id: "organization-1".into(),
+            team_id: Some("team-1".into()),
+            project_id: "project-1".into(),
+            platform_administrator: false,
+            epochs: labby_auth::depot_delegation::DelegatedAuthorityEpochs {
+                authority_schema: 7,
+                organization_policy: 8,
+                team_membership: Some(9),
+                team_policy: Some(10),
+                project_membership: Some(11),
+                project_policy: Some(12),
+                global_revision: 13,
+            },
+        };
+        let headers = controls
+            .delegation_headers(
+                Operation::JobsStart,
+                &json!({"idempotencyKey":"intent-1"}),
+                Some(&context),
+            )
+            .unwrap();
+        assert_eq!(headers["idempotency-key"], "intent-1");
+        assert_eq!(headers["x-labby-team-id"], "team-1");
+        assert_eq!(headers["x-labby-organization-id"], "organization-1");
+        assert_eq!(headers["x-labby-project-id"], "project-1");
+        let token = headers["x-labby-delegation"].to_str().unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["method"], "POST");
+        assert_eq!(claims["resource"], "/api/operations/depot.ingest.start");
+        assert_eq!(claims["operation"], "depot.ingest.start");
+        assert_eq!(claims["intent_id"], "intent-1");
+        assert_eq!(claims["capabilities"], json!(["scope.create"]));
+        assert!(claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap() <= 60);
+    }
+
+    #[test]
+    fn managed_delegation_configuration_fails_closed_when_incomplete() {
+        let depot = crate::config::depot::DepotPreferences {
+            control_mode: crate::config::depot::DepotControlMode::LabbyManaged,
+            authority_installation_id: Some("deployment-1".into()),
+            ..Default::default()
+        };
+        assert!(
+            ArtifactControlPlane::from_configs(&ArtifactPreferences::default(), &depot).is_err()
+        );
     }
 }

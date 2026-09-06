@@ -145,7 +145,7 @@ impl LabMcpServer {
             auth.scopes.clone(),
             transport,
         )
-        .with_selected_team_id(selected_team_id);
+        .with_selected_team_id(selected_team_id.clone());
         let request_id =
             optional_header_str(&parts.headers, "x-request-id")?.unwrap_or("mcp-skills-read");
         let correlation =
@@ -224,7 +224,7 @@ impl LabMcpServer {
             boundary.scopes.clone(),
             transport,
         )
-        .with_selected_team_id(selected_team_id);
+        .with_selected_team_id(selected_team_id.clone());
         if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
             .iter()
             .any(|candidate| candidate.name == action)
@@ -241,6 +241,7 @@ impl LabMcpServer {
                 &self.access_runtime,
                 boundary.identity,
                 project_id,
+                selected_team_id.as_deref(),
                 permission,
             )
             .await?;

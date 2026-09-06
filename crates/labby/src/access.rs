@@ -82,7 +82,8 @@ pub(crate) use authority::{
 };
 #[allow(unused_imports)]
 pub(crate) use authorization::{
-    AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
+    AuthorizeProjectInput, DepotDelegationAuthoritySnapshot, LibraryAccessSnapshot,
+    ProjectPermissionSnapshot,
 };
 #[allow(unused_imports)]
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};

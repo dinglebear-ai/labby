@@ -59,6 +59,105 @@ pub(crate) struct LibraryAccessSnapshot {
     pub(crate) is_platform_admin: bool,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct DepotDelegationAuthoritySnapshot {
+    pub(crate) principal_id: String,
+    pub(crate) organization_id: String,
+    pub(crate) team_id: Option<String>,
+    pub(crate) project_id: String,
+    pub(crate) platform_administrator: bool,
+    pub(crate) authority_schema: u64,
+    pub(crate) organization_policy: u64,
+    pub(crate) team_membership: Option<u64>,
+    pub(crate) team_policy: Option<u64>,
+    pub(crate) project_membership: u64,
+    pub(crate) project_policy: u64,
+    pub(crate) global_revision: u64,
+}
+
+pub(super) fn depot_delegation_authority(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+    selected_team_id: Option<&str>,
+) -> AccessStoreResult<DepotDelegationAuthoritySnapshot> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let selected = select_project_membership_in_transaction(&transaction, identity, project_id)
+        .map_err(collapse_denial)?;
+    let platform_administrator: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')",
+            [&selected.principal_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let (authority_schema, global_revision, organization_policy, project_policy, project_membership) = transaction
+        .query_row(
+            "SELECT m.schema_version,m.global_revision,o.policy_epoch,p.project_policy_epoch,pm.updated_at
+             FROM access_metadata m JOIN organizations o ON o.organization_id=?1
+             JOIN projects p ON p.organization_id=o.organization_id AND p.project_id=?2
+             LEFT JOIN project_memberships pm ON pm.organization_id=o.organization_id
+               AND pm.project_id=p.project_id AND pm.principal_id=?3 AND pm.status='active'
+             WHERE m.singleton=1 AND o.status='active' AND p.status='active'",
+            params![selected.organization_id, selected.project_id, selected.principal_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<i64>>(4)?)),
+        )
+        .map_err(map_sqlite_error)?;
+    let team = if platform_administrator {
+        None
+    } else {
+        let team_id = selected_team_id.ok_or(AccessStoreError::NotAuthorized)?;
+        let epochs = transaction
+            .query_row(
+                "SELECT g.membership_epoch,g.policy_epoch FROM team_memberships tm
+             JOIN groups g ON g.organization_id=tm.organization_id AND g.group_id=tm.team_id
+             JOIN team_project_assignments a ON a.organization_id=tm.organization_id
+               AND a.team_id=tm.team_id AND a.project_id=?3
+             WHERE tm.organization_id=?1 AND tm.principal_id=?2 AND tm.team_id=?4
+               AND tm.status='active' AND g.status='active' AND a.status='active'",
+                params![
+                    selected.organization_id,
+                    selected.principal_id,
+                    selected.project_id,
+                    team_id
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+        Some((team_id.to_owned(), epochs.0, epochs.1))
+    };
+    let snapshot = DepotDelegationAuthoritySnapshot {
+        principal_id: selected.principal_id,
+        organization_id: selected.organization_id,
+        team_id: team.as_ref().map(|value| value.0.clone()),
+        project_id: selected.project_id,
+        platform_administrator,
+        authority_schema: epoch_u64(authority_schema)?,
+        organization_policy: epoch_u64(organization_policy)?,
+        team_membership: team
+            .as_ref()
+            .map(|value| value.1)
+            .map(epoch_u64)
+            .transpose()?,
+        team_policy: team
+            .as_ref()
+            .map(|value| value.2)
+            .map(epoch_u64)
+            .transpose()?,
+        project_membership: epoch_u64(project_membership.unwrap_or(global_revision))?,
+        project_policy: epoch_u64(project_policy)?,
+        global_revision: epoch_u64(global_revision)?,
+    };
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
+fn epoch_u64(value: i64) -> AccessStoreResult<u64> {
+    u64::try_from(value).map_err(|_| AccessStoreError::MalformedVocabulary)
+}
+
 pub(super) fn authorize(
     connection: &mut Connection,
     input: &AuthorizeProjectInput,

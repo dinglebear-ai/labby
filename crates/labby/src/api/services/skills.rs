@@ -220,6 +220,9 @@ pub(crate) async fn handle(
                             &access_runtime,
                             verified_identity,
                             project_id.as_deref(),
+                            library_headers
+                                .get("x-labby-team-id")
+                                .and_then(|value| value.to_str().ok()),
                             permission,
                         )
                         .await?;

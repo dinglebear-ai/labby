@@ -595,6 +595,23 @@ impl AccessStore {
         .await
     }
 
+    pub(crate) async fn depot_delegation_authority(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+        selected_team_id: Option<String>,
+    ) -> AccessStoreResult<super::authorization::DepotDelegationAuthoritySnapshot> {
+        self.with_connection(move |connection| {
+            super::authorization::depot_delegation_authority(
+                connection,
+                &identity,
+                &project_id,
+                selected_team_id.as_deref(),
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn resolve_file_stash_principal(
         &self,
         identity: labby_auth::VerifiedIdentity,
