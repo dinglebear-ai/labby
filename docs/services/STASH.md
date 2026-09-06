@@ -27,11 +27,14 @@ are historical evidence only and must not be used as an implementation pattern.
 
 ## Identity and isolation
 
-Every operation consumes the middleware-derived canonical `VerifiedIdentity`
-and asks the existing AccessStore to resolve its `PrincipalLink` to the durable
-AccessStore `PrincipalId`. File Stash does not derive, hash, cache, or migrate a
-parallel principal namespace. Browser sessions and propagated in-process or
-remote MCP authorization use that same resolution. MCP must preserve caller
+Network and stdio operations consume the middleware-derived canonical
+`VerifiedIdentity` and ask the existing AccessStore to resolve its
+`PrincipalLink` to the durable AccessStore `PrincipalId`. File Stash does not
+derive, hash, cache, or migrate a parallel principal namespace. The private
+in-process peer is the sole exception: its host-controlled metadata may carry a
+pre-resolved `access_principal_id`, which AccessStore must confirm is still
+active before Stash authorization. Network and stdio transports never trust a
+serialized principal ID. MCP must preserve caller
 authorization through `resolve_caller_authorization`; it must never fall back to
 trusted-local identity. Static bearer, Unix-peer, and trusted-local stdio
 credentials work only when their stable local `PrincipalLink` is explicitly
@@ -90,8 +93,8 @@ The mock's **Shared** summary card is `owned_shared_file_count`, not grant count
 or files shared with the caller. All stats come from one authoritative snapshot,
 not UI aggregation.
 
-Delete is destructive and marks the object deleted while revoking every grant in
-one metadata transaction. Delete and revoke prevent all new opens immediately.
+Delete is destructive and atomically removes the file metadata row and its
+cascade-owned grants in one metadata transaction. Delete and revoke prevent all new opens immediately.
 Authorization is snapshot-on-open: a stream whose authorized regular-file handle
 was already opened may finish, while later opens fail. Physical reclamation may
 be asynchronous, but a deleted object never becomes newly readable. Upload and
@@ -114,6 +117,7 @@ Defaults are intentionally conservative for a local operator service:
 | principal committed plus reserved bytes | 1 GiB | 100 GiB |
 | instance committed plus reserved bytes | 10 GiB | 1 TiB |
 | live files per principal | 1,000 | 100,000 |
+| live files per instance | 100,000 | 1,000,000 |
 | list page | 50 | 200 |
 | search query | 128 UTF-8 bytes | 1,024 bytes |
 | request-header bytes | 16 KiB | 64 KiB |
@@ -130,10 +134,12 @@ Uploads require exactly one valid `Content-Length`, reject any unsupported
 Absent, malformed, duplicate, understated, overstated, or body-mismatched lengths
 are rejected. The runtime reserves exactly the declared bytes transactionally,
 checks the incremental byte count while reading, and compares the final persisted
-byte count exactly to `Content-Length` before publication. Upload idle and total deadlines default to
-30 seconds and 10 minutes. Pending reservations expire after 30 minutes. A
+byte count exactly to `Content-Length` before publication. Upload and download
+idle and total deadlines default to 30 seconds and 10 minutes, respectively.
+Pending reservations expire after 30 minutes. A
 bounded janitor processes at most 100 expired items per pass with exponential
-backoff capped at five minutes. Permit or queue saturation returns a retryable
+backoff capped at five minutes; the cap cannot be shorter than the normal
+janitor interval. Permit or queue saturation returns a retryable
 `busy` error; quota exhaustion returns `quota_exceeded` and is not retried until
 state or limits change.
 
@@ -155,10 +161,12 @@ reservation; (2) stream to an exclusively created temp file, verify the exact
 length, fsync the file, exclusively publish the opaque blob, then fsync the blob
 directory; (3) commit metadata as `committed`; and (4) release the reservation.
 Only `committed` rows with a verified regular blob are readable. Restart recovery
-reconciles each state idempotently: remove unreferenced temp/blob files, complete
-or roll back expired pending rows, release orphaned reservations, and fail closed
-on ambiguous or mismatched state. A database/blob mismatch is `integrity_error`,
-never an empty or missing file.
+reconciles pending publication state before readiness: it completes or rolls back
+pending rows, releases orphaned reservations, and fails closed on ambiguous state.
+After readiness, a cancellation-aware background scrub checks committed blobs and
+removes unreferenced temp/blob files in bounded batches. Reads independently verify
+the selected blob before opening it, so a database/blob mismatch remains an
+`integrity_error`, never an empty or missing file, while the scrub is in progress.
 
 File content is untrusted and plaintext at rest in v1. Operators must include
 both database and blob directories in a consistent backup and restrict host

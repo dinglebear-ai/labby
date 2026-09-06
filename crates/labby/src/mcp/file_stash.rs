@@ -18,6 +18,18 @@ use crate::mcp::server::LabMcpServer;
 pub(crate) const TEMPLATE_URI: &str = "stash://me/files/{file_id}";
 const PRIVATE_IN_PROCESS_TRANSPORT: &str = "in-process";
 
+pub(crate) struct ResolvedStashPrincipal {
+    id: PrincipalId,
+    _lease: crate::access::ActiveFileStashPrincipalLease,
+}
+
+impl std::ops::Deref for ResolvedStashPrincipal {
+    type Target = PrincipalId;
+    fn deref(&self) -> &Self::Target {
+        &self.id
+    }
+}
+
 impl LabMcpServer {
     pub(crate) fn file_stash_caller_bound(&self) -> bool {
         self.registry.dispatch_capability("stash")
@@ -34,13 +46,35 @@ impl LabMcpServer {
     ) -> Result<serde_json::Value, ToolError> {
         match service {
             "stash" => {
-                let principal = self.file_stash_principal(context, meta).await?;
+                let (principal, validated_grantee) = if action == "stash.grants.create" {
+                    let recipient = params
+                        .get("grantee_principal_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| ToolError::InvalidParam {
+                            param: "grantee_principal_id".into(),
+                            message: "invalid File Stash parameter".into(),
+                        })?
+                        .to_owned();
+                    let (owner, recipient, lease) = self
+                        .file_stash_participants(context, meta, recipient)
+                        .await?;
+                    (
+                        ResolvedStashPrincipal {
+                            id: owner,
+                            _lease: lease,
+                        },
+                        Some(recipient),
+                    )
+                } else {
+                    (self.file_stash_principal(context, meta).await?, None)
+                };
                 crate::dispatch::file_stash::dispatch_for_principal(
                     &self.file_stash_service(),
                     &principal,
                     "mcp",
                     action,
                     params,
+                    validated_grantee.as_ref(),
                 )
                 .await
             }
@@ -66,7 +100,7 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-    ) -> Result<PrincipalId, ToolError> {
+    ) -> Result<ResolvedStashPrincipal, ToolError> {
         let caller = resolve_caller_authorization(
             auth_context_from_extensions(&context.extensions),
             self.absent_auth_trust(),
@@ -80,8 +114,9 @@ impl LabMcpServer {
         {
             return self
                 .access_runtime
-                .resolve_file_stash_principal(identity.clone())
+                .resolve_and_lease_file_stash_principal(identity.clone())
                 .await
+                .map(|(id, lease)| ResolvedStashPrincipal { id, _lease: lease })
                 .map_err(|_| forbidden());
         }
         // Serialized principal IDs are trusted on only the private in-process
@@ -93,8 +128,54 @@ impl LabMcpServer {
                 .access_runtime
                 .lease_active_file_stash_principal(principal.clone())
                 .await
-                .map(|_| principal)
+                .map(|lease| ResolvedStashPrincipal {
+                    id: principal,
+                    _lease: lease,
+                })
                 .map_err(|_| forbidden());
+        }
+        Err(forbidden())
+    }
+
+    async fn file_stash_participants(
+        &self,
+        context: &RequestContext<RoleServer>,
+        meta: Option<&rmcp::model::RequestMetaObject>,
+        recipient: String,
+    ) -> Result<
+        (
+            PrincipalId,
+            PrincipalId,
+            crate::access::ActiveFileStashPrincipalLease,
+        ),
+        ToolError,
+    > {
+        let caller = resolve_caller_authorization(
+            auth_context_from_extensions(&context.extensions),
+            self.absent_auth_trust(),
+            propagated_caller_auth(meta),
+        );
+        if !caller.can_read() {
+            return Err(forbidden());
+        }
+        if let Some(parts) = context.extensions.get::<Parts>()
+            && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
+        {
+            return self
+                .access_runtime
+                .resolve_and_lease_file_stash_participants(identity.clone(), recipient)
+                .await
+                .map_err(|_| forbidden());
+        }
+        if let Some(owner) =
+            propagated_file_stash_principal(self.transport_label, propagated_caller_auth(meta))
+        {
+            let (recipient, lease) = self
+                .access_runtime
+                .lease_file_stash_participants(owner.clone(), recipient)
+                .await
+                .map_err(|_| forbidden())?;
+            return Ok((owner, recipient, lease));
         }
         Err(forbidden())
     }
@@ -102,7 +183,7 @@ impl LabMcpServer {
     pub(crate) async fn file_stash_resources(
         &self,
         context: &RequestContext<RoleServer>,
-    ) -> Vec<Resource> {
+    ) -> Result<Vec<Resource>, ErrorData> {
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resources.list",
@@ -129,7 +210,7 @@ impl LabMcpServer {
             },
         )
         .await
-        .unwrap_or_default()
+        .map_err(|error| list_error(&error))
     }
 
     pub(crate) async fn read_file_stash_resource(
@@ -157,8 +238,9 @@ impl LabMcpServer {
                     message: "File Stash operation failed".to_owned(),
                 })?;
                 let mut bytes = Vec::with_capacity(capacity);
-                (&mut blob.file)
-                    .take(blob.size.saturating_add(1))
+                let read_limit = blob.size.saturating_add(1);
+                (&mut blob)
+                    .take(read_limit)
                     .read_to_end(&mut bytes)
                     .await
                     .map_err(|_| ToolError::Sdk {
@@ -171,16 +253,10 @@ impl LabMcpServer {
                         message: "File Stash operation failed".to_owned(),
                     });
                 }
-                crate::dispatch::file_stash::observe_operation(
-                    "mcp",
-                    "stash.resource.read",
-                    "success",
+                crate::dispatch::file_stash::capture_observation_details(
                     Some(&file_id),
                     None,
                     Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
-                    false,
-                    0,
-                    None,
                 );
                 let contents = ResourceContents::blob(
                     base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -193,6 +269,13 @@ impl LabMcpServer {
         .await
         .map_err(|error| map_resource_read_error(&error, uri))
     }
+}
+
+fn list_error(error: &ToolError) -> ErrorData {
+    ErrorData::internal_error(
+        "File Stash resources could not be listed",
+        Some(serde_json::json!({"kind": error.kind()})),
+    )
 }
 
 fn map_resource_read_error(error: &ToolError, uri: &str) -> ErrorData {

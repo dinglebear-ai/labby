@@ -95,14 +95,10 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .expect("real browser session");
     #[cfg(target_os = "linux")]
     {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs() as i64;
-        let connection = rusqlite::Connection::open(identity.root().join("labby-home/access.db"))
-            .expect("open access store");
-        connection.execute("INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES('browser-stash-recipient','bootstrap-local','user','active','Browser Stash Recipient',?1,?1)", [now]).expect("seed Stash recipient");
-        connection.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES('browser-stash-recipient-link','browser-stash-recipient','local_credential',NULL,NULL,'static-bearer:primary','active',1,1,?1,?1)", [now]).expect("bind Stash recipient credential");
+        identity
+            .provision_stash_recipient("browser-stash-recipient", "Browser Stash Recipient")
+            .await
+            .expect("provision Stash recipient through live identity fixture");
     }
     let session = identity.session.as_ref().expect("session materialized");
     let (cookie_name, cookie_value) = session.cookie.split_once('=').expect("cookie pair");

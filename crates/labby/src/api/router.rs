@@ -424,7 +424,7 @@ fn build_v1_router(
     );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     v1 = v1.nest("/depot", services::depot::routes(state.clone()));
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     if api_auth_configured
         && state.enabled_services.contains("stash")
         && state.registry.dispatch_capability("stash")
@@ -1363,7 +1363,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn supported_platform_mounts_caller_bound_stash_only_with_api_auth() {
         let state = AppState::new();
@@ -1383,7 +1383,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn unsupported_platform_does_not_mount_stash() {
         let routes = build_v1_router(&AppState::new(), true, false);

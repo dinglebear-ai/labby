@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore};
 
+const SHUTDOWN_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FileStashBlockedReason {
     UnsafeRoot,
@@ -108,7 +110,7 @@ impl FileStashRuntime {
                 Ok((store, handle, tmp, blob_dir)) => {
                     let blob_store =
                         BlobStore::new(tmp, blob_dir, store.clone(), preferences.clone());
-                    if let Err(error) = blob_store.recover().await {
+                    if let Err(error) = blob_store.recover_pending().await {
                         tracing::warn!(?error, "file stash recovery blocked initialization");
                         return Self {
                             root: Arc::new(root),
@@ -191,13 +193,20 @@ impl FileStashRuntime {
         };
         self.janitor_admission.close();
         self.janitor_cancel.cancel();
-        if let Some(task) = self.janitor_task.lock().await.take() {
-            drop(task.await);
-        }
-        if let Some(store) = store
-            && let Err(error) = store.checkpoint().await
+        if let Some(mut task) = self.janitor_task.lock().await.take()
+            && tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, &mut task)
+                .await
+                .is_err()
         {
-            tracing::warn!(?error, "file stash shutdown checkpoint failed");
+            tracing::warn!("file stash janitor did not stop before the shutdown deadline");
+            task.abort();
+        }
+        if let Some(store) = store {
+            match tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, store.checkpoint()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(?error, "file stash shutdown checkpoint failed"),
+                Err(_) => tracing::warn!("file stash shutdown checkpoint exceeded its deadline"),
+            }
         }
         if let Some(store) = match &*self.state.lock().await {
             State::Ready(store) => Some(store.clone()),
@@ -220,6 +229,9 @@ fn spawn_janitor(
     max_backoff: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        if let Err(error) = blobs.scrub_integrity(cancel.clone()).await {
+            tracing::warn!(?error, "file stash background integrity scrub failed");
+        }
         let mut delay = interval;
         loop {
             tokio::select! {
@@ -230,13 +242,24 @@ fn spawn_janitor(
                         Ok(_) => delay = interval,
                         Err(error) => {
                             tracing::warn!(?error, "file stash janitor pass failed");
-                            delay = delay.saturating_mul(2).min(max_backoff);
+                            delay = next_janitor_delay(delay, interval, max_backoff);
                         }
                     }
                 }
             }
         }
     })
+}
+
+fn next_janitor_delay(
+    previous: std::time::Duration,
+    interval: std::time::Duration,
+    max_backoff: std::time::Duration,
+) -> std::time::Duration {
+    previous
+        .saturating_mul(2)
+        .max(interval)
+        .min(max_backoff.max(interval))
 }
 
 async fn initialize_owned(
@@ -559,6 +582,19 @@ fn anchored_child_path(_: &File, _: &Path, _: &str) -> Result<PathBuf, FileStash
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn janitor_failure_delay_never_drops_below_the_normal_interval() {
+        let interval = std::time::Duration::from_mins(1);
+        assert_eq!(
+            next_janitor_delay(interval, interval, std::time::Duration::from_secs(1)),
+            interval
+        );
+        assert_eq!(
+            next_janitor_delay(interval, interval, std::time::Duration::from_mins(5)),
+            std::time::Duration::from_mins(2)
+        );
+    }
     #[cfg(target_os = "linux")]
     fn root(temp: &tempfile::TempDir, name: &str) -> PathBuf {
         std::fs::canonicalize(temp.path()).unwrap().join(name)

@@ -59,7 +59,7 @@ impl AccessPrincipalId {
 /// Keeps AccessStore mutation admission leased after a fresh active-principal
 /// read, so a grant commit can linearize ahead of recipient deactivation.
 pub(crate) struct ActiveFileStashPrincipalLease {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    _guards: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
 
 #[allow(unused_imports)]

@@ -798,7 +798,7 @@ impl LabMcpServer {
         let mut resources = CatalogSnapshotCollector::new(page_collector);
         let mut regular_resource_provenance = Vec::new();
 
-        for resource in self.file_stash_resources(&context).await {
+        for resource in self.file_stash_resources(&context).await? {
             resources.accept(resource);
             if resources.finished() {
                 break;

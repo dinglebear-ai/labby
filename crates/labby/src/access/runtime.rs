@@ -225,6 +225,52 @@ impl AccessRuntime {
             })
     }
 
+    pub(crate) async fn resolve_and_lease_file_stash_principal(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> Result<
+        (
+            super::AccessPrincipalId,
+            super::ActiveFileStashPrincipalLease,
+        ),
+        FileStashPrincipalResolutionError,
+    > {
+        self.store()
+            .await?
+            .resolve_and_lease_file_stash_principal(identity)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
+    }
+
+    pub(crate) async fn resolve_and_lease_file_stash_participants(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        recipient: String,
+    ) -> Result<
+        (
+            super::AccessPrincipalId,
+            super::AccessPrincipalId,
+            super::ActiveFileStashPrincipalLease,
+        ),
+        FileStashPrincipalResolutionError,
+    > {
+        self.store()
+            .await?
+            .resolve_and_lease_file_stash_participants(identity, recipient)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
+    }
+
     pub(crate) async fn lease_active_file_stash_principal(
         &self,
         principal: super::AccessPrincipalId,
@@ -232,6 +278,29 @@ impl AccessRuntime {
         self.store()
             .await?
             .lease_active_file_stash_principal(principal)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
+    }
+
+    pub(crate) async fn lease_file_stash_participants(
+        &self,
+        owner: super::AccessPrincipalId,
+        recipient: String,
+    ) -> Result<
+        (
+            super::AccessPrincipalId,
+            super::ActiveFileStashPrincipalLease,
+        ),
+        FileStashPrincipalResolutionError,
+    > {
+        self.store()
+            .await?
+            .lease_file_stash_participants(owner, recipient)
             .await
             .map_err(|error| match error {
                 AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {

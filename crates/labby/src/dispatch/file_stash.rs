@@ -65,23 +65,6 @@ pub(crate) fn observe_operation(
     elapsed_ms: u64,
     kind: Option<&str>,
 ) {
-    if elapsed_ms == 0 {
-        let _ = OBSERVATION_DETAILS.try_with(|details| {
-            let mut details = details
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(value) = object_id {
-                details.object_id = Some(value.to_owned());
-            }
-            if let Some(value) = grant_id {
-                details.grant_id = Some(value.to_owned());
-            }
-            if byte_count.is_some() {
-                details.byte_count = byte_count;
-            }
-        });
-        return;
-    }
     let event = || {
         tracing::info!(
             surface,
@@ -114,6 +97,27 @@ pub(crate) fn observe_operation(
             "file stash operation"
         )
     }
+}
+
+pub(crate) fn capture_observation_details(
+    object_id: Option<&str>,
+    grant_id: Option<&str>,
+    byte_count: Option<u64>,
+) {
+    let _ = OBSERVATION_DETAILS.try_with(|details| {
+        let mut details = details
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(value) = object_id {
+            details.object_id = Some(value.to_owned());
+        }
+        if let Some(value) = grant_id {
+            details.grant_id = Some(value.to_owned());
+        }
+        if byte_count.is_some() {
+            details.byte_count = byte_count;
+        }
+    });
 }
 
 pub(crate) async fn observe_result<T>(
@@ -338,7 +342,7 @@ const GRANT_REVOKE_PARAMS: &[ParamSpec] = &[
 #[derive(Clone)]
 pub(crate) struct FileStashService {
     runtime: Arc<FileStashRuntime>,
-    access_runtime: Arc<AccessRuntime>,
+    _access_runtime: Arc<AccessRuntime>,
     page_limit: usize,
     max_query_bytes: usize,
 }
@@ -421,7 +425,7 @@ impl FileStashService {
     ) -> Self {
         Self {
             runtime,
-            access_runtime,
+            _access_runtime: access_runtime,
             page_limit: page_limit.clamp(1, 200),
             max_query_bytes: max_query_bytes.clamp(1, 1_024),
         }
@@ -535,41 +539,13 @@ impl FileStashService {
         }
         Ok(())
     }
-    pub(crate) async fn create_grant(
+    pub(crate) async fn create_grant_validated(
         &self,
         owner: &PrincipalId,
         file_id: &str,
         grantee: &PrincipalId,
     ) -> Result<GrantView, ToolError> {
         validate_id(file_id, "file_id")?;
-        let _recipient_lease = self
-            .access_runtime
-            .lease_active_file_stash_principal(grantee.clone())
-            .await
-            .map_err(|_| service_error("not_found", "File Stash operation failed"))?;
-        let (store, _) = self.stores().await?;
-        store
-            .create_grant(
-                owner.as_str().to_owned(),
-                file_id.to_owned(),
-                grantee.as_str().to_owned(),
-            )
-            .await
-            .map(Into::into)
-            .map_err(map_error)
-    }
-    pub(crate) async fn create_grant_for_recipient_id(
-        &self,
-        owner: &PrincipalId,
-        file_id: &str,
-        recipient_id: String,
-    ) -> Result<GrantView, ToolError> {
-        validate_id(file_id, "file_id")?;
-        let (grantee, _recipient_lease) = self
-            .access_runtime
-            .resolve_active_file_stash_recipient(recipient_id)
-            .await
-            .map_err(|_| service_error("not_found", "File Stash operation failed"))?;
         let (store, _) = self.stores().await?;
         store
             .create_grant(
@@ -692,6 +668,7 @@ pub(crate) async fn dispatch_for_principal(
     surface: &'static str,
     action: &str,
     params: Value,
+    validated_grantee: Option<&PrincipalId>,
 ) -> Result<Value, ToolError> {
     let object = params.as_object();
     let string = |name: &str| {
@@ -757,11 +734,11 @@ pub(crate) async fn dispatch_for_principal(
         }
         "stash.grants.create" => serde_json::to_value(
             service
-                .create_grant(
+                .create_grant_validated(
                     principal,
                     string("file_id")?,
-                    &PrincipalId::from_propagated(string("grantee_principal_id")?.to_owned())
-                        .ok_or_else(|| invalid("grantee_principal_id"))?,
+                    validated_grantee
+                        .ok_or_else(|| service_error("not_found", "File Stash operation failed"))?,
                 )
                 .await?,
         ),
@@ -1063,6 +1040,7 @@ mod tests {
                 "mcp",
                 "stash.rename",
                 serde_json::json!({"file_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","display_name":secret_name}),
+                None,
             ),
         )
         .await;

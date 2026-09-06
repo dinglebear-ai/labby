@@ -351,18 +351,71 @@ async fn action_impl(
     ) {
         mutation_csrf(&headers, auth.as_ref(), &request.action)?;
     }
-    let principal = principal(&state, identity).await?;
     let action = request.action;
+    let (principal, validated_grantee) = if action == "stash.grants.create" {
+        let recipient = request
+            .params
+            .get("grantee_principal_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| stable("invalid_param"))?
+            .to_owned();
+        let (owner, recipient, lease) =
+            principal_and_recipient(&state, identity, recipient).await?;
+        (
+            ResolvedStashPrincipal {
+                id: owner,
+                _lease: lease,
+            },
+            Some(recipient),
+        )
+    } else {
+        (principal(&state, identity).await?, None)
+    };
     let response = crate::dispatch::file_stash::dispatch_for_principal(
         &service(&state),
         &principal,
         "api",
         &action,
         request.params,
+        validated_grantee.as_ref(),
     )
     .await
     .map_err(|error| ApiError::new(error).with_service_action("stash", &action))?;
     Ok(result(response))
+}
+
+async fn principal_and_recipient(
+    state: &AppState,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    recipient: String,
+) -> Result<
+    (
+        crate::access::AccessPrincipalId,
+        crate::access::AccessPrincipalId,
+        crate::access::ActiveFileStashPrincipalLease,
+    ),
+    ApiError,
+> {
+    let Some(axum::Extension(identity)) = identity else {
+        return Err(stable("not_found"));
+    };
+    state
+        .access_runtime
+        .resolve_and_lease_file_stash_participants(identity, recipient)
+        .await
+        .map_err(map_principal_error)
+}
+
+fn map_principal_error(error: crate::access::FileStashPrincipalResolutionError) -> ApiError {
+    match error {
+        crate::access::FileStashPrincipalResolutionError::IdentityUnavailable => {
+            stable("not_found")
+        }
+        crate::access::FileStashPrincipalResolutionError::StoreUnavailable
+        | crate::access::FileStashPrincipalResolutionError::Runtime(_) => {
+            stable("service_unavailable")
+        }
+    }
 }
 
 fn service(state: &AppState) -> FileStashService {
@@ -402,25 +455,29 @@ async fn observe_api<T>(
 async fn principal(
     state: &AppState,
     identity: Option<axum::Extension<VerifiedIdentity>>,
-) -> Result<crate::access::AccessPrincipalId, ApiError> {
+) -> Result<ResolvedStashPrincipal, ApiError> {
     let Some(axum::Extension(identity)) = identity else {
         return Err(stable("not_found"));
     };
     state
         .access_runtime
-        .resolve_file_stash_principal(identity)
+        .resolve_and_lease_file_stash_principal(identity)
         .await
-        .map_err(|error| match error {
-            crate::access::FileStashPrincipalResolutionError::IdentityUnavailable => {
-                stable("not_found")
-            }
-            crate::access::FileStashPrincipalResolutionError::StoreUnavailable => {
-                stable("service_unavailable")
-            }
-            crate::access::FileStashPrincipalResolutionError::Runtime(_) => {
-                stable("service_unavailable")
-            }
-        })
+        .map(|(id, lease)| ResolvedStashPrincipal { id, _lease: lease })
+        .map_err(map_principal_error)
+}
+
+struct ResolvedStashPrincipal {
+    id: crate::access::AccessPrincipalId,
+    _lease: crate::access::ActiveFileStashPrincipalLease,
+}
+
+impl std::ops::Deref for ResolvedStashPrincipal {
+    type Target = crate::access::AccessPrincipalId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.id
+    }
 }
 
 fn stable(kind: &str) -> ApiError {
@@ -465,17 +522,7 @@ async fn list_impl(
             stash.search(&principal, &query, q.cursor.as_deref(), q.limit),
         )
         .await?;
-        crate::dispatch::file_stash::observe_operation(
-            "api",
-            "stash.search",
-            "success",
-            None,
-            None,
-            None,
-            false,
-            0,
-            None,
-        );
+        crate::dispatch::file_stash::capture_observation_details(None, None, None);
         page
     } else {
         let stash = service(&state);
@@ -489,17 +536,7 @@ async fn list_impl(
             stash.list(&principal, q.cursor.as_deref(), q.limit),
         )
         .await?;
-        crate::dispatch::file_stash::observe_operation(
-            "api",
-            "stash.list",
-            "success",
-            None,
-            None,
-            None,
-            false,
-            0,
-            None,
-        );
+        crate::dispatch::file_stash::capture_observation_details(None, None, None);
         page
     };
     Ok(result(page))
@@ -520,16 +557,10 @@ async fn stats_impl(
         stash.stats(&principal),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.stats",
-        "success",
+    crate::dispatch::file_stash::capture_observation_details(
         None,
         None,
         Some(stats.owned_committed_bytes),
-        false,
-        0,
-        None,
     );
     Ok(result(stats))
 }
@@ -547,7 +578,17 @@ async fn recipients_impl(
     {
         return Err(stable("not_found"));
     }
-    let principal = principal(&state, identity).await?;
+    let Some(axum::Extension(identity)) = identity else {
+        return Err(stable("not_found"));
+    };
+    // Recipient search performs its own bounded AccessStore operation. Resolve
+    // the caller without retaining the connection-admission lease so the
+    // search can acquire it and install a cancellable SQLite deadline.
+    let principal = state
+        .access_runtime
+        .resolve_file_stash_principal(identity)
+        .await
+        .map_err(map_principal_error)?;
     let query = q.query.trim();
     if query.chars().count() < 3 || query.len() > 128 {
         return Err(stable("invalid_param"));
@@ -565,19 +606,23 @@ async fn recipients_impl(
         None,
         false,
         async {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(state.config.file_stash.database_deadline_ms),
-                store.search_file_stash_recipients(principal, query.to_owned(), 20),
-            )
-            .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "busy".into(),
-                message: "File Stash operation failed".into(),
-            })?
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "service_unavailable".into(),
-                message: "File Stash operation failed".into(),
-            })
+            store
+                .search_file_stash_recipients(
+                    principal,
+                    query.to_owned(),
+                    20,
+                    std::time::Duration::from_millis(state.config.file_stash.database_deadline_ms),
+                )
+                .await
+                .map_err(|error| ToolError::Sdk {
+                    sdk_kind: if error.to_string().contains("deadline exceeded") {
+                        "busy"
+                    } else {
+                        "service_unavailable"
+                    }
+                    .into(),
+                    message: "File Stash operation failed".into(),
+                })
         },
     )
     .await?;
@@ -600,16 +645,10 @@ async fn metadata_impl(
         stash.metadata(&principal, &file_id),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.metadata",
-        "success",
+    crate::dispatch::file_stash::capture_observation_details(
         Some(&file_id),
         None,
         Some(file.size_bytes),
-        false,
-        0,
-        None,
     );
     Ok(result(file))
 }
@@ -634,16 +673,10 @@ async fn rename_impl(
         stash.rename(&principal, &file_id, &body.display_name),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.rename",
-        "success",
+    crate::dispatch::file_stash::capture_observation_details(
         Some(&file_id),
         None,
         Some(file.size_bytes),
-        false,
-        0,
-        None,
     );
     Ok(result(file))
 }
@@ -667,17 +700,7 @@ async fn remove_impl(
         stash.delete(&principal, &file_id),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.delete",
-        "success",
-        Some(&file_id),
-        None,
-        None,
-        true,
-        0,
-        None,
-    );
+    crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, None);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 async fn create_grant_impl(
@@ -689,7 +712,12 @@ async fn create_grant_impl(
     Json(body): Json<GrantRequest>,
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.create")?;
-    let principal = principal(&state, identity).await?;
+    let (principal, grantee, lease) =
+        principal_and_recipient(&state, identity, body.grantee_principal_id).await?;
+    let principal = ResolvedStashPrincipal {
+        id: principal,
+        _lease: lease,
+    };
     let stash = service(&state);
     let grant = crate::dispatch::file_stash::observe_result(
         "api",
@@ -698,18 +726,12 @@ async fn create_grant_impl(
         None,
         None,
         false,
-        stash.create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id),
+        stash.create_grant_validated(&principal, &file_id, &grantee),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.grants.create",
-        "success",
+    crate::dispatch::file_stash::capture_observation_details(
         Some(&file_id),
         Some(&grant.grant_id),
-        None,
-        false,
-        0,
         None,
     );
     Ok((StatusCode::CREATED, result(grant)).into_response())
@@ -732,17 +754,7 @@ async fn list_grants_impl(
         stash.grants(&principal, &file_id, q.cursor.as_deref(), q.limit),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.grants.list",
-        "success",
-        Some(&file_id),
-        None,
-        None,
-        false,
-        0,
-        None,
-    );
+    crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, None);
     Ok(result(grants))
 }
 async fn revoke_grant_impl(
@@ -765,17 +777,7 @@ async fn revoke_grant_impl(
         stash.revoke_grant(&principal, &file_id, &grant_id),
     )
     .await?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.grants.revoke",
-        "success",
-        Some(&file_id),
-        Some(&grant_id),
-        None,
-        false,
-        0,
-        None,
-    );
+    crate::dispatch::file_stash::capture_observation_details(Some(&file_id), Some(&grant_id), None);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -800,17 +802,7 @@ async fn upload_impl(
         .map(|value| value.into_owned())
         .ok_or_else(|| stable("validation_failed"))?;
     let declared = exact_content_length(&headers)?;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.upload",
-        "success",
-        None,
-        None,
-        Some(declared),
-        false,
-        0,
-        None,
-    );
+    crate::dispatch::file_stash::capture_observation_details(None, None, Some(declared));
     validate_transfer_headers(&headers)?;
     let svc = service(&state);
     let (reservation, admission) = svc
@@ -842,17 +834,7 @@ async fn upload_impl(
     )
     .await?;
     guard.0 = None;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.upload",
-        "success",
-        Some(&file_id),
-        None,
-        Some(declared),
-        false,
-        0,
-        None,
-    );
+    crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, Some(declared));
     Ok((
         StatusCode::CREATED,
         result(
@@ -964,7 +946,7 @@ impl AsyncRead for HeldBlob {
             )));
         }
         let before = buf.filled().len();
-        match Pin::new(&mut this.blob.file).poll_read(cx, buf) {
+        match Pin::new(&mut this.blob).poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
                 if buf.filled().len() > before {
                     this.observation.add_bytes(buf.filled().len() - before);

@@ -184,7 +184,7 @@ impl FileStashStore {
         self.admission.close();
     }
 
-    pub(crate) async fn reserve_upload(
+    pub(crate) async fn reserve_upload_with_instance_limit(
         &self,
         owner: String,
         display_name: String,
@@ -194,6 +194,7 @@ impl FileStashStore {
         principal_quota: u64,
         instance_quota: u64,
         max_live_files: u32,
+        max_instance_live_files: u32,
     ) -> Result<UploadReservation> {
         let upload_id = ulid::Ulid::new().to_string();
         self.with_connection(move |connection| {
@@ -207,15 +208,16 @@ impl FileStashStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .map_err(FileStashStoreError::sqlite)?;
-            let instance_used: i64 = tx
+            let (instance_used, instance_live_files): (i64, i64) = tx
                 .query_row(
-                    "SELECT COALESCE((SELECT SUM(size_bytes) FROM files WHERE ready=1),0)+COALESCE((SELECT SUM(reserved_bytes) FROM pending_uploads),0)",
+                    "SELECT COALESCE((SELECT SUM(size_bytes) FROM files WHERE ready=1),0)+COALESCE((SELECT SUM(reserved_bytes) FROM pending_uploads),0),COALESCE((SELECT COUNT(*) FROM files WHERE ready=1),0)+COALESCE((SELECT COUNT(*) FROM pending_uploads),0)",
                     [],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(FileStashStoreError::sqlite)?;
             let declared = i64::try_from(declared_bytes).map_err(|_| FileStashStoreError::QuotaExceeded)?;
             if live_files.saturating_add(pending_files) >= i64::from(max_live_files)
+                || instance_live_files >= i64::from(max_instance_live_files)
                 || principal_committed.saturating_add(principal_reserved).saturating_add(declared)
                     > i64::try_from(principal_quota).unwrap_or(i64::MAX)
                 || instance_used.saturating_add(declared)
@@ -232,6 +234,32 @@ impl FileStashStore {
             tx.commit().map_err(FileStashStoreError::sqlite)?;
             Ok(UploadReservation { upload_id, owner_principal_id: owner, display_name, collision_key, reserved_bytes: declared_bytes })
         }).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reserve_upload(
+        &self,
+        owner: String,
+        display_name: String,
+        collision_key: String,
+        declared_bytes: u64,
+        expires_at: i64,
+        principal_quota: u64,
+        instance_quota: u64,
+        max_live_files: u32,
+    ) -> Result<UploadReservation> {
+        self.reserve_upload_with_instance_limit(
+            owner,
+            display_name,
+            collision_key,
+            declared_bytes,
+            expires_at,
+            principal_quota,
+            instance_quota,
+            max_live_files,
+            u32::MAX,
+        )
+        .await
     }
 
     pub(crate) async fn mark_blob_published(&self, upload_id: String) -> Result<()> {
@@ -672,6 +700,41 @@ mod tests {
         assert!(matches!(
             a.err().or_else(|| b.err()),
             Some(FileStashStoreError::QuotaExceeded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_uploads_count_toward_the_instance_live_file_limit() {
+        let (_temp, store) = store().await;
+        store
+            .reserve_upload_with_instance_limit(
+                "owner-a".into(),
+                "a".into(),
+                "a".into(),
+                0,
+                i64::MAX,
+                10,
+                20,
+                10,
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .reserve_upload_with_instance_limit(
+                    "owner-b".into(),
+                    "b".into(),
+                    "b".into(),
+                    0,
+                    i64::MAX,
+                    10,
+                    20,
+                    10,
+                    1,
+                )
+                .await,
+            Err(FileStashStoreError::QuotaExceeded)
         ));
     }
 
