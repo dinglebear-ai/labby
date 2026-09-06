@@ -50,6 +50,8 @@ async fn handle(
             identity,
             ceiling: crate::access::AuthorityCeiling::from_auth_context(&auth.0),
             installation_id,
+            #[cfg(feature = "gateway")]
+            gateway_manager: state.gateway_manager.clone(),
         },
         &request.action,
         request.params,

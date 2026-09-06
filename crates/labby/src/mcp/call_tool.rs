@@ -1629,6 +1629,8 @@ impl LabMcpServer {
                                     identity,
                                     ceiling,
                                     installation_id,
+                                    #[cfg(feature = "gateway")]
+                                    gateway_manager: self.gateway_manager.clone(),
                                 },
                                 &action,
                                 params,

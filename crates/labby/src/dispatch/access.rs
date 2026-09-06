@@ -153,6 +153,9 @@ pub(crate) struct AccessDispatchContext {
     pub(crate) identity: VerifiedIdentity,
     pub(crate) ceiling: AuthorityCeiling,
     pub(crate) installation_id: String,
+    #[cfg(feature = "gateway")]
+    pub(crate) gateway_manager:
+        Option<std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>>,
 }
 
 pub(crate) async fn dispatch(
@@ -330,6 +333,13 @@ pub(crate) async fn dispatch(
                 })
                 .await
                 .map_err(map_access_error)?;
+            invalidate_team_gateway_credential(
+                &context,
+                &value.team_id,
+                &value.upstream_name,
+                "team credential rotated",
+            )
+            .await;
             serde_json::to_value(value).map_err(|_| unavailable())?
         }
         #[cfg(feature = "gateway")]
@@ -343,6 +353,15 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map_access_error)?;
+            if let Some(binding) = &value {
+                invalidate_team_gateway_credential(
+                    &context,
+                    &binding.team_id,
+                    &binding.upstream_name,
+                    "team credential revoked",
+                )
+                .await;
+            }
             json!({"binding": value})
         }
         "access.platform_admin.grant" | "access.platform_admin.revoke" => {
@@ -362,6 +381,22 @@ pub(crate) async fn dispatch(
         _ => return Err(unknown_action(action_name)),
     };
     Ok(result)
+}
+
+#[cfg(feature = "gateway")]
+async fn invalidate_team_gateway_credential(
+    context: &AccessDispatchContext,
+    team_id: &str,
+    upstream: &str,
+    reason: &'static str,
+) {
+    let Some(manager) = &context.gateway_manager else {
+        return;
+    };
+    if let Some(pool) = manager.current_pool().await {
+        pool.invalidate_oauth_subject_sessions(upstream, &format!("team:{team_id}"), reason)
+            .await;
+    }
 }
 
 async fn authorize_administration(

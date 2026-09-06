@@ -81,7 +81,10 @@ pub(crate) fn gateway_runtime_subject(
         gateway_authority_class(action),
         Some(GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage)
     ) {
-        return team_id.map(|team| format!("team:{team}:{subject}"));
+        // Membership is checked before this point. All members of one Team
+        // deliberately select its shared custodied credential, while sibling
+        // teams retain distinct pool/cache identities.
+        return team_id.map(|team| format!("team:{team}"));
     }
     Some(subject.to_owned())
 }
@@ -273,6 +276,10 @@ mod tests {
         assert_ne!(
             gateway_runtime_subject("gateway.loadout.get", Some("alpha"), Some("user")),
             gateway_runtime_subject("gateway.loadout.get", Some("beta"), Some("user")),
+        );
+        assert_eq!(
+            gateway_runtime_subject("gateway.loadout.get", Some("alpha"), Some("first")),
+            gateway_runtime_subject("gateway.loadout.get", Some("alpha"), Some("second")),
         );
     }
 }
