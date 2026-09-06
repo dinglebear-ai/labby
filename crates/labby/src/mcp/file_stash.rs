@@ -115,10 +115,18 @@ impl LabMcpServer {
         else {
             return Vec::new();
         };
-        collect_file_stash_resources(
-            &self.file_stash_service(),
-            &principal,
-            self.file_stash_runtime.page_limit(),
+        crate::dispatch::file_stash::observe_result(
+            "mcp",
+            "stash.resources.list",
+            None,
+            None,
+            None,
+            false,
+            collect_file_stash_resources(
+                &self.file_stash_service(),
+                &principal,
+                self.file_stash_runtime.page_limit(),
+            ),
         )
         .await
         .unwrap_or_default()
@@ -135,14 +143,41 @@ impl LabMcpServer {
             .await
             .map_err(|_| unknown(uri))?;
         let stash = self.file_stash_service();
-        let (_metadata, mut blob) = crate::dispatch::file_stash::observe_result(
+        crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resource.read",
             Some(&file_id),
             None,
             None,
             false,
-            stash.open_download(&principal, &file_id, true),
+            async {
+                let (_metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
+                let capacity = usize::try_from(blob.size).map_err(|_| ToolError::Sdk {
+                    sdk_kind: "quota_exceeded".to_owned(),
+                    message: "File Stash operation failed".to_owned(),
+                })?;
+                let mut bytes = Vec::with_capacity(capacity);
+                (&mut blob.file)
+                    .take(blob.size.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .await
+                    .map_err(|_| ToolError::Sdk {
+                        sdk_kind: "service_unavailable".to_owned(),
+                        message: "File Stash operation failed".to_owned(),
+                    })?;
+                if bytes.len() != capacity {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "integrity_error".to_owned(),
+                        message: "File Stash operation failed".to_owned(),
+                    });
+                }
+                let contents = ResourceContents::blob(
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    uri.to_owned(),
+                )
+                .with_mime_type("application/octet-stream");
+                Ok(ReadResourceResult::new(vec![contents]).into())
+            },
         )
         .await
         .map_err(|error| match error.kind() {
@@ -150,23 +185,7 @@ impl LabMcpServer {
             "not_found" => unknown(uri),
             "busy" => busy(uri),
             _ => unavailable(uri),
-        })?;
-        let capacity = usize::try_from(blob.size).map_err(|_| quota_exceeded(uri))?;
-        let mut bytes = Vec::with_capacity(capacity);
-        (&mut blob.file)
-            .take(blob.size.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| unavailable(uri))?;
-        if bytes.len() != capacity {
-            return Err(unavailable(uri));
-        }
-        let contents = ResourceContents::blob(
-            base64::engine::general_purpose::STANDARD.encode(bytes),
-            uri.to_owned(),
-        )
-        .with_mime_type("application/octet-stream");
-        Ok(ReadResourceResult::new(vec![contents]).into())
+        })
     }
 }
 
@@ -180,16 +199,9 @@ async fn collect_file_stash_resources(
     while files.len() < crate::mcp::pagination::MCP_RETAINED_LIST_ITEM_CAP {
         let remaining = crate::mcp::pagination::MCP_RETAINED_LIST_ITEM_CAP - files.len();
         let limit = remaining.min(page_limit);
-        let page = crate::dispatch::file_stash::observe_result(
-            "mcp",
-            "stash.resources.list",
-            None,
-            None,
-            None,
-            false,
-            service.list(principal, cursor.as_deref(), Some(limit)),
-        )
-        .await?;
+        let page = service
+            .list(principal, cursor.as_deref(), Some(limit))
+            .await?;
         files.extend(page.files);
         let Some(next) = page.next_cursor else { break };
         if cursor.as_deref() == Some(next.as_str()) {
@@ -309,7 +321,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn resource_snapshot_walks_beyond_the_service_page_limit() {
         use std::os::unix::fs::PermissionsExt as _;

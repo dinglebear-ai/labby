@@ -109,3 +109,53 @@ test('Stash cancellation is scoped to one queued file and remains retryable', as
   assert.ok([...view.container.querySelectorAll('button')].some(button => /retry upload/i.test(button.textContent || '')))
   await view.unmount()
 })
+
+test('Stash bounds overlapping upload batches to two workers and rejects overflow without eviction', async () => {
+  document.body.replaceChildren()
+  let active = 0
+  let maxActive = 0
+  const started: string[] = []
+  const completions: Array<() => void> = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 0, owned_shared_file_count: 0, owned_committed_bytes: 0, owned_reserved_bytes: 0 })
+    if (!url.pathname.endsWith('/uploads')) return Response.json({ files: [], next_cursor: null })
+    const name = decodeURIComponent(new Headers(init?.headers).get('x-labby-stash-filename') || '')
+    started.push(name)
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    await new Promise<void>(resolve => completions.push(resolve))
+    active -= 1
+    return Response.json({ file_id: name, uri: `stash://me/files/${name}` }, { status: 201 })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  const dropTarget = [...view.container.querySelectorAll('button')].find(button => /drop files here/i.test(button.textContent || ''))
+  assert.ok(dropTarget)
+  const drop = async (names: string[]) => {
+    const event = new window.Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'dataTransfer', { value: { files: names.map(name => new File([name], name)) } })
+    await act(async () => { dropTarget.dispatchEvent(event); await new Promise(resolve => setTimeout(resolve, 20)) })
+  }
+
+  const accepted = Array.from({ length: 8 }, (_, index) => `accepted-${index}.txt`)
+  await drop(accepted)
+  assert.deepEqual(started, accepted.slice(0, 2))
+  assert.equal(maxActive, 2)
+
+  await drop(['overflow-a.txt', 'overflow-b.txt'])
+  assert.match(view.container.textContent || '', /2 files not queued; the upload queue holds 8/)
+  for (const name of accepted) assert.match(view.container.textContent || '', new RegExp(name))
+  assert.doesNotMatch(view.container.textContent || '', /overflow-a\.txt|overflow-b\.txt/)
+
+  while (started.length < accepted.length) {
+    const ready = completions.splice(0, completions.length)
+    await act(async () => { ready.forEach(resolve => resolve()); await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.ok(active <= 2)
+  }
+  const ready = completions.splice(0, completions.length)
+  await act(async () => { ready.forEach(resolve => resolve()); await new Promise(resolve => setTimeout(resolve, 20)) })
+  assert.equal(maxActive, 2)
+  assert.deepEqual(started, accepted)
+  await view.unmount()
+})

@@ -546,7 +546,7 @@ fn validate_child_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn create_regular_exclusive(directory: &File, name: &str) -> Result<File> {
     validate_child_name(name)?;
     use rustix::fs::{Mode, OFlags, openat};
@@ -565,7 +565,7 @@ fn create_regular_exclusive(directory: &File, name: &str) -> Result<File> {
     Ok(file)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn publish_exclusive(from: &File, old: &str, to: &File, new: &str) -> Result<()> {
     validate_child_name(old)?;
     validate_blob_key(new)?;
@@ -576,7 +576,7 @@ fn publish_exclusive(from: &File, old: &str, to: &File, new: &str) -> Result<()>
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn regular_size(directory: &File, name: &str) -> Result<Option<u64>> {
     validate_child_name(name)?;
     use rustix::fs::{Mode, OFlags, openat};
@@ -599,7 +599,7 @@ fn regular_size(directory: &File, name: &str) -> Result<Option<u64>> {
     ))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn open_regular(directory: &File, name: &str) -> Result<File> {
     validate_blob_key(name)?;
     use rustix::fs::{Mode, OFlags, openat};
@@ -618,7 +618,7 @@ fn open_regular(directory: &File, name: &str) -> Result<File> {
     Ok(file)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn remove_regular_if_exists(directory: &File, name: &str) -> Result<()> {
     validate_child_name(name)?;
     use rustix::fs::{AtFlags, unlinkat};
@@ -638,11 +638,11 @@ fn remove_regular_if_exists(directory: &File, name: &str) -> Result<()> {
     unlinkat(directory, name, AtFlags::empty()).map_err(|_| FileStashStoreError::Unavailable)
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 static FAIL_UNLINK_NAME: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 async fn remove_unreferenced_tmp(directory: &File, batch_size: usize) -> Result<()> {
     let entries =
         rustix::fs::Dir::read_from(directory).map_err(|_| FileStashStoreError::Unavailable)?;
@@ -662,7 +662,7 @@ async fn remove_unreferenced_tmp(directory: &File, batch_size: usize) -> Result<
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn validate_regular(file: &File) -> Result<()> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let metadata = file
@@ -678,38 +678,38 @@ fn validate_regular(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn sync_directory(directory: &File) -> Result<()> {
     directory
         .sync_all()
         .map_err(|_| FileStashStoreError::Unavailable)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn create_regular_exclusive(_: &File, _: &str) -> Result<File> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn publish_exclusive(_: &File, _: &str, _: &File, _: &str) -> Result<()> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn regular_size(_: &File, _: &str) -> Result<Option<u64>> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn open_regular(_: &File, _: &str) -> Result<File> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn remove_regular_if_exists(_: &File, _: &str) -> Result<()> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 async fn remove_unreferenced_tmp(_: &File, _: usize) -> Result<()> {
     Err(FileStashStoreError::Unavailable)
 }
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn sync_directory(_: &File) -> Result<()> {
     Err(FileStashStoreError::Unavailable)
 }
@@ -742,7 +742,7 @@ mod admission_tests {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::file_stash::StashUsage;

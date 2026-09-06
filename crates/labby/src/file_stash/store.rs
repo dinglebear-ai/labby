@@ -266,7 +266,7 @@ impl FileStashStore {
     }
 
     pub(crate) async fn cancel_upload(&self, upload_id: String) -> Result<()> {
-        #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+        #[cfg(all(test, target_os = "linux"))]
         {
             let mut injected = FAIL_CANCEL_ID
                 .lock()
@@ -504,11 +504,11 @@ impl FileStashStore {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn inject_cancel_failure(upload_id: String) {
     *FAIL_CANCEL_ID
         .lock()
@@ -553,7 +553,7 @@ fn open_connection(path: &Path, snapshot_id: &str) -> Result<Connection> {
     Ok(c)
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

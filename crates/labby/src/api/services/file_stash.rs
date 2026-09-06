@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use std::{
-    future::Future as _,
+    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -139,7 +139,90 @@ struct GrantRequest {
     grantee_principal_id: String,
 }
 
+macro_rules! observed_handler {
+    ($name:ident, $inner:ident, $action:literal, $destructive:literal, ($($arg:ident : $ty:ty),* $(,)?)) => {
+        async fn $name($($arg: $ty),*) -> Result<Response, ApiError> {
+            observe_api($action, None, None, $destructive, $inner($($arg),*)).await
+        }
+    };
+}
+
 async fn action(
+    state: State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    request: Json<crate::api::ActionRequest>,
+) -> Result<Response, ApiError> {
+    let action = request.action.clone();
+    let destructive = action == "stash.delete";
+    observe_api(
+        &action,
+        None,
+        None,
+        destructive,
+        action_impl(state, headers, auth, identity, request),
+    )
+    .await
+}
+
+async fn list(
+    state: State<AppState>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    query: Query<PageQuery>,
+) -> Result<Response, ApiError> {
+    let action = if query.query.is_some() {
+        "stash.search"
+    } else {
+        "stash.list"
+    };
+    observe_api(action, None, None, false, list_impl(state, identity, query)).await
+}
+observed_handler!(stats, stats_impl, "stash.stats", false, (
+    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
+));
+observed_handler!(recipients, recipients_impl, "stash.recipients.search", false, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>, query: Json<RecipientQuery>,
+));
+observed_handler!(metadata, metadata_impl, "stash.metadata", false, (
+    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>,
+));
+observed_handler!(rename, rename_impl, "stash.rename", false, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
+    body: Json<RenameRequest>,
+));
+observed_handler!(remove, remove_impl, "stash.delete", true, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
+));
+observed_handler!(create_grant, create_grant_impl, "stash.grants.create", false, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>, file_id: Path<String>,
+    body: Json<GrantRequest>,
+));
+observed_handler!(list_grants, list_grants_impl, "stash.grants.list", false, (
+    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
+    file_id: Path<String>, query: Query<PageQuery>,
+));
+observed_handler!(revoke_grant, revoke_grant_impl, "stash.grants.revoke", false, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    path: Path<(String, String)>,
+));
+observed_handler!(upload, upload_impl, "stash.upload", false, (
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>, body: Body,
+));
+async fn action_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -173,6 +256,31 @@ fn service(state: &AppState) -> FileStashService {
         usize::from(state.config.file_stash.page_size),
         state.config.file_stash.max_query_bytes,
     )
+}
+
+async fn observe_api<T>(
+    action: &str,
+    object_id: Option<&str>,
+    grant_id: Option<&str>,
+    destructive: bool,
+    future: impl Future<Output = Result<T, ApiError>>,
+) -> Result<T, ApiError> {
+    let started = std::time::Instant::now();
+    let result = future.await;
+    crate::dispatch::file_stash::observe_operation(
+        "api",
+        action,
+        if result.is_ok() { "success" } else { "error" },
+        object_id,
+        grant_id,
+        None,
+        destructive,
+        u64::try_from(started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1),
+        result.as_ref().err().map(|error| error.error.kind()),
+    );
+    result
 }
 
 async fn principal(
@@ -223,7 +331,7 @@ fn mutation_csrf(
         .map_err(ApiError::from)
 }
 
-async fn list(
+async fn list_impl(
     State(state): State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Query(q): Query<PageQuery>,
@@ -280,7 +388,7 @@ async fn list(
     };
     Ok(result(page))
 }
-async fn stats(
+async fn stats_impl(
     State(state): State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
 ) -> Result<Response, ApiError> {
@@ -309,7 +417,7 @@ async fn stats(
     );
     Ok(result(stats))
 }
-async fn recipients(
+async fn recipients_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -359,7 +467,7 @@ async fn recipients(
     .await?;
     Ok(result(serde_json::json!({"recipients": values})))
 }
-async fn metadata(
+async fn metadata_impl(
     State(state): State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
@@ -389,7 +497,7 @@ async fn metadata(
     );
     Ok(result(file))
 }
-async fn rename(
+async fn rename_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -423,7 +531,7 @@ async fn rename(
     );
     Ok(result(file))
 }
-async fn remove(
+async fn remove_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -456,7 +564,7 @@ async fn remove(
     );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-async fn create_grant(
+async fn create_grant_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -490,7 +598,7 @@ async fn create_grant(
     );
     Ok((StatusCode::CREATED, result(grant)).into_response())
 }
-async fn list_grants(
+async fn list_grants_impl(
     State(state): State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
@@ -521,7 +629,7 @@ async fn list_grants(
     );
     Ok(result(grants))
 }
-async fn revoke_grant(
+async fn revoke_grant_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -555,7 +663,7 @@ async fn revoke_grant(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn upload(
+async fn upload_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
@@ -632,60 +740,60 @@ async fn download(
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let principal = principal(&state, identity).await?;
-    let stash = service(&state);
-    let (file, opened) = crate::dispatch::file_stash::observe_result(
-        "api",
-        "stash.download",
-        Some(&file_id),
-        None,
-        None,
-        false,
-        stash.open_download(&principal, &file_id, false),
-    )
-    .await?;
-    let size = opened.size;
-    crate::dispatch::file_stash::observe_operation(
-        "api",
-        "stash.download",
-        "success",
-        Some(&file_id),
-        None,
-        Some(size),
-        false,
-        0,
-        None,
-    );
-    let mut response = Response::new(blob_body(opened));
-    *response.status_mut() = StatusCode::OK;
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
-    );
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&size.to_string()).map_err(|_| stable("integrity_error"))?,
-    );
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&content_disposition(&file.display_name))
-            .map_err(|_| stable("integrity_error"))?,
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; sandbox"),
-    );
-    Ok(response)
+    let started = std::time::Instant::now();
+    let result: Result<Response, ApiError> = async {
+        let principal = principal(&state, identity).await?;
+        let stash = service(&state);
+        let (file, opened) = stash.open_download(&principal, &file_id, false).await?;
+        let size = opened.size;
+        let mut response = Response::new(blob_body(opened, file_id.clone(), started));
+        *response.status_mut() = StatusCode::OK;
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&size.to_string()).map_err(|_| stable("integrity_error"))?,
+        );
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&content_disposition(&file.display_name))
+                .map_err(|_| stable("integrity_error"))?,
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; sandbox"),
+        );
+        Ok(response)
+    }
+    .await;
+    if let Err(error) = &result {
+        crate::dispatch::file_stash::observe_operation(
+            "api",
+            "stash.download",
+            "error",
+            Some(&file_id),
+            None,
+            None,
+            false,
+            u64::try_from(started.elapsed().as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1),
+            Some(error.error.kind()),
+        );
+    }
+    result
 }
 
 /// Async reader that owns the opened blob until EOF/drop, while its independent
@@ -694,13 +802,23 @@ struct HeldBlob {
     blob: crate::file_stash::OpenedBlob,
     cancel: CancellationToken,
     idle: Pin<Box<tokio::time::Sleep>>,
+    observation: DownloadObservation,
 }
 
 impl HeldBlob {
-    fn new(blob: crate::file_stash::OpenedBlob) -> Self {
+    fn new(
+        blob: crate::file_stash::OpenedBlob,
+        file_id: String,
+        started: std::time::Instant,
+    ) -> Self {
         let cancel = blob.cancellation();
         let idle = Box::pin(tokio::time::sleep(blob.idle_timeout));
-        Self { blob, cancel, idle }
+        Self {
+            blob,
+            cancel,
+            idle,
+            observation: DownloadObservation::new(file_id, started),
+        }
     }
 }
 
@@ -712,6 +830,7 @@ impl AsyncRead for HeldBlob {
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
         if this.cancel.is_cancelled() {
+            this.observation.finish("error", Some("timeout"));
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "File Stash download exceeded its total deadline",
@@ -724,23 +843,78 @@ impl AsyncRead for HeldBlob {
                     this.idle
                         .as_mut()
                         .reset(tokio::time::Instant::now() + this.blob.idle_timeout);
+                } else {
+                    this.observation.finish("success", None);
                 }
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Ready(Err(error)) => {
+                this.observation
+                    .finish("error", Some("service_unavailable"));
+                Poll::Ready(Err(error))
+            }
             Poll::Pending => match this.idle.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "File Stash download exceeded its idle deadline",
-                ))),
+                Poll::Ready(()) => {
+                    this.observation.finish("error", Some("timeout"));
+                    Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "File Stash download exceeded its idle deadline",
+                    )))
+                }
                 Poll::Pending => Poll::Pending,
             },
         }
     }
 }
 
-fn blob_body(opened: crate::file_stash::OpenedBlob) -> Body {
-    Body::from_stream(ReaderStream::new(HeldBlob::new(opened)))
+struct DownloadObservation {
+    file_id: String,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl DownloadObservation {
+    fn new(file_id: String, started: std::time::Instant) -> Self {
+        Self {
+            file_id,
+            started,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self, result: &'static str, kind: Option<&str>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        crate::dispatch::file_stash::observe_operation(
+            "api",
+            "stash.download",
+            result,
+            Some(&self.file_id),
+            None,
+            Some(0),
+            false,
+            u64::try_from(self.started.elapsed().as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1),
+            kind,
+        );
+    }
+}
+
+impl Drop for DownloadObservation {
+    fn drop(&mut self) {
+        self.finish("error", Some("cancelled"));
+    }
+}
+
+fn blob_body(
+    opened: crate::file_stash::OpenedBlob,
+    file_id: String,
+    started: std::time::Instant,
+) -> Body {
+    Body::from_stream(ReaderStream::new(HeldBlob::new(opened, file_id, started)))
 }
 
 fn validate_header_budget(headers: &HeaderMap, limit: usize) -> Result<(), ApiError> {
@@ -834,12 +1008,13 @@ impl Drop for CancelOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     use axum::body::Bytes;
     use axum::{Router, http::Request};
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     use std::sync::Arc;
     use tower::ServiceExt as _;
+    use tracing_subscriber::prelude::*;
 
     fn mounted(state: AppState) -> Router {
         Router::new()
@@ -857,6 +1032,38 @@ mod tests {
         assert!(exact_content_length(&headers).is_err());
         headers.append(header::CONTENT_LENGTH, HeaderValue::from_static("1"));
         assert!(exact_content_length(&headers).is_err());
+    }
+
+    #[tokio::test]
+    async fn api_terminal_observation_covers_outer_handler_failures() {
+        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let logs = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(logs.clone()),
+        );
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _subscriber = tracing::dispatcher::set_default(&dispatch);
+        crate::test_support::rebuild_tracing_interest_cache();
+        let request = tracing::info_span!("http.request", request_id = "request-api-123");
+        let _request = request.enter();
+
+        let result = observe_api("stash.upload", None, None, false, async {
+            Err::<(), _>(stable("invalid_param"))
+        })
+        .await;
+
+        assert!(result.is_err());
+        let output = crate::test_support::captured_logs(&logs);
+        assert_eq!(output.matches("file stash operation").count(), 1);
+        assert!(output.contains("\"surface\":\"api\""));
+        assert!(output.contains("\"action\":\"stash.upload\""));
+        assert!(output.contains("\"result\":\"error\""));
+        assert!(output.contains("\"kind\":\"invalid_param\""));
+        assert!(output.contains("request-api-123"));
     }
 
     #[test]
@@ -999,7 +1206,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn response_body_holds_download_admission_until_drop() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -1054,7 +1261,7 @@ mod tests {
         runtime.shutdown().await;
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn ready_router_fixture() -> (
         Router,
         FileStashService,
@@ -1104,7 +1311,7 @@ mod tests {
         (router, service, principal, stash, temp)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn router_reports_raw_body_length_mismatch_without_committing_usage() {
         let (router, service, principal, runtime, _temp) = ready_router_fixture().await;
@@ -1132,7 +1339,7 @@ mod tests {
         runtime.shutdown().await;
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn dropped_router_upload_cancels_and_releases_reserved_usage() {
         let (router, service, principal, runtime, _temp) = ready_router_fixture().await;

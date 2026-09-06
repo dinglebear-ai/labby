@@ -81,12 +81,10 @@ impl FileStashRuntime {
     ) -> Self {
         let page_limit = usize::from(preferences.page_size);
         let max_query_bytes = preferences.max_query_bytes;
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_os = "linux"))]
         {
             drop(preferences);
-            tracing::warn!(
-                "File Stash is unavailable on macOS: descriptor-rooted SQLite is not supported"
-            );
+            tracing::warn!("File Stash is unavailable: this target is not Linux-qualified");
             Self {
                 root: Arc::new(root),
                 _root_handle: None,
@@ -101,7 +99,7 @@ impl FileStashRuntime {
                 max_query_bytes,
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             let initialized = initialize_owned(&root, &preferences).await;
             let admission = Arc::new(Semaphore::new(1));
@@ -282,7 +280,7 @@ fn map_store_error(error: FileStashStoreError) -> FileStashBlockedReason {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn open_private_directory(root: &File, name: &str) -> Result<File, FileStashBlockedReason> {
     use rustix::fs::{Mode, OFlags, openat};
     let fd = openat(
@@ -297,7 +295,7 @@ fn open_private_directory(root: &File, name: &str) -> Result<File, FileStashBloc
     Ok(file)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn open_private_directory(_: &File, _: &str) -> Result<File, FileStashBlockedReason> {
     Err(FileStashBlockedReason::UnsafeRoot)
 }
@@ -534,7 +532,7 @@ fn verify_database_identity(_: &File, _: &Path) -> Result<(), FileStashBlockedRe
     Err(FileStashBlockedReason::UnsafeRoot)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn anchored_child_path(
     root: &File,
     _: &Path,
@@ -553,15 +551,7 @@ fn anchored_child_path(
         child
     )))
 }
-#[cfg(target_os = "macos")]
-fn anchored_child_path(
-    _: &File,
-    root_path: &Path,
-    child: &str,
-) -> Result<PathBuf, FileStashBlockedReason> {
-    Ok(root_path.join(child))
-}
-#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+#[cfg(not(target_os = "linux"))]
 fn anchored_child_path(_: &File, _: &Path, _: &str) -> Result<PathBuf, FileStashBlockedReason> {
     Err(FileStashBlockedReason::UnsafeRoot)
 }
@@ -569,12 +559,12 @@ fn anchored_child_path(_: &File, _: &Path, _: &str) -> Result<PathBuf, FileStash
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     fn root(temp: &tempfile::TempDir, name: &str) -> PathBuf {
         std::fs::canonicalize(temp.path()).unwrap().join(name)
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn initializes_restarts_checkpoints_and_detects_mismatch() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -596,7 +586,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn schema_enforces_cross_table_names_and_grantee_separation() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(root(&temp, "stash")).await;
@@ -617,7 +607,7 @@ mod tests {
         }).await.unwrap();
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_intermediate_symlink_and_insecure_existing_mode() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
         let temp = tempfile::TempDir::new().unwrap();
@@ -644,7 +634,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn database_symlink_substitution_is_rejected_before_target_mutation() {
         use std::os::unix::fs::symlink;
         let temp = tempfile::TempDir::new().unwrap();
@@ -698,7 +688,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn database_queue_saturates_and_shutdown_closes_existing_handles() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(root(&temp, "stash")).await;
@@ -728,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_corrupt_schema_fingerprint() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -749,7 +739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_future_schema_without_partial_migration() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -774,9 +764,9 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     #[tokio::test]
-    async fn macos_fails_closed_without_descriptor_rooted_sqlite() {
+    async fn unsupported_targets_fail_closed_without_descriptor_rooted_sqlite() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(temp.path().join("stash")).await;
         assert_eq!(

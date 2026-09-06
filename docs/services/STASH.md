@@ -1,3 +1,9 @@
+---
+title: "File Stash"
+created: "2026-09-05"
+updated: "2026-09-06"
+---
+
 # File Stash
 
 File Stash is Labby's built-in service for principal-scoped arbitrary
