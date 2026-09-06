@@ -21,8 +21,15 @@ pub(crate) struct AuthoritySnapshotRecord {
     pub(crate) value: Value,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AuthoritySnapshotCheckpoint {
+    pub(crate) records: Vec<AuthoritySnapshotRecord>,
+    /// Last local mutation included in the same SQLite view as `records`.
+    pub(crate) outbox_cutoff: Option<u64>,
+}
+
 pub(super) fn snapshot(
-    connection: &mut Connection,
+    connection: &Connection,
     organization_id: &str,
 ) -> AccessStoreResult<Vec<AuthoritySnapshotRecord>> {
     let mut records = Vec::new();
@@ -123,6 +130,30 @@ pub(super) fn snapshot(
     Ok(records)
 }
 
+pub(super) fn snapshot_checkpoint(
+    connection: &mut Connection,
+    organization_id: &str,
+) -> AccessStoreResult<AuthoritySnapshotCheckpoint> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    let records = snapshot(&tx, organization_id)?;
+    let cutoff = tx
+        .query_row(
+            "SELECT MAX(sequence) FROM authority_projection_outbox WHERE organization_id=?1",
+            [organization_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(map_sqlite_error)?
+        .map(|value| u64::try_from(value).map_err(|_| AccessStoreError::MalformedVocabulary))
+        .transpose()?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(AuthoritySnapshotCheckpoint {
+        records,
+        outbox_cutoff: cutoff,
+    })
+}
+
 pub(super) fn organizations(connection: &mut Connection) -> AccessStoreResult<Vec<String>> {
     let mut statement = connection
         .prepare("SELECT organization_id FROM organizations WHERE status='active' ORDER BY organization_id COLLATE BINARY")
@@ -214,12 +245,13 @@ pub(super) fn supersede_with_snapshot(
     connection: &mut Connection,
     organization_id: &str,
     digest: &str,
+    through: u64,
     now: i64,
 ) -> AccessStoreResult<usize> {
     connection
         .execute(
-            "UPDATE authority_projection_outbox SET status='sent',sent_at=?2,envelope_digest=?3 WHERE organization_id=?1 AND status IN ('pending','inflight')",
-            params![organization_id, now, digest],
+            "UPDATE authority_projection_outbox SET status='sent',sent_at=?3,envelope_digest=?4 WHERE organization_id=?1 AND sequence<=?2 AND status IN ('pending','inflight')",
+            params![organization_id, i64::try_from(through).map_err(|_| AccessStoreError::MalformedVocabulary)?, now, digest],
         )
         .map_err(map_sqlite_error)
 }

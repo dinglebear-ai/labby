@@ -129,7 +129,7 @@ async fn upload_bytes(
         identity.map(|Extension(identity)| identity),
         Some(project_id),
         selected_team_id,
-        Permission::AssetUse,
+        Permission::ProjectManage,
     )
     .await?;
     let request_id = headers
@@ -155,14 +155,37 @@ async fn upload_bytes(
         message: "Artifact upload queue is unavailable".to_owned(),
     })?;
     tracing::info!(surface = "api", service = "uploads", action = "uploads.put", request_id, actor_id = %context.actor_id, project_id = %context.project_id, "remote upload started");
-    let stream = Limited::new(body, MAX_UPLOAD_BYTES).into_data_stream();
+    let bytes = Limited::new(body, MAX_UPLOAD_BYTES)
+        .collect()
+        .await
+        .map_err(|_| crate::dispatch::error::ToolError::InvalidParam {
+            message: "Artifact upload exceeds 50000000 bytes or could not be read".to_owned(),
+            param: "body".to_owned(),
+        })?
+        .to_bytes();
+    let actual_length = u64::try_from(bytes.len()).map_err(|_| {
+        crate::dispatch::error::ToolError::InvalidParam {
+            message: "Artifact upload length is invalid".to_owned(),
+            param: "body".to_owned(),
+        }
+    })?;
+    if content_length.is_some_and(|declared| declared != actual_length) {
+        return Err(crate::dispatch::error::ToolError::InvalidParam {
+            message: "Artifact upload content length does not match its body".to_owned(),
+            param: "content-length".to_owned(),
+        }
+        .into());
+    }
+    use sha2::Digest as _;
+    let content_digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&bytes)));
     let result = controls
         .upload(
             query.connection_id.as_deref(),
             &id,
-            reqwest::Body::wrap_stream(stream),
-            content_length,
+            reqwest::Body::from(bytes),
+            Some(actual_length),
             content_type,
+            &content_digest,
             &context,
         )
         .await;
@@ -252,11 +275,13 @@ async fn handle(
             let spec = crate::dispatch::remote_control::actions(service)
                 .iter()
                 .find(|candidate| candidate.name == action);
-            let permission = if spec.is_some_and(|spec| spec.requires_admin) {
-                Permission::AssetUse
-            } else {
-                Permission::AssetDiscover
-            };
+            let operation = crate::dispatch::remote_control::operation(service, &action)
+                .ok_or_else(|| crate::dispatch::error::ToolError::UnknownAction {
+                    message: format!("Unknown action: {action}"),
+                    valid: Vec::new(),
+                    hint: None,
+                })?;
+            let permission = crate::dispatch::artifact_control::operation_permission(operation);
             if spec.is_some_and(|spec| spec.requires_admin) {
                 require_session_csrf(
                     &action,

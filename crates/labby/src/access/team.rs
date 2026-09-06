@@ -580,7 +580,7 @@ fn mutate_member(
         &tx,
         &actor.organization_id,
         team_id,
-        &format!("{team_id}\0{principal_id}"),
+        principal_id,
         role,
         status,
     )?;
@@ -791,7 +791,7 @@ fn accept_invitation_at(
         &tx,
         revision,
         now,
-        &format!("{team_id}\0{}", principal.id),
+        &principal.id,
         &organization_id,
         "access.team_invitation.accept",
         "team_membership",

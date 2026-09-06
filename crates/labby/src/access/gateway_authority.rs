@@ -98,8 +98,16 @@ fn qualify_named_fields(value: &mut Value, prefix: &str) {
             object.remove("team_id");
             for (key, child) in object {
                 if matches!(key.as_str(), "name" | "loadout") {
-                    if let Some(name) = child.as_str().filter(|name| !name.starts_with(prefix)) {
-                        *child = Value::String(format!("{prefix}{name}"));
+                    if let Some(name) = child.as_str() {
+                        if !name.starts_with(prefix) {
+                            *child = Value::String(format!("{prefix}{name}"));
+                        }
+                    } else {
+                        // `loadout` is a string selector on read/delete actions,
+                        // but an object containing its own `name` on create and
+                        // update actions. Walk the object form instead of
+                        // treating the key itself as a terminal field.
+                        qualify_named_fields(child, prefix);
                     }
                 } else {
                     qualify_named_fields(child, prefix);
@@ -270,6 +278,14 @@ mod tests {
         .unwrap();
         assert_eq!(params["loadout"]["name"], "team:alpha:prod");
         assert!(params.get("team_id").is_none());
+
+        let selector = qualify_team_gateway_params(
+            "gateway.loadout.get",
+            Some("alpha"),
+            serde_json::json!({"loadout":"prod"}),
+        )
+        .unwrap();
+        assert_eq!(selector["loadout"], "team:alpha:prod");
         let mut rows = serde_json::json!([{"name":"team:alpha:prod"},{"name":"team:beta:prod"}]);
         filter_team_gateway_projection(Some("alpha"), &mut rows);
         assert_eq!(rows, serde_json::json!([{"name":"prod"}]));

@@ -168,11 +168,20 @@ impl AuthorityProjectionSender {
         if response.status() != StatusCode::OK {
             return Err(ProjectionSendError::Rejected);
         }
-        let ack: AuthorityProjectionAck = response
+        let response: ProjectionResponse = response
             .json()
             .await
             .map_err(|_| ProjectionSendError::InvalidResponse)?;
-        if ack.organization_id != organization_id || ack.highest_contiguous_sequence <= base {
+        let ack = response.ack;
+        let expected_final = base
+            .checked_add(
+                u64::try_from(envelope.records.len())
+                    .map_err(|_| ProjectionSendError::Configuration)?,
+            )
+            .ok_or(ProjectionSendError::Configuration)?;
+        if ack.organization_id != organization_id
+            || ack.highest_contiguous_sequence != expected_final
+        {
             return Err(ProjectionSendError::InvalidResponse);
         }
         Ok(ack)
@@ -184,12 +193,14 @@ impl AuthorityProjectionSender {
         &self,
         organization_id: &str,
         now: i64,
-    ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
-        let records = self
+    ) -> Result<(AuthorityProjectionAck, Option<u64>), ProjectionSendError> {
+        let checkpoint = self
             .store
-            .authority_snapshot(organization_id.to_owned())
+            .authority_snapshot_checkpoint(organization_id.to_owned())
             .await
-            .map_err(|_| ProjectionSendError::Store)?
+            .map_err(|_| ProjectionSendError::Store)?;
+        let records = checkpoint
+            .records
             .into_iter()
             .map(|record| AuthorityProjectionRecord {
                 sequence: 0,
@@ -199,7 +210,8 @@ impl AuthorityProjectionSender {
                 value: Some(record.value),
             })
             .collect();
-        self.send_snapshot(organization_id, records, now).await
+        let ack = self.send_snapshot(organization_id, records, now).await?;
+        Ok((ack, checkpoint.outbox_cutoff))
     }
 
     /// Performs at most one bounded delivery pass. It is intended for a supervised
@@ -346,10 +358,11 @@ impl AuthorityProjectionSender {
         if response.status() != StatusCode::OK {
             return Err(ProjectionSendError::Rejected);
         }
-        response
+        let response: ProjectionResponse = response
             .json()
             .await
-            .map_err(|_| ProjectionSendError::InvalidResponse)
+            .map_err(|_| ProjectionSendError::InvalidResponse)?;
+        Ok(response.ack)
     }
 }
 
@@ -412,12 +425,13 @@ pub(crate) async fn start_managed_projection(
             Ok(organizations) => {
                 for organization in organizations {
                     match sender.send_current_snapshot(&organization, now).await {
-                        Ok(ack) => {
+                        Ok((ack, Some(cutoff))) => {
                             if let Err(error) = sender
                                 .store
                                 .supersede_authority_projection_with_snapshot(
                                     organization,
                                     ack.last_envelope_digest,
+                                    cutoff,
                                     now,
                                 )
                                 .await
@@ -428,6 +442,7 @@ pub(crate) async fn start_managed_projection(
                                 );
                             }
                         }
+                        Ok((_ack, None)) => {}
                         Err(error) => tracing::warn!(
                             error = %error,
                             "initial Depot authority snapshot failed; managed authority remains stale"
@@ -467,6 +482,11 @@ pub(crate) struct ProjectionReadiness {
 pub(crate) struct ProjectionWatermark {
     pub(crate) highest_contiguous_sequence: u64,
     pub(crate) last_envelope_digest: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectionResponse {
+    ack: AuthorityProjectionAck,
 }
 
 #[derive(Serialize)]
@@ -610,6 +630,27 @@ mod tests {
         assert_eq!(
             String::from_utf8(canonical_json(&value).unwrap()).unwrap(),
             "{\"generated_at\":\"2026-09-05T00:00:00Z\",\"installation_id\":\"install-1\",\"key_id\":\"key-1\",\"kind\":\"delta\",\"organization_id\":\"org-1\",\"payload_digest\":\"sha256:placeholder\",\"previous_digest\":null,\"records\":[],\"schema_version\":1,\"sequence_end\":1,\"sequence_start\":1}"
+        );
+    }
+
+    #[test]
+    fn projection_response_requires_the_ack_wrapper() {
+        let wrapped = serde_json::json!({"ack": {
+            "organization_id": "org-1",
+            "highest_contiguous_sequence": 4,
+            "last_envelope_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "snapshot_digest": null
+        }});
+        let response: ProjectionResponse = serde_json::from_value(wrapped).unwrap();
+        assert_eq!(response.ack.organization_id, "org-1");
+        assert!(
+            serde_json::from_value::<ProjectionResponse>(serde_json::json!({
+                "organization_id": "org-1",
+                "highest_contiguous_sequence": 4,
+                "last_envelope_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "snapshot_digest": null
+            }))
+            .is_err()
         );
     }
 }

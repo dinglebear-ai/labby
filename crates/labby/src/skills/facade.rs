@@ -150,7 +150,9 @@ impl ArtifactAccessSnapshot {
         ownership.tenant_id == self.tenant_id
             && match ownership.owner_kind() {
                 LibraryOwnerKind::Personal => {
-                    ownership.owner_id == self.actor_id || self.is_platform_admin
+                    ownership.owner_id == self.actor_id
+                        || self.is_platform_admin
+                        || visibility == SkillVisibility::Tenant
                 }
                 LibraryOwnerKind::Project => {
                     (ownership.owner_id == self.project_id || self.is_platform_admin)
@@ -917,15 +919,24 @@ mod tests {
         }))
     }
 
-    fn artifact_access(tenant: &str, actor: &str, is_admin: bool) -> ArtifactAccessSnapshot {
+    fn artifact_access_with_platform_role(
+        tenant: &str,
+        actor: &str,
+        is_admin: bool,
+        is_platform_admin: bool,
+    ) -> ArtifactAccessSnapshot {
         ArtifactAccessSnapshot::new(
             LibraryTenantId::from_canonical_projection(tenant).unwrap(),
             LibraryActorId::from_canonical_projection(actor).unwrap(),
             LibraryActorId::from_canonical_projection("project").unwrap(),
             BTreeSet::new(),
             is_admin,
-            false,
+            is_platform_admin,
         )
+    }
+
+    fn artifact_access(tenant: &str, actor: &str, is_admin: bool) -> ArtifactAccessSnapshot {
+        artifact_access_with_platform_role(tenant, actor, is_admin, false)
     }
 
     use labby_runtime::skills::ResourceDigest;
@@ -1035,6 +1046,17 @@ mod tests {
             .with_artifact_access(artifact_access("tenant-a", "admin", true));
         assert!(
             resolve_visible_skill(&admin, "skill://labby/artifact/notes.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "project administration does not grant access to another principal's private records"
+        );
+
+        let platform_admin = artifact_context(SkillVisibility::Private).with_artifact_access(
+            artifact_access_with_platform_role("tenant-a", "platform-admin", true, true),
+        );
+        assert!(
+            resolve_visible_skill(&platform_admin, "skill://labby/artifact/notes.md")
                 .await
                 .unwrap()
                 .is_some()

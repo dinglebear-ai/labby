@@ -331,12 +331,24 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
-    let base = BTreeSet::from(["doctor", "server_logs", "setup", "stash"]);
+    let base = BTreeSet::from([
+        "access",
+        "agents",
+        "dev_containers",
+        "doctor",
+        "server_logs",
+        "setup",
+        "stash",
+        "tasks",
+    ]);
     let gateway = BTreeSet::from([
         "artifacts",
+        "access",
+        "agents",
         "browser",
         "bundles",
         "doctor",
+        "dev_containers",
         "gateway",
         "jobs",
         "server_logs",
@@ -345,6 +357,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "sources",
         "stash",
         "uploads",
+        "tasks",
     ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
@@ -354,31 +367,58 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ("gateway-host", gateway),
         (
             "fs",
-            BTreeSet::from(["doctor", "fs", "server_logs", "setup", "stash"]),
+            BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
+                "doctor",
+                "fs",
+                "server_logs",
+                "setup",
+                "stash",
+                "tasks",
+            ]),
         ),
         (
             "skills",
             BTreeSet::from([
                 "artifacts",
+                "access",
+                "agents",
                 "bundles",
                 "doctor",
+                "dev_containers",
                 "jobs",
                 "server_logs",
                 "setup",
                 "sources",
                 "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
         (
             "lab-admin",
-            BTreeSet::from(["doctor", "lab_admin", "server_logs", "setup", "stash"]),
+            BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
+                "doctor",
+                "lab_admin",
+                "server_logs",
+                "setup",
+                "stash",
+                "tasks",
+            ]),
         ),
         (
             "all",
             BTreeSet::from([
                 "browser",
+                "access",
+                "agents",
                 "doctor",
+                "dev_containers",
                 "fs",
                 "gateway",
                 "lab_admin",
@@ -391,6 +431,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "sources",
                 "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
     ]);

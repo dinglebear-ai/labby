@@ -95,7 +95,9 @@ impl Operation {
 
     fn expected_input_schema(self) -> Value {
         let properties = match self {
-            Self::ArtifactsList => json!({"cursor":{"type":"string"},"limit":{"type":"integer"}}),
+            Self::ArtifactsList => {
+                json!({"cursor":{"type":"string"},"limit":{"type":"integer"},"query":{"type":"string"}})
+            }
             Self::ArtifactsGet => json!({"artifactId":{"type":"string"}}),
             Self::ArtifactsSearch | Self::SearchSkillsSh => {
                 json!({"query":{"type":"string"},"limit":{"type":"integer"}})
@@ -186,6 +188,7 @@ impl Operation {
         })
     }
 
+    #[cfg(test)]
     fn expected_schema_fingerprint(self) -> String {
         schema_fingerprint(&self.expected_input_schema())
     }
@@ -240,12 +243,13 @@ impl ArtifactControlClient {
         let compatible = catalog.operations.iter().any(|definition| {
             let input_schema = definition.get("inputSchema");
             let declared_fingerprint = definition.get("schemaFingerprint").and_then(Value::as_str);
-            let expected_fingerprint = operation.expected_schema_fingerprint();
             definition.get("name").and_then(Value::as_str) == Some(operation.provider_name())
                 && definition.get("contractVersion").and_then(Value::as_u64)
                     == Some(OPERATION_CONTRACT_VERSION)
                 && declared_fingerprint == input_schema.map(schema_fingerprint).as_deref()
-                && declared_fingerprint == Some(expected_fingerprint.as_str())
+                && input_schema.is_some_and(|schema| {
+                    schema_contract_matches(schema, &operation.expected_input_schema())
+                })
                 && definition
                     .pointer("/inputSchema/type")
                     .and_then(Value::as_str)
@@ -315,6 +319,26 @@ impl ArtifactControlClient {
             )
             .await
     }
+}
+
+fn schema_contract_matches(actual: &Value, expected: &Value) -> bool {
+    let Some(actual_properties) = actual.get("properties").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(expected_properties) = expected.get("properties").and_then(Value::as_object) else {
+        return false;
+    };
+    if actual.get("type") != expected.get("type")
+        || actual.get("required") != expected.get("required")
+        || actual_properties.len() != expected_properties.len()
+    {
+        return false;
+    }
+    expected_properties.iter().all(|(name, expected_property)| {
+        actual_properties.get(name).is_some_and(|actual_property| {
+            actual_property.get("type") == expected_property.get("type")
+        })
+    })
 }
 
 fn schema_fingerprint(schema: &Value) -> String {

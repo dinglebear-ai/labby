@@ -54,12 +54,20 @@ const GATEWAY_OWNED: &[OwnerKind] = &[
 /// names, so this service-level policy cannot hide an unregistered action.
 pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassification> {
     let (resource, owners, delegated) = match action.service.as_str() {
+        "access" if action.action.starts_with("access.platform_admin.") => {
+            (ResourceFamily::Platform, INSTALLATION, false)
+        }
+        "access" => (ResourceFamily::Project, USER_OWNED, false),
+        "agents" => (ResourceFamily::Agent, USER_OWNED, false),
         "artifacts" | "bundles" | "sources" | "uploads" => {
             (ResourceFamily::Library, USER_OWNED, true)
         }
         "gateway" => (ResourceFamily::Gateway, GATEWAY_OWNED, true),
         "browser" | "snippets" => (ResourceFamily::Gateway, USER_OWNED, true),
+        "dev_containers" => (ResourceFamily::DevContainer, USER_OWNED, false),
         "jobs" => (ResourceFamily::Task, USER_OWNED, true),
+        "stash" => (ResourceFamily::Stash, USER_OWNED, false),
+        "tasks" => (ResourceFamily::Task, USER_OWNED, false),
         "doctor" | "fs" | "lab_admin" | "server_logs" | "setup" => {
             (ResourceFamily::Platform, INSTALLATION, false)
         }

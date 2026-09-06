@@ -96,6 +96,9 @@ pub(crate) struct AuthorityContext {
     pub team_id: Option<String>,
     pub project_id: String,
     pub platform_administrator: bool,
+    /// Exact permission revalidated for this request. Delegation must never
+    /// mint a capability outside this local authorization ceiling.
+    pub permission: crate::access::Permission,
     pub epochs: DelegatedAuthorityEpochs,
 }
 
@@ -134,12 +137,13 @@ pub(crate) async fn authorize_authority_context(
         team_id: snapshot.team_id,
         project_id: snapshot.project_id,
         platform_administrator: snapshot.platform_administrator,
+        permission,
         epochs: DelegatedAuthorityEpochs {
             authority_schema: snapshot.authority_schema,
             organization_policy: snapshot.organization_policy,
             team_membership: snapshot.team_membership,
             team_policy: snapshot.team_policy,
-            project_membership: Some(snapshot.project_membership),
+            project_membership: snapshot.project_membership,
             project_policy: Some(snapshot.project_policy),
             global_revision: snapshot.global_revision,
         },
@@ -275,6 +279,7 @@ impl ArtifactControlPlane {
         body: reqwest::Body,
         content_length: Option<u64>,
         content_type: &str,
+        content_digest: &str,
         context: &AuthorityContext,
     ) -> Result<Value, ToolError> {
         let connection = self.connection(connection_id)?;
@@ -289,7 +294,8 @@ impl ArtifactControlPlane {
                 message: "Artifact authority connection is unavailable".to_owned(),
             })?;
         let client = connection.client(Some(context))?;
-        let headers = self.upload_delegation_headers(upload_id, context)?;
+        let headers =
+            self.upload_delegation_headers(upload_id, content_digest, content_length, context)?;
         let result = client
             .upload_with_headers(upload_id, body, content_length, content_type, headers)
             .await
@@ -365,8 +371,13 @@ impl ArtifactControlPlane {
             resource,
             operation: operation.provider_name().into(),
             intent_id: intent_id.clone(),
-            scopes: vec!["skills:read".into(), "skills:write".into()],
-            capabilities: operation_capabilities(operation, context.platform_administrator),
+            content_digest: None,
+            content_length: None,
+            scopes: operation_scopes(operation, context.permission)?
+                .iter()
+                .map(|scope| (*scope).to_owned())
+                .collect(),
+            capabilities: operation_capabilities(operation, context)?,
             epochs: context.epochs.clone(),
             delegation_chain: vec!["labby".into()],
         };
@@ -395,6 +406,8 @@ impl ArtifactControlPlane {
     fn upload_delegation_headers(
         &self,
         upload_id: &str,
+        content_digest: &str,
+        content_length: Option<u64>,
         context: &AuthorityContext,
     ) -> Result<reqwest::header::HeaderMap, ToolError> {
         let Some(delegation) = self.delegation.as_ref() else {
@@ -424,11 +437,13 @@ impl ArtifactControlPlane {
             resource,
             operation: "depot.uploads.put".into(),
             intent_id: intent_id.clone(),
-            scopes: vec!["skills:write".into()],
-            capabilities: operation_capabilities(
-                Operation::UploadsCreate,
-                context.platform_administrator,
-            ),
+            content_digest: Some(content_digest.to_owned()),
+            content_length,
+            scopes: operation_scopes(Operation::UploadsCreate, context.permission)?
+                .iter()
+                .map(|scope| (*scope).to_owned())
+                .collect(),
+            capabilities: operation_capabilities(Operation::UploadsCreate, context)?,
             epochs: context.epochs.clone(),
             delegation_chain: vec!["labby".into()],
         };
@@ -463,14 +478,27 @@ fn delegation_header_map(
     Ok(headers)
 }
 
-fn operation_capabilities(operation: Operation, platform: bool) -> Vec<String> {
-    if platform {
-        return vec!["platform.manage".into()];
+fn operation_capabilities(
+    operation: Operation,
+    context: &AuthorityContext,
+) -> Result<Vec<String>, ToolError> {
+    let (capability, required_permission) = operation_authority(operation);
+    if context.permission != required_permission {
+        return Err(ToolError::Forbidden {
+            message: "Remote Artifact operation exceeds its authorized permission".to_owned(),
+            required_scopes: Vec::new(),
+        });
     }
-    let capability = match operation {
+    if context.platform_administrator {
+        return Ok(vec!["platform.manage".into()]);
+    }
+    Ok(vec![capability.into()])
+}
+
+fn operation_authority(operation: Operation) -> (&'static str, crate::access::Permission) {
+    match operation {
         Operation::ArtifactsList
         | Operation::ArtifactsSearch
-        | Operation::CandidatesList
         | Operation::SearchSkillsSh
         | Operation::SearchArd
         | Operation::SearchMarketplace
@@ -478,24 +506,57 @@ fn operation_capabilities(operation: Operation, platform: bool) -> Vec<String> {
         | Operation::AcpRegistryList
         | Operation::AuthorityStatus
         | Operation::SourcesList
+        | Operation::BundlesList => ("scope.read", crate::access::Permission::AssetDiscover),
+        Operation::CandidatesList
         | Operation::JobsList
         | Operation::JobsGet
-        | Operation::UploadsGet
-        | Operation::BundlesList => "scope.read",
-        Operation::ArtifactsGet | Operation::BundlesGet => "scope.use",
+        | Operation::UploadsGet => ("scope.read", crate::access::Permission::ProjectManage),
+        Operation::ArtifactsGet | Operation::BundlesGet => {
+            ("scope.use", crate::access::Permission::AssetUse)
+        }
         Operation::CandidatesIntake
         | Operation::ArtifactsFork
         | Operation::JobsStart
         | Operation::UploadsCreate
         | Operation::BundlesCreate
-        | Operation::BundlesAddArtifact => "scope.create",
+        | Operation::BundlesAddArtifact => {
+            ("scope.create", crate::access::Permission::ProjectManage)
+        }
         Operation::JobsCancel
         | Operation::JobsRetry
         | Operation::BundlesPublish
-        | Operation::BundlesRemoveArtifact => "scope.operate",
-        _ => "scope.manage",
-    };
-    vec![capability.into()]
+        | Operation::BundlesRemoveArtifact => {
+            ("scope.operate", crate::access::Permission::ProjectManage)
+        }
+        _ => ("scope.manage", crate::access::Permission::ProjectManage),
+    }
+}
+
+pub(crate) fn operation_permission(operation: Operation) -> crate::access::Permission {
+    operation_authority(operation).1
+}
+
+fn operation_scopes(
+    operation: Operation,
+    permission: crate::access::Permission,
+) -> Result<&'static [&'static str], ToolError> {
+    // Validate the permission/capability pair before emitting broader transport
+    // scopes. Depot treats both fields as authority, so neither may exceed the
+    // exact Labby decision.
+    let (_, required_permission) = operation_authority(operation);
+    if permission != required_permission {
+        return Err(ToolError::Forbidden {
+            message: "Remote Artifact operation exceeds its authorized permission".to_owned(),
+            required_scopes: Vec::new(),
+        });
+    }
+    Ok(match permission {
+        crate::access::Permission::AssetDiscover | crate::access::Permission::AssetUse => {
+            &["skills:read"]
+        }
+        crate::access::Permission::ProjectManage => &["skills:read", "skills:write"],
+        crate::access::Permission::ProjectRead => &["skills:read"],
+    })
 }
 
 fn delegation_configuration(
@@ -692,7 +753,10 @@ mod tests {
     use base64::Engine as _;
     use serde_json::json;
 
-    use super::{ArtifactControlPlane, AuthorityContext, Operation, redact_provider_metadata};
+    use super::{
+        ArtifactControlPlane, AuthorityContext, Operation, operation_capabilities,
+        redact_provider_metadata,
+    };
     use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
     #[test]
@@ -837,6 +901,7 @@ mod tests {
             team_id: Some("team-1".into()),
             project_id: "project-1".into(),
             platform_administrator: false,
+            permission: crate::access::Permission::ProjectManage,
             epochs: labby_auth::depot_delegation::DelegatedAuthorityEpochs {
                 authority_schema: 7,
                 organization_policy: 8,
@@ -872,6 +937,28 @@ mod tests {
         assert_eq!(claims["intent_id"], "intent-1");
         assert_eq!(claims["capabilities"], json!(["scope.create"]));
         assert!(claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap() <= 60);
+
+        let upload_headers = controls
+            .upload_delegation_headers(
+                "upload-1",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some(12),
+                &context,
+            )
+            .unwrap();
+        let upload_token = upload_headers["x-labby-delegation"].to_str().unwrap();
+        let upload_payload = upload_token.split('.').nth(1).unwrap();
+        let upload_claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(upload_payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            upload_claims["content_digest"],
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(upload_claims["content_length"], 12);
     }
 
     #[test]
@@ -884,5 +971,146 @@ mod tests {
         assert!(
             ArtifactControlPlane::from_configs(&ArtifactPreferences::default(), &depot).is_err()
         );
+    }
+
+    #[test]
+    fn delegated_capability_cannot_exceed_exact_local_permission() {
+        let context = AuthorityContext {
+            actor_id: "principal-1".into(),
+            organization_id: "organization-1".into(),
+            team_id: Some("team-1".into()),
+            project_id: "project-1".into(),
+            platform_administrator: false,
+            permission: crate::access::Permission::AssetDiscover,
+            epochs: labby_auth::depot_delegation::DelegatedAuthorityEpochs {
+                authority_schema: 1,
+                organization_policy: 1,
+                team_membership: Some(1),
+                team_policy: Some(1),
+                project_membership: Some(1),
+                project_policy: Some(1),
+                global_revision: 1,
+            },
+        };
+        assert!(operation_capabilities(Operation::ArtifactsList, &context).is_ok());
+        assert!(operation_capabilities(Operation::JobsStart, &context).is_err());
+        assert!(operation_capabilities(Operation::SourcesConfigure, &context).is_err());
+    }
+
+    /// Cross-repository system driver. Depot's ExUnit orchestrator supplies a
+    /// real production Router endpoint and credentials, then invokes this exact
+    /// ignored test. No HTTP contract mock is used here.
+    #[tokio::test]
+    #[ignore = "run by Depot's managed Labby HTTP orchestrator"]
+    async fn real_managed_depot_http_driver() {
+        use crate::access::{AssignTeamProjectInput, BootstrapOwnerInput, Permission, ProjectRole};
+        use labby_auth::{Authenticator, VerifiedIdentity};
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+
+        let endpoint = std::env::var("LABBY_DEPOT_SYSTEM_ENDPOINT")
+            .expect("LABBY_DEPOT_SYSTEM_ENDPOINT is required");
+        let bearer_env = "LABBY_DEPOT_SYSTEM_BEARER";
+        std::env::var(bearer_env).expect("LABBY_DEPOT_SYSTEM_BEARER is required");
+        let seed = [41_u8; 32];
+        let directory = tempfile::Builder::new()
+            .prefix("labby-depot-system-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let store = crate::access::AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let owner = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "managed-system-owner",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(owner.clone(), "System Org", "System Project").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .assign_team_project(
+                AssignTeamProjectInput::new(
+                    owner.clone(),
+                    "bootstrap-initial-team",
+                    "bootstrap-default",
+                    ProjectRole::Owner,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let sender = crate::dispatch::depot::authority_projection::AuthorityProjectionSender::new(
+            url::Url::parse(&endpoint).unwrap(),
+            std::env::var(bearer_env).unwrap(),
+            "system-installation",
+            "current",
+            seed,
+            store.clone(),
+        )
+        .unwrap();
+        sender
+            .send_current_snapshot(
+                "bootstrap-local",
+                i64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let controls = ArtifactControlPlane {
+            clients: [(
+                "system".to_owned(),
+                super::AuthorityConnection {
+                    control_plane_url: endpoint,
+                    pinned_addresses: vec!["127.0.0.1".parse().unwrap()],
+                    bearer_token_env: Some(bearer_env.into()),
+                    permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            delegation: Some(
+                super::delegation_configuration_from_seed("system-installation", "current", seed)
+                    .unwrap(),
+            ),
+        };
+        let runtime =
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await;
+        let context = super::authorize_authority_context(
+            &runtime,
+            owner,
+            "bootstrap-default",
+            Some("bootstrap-initial-team"),
+            Permission::AssetDiscover,
+        )
+        .await
+        .unwrap();
+        let result = controls
+            .execute(
+                Some("system"),
+                Operation::ArtifactsList,
+                &json!({"limit":1}),
+                Some(&context),
+            )
+            .await
+            .unwrap();
+        assert!(result.get("artifacts").is_some());
     }
 }

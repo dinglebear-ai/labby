@@ -314,6 +314,15 @@ impl AccessStore {
         })
         .await
     }
+    pub(crate) async fn authority_snapshot_checkpoint(
+        &self,
+        organization_id: String,
+    ) -> AccessStoreResult<super::outbox::AuthoritySnapshotCheckpoint> {
+        self.with_connection(move |connection| {
+            super::outbox::snapshot_checkpoint(connection, &organization_id)
+        })
+        .await
+    }
     pub(crate) async fn authority_organizations(&self) -> AccessStoreResult<Vec<String>> {
         self.with_connection(super::outbox::organizations).await
     }
@@ -351,10 +360,17 @@ impl AccessStore {
         &self,
         organization_id: String,
         digest: String,
+        through: u64,
         now: i64,
     ) -> AccessStoreResult<usize> {
         self.with_connection(move |connection| {
-            super::outbox::supersede_with_snapshot(connection, &organization_id, &digest, now)
+            super::outbox::supersede_with_snapshot(
+                connection,
+                &organization_id,
+                &digest,
+                through,
+                now,
+            )
         })
         .await
     }
@@ -1335,8 +1351,14 @@ mod tests {
                 "access_metadata",
                 "access_security_events",
                 "access_tombstones",
+                "authority_outbox_sequences",
+                "authority_projection_outbox",
                 "bootstrap_proofs",
                 "credential_idempotency",
+                "dev_container_instances",
+                "dev_container_ledger",
+                "dev_container_owner_quotas",
+                "dev_container_templates",
                 "groups",
                 "organizations",
                 "platform_administrators",
@@ -1347,7 +1369,9 @@ mod tests {
                 "project_memberships",
                 "project_policy_publications",
                 "projects",
+                "team_invitations",
                 "team_memberships",
+                "team_project_assignments",
             ]
         );
         assert_eq!(

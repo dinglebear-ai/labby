@@ -397,21 +397,34 @@ pub async fn auth_session(
             .and_then(labby_auth::parse_bearer_token)
         && labby_auth::tokens_equal(&token, expected.as_ref())
     {
+        let identity = match labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        ) {
+            Ok(identity) => identity,
+            Err(_) => return internal_error_response("authenticated authority is unavailable"),
+        };
+        let authority = match state.access_runtime.session_authority(identity).await {
+            Ok(authority) => authority,
+            Err(_) => return internal_error_response("authenticated authority is unavailable"),
+        };
         let response = no_store_json(serde_json::json!({
             "authenticated": true,
             "login_available": state.oauth_state.is_some(),
-            "is_admin": false,
+            "is_admin": authority.capabilities.iter().any(|capability| capability.as_wire() == "platform.manage"),
             "user": {
                 "sub": "static-bearer",
                 "email": serde_json::Value::Null,
             },
             "expires_at": DEV_SESSION_EXPIRES_AT,
             "csrf_token": "",
-            "owner": serde_json::Value::Null,
-            "team": serde_json::Value::Null,
+            "owner": { "kind": "personal", "id": authority.principal_id },
+            "organization_id": authority.organization_id,
+            "teams": authority.teams.iter().map(|(id, role, membership_epoch, policy_epoch)| serde_json::json!({"id":id,"role":role.as_wire(),"membership_epoch":membership_epoch,"policy_epoch":policy_epoch})).collect::<Vec<_>>(),
+            "projects": authority.projects.iter().map(|(id, role)| serde_json::json!({"id":id,"role":role.as_wire()})).collect::<Vec<_>>(),
             "project": serde_json::Value::Null,
-            "capabilities": [],
-            "authority_generation": 0,
+            "capabilities": authority.capabilities.iter().map(|capability| capability.as_wire()).collect::<Vec<_>>(),
+            "authority_generation": authority.authority_generation,
         }));
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;

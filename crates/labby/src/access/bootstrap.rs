@@ -413,7 +413,12 @@ mod tests {
             .unwrap();
         drop(store);
         let connection = Connection::open(&path).unwrap();
-        connection.execute("DELETE FROM access_audit", []).unwrap();
+        connection
+            .execute_batch(
+                "DELETE FROM authority_projection_outbox;
+                 DELETE FROM access_audit;",
+            )
+            .unwrap();
         drop(connection);
         assert!(matches!(
             AccessStore::open(path).await,

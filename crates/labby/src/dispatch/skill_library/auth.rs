@@ -379,7 +379,10 @@ impl SkillLibraryAuthorizationDecision {
     ) -> bool {
         ownership.tenant_id == self.tenant_id
             && match ownership.owner_kind() {
-                LibraryOwnerKind::Personal => self.permits_personal(ownership),
+                LibraryOwnerKind::Personal => {
+                    self.permits_personal(ownership)
+                        || (visibility == SkillVisibility::Tenant && is_active)
+                }
                 LibraryOwnerKind::Project => {
                     (ownership.owner_id == self.project_id || self.is_platform_admin)
                         && (visibility == SkillVisibility::Tenant || self.is_admin)
@@ -1330,7 +1333,7 @@ mod tests {
         .unwrap();
         assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
         assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, false));
-        assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, true));
+        assert!(member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, true));
 
         let cross_tenant = LibraryOwnership::canonical(
             LibraryTenantId::from_canonical_projection("other-tenant").unwrap(),
@@ -1487,7 +1490,8 @@ mod tests {
             .await
             .unwrap()
             .execute_test_statement(
-                "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
+                "UPDATE platform_administrators SET status='revoked',revoked_at=2,updated_at=2 WHERE principal_id='bootstrap-owner';
+                 UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
             )
             .await
             .unwrap();
@@ -1521,6 +1525,12 @@ mod tests {
         let (directory, runtime, owner) = fixture().await;
         let primary = runtime.store().await.unwrap();
         let secondary = AccessStore::open_existing_current(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        primary
+            .execute_test_statement(
+                "UPDATE platform_administrators SET status='revoked',revoked_at=2,updated_at=2 WHERE principal_id='bootstrap-owner'",
+            )
             .await
             .unwrap();
         let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
@@ -1816,7 +1826,8 @@ mod tests {
             .await
             .unwrap()
             .execute_test_statement(
-                "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
+                "UPDATE platform_administrators SET status='revoked',revoked_at=2,updated_at=2 WHERE principal_id='bootstrap-owner';
+                 UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
             )
             .await
             .unwrap();

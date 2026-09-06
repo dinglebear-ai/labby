@@ -203,11 +203,15 @@ pub(crate) async fn handle(
                     let spec = crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
                         .iter()
                         .find(|candidate| candidate.name == action);
-                    let permission = if spec.is_some_and(|spec| spec.requires_admin) {
-                        crate::access::Permission::AssetUse
-                    } else {
-                        crate::access::Permission::AssetDiscover
-                    };
+                    let operation =
+                        crate::dispatch::remote_control::operation("artifacts", &action)
+                            .ok_or_else(|| ToolError::UnknownAction {
+                                message: format!("Unknown action: {action}"),
+                                valid: Vec::new(),
+                                hint: None,
+                            })?;
+                    let permission =
+                        crate::dispatch::artifact_control::operation_permission(operation);
                     if spec.is_some_and(|spec| spec.requires_admin) {
                         crate::api::services::remote_control::require_session_csrf(
                             &action,

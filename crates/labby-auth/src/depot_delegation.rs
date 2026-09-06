@@ -41,6 +41,10 @@ pub struct DepotDelegationClaims {
     pub resource: String,
     pub operation: String,
     pub intent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_length: Option<u64>,
     pub scopes: Vec<String>,
     pub capabilities: Vec<String>,
     pub epochs: DelegatedAuthorityEpochs,
@@ -141,6 +145,13 @@ fn validate(c: &DepotDelegationClaims) -> Result<(), DelegationError> {
         || c.scopes.len() > MAX_VALUES
         || c.capabilities.len() > MAX_VALUES
         || c.delegation_chain.len() > 8
+        || c.content_digest.as_ref().is_some_and(|digest| {
+            digest.len() != 71
+                || !digest.starts_with("sha256:")
+                || !digest[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
         || c.team_id.as_deref().is_some_and(|v| !valid(v))
         || c.project_id.as_deref().is_some_and(|v| !valid(v))
     {
@@ -172,6 +183,8 @@ mod tests {
             resource: "/api/artifacts".into(),
             operation: "artifact.create".into(),
             intent_id: "i1".into(),
+            content_digest: None,
+            content_length: None,
             scopes: vec!["skills:write".into()],
             capabilities: vec!["scope.create".into()],
             epochs: DelegatedAuthorityEpochs {

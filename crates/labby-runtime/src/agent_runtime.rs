@@ -174,14 +174,28 @@ pub async fn execute_agent<A: AgentAuthority, E: AgentExecutor>(
         .lease
         .validate_at(AuthoritySafeBoundary::BeforeDispatch, now, &epochs)
         .map_err(AgentRuntimeError::Lease)?;
+    let final_lease = request.lease.clone();
+    let final_cancellation = cancellation.clone();
+    let revocation = request.definition.revocation_policy;
     let guard = ExecutionGuard {
         authority,
         lease: request.lease.clone(),
         cancellation,
-        revocation: request.definition.revocation_policy,
+        revocation,
     };
     let bounds = request.bounds;
     let output = executor.execute(request, guard).await?;
+    // Executors may check around their own external effects, but the runtime
+    // owns the final commit boundary and never trusts an implementation to do
+    // so. This closes the gap for executors that omit or misplace guard.check.
+    ExecutionGuard {
+        authority,
+        lease: final_lease,
+        cancellation: final_cancellation,
+        revocation,
+    }
+    .check(AuthoritySafeBoundary::BeforeCommit, now)
+    .await?;
     if output.bytes > bounds.max_output_bytes
         || output.external_effects > bounds.max_external_effects
     {
@@ -236,6 +250,34 @@ mod tests {
                 bytes: 4,
                 external_effects: 0,
             })
+        }
+    }
+    struct ExecWithoutFinalCheck;
+    impl AgentExecutor for ExecWithoutFinalCheck {
+        async fn execute(
+            &self,
+            _: AgentExecutionRequest,
+            _: ExecutionGuard<'_>,
+        ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+            Ok(AgentExecutionOutput {
+                digest: dig(),
+                bytes: 4,
+                external_effects: 0,
+            })
+        }
+    }
+    struct ChangingAuth {
+        initial: AuthorityEpochVector,
+        changed: AuthorityEpochVector,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl AgentAuthority for ChangingAuth {
+        async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(self.initial.clone())
+            } else {
+                Ok(self.changed.clone())
+            }
         }
     }
     fn dig() -> String {
@@ -344,6 +386,28 @@ mod tests {
             .await
             .unwrap_err(),
             AgentRuntimeError::Lease(AuthorityLeaseError::AuthorityChanged)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_owns_final_boundary_even_when_executor_omits_it() {
+        let initial = epochs(1);
+        let authority = ChangingAuth {
+            initial: initial.clone(),
+            changed: epochs(2),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        assert_eq!(
+            execute_agent(
+                &authority,
+                &ExecWithoutFinalCheck,
+                request(&initial),
+                Cancellation::new(),
+                1,
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::Revoked
         );
     }
 }

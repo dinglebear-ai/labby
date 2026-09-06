@@ -4,6 +4,7 @@ use crate::agent_runtime::{
     AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor, AgentRuntimeError,
     Cancellation, execute_agent,
 };
+use crate::authority::AuthoritySafeBoundary;
 use labby_primitives::{access::OwnerScope, task::TaskState};
 use std::{
     collections::BTreeMap,
@@ -103,6 +104,18 @@ where
     .await
     {
         Ok(output) => {
+            // Settlement is Task's durable success commit, distinct from the
+            // executor's output commit. Revalidate immediately at this owning
+            // boundary so a revoked result is never recorded as successful.
+            let epochs = authority
+                .current_epochs()
+                .await
+                .map_err(TaskRuntimeError::Agent)?;
+            task.agent_request
+                .lease
+                .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
+                .map_err(AgentRuntimeError::Lease)
+                .map_err(TaskRuntimeError::Agent)?;
             ledger
                 .settle(&task, TaskState::Succeeded, Some(&output), None)
                 .await?;
@@ -203,6 +216,34 @@ mod tests {
                 bytes: 1,
                 external_effects: 0,
             })
+        }
+    }
+    struct ExecWithoutCheck;
+    impl AgentExecutor for ExecWithoutCheck {
+        async fn execute(
+            &self,
+            _: AgentExecutionRequest,
+            _: ExecutionGuard<'_>,
+        ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+            Ok(AgentExecutionOutput {
+                digest: d(),
+                bytes: 1,
+                external_effects: 0,
+            })
+        }
+    }
+    struct RevokedBeforeSettlement {
+        reads: AtomicUsize,
+        initial: AuthorityEpochVector,
+        revoked: AuthorityEpochVector,
+    }
+    impl AgentAuthority for RevokedBeforeSettlement {
+        async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) < 2 {
+                Ok(self.initial.clone())
+            } else {
+                Ok(self.revoked.clone())
+            }
         }
     }
     fn d() -> String {
@@ -313,5 +354,51 @@ mod tests {
         assert_eq!(out.bytes, 1);
         assert_eq!(ledger.settles.load(Ordering::SeqCst), 1);
         assert_eq!(recover_tasks(&ledger, 101).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn success_is_not_settled_after_authority_changes() {
+        let ledger = Ledger {
+            settles: AtomicUsize::new(0),
+        };
+        let initial = epochs();
+        let revoked = AuthorityEpochVector::new(AuthorityEpochVectorInput {
+            version: 1,
+            authority_schema_generation: 1,
+            installation_epoch: 1,
+            organization_epoch: 1,
+            principal_epoch: 2,
+            team_membership_epochs: vec![],
+            team_policy_epoch: None,
+            project_membership_epoch: None,
+            project_policy_epoch: None,
+            resource_policy_epoch: None,
+            gateway_catalog_generation: Some(1),
+            depot_projection_watermark: None,
+            credential_generation: None,
+            session_generation: 1,
+        })
+        .unwrap();
+        let authority = RevokedBeforeSettlement {
+            reads: AtomicUsize::new(0),
+            initial,
+            revoked,
+        };
+        assert!(matches!(
+            execute_task(
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &authority,
+                &ExecWithoutCheck,
+                task(),
+                Cancellation::new(),
+                1,
+            )
+            .await,
+            Err(TaskRuntimeError::Agent(AgentRuntimeError::Lease(
+                AuthorityLeaseError::AuthorityChanged
+            )))
+        ));
+        assert_eq!(ledger.settles.load(Ordering::SeqCst), 0);
     }
 }

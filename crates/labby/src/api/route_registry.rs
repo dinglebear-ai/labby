@@ -479,6 +479,22 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         crate::api::services::access_bootstrap::descriptors(),
     ));
     routes.extend(prefixed(
+        "/v1/access/admin",
+        crate::api::services::access::descriptors(),
+    ));
+    routes.extend(prefixed(
+        "/v1/agents",
+        crate::api::services::agents::descriptors(),
+    ));
+    routes.extend(prefixed(
+        "/v1/tasks",
+        crate::api::services::tasks::descriptors(),
+    ));
+    routes.extend(prefixed(
+        "/v1/projects",
+        crate::api::services::projects::descriptors(),
+    ));
+    routes.extend(prefixed(
         "/auth/bootstrap",
         crate::api::services::access_bootstrap_proof::descriptors(),
     ));

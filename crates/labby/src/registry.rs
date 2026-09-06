@@ -1001,6 +1001,7 @@ mod tests {
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
             s.insert("access");
+            s.extend(["agents", "tasks", "dev_containers"]);
             s.insert("browser");
             #[cfg(feature = "gateway")]
             s.insert("gateway");

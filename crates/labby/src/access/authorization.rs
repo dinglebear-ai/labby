@@ -1,5 +1,5 @@
 use labby_auth::VerifiedIdentity;
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use super::domain::{Permission, ProjectRole};
 use super::error::{AccessStoreError, AccessStoreResult};
@@ -72,7 +72,7 @@ pub(crate) struct DepotDelegationAuthoritySnapshot {
     pub(crate) organization_policy: u64,
     pub(crate) team_membership: Option<u64>,
     pub(crate) team_policy: Option<u64>,
-    pub(crate) project_membership: u64,
+    pub(crate) project_membership: Option<u64>,
     pub(crate) project_policy: u64,
     pub(crate) global_revision: u64,
 }
@@ -104,7 +104,9 @@ pub(super) fn depot_delegation_authority(
                 [project_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
-            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+            .optional()
+            .map_err(map_sqlite_error)?
+            .ok_or(AccessStoreError::ProjectAccessUnavailable)?;
         super::read::ProjectMembershipSnapshot {
             principal_id: principal.id,
             organization_id,
@@ -185,7 +187,7 @@ pub(super) fn depot_delegation_authority(
             .map(|value| value.2)
             .map(epoch_u64)
             .transpose()?,
-        project_membership: epoch_u64(project_membership.unwrap_or(global_revision))?,
+        project_membership: project_membership.map(epoch_u64).transpose()?,
         project_policy: epoch_u64(project_policy)?,
         global_revision: epoch_u64(global_revision)?,
     };
@@ -263,7 +265,9 @@ pub(super) fn authorize_library_in_transaction(
                 [project_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
-            .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+            .optional()
+            .map_err(map_sqlite_error)?
+            .ok_or(AccessStoreError::ProjectAccessUnavailable)?;
         super::read::ProjectMembershipSnapshot {
             principal_id: principal.id,
             organization_id,
