@@ -15,7 +15,7 @@
 
 #[cfg(feature = "gateway")]
 use std::time::SystemTime;
-use std::{future::Future, pin::Pin, time::Instant};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -1638,6 +1638,34 @@ impl LabMcpServer {
                     _ => Err(ToolError::Forbidden {
                         message: "access administration requires host-established identity"
                             .to_owned(),
+                        required_scopes: Vec::new(),
+                    }),
+                }
+            } else if service == "dev_containers" {
+                let auth = auth_context_from_extensions(&context.extensions);
+                let identity = context
+                    .extensions
+                    .get::<labby_auth::VerifiedIdentity>()
+                    .cloned();
+                match identity {
+                    Some(identity) => {
+                        let ceiling = auth.map_or_else(
+                            crate::access::AuthorityCeiling::trusted_local,
+                            crate::access::AuthorityCeiling::from_auth_context,
+                        );
+                        crate::dispatch::dev_containers::dispatch(
+                            crate::dispatch::dev_containers::DevContainerDispatchContext {
+                                access_runtime: Arc::clone(&self.access_runtime),
+                                identity,
+                                ceiling,
+                            },
+                            &action,
+                            params,
+                        )
+                        .await
+                    }
+                    None => Err(ToolError::Forbidden {
+                        message: "Dev Container operation is not authorized".to_owned(),
                         required_scopes: Vec::new(),
                     }),
                 }

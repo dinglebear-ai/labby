@@ -1,6 +1,6 @@
 //! Surface-neutral Dev Container execution and recovery orchestration.
 
-use std::{collections::BTreeSet, future::Future};
+use std::{collections::BTreeSet, future::Future, pin::Pin};
 
 use labby_primitives::dev_container::{
     ApprovedTemplate, DevContainerId, HostCapability, LifecycleNonce,
@@ -54,20 +54,67 @@ pub struct EngineCreateRequest {
 pub trait ContainerRuntime: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn create(
-        &self,
+    fn create<'a>(
+        &'a self,
         request: EngineCreateRequest,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn inspect(
-        &self,
-        handle: &EngineHandle,
-    ) -> impl Future<Output = Result<EngineState, Self::Error>> + Send;
-    fn start(&self, handle: &EngineHandle) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn stop(&self, handle: &EngineHandle) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn destroy(
-        &self,
-        handle: &EngineHandle,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn inspect<'a>(
+        &'a self,
+        handle: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<EngineState, Self::Error>> + Send + 'a>>;
+    fn start<'a>(
+        &'a self,
+        handle: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn stop<'a>(
+        &'a self,
+        handle: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn destroy<'a>(
+        &'a self,
+        handle: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error("Dev Container runtime is disabled")]
+pub struct DisabledRuntimeError;
+
+#[derive(Default)]
+pub struct DisabledContainerRuntime;
+
+impl ContainerRuntime for DisabledContainerRuntime {
+    type Error = DisabledRuntimeError;
+    fn create<'a>(
+        &'a self,
+        _: EngineCreateRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async { Err(DisabledRuntimeError) })
+    }
+    fn inspect<'a>(
+        &'a self,
+        _: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<EngineState, Self::Error>> + Send + 'a>> {
+        Box::pin(async { Err(DisabledRuntimeError) })
+    }
+    fn start<'a>(
+        &'a self,
+        _: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async { Err(DisabledRuntimeError) })
+    }
+    fn stop<'a>(
+        &'a self,
+        _: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async { Err(DisabledRuntimeError) })
+    }
+    fn destroy<'a>(
+        &'a self,
+        _: &'a EngineHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async { Err(DisabledRuntimeError) })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -92,7 +139,7 @@ pub fn recovery_action(intent: DurableIntent, engine: EngineState) -> RecoveryAc
     }
 }
 
-pub async fn create<E: ContainerRuntime>(
+pub async fn create<E: ContainerRuntime + ?Sized>(
     engine: &E,
     lease: &AuthorityLease,
     epochs: &AuthorityEpochVector,
@@ -123,7 +170,7 @@ pub async fn create<E: ContainerRuntime>(
     engine.create(request).await.map_err(RuntimeError::Engine)
 }
 
-pub async fn reconcile<E: ContainerRuntime>(
+pub async fn reconcile<E: ContainerRuntime + ?Sized>(
     engine: &E,
     lease: &AuthorityLease,
     epochs: &AuthorityEpochVector,
@@ -174,27 +221,50 @@ mod tests {
     }
     impl ContainerRuntime for FakeEngine {
         type Error = FakeError;
-        async fn create(&self, _: EngineCreateRequest) -> Result<(), Self::Error> {
-            self.calls.lock().unwrap().push("create");
-            Ok(())
+        fn create<'a>(
+            &'a self,
+            _: EngineCreateRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push("create");
+                Ok(())
+            })
         }
-        async fn inspect(&self, _: &EngineHandle) -> Result<EngineState, Self::Error> {
-            Ok(*self.state.lock().unwrap())
+        fn inspect<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> Pin<Box<dyn Future<Output = Result<EngineState, Self::Error>> + Send + 'a>> {
+            Box::pin(async move { Ok(*self.state.lock().unwrap()) })
         }
-        async fn start(&self, _: &EngineHandle) -> Result<(), Self::Error> {
-            self.calls.lock().unwrap().push("start");
-            *self.state.lock().unwrap() = EngineState::Running;
-            Ok(())
+        fn start<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push("start");
+                *self.state.lock().unwrap() = EngineState::Running;
+                Ok(())
+            })
         }
-        async fn stop(&self, _: &EngineHandle) -> Result<(), Self::Error> {
-            self.calls.lock().unwrap().push("stop");
-            *self.state.lock().unwrap() = EngineState::Stopped;
-            Ok(())
+        fn stop<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push("stop");
+                *self.state.lock().unwrap() = EngineState::Stopped;
+                Ok(())
+            })
         }
-        async fn destroy(&self, _: &EngineHandle) -> Result<(), Self::Error> {
-            self.calls.lock().unwrap().push("destroy");
-            *self.state.lock().unwrap() = EngineState::Missing;
-            Ok(())
+        fn destroy<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push("destroy");
+                *self.state.lock().unwrap() = EngineState::Missing;
+                Ok(())
+            })
         }
     }
 

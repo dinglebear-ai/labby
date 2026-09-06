@@ -35,7 +35,7 @@ mod workflow;
 #[allow(unused_imports)]
 pub(crate) use authority::{
     ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
-    resolve_personal_owner,
+    refresh_authority_epochs, resolve_personal_owner,
 };
 #[allow(unused_imports)]
 pub(crate) use authorization::{
@@ -51,6 +51,9 @@ pub(crate) use credential_store::{
 pub(crate) use credential_verifier::{
     AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
     LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
+};
+pub(crate) use dev_container::{
+    RecoveryRecord, create_approved_for_store, recovery_inventory_for_store, set_desired_for_store,
 };
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};

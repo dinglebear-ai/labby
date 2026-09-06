@@ -193,6 +193,24 @@ pub(crate) async fn authorize_action(
     .map_err(|error| AccessStoreError::Unavailable(error.to_string()))
 }
 
+pub(crate) async fn refresh_authority_epochs(
+    store: &AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+    capability: Capability,
+) -> AccessStoreResult<AuthorityEpochVector> {
+    store
+        .with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(map_sqlite_error)?;
+            let resolved = resolve_authority(&transaction, &identity, &owner, capability)?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(resolved.epochs)
+        })
+        .await
+}
+
 /// Resolve the caller's personal owner scope from verified durable identity facts. This avoids
 /// accepting a principal identifier from an untrusted adapter payload.
 pub(crate) async fn resolve_personal_owner(

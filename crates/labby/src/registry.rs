@@ -458,6 +458,14 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     ));
 
     reg.register(RegisteredService::bootstrap_operator(
+        "dev_containers",
+        "Create and manage isolated development containers",
+        "administration",
+        crate::dispatch::dev_containers::ACTIONS,
+        dispatch_fn!(crate::dispatch::dev_containers::dispatch_unbound),
+    ));
+
+    reg.register(RegisteredService::bootstrap_operator(
         "browser",
         "Bridge browser-native WebMCP tools into Labby",
         "bootstrap",

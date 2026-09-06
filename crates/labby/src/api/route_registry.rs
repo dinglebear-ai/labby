@@ -487,6 +487,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         "/v1/access/credentials",
         crate::api::services::access_credentials::descriptors(),
     ));
+    routes.extend(prefixed(
+        "/v1/dev-containers",
+        crate::api::services::dev_containers::descriptors(),
+    ));
 
     #[cfg(feature = "skills")]
     routes.extend(prefixed(

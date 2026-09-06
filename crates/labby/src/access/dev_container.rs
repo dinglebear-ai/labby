@@ -72,7 +72,7 @@ CREATE TABLE dev_container_ledger (
 ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ReservedResources {
+pub(crate) struct ReservedResources {
     pub cpu_millis: u32,
     pub memory_bytes: u64,
     pub disk_bytes: u64,
@@ -89,7 +89,7 @@ pub(super) struct CreateInstance<'a> {
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub(super) enum DevContainerLedgerError {
+pub(crate) enum DevContainerLedgerError {
     #[error("Dev Container ledger input is invalid")]
     InvalidInput,
     #[error("Dev Container template is unavailable")]
@@ -337,12 +337,54 @@ fn host_capability_name(capability: HostCapability) -> &'static str {
     }
 }
 
+fn parse_host_capability(value: &str) -> Option<HostCapability> {
+    match value {
+        "privileged" => Some(HostCapability::Privileged),
+        "host_filesystem" => Some(HostCapability::HostFilesystem),
+        "container_runtime_socket" => Some(HostCapability::ContainerRuntimeSocket),
+        "host_network" => Some(HostCapability::HostNetwork),
+        "host_device" => Some(HostCapability::HostDevice),
+        "kernel_administration" => Some(HostCapability::KernelAdministration),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RecoveryRecord {
     pub instance_id: String,
+    pub owner_kind: OwnerKind,
+    pub owner_id: String,
     pub lifecycle_nonce: String,
     pub desired_state: DesiredState,
     pub observed_state: ObservedState,
+}
+
+pub(crate) struct CreatedRuntimeSpec {
+    pub template: ApprovedTemplate,
+    pub instance: OwnedDevContainer,
+    pub resources: ReservedResources,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_approved_for_store(
+    store: &super::AccessStore,
+    owner: OwnerScope,
+    instance_id: String,
+    template_id: String,
+    secret_references: Vec<String>,
+    authority_fingerprint: String,
+    event_id: String,
+    now: i64,
+) -> Result<CreatedRuntimeSpec, DevContainerLedgerError> {
+    store.with_connection(move |connection| {
+        let row=connection.query_row("SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status FROM dev_container_templates WHERE template_id=?1",[&template_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,u32>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(super::store::map_sqlite_error)?.filter(|r|r.7=="approved").ok_or(super::AccessStoreError::NotAuthorized)?;
+        let caps=serde_json::from_str::<Vec<String>>(&row.6).map_err(|_|super::AccessStoreError::MalformedVocabulary)?.into_iter().map(|v|parse_host_capability(&v).ok_or(super::AccessStoreError::MalformedVocabulary)).collect::<Result<Vec<_>,_>>()?;
+        let template=ApprovedTemplate::new(labby_primitives::dev_container::DevContainerTemplateId::new(template_id).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,labby_primitives::dev_container::ImageDigest::new(row.0).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,labby_primitives::dev_container::DevContainerQuota{max_active_instances:row.1,cpu_millis:row.2,memory_bytes:u64::try_from(row.3).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,disk_bytes:u64::try_from(row.4).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,max_lifetime_seconds:u64::try_from(row.5).map_err(|_|super::AccessStoreError::MalformedVocabulary)?},labby_primitives::dev_container::HostCapabilityPolicy::approved(caps)).map_err(|_|super::AccessStoreError::MalformedVocabulary)?;
+        let instance=OwnedDevContainer::new(labby_primitives::dev_container::DevContainerId::new(instance_id).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,owner,&template,labby_primitives::dev_container::LifecycleNonce::new(uuid::Uuid::new_v4().simple().to_string()).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,secret_references.into_iter().map(SecretReference::new).collect::<Result<Vec<_>,_>>().map_err(|_|super::AccessStoreError::MalformedVocabulary)?).map_err(|_|super::AccessStoreError::MalformedVocabulary)?;
+        let q=template.quota_ceiling(); let resources=ReservedResources{cpu_millis:q.cpu_millis,memory_bytes:q.memory_bytes,disk_bytes:q.disk_bytes,lifetime_seconds:q.max_lifetime_seconds};
+        create_instance(connection,&CreateInstance{instance:&instance,resources,authority_fingerprint:&authority_fingerprint,event_id:&event_id,occurred_at:now}).map_err(|_|super::AccessStoreError::Unavailable("Dev Container creation failed".into()))?;
+        Ok(CreatedRuntimeSpec{template,instance,resources})
+    }).await.map_err(|_|DevContainerLedgerError::Storage)
 }
 
 pub(crate) fn recovery_inventory(
@@ -350,24 +392,62 @@ pub(crate) fn recovery_inventory(
 ) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
     let mut statement = connection
         .prepare(
-            "SELECT instance_id,lifecycle_nonce,desired_state,observed_state
+            "SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state
              FROM dev_container_instances
              WHERE observed_state != 'deleted' ORDER BY instance_id",
         )
         .map_err(|_| DevContainerLedgerError::Storage)?;
     statement
         .query_map([], |row| {
-            let desired = desired_state(&row.get::<_, String>(2)?)?;
-            let observed = observed_state(&row.get::<_, String>(3)?)?;
+            let owner_kind = owner_kind(&row.get::<_, String>(1)?)?;
+            let desired = desired_state(&row.get::<_, String>(4)?)?;
+            let observed = observed_state(&row.get::<_, String>(5)?)?;
             Ok(RecoveryRecord {
                 instance_id: row.get(0)?,
-                lifecycle_nonce: row.get(1)?,
+                owner_kind,
+                owner_id: row.get(2)?,
+                lifecycle_nonce: row.get(3)?,
                 desired_state: desired,
                 observed_state: observed,
             })
         })
         .map_err(|_| DevContainerLedgerError::Storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| DevContainerLedgerError::Storage)
+}
+
+pub(crate) async fn recovery_inventory_for_store(
+    store: &super::AccessStore,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    store
+        .with_connection(|connection| {
+            recovery_inventory(connection).map_err(|_| {
+                super::AccessStoreError::Unavailable("Dev Container persistence unavailable".into())
+            })
+        })
+        .await
+        .map_err(|_| DevContainerLedgerError::Storage)
+}
+
+pub(crate) async fn set_desired_for_store(
+    store: &super::AccessStore,
+    instance_id: String,
+    nonce: String,
+    desired: DesiredState,
+    event_id: String,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| {
+            set_desired_state(connection, &instance_id, &nonce, desired, &event_id, now).map_err(
+                |_| {
+                    super::AccessStoreError::Unavailable(
+                        "Dev Container persistence unavailable".into(),
+                    )
+                },
+            )
+        })
+        .await
         .map_err(|_| DevContainerLedgerError::Storage)
 }
 
@@ -484,6 +564,15 @@ fn desired_state(value: &str) -> rusqlite::Result<DesiredState> {
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
+fn owner_kind(value: &str) -> rusqlite::Result<OwnerKind> {
+    match value {
+        "installation" => Ok(OwnerKind::Installation),
+        "team" => Ok(OwnerKind::Team),
+        "project" => Ok(OwnerKind::Project),
+        "personal" => Ok(OwnerKind::Personal),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
 fn observed_state(value: &str) -> rusqlite::Result<ObservedState> {
     match value {
         "pending" => Ok(ObservedState::Pending),
@@ -587,6 +676,8 @@ mod tests {
             recovery_inventory(&connection).unwrap(),
             vec![RecoveryRecord {
                 instance_id: "dc-1".into(),
+                owner_kind: OwnerKind::Personal,
+                owner_id: "principal-1".into(),
                 lifecycle_nonce: "11111111111111111111111111111111".into(),
                 desired_state: DesiredState::Running,
                 observed_state: ObservedState::Pending,

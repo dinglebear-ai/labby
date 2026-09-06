@@ -78,6 +78,11 @@ pub(crate) struct AccessRuntime {
     path: Arc<PathBuf>,
     state: Arc<Mutex<RuntimeState>>,
     bootstrap_writer: Arc<Semaphore>,
+    dev_container_runtime: Arc<
+        dyn labby_runtime::dev_container_runtime::ContainerRuntime<
+                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+            >,
+    >,
 }
 
 impl AccessRuntime {
@@ -160,6 +165,9 @@ impl AccessRuntime {
                 AccessBlockedReason::Unavailable,
             ))),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
+            dev_container_runtime: Arc::new(
+                labby_runtime::dev_container_runtime::DisabledContainerRuntime,
+            ),
         }
     }
 
@@ -180,7 +188,32 @@ impl AccessRuntime {
             path: Arc::new(path),
             state: Arc::new(Mutex::new(state)),
             bootstrap_writer: Arc::new(Semaphore::new(1)),
+            dev_container_runtime: Arc::new(
+                labby_runtime::dev_container_runtime::DisabledContainerRuntime,
+            ),
         }
+    }
+
+    pub(crate) fn with_dev_container_runtime(
+        mut self,
+        runtime: Arc<
+            dyn labby_runtime::dev_container_runtime::ContainerRuntime<
+                    Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+                >,
+        >,
+    ) -> Self {
+        self.dev_container_runtime = runtime;
+        self
+    }
+
+    pub(crate) fn dev_container_runtime(
+        &self,
+    ) -> Arc<
+        dyn labby_runtime::dev_container_runtime::ContainerRuntime<
+                Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
+            >,
+    > {
+        Arc::clone(&self.dev_container_runtime)
     }
 
     pub(crate) async fn status(&self) -> AccessRuntimeStatus {
