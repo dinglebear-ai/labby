@@ -267,6 +267,147 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   assert.equal(hasHorizontalOverflow, false)
 })
 
+test('Depot Administration renders live schemas and guards destructive operations', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const calls: Array<{ operation: string; params: Record<string, unknown>; destructiveIntent?: { confirmed: boolean; idempotencyKey: string } }> = []
+
+  await page.route('**/v1/depot/status', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ depot: { configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 } }),
+  }))
+  await page.route('**/v1/depot/operations', async route => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ operations: [
+        { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', group: 'access', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.', items: { type: 'string' } } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
+        { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', group: 'access', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+        { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', group: 'operations', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+      ] }) })
+      return
+    }
+    calls.push(route.request().postDataJSON() as { operation: string; params: Record<string, unknown>; destructiveIntent?: { confirmed: boolean; idempotencyKey: string } })
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }) })
+  })
+
+  await page.goto(`${baseUrl}/administration/`, { waitUntil: 'networkidle' })
+  await assert.doesNotReject(() => page.getByText('Canonical operations').waitFor())
+  await page.getByRole('button', { name: /^Access/ }).click()
+  await page.getByRole('button', { name: /Create access token/ }).click()
+  await page.getByLabel('name').fill('labby-admin')
+  await page.getByLabel('scopes').fill('skills:read, skills:write')
+  await page.getByRole('button', { name: 'Review and run' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[0], { operation: 'depot.tokens.create', params: { name: 'labby-admin', scopes: ['skills:read', 'skills:write'] } })
+
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /Revoke access token/ }).click()
+  await page.getByLabel('tokenId').fill('token-1')
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isDisabled(), true))
+  await page.getByLabel('Confirm permanent operation').check()
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isEnabled(), true))
+  await page.getByRole('button', { name: 'Run destructive operation' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.equal(calls[1]?.operation, 'depot.tokens.revoke')
+  assert.deepEqual(calls[1]?.params, { tokenId: 'token-1' })
+  assert.equal(calls[1]?.destructiveIntent?.confirmed, true)
+  assert.match(calls[1]?.destructiveIntent?.idempotencyKey ?? '', /^[0-9a-f-]{36}$/)
+  await assert.doesNotReject(async () => assert.equal(await page.getByLabel('Confirm permanent operation').isChecked(), false))
+
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /Revoke access token/ }).click()
+  await page.getByLabel('tokenId').fill('token-2')
+  await assert.doesNotReject(async () => assert.equal(await page.getByLabel('Confirm permanent operation').isChecked(), false))
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isDisabled(), true))
+  await page.getByLabel('Confirm permanent operation').check()
+  await page.getByRole('button', { name: 'Run destructive operation' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.equal(calls[2]?.operation, 'depot.tokens.revoke')
+  assert.deepEqual(calls[2]?.params, { tokenId: 'token-2' })
+  assert.notEqual(calls[2]?.destructiveIntent?.idempotencyKey, calls[1]?.destructiveIntent?.idempotencyKey)
+
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 390, height: 844 })
+  const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  assert.equal(hasHorizontalOverflow, false)
+  await page.getByRole('button', { name: /^Overview/ }).focus()
+  await page.keyboard.press('Tab')
+  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Catalog/)
+})
+
+test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const actionCalls: Array<{ action: string; params: Record<string, unknown> }> = []
+  let connections = [{ id: 'different-depot' }]
+  let libraryVersion: unknown = 12
+
+  await page.route('**/v1/depot/providers', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{ id: 'team-depot', name: 'Team Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }]),
+  }))
+  await page.route('**/v1/depot/discover', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch-1',
+      items: [{ providerId: 'team-depot', artifactId: 'artifact-1', id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' }],
+      providerOutcomes: [{ providerId: 'team-depot', state: 'exhausted' }], failures: [], coverageComplete: true,
+      knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null,
+    }),
+  }))
+  await page.route('**/v1/depot/artifacts/detail', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      schemaVersion: 'labby.depot-compatibility/v2', providerId: 'team-depot', artifactId: 'artifact-1',
+      artifact: { id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' },
+    }),
+  }))
+  await page.route('**/v1/artifacts', async route => {
+    const call = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
+    actionCalls.push(call)
+    if (call.action === 'artifacts.list_connections') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ connections }) })
+    } else if (call.action === 'artifacts.list') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifacts: [], library_version: libraryVersion }) })
+    } else {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifact: { id: 'local-1' }, library_version: 13 }) })
+    }
+  })
+
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+  await assert.doesNotReject(() => page.getByRole('link', { name: /Release helper/ }).waitFor())
+  await page.goto(`${baseUrl}/depot/?artifactProvider=team-depot&artifact=artifact-1`, { waitUntil: 'networkidle' })
+
+  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByText('Configure an Artifact acquisition connection named “team-depot” before importing from this provider.').waitFor()
+  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+
+  connections = [{ id: 'team-depot' }]
+  libraryVersion = 'not-a-version'
+  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByText('Labby did not return a valid current library version.').waitFor()
+  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+
+  libraryVersion = 12
+  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByText('Exact Artifact imported into Labby').waitFor()
+
+  const importCall = actionCalls.find(call => call.action === 'artifacts.import')
+  assert.ok(importCall)
+  assert.deepEqual(importCall.params.source, {
+    kind: 'depot', connection_id: 'team-depot', artifact_id: 'artifact-1', revision_id: 'revision-7',
+  })
+  assert.equal(importCall.params.expected_library_version, 12)
+  assert.match(String(importCall.params.idempotency_key), /^depot-import-[0-9a-f-]{36}$/)
+})
+
 test('overview metrics and volume bars drill into exact Usage slices', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

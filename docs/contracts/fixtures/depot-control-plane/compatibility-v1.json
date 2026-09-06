@@ -7,7 +7,7 @@
     "surface": "authenticated-browser-http"
   },
   "depot": {
-    "contractCommit": "b6aaad0",
+    "contractCommit": "b957e72",
     "durableSchemaGeneration": 2,
     "sessionContractVersion": 1,
     "artifactInterchange": "dinglebear.artifact-interchange/v1",
@@ -30,7 +30,27 @@
   },
   "actorPolicy": {
     "delegatedOAuth": "mutations-and-import",
-    "serviceCredential": "read-only-unless-explicitly-approved"
+    "serviceCredential": "mutations-require-labby-admin-csrf-and-depot-write-scope"
+  },
+  "administrationContract": {
+    "version": 1,
+    "operationFingerprint": {
+      "algorithm": "sha256-canonical-json",
+      "required": true,
+      "binds": ["name", "inputSchema", "annotations", "actor", "authorityEpoch"]
+    },
+    "inputSchema": {
+      "dialect": "labby.depot-operation-schema/v1",
+      "types": ["string", "boolean", "integer", "number", "array", "object"],
+      "maxProperties": 128,
+      "maxRequired": 128,
+      "maxEnumValues": 256,
+      "maxKeyBytes": 128,
+      "unsupportedBehavior": "incompatible"
+    },
+    "authorityStates": ["unknown", "read", "write"],
+    "destructiveIntent": "single-use-actor-operation-params-epoch-bound",
+    "ambiguousMutation": "indeterminate-until-reconciled"
   },
   "limits": {
     "artifactPage": 200,
@@ -46,13 +66,14 @@
     "bootstrap": {"status": "supported", "operations": []},
     "bazaarBrowse": {"status": "supported", "operations": ["depot.artifacts.list"]},
     "artifactDetail": {"status": "supported", "operations": ["depot.artifacts.get"]},
-    "sendToLabby": {"status": "deferred", "operations": [], "exactExport": false},
-    "candidateIntake": {"status": "expansion", "operations": ["depot.artifacts.intake_candidate"]},
-    "fork": {"status": "expansion", "operations": ["depot.artifacts.fork"]},
-    "publication": {"status": "expansion", "operations": ["depot.artifacts.set_publication"]},
-    "license": {"status": "expansion", "operations": ["depot.artifacts.set_license"]},
-    "archive": {"status": "excluded", "operations": []},
-    "delete": {"status": "excluded", "operations": []},
-    "browserCredentialAdministration": {"status": "deferred", "operations": []}
+    "sendToLabby": {"status": "supported", "operations": ["artifacts.import"], "exactExport": true},
+    "candidateIntake": {"status": "supported", "operations": ["depot.artifacts.intake_candidate"]},
+    "fork": {"status": "supported", "operations": ["depot.artifacts.fork"]},
+    "publication": {"status": "supported", "operations": ["depot.artifacts.set_publication"]},
+    "license": {"status": "supported", "operations": ["depot.artifacts.set_license"]},
+    "archive": {"status": "supported", "operations": ["depot.uploads.create", "depot.uploads.get", "depot.uploads.delete", "depot.ingest.start"]},
+    "delete": {"status": "supported", "operations": ["depot.skills.delete", "depot.bundles.delete"]},
+    "browserCredentialAdministration": {"status": "supported", "operations": ["depot.tokens.list", "depot.tokens.create", "depot.tokens.revoke"]},
+    "maintenance": {"status": "supported", "operationPrefix": "depot.maintenance."}
   }
 }
