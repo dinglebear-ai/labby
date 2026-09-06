@@ -235,7 +235,7 @@ async fn file_stash_round_trips_across_two_principals_and_restart() {
 
     let mcp_headers = |request: reqwest::RequestBuilder| {
         request
-            .bearer_auth(identity.static_token_for_request())
+            .bearer_auth(identity.credential_for_request())
             .header("accept", "application/json, text/event-stream")
             .header("content-type", "application/json")
     };

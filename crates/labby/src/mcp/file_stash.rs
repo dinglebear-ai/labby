@@ -195,17 +195,17 @@ impl LabMcpServer {
         if !caller.can_read() {
             return Ok(Vec::new());
         }
-        let has_verified_identity = context
+        let verified_identity = context
             .extensions
             .get::<Parts>()
             .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
-            .is_some();
+            .cloned();
         let has_private_principal = propagated_file_stash_principal(
             self.transport_label,
             propagated_caller_auth(Some(&context.meta)),
         )
         .is_some();
-        if !has_verified_identity && !has_private_principal {
+        if verified_identity.is_none() && !has_private_principal {
             return Ok(Vec::new());
         }
         crate::dispatch::file_stash::observe_result(
@@ -222,9 +222,29 @@ impl LabMcpServer {
                 {
                     return Ok(Vec::new());
                 }
-                let principal = self
-                    .file_stash_principal(context, Some(&context.meta))
-                    .await?;
+                let principal = if let Some(identity) = verified_identity {
+                    match self
+                        .access_runtime
+                        .resolve_and_lease_file_stash_principal(identity)
+                        .await
+                    {
+                        Ok((id, lease)) => ResolvedStashPrincipal { id, _lease: lease },
+                        Err(
+                            crate::access::FileStashPrincipalResolutionError::IdentityUnavailable,
+                        ) => {
+                            return Ok(Vec::new());
+                        }
+                        Err(_) => {
+                            return Err(ToolError::Sdk {
+                                sdk_kind: "service_unavailable".to_owned(),
+                                message: "File Stash operation failed".to_owned(),
+                            });
+                        }
+                    }
+                } else {
+                    self.file_stash_principal(context, Some(&context.meta))
+                        .await?
+                };
                 collect_file_stash_resources(
                     &self.file_stash_service(),
                     &principal,

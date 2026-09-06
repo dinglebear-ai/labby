@@ -271,6 +271,7 @@ impl LiveIdentity {
             self.identity.credential_id.clone(),
             principal_id.to_owned(),
             display_name.to_owned(),
+            "static-bearer:primary".to_owned(),
         )
         .await
     }

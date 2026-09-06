@@ -133,6 +133,7 @@ impl AccessStore {
         owner_credential_id: String,
         principal_id: String,
         display_name: String,
+        recipient_credential_id: String,
     ) -> AccessStoreResult<()> {
         if principal_id.is_empty()
             || principal_id.len() > 255
@@ -140,6 +141,9 @@ impl AccessStore {
             || display_name.trim().is_empty()
             || display_name.len() > 255
             || display_name.chars().any(char::is_control)
+            || recipient_credential_id.is_empty()
+            || recipient_credential_id.len() > 255
+            || recipient_credential_id.chars().any(char::is_control)
         {
             return Err(AccessStoreError::MalformedVocabulary);
         }
@@ -165,6 +169,12 @@ impl AccessStore {
                 .execute(
                     "INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',?3,unixepoch(),unixepoch())",
                     rusqlite::params![principal_id, organization_id, display_name],
+                )
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'local_credential',NULL,NULL,?3,'active',1,1,unixepoch(),unixepoch())",
+                    rusqlite::params![format!("credential-link:{recipient_credential_id}"), principal_id, recipient_credential_id],
                 )
                 .map_err(map_sqlite_error)?;
             transaction.commit().map_err(map_sqlite_error)
