@@ -92,6 +92,17 @@ impl AccessRuntime {
         }
     }
 
+    pub(crate) async fn session_authority(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> Result<super::read::SessionAuthoritySnapshot, AccessRuntimeError> {
+        self.security_store()
+            .await?
+            .session_authority(identity)
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
     pub(crate) async fn admit_security_operation(
         &self,
         class: String,

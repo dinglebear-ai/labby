@@ -118,6 +118,10 @@ impl TeamRole {
         }
     }
 
+    pub(crate) const fn as_wire(self) -> &'static str {
+        self.as_persisted()
+    }
+
     pub(super) fn from_persisted(value: &str) -> Option<Self> {
         match value {
             "owner" => Some(Self::Owner),
@@ -445,6 +449,10 @@ impl ProjectRole {
             Self::Member => "member",
             Self::Viewer => "viewer",
         }
+    }
+
+    pub(crate) const fn as_wire(self) -> &'static str {
+        self.as_persisted()
     }
 
     pub(super) const fn precedence(self) -> u8 {

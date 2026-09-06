@@ -15,7 +15,7 @@ use super::authorization::{
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
-use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
+use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionAuthoritySnapshot};
 use super::team::{
     AcceptTeamInvitationInput, AddTeamMemberInput, AssignTeamProjectInput, CreateTeamInput,
     CreateTeamInvitationInput, EffectiveProjectRoleSnapshot, PlatformAdministratorInput,
@@ -237,6 +237,16 @@ impl AccessStore {
     ) -> AccessStoreResult<Vec<AccessibleProjectSnapshot>> {
         self.with_connection(move |connection| {
             super::read::list_accessible_projects(connection, &identity)
+        })
+        .await
+    }
+
+    pub(crate) async fn session_authority(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<SessionAuthoritySnapshot> {
+        self.with_connection(move |connection| {
+            super::read::session_authority(connection, &identity)
         })
         .await
     }

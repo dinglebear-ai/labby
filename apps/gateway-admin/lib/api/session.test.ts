@@ -5,6 +5,8 @@ import {
   __setBrowserSessionStateForTests,
   getBrowserSessionEpoch,
   getBrowserSessionState,
+  getSessionAuthority,
+  sessionHasCapability,
   loadBrowserSession,
   logoutBrowserSession,
 } from '../auth/session-store.ts'
@@ -27,7 +29,12 @@ test('loadBrowserSession stores authenticated payloads', async () => {
         },
         expires_at: 123,
         csrf_token: 'csrf-123',
-        project_id: 'project-42',
+        principal_id: 'principal-42',
+        active_owner: { kind: 'team', id: 'team-7' },
+        active_team_id: 'team-7',
+        active_project_id: 'project-42',
+        capabilities: ['scope.read', 'scope.operate'],
+        authority_generation: 9,
       }),
       { status: 200 },
     )) as FetchMock
@@ -35,16 +42,30 @@ test('loadBrowserSession stores authenticated payloads', async () => {
   const state = await loadBrowserSession()
   assert.equal(state.status, 'authenticated')
   assert.equal(state.status === 'authenticated' ? state.projectId : undefined, 'project-42')
+  assert.deepEqual(getSessionAuthority(), {
+    principalId: 'principal-42',
+    activeOwner: { kind: 'team', id: 'team-7' },
+    activeTeamId: 'team-7',
+    activeProjectId: 'project-42',
+    capabilities: ['scope.operate', 'scope.read'],
+    generation: 9,
+  })
   assert.equal(getBrowserSessionState().status, 'authenticated')
 })
 
-test('same-subject authority changes advance the browser session epoch', async () => {
+test('same-subject server authority changes advance the browser session epoch', async () => {
   __setBrowserSessionStateForTests({
     status: 'authenticated',
     user: { sub: 'browser-user', email: 'browser@example.com' },
     expiresAt: 123,
     csrfToken: 'csrf-admin',
-    isAdmin: true,
+    authority: {
+      principalId: 'principal-1',
+      activeOwner: { kind: 'team', id: 'team-a' },
+      activeTeamId: 'team-a',
+      capabilities: ['scope.read'],
+      generation: 3,
+    },
   })
   const before = getBrowserSessionEpoch()
   globalThis.fetch = (async () => new Response(JSON.stringify({
@@ -52,11 +73,49 @@ test('same-subject authority changes advance the browser session epoch', async (
     user: { sub: 'browser-user', email: 'browser@example.com' },
     expires_at: 124,
     csrf_token: 'csrf-user',
-    is_admin: false,
+    principal_id: 'principal-1',
+    active_owner: { kind: 'team', id: 'team-b' },
+    active_team_id: 'team-b',
+    capabilities: ['scope.read'],
+    authority_generation: 4,
   }), { status: 200 })) as FetchMock
 
   await loadBrowserSession()
   assert.ok(getBrowserSessionEpoch() > before)
+})
+
+test('legacy admin hints never manufacture a role without a server authority projection', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'allowlisted-user', email: 'admin@example.com' },
+    expires_at: 124,
+    csrf_token: 'csrf-user',
+    is_admin: true,
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.isAdmin : true, false)
+  assert.equal(getSessionAuthority(), undefined)
+  assert.equal(sessionHasCapability('platform.manage'), false)
+})
+
+test('principal projection defaults to personal ownership and capabilities drive admin presentation', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'opaque-provider-subject' },
+    expires_at: 124,
+    csrf_token: 'csrf-user',
+    principal_id: 'principal-9',
+    capabilities: ['platform.manage', 'scope.read'],
+    authority_generation: 1,
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.deepEqual(getSessionAuthority()?.activeOwner, { kind: 'personal', id: 'principal-9' })
+  assert.equal(state.status === 'authenticated' ? state.isAdmin : false, true)
+  assert.equal(sessionHasCapability('platform.manage'), true)
 })
 
 test('loadBrowserSession falls back to unauthenticated when /auth/session fails', async () => {
