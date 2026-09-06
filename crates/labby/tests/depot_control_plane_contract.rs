@@ -19,8 +19,17 @@ fn operational_depot_contract_is_fail_closed_and_bounded() {
         assert_eq!(value["mountPolicy"][mode], "disabled", "{mode}");
     }
     assert_eq!(value["flows"]["bazaarBrowse"]["status"], "supported");
-    assert_eq!(value["flows"]["sendToLabby"]["status"], "deferred");
-    assert_eq!(value["flows"]["sendToLabby"]["exactExport"], false);
+    assert_eq!(value["flows"]["sendToLabby"]["status"], "supported");
+    assert_eq!(value["flows"]["sendToLabby"]["exactExport"], true);
+    assert_eq!(
+        value["flows"]["sendToLabby"]["operations"],
+        serde_json::json!(["artifacts.import"])
+    );
+    assert_eq!(
+        value["flows"]["browserCredentialAdministration"]["status"],
+        "supported"
+    );
+    assert_eq!(value["flows"]["maintenance"]["status"], "supported");
     assert!(value["limits"]["artifactPage"].as_u64().unwrap() <= 200);
     assert!(
         value["limits"]["streamConcurrency"].as_u64().unwrap()

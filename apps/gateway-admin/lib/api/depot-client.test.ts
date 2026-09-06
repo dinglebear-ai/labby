@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { depotCall, depotStatus, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
+import { depotCall, depotOperations, depotStatus, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -12,7 +12,7 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
 
 test('accepts complete status, list, and detail contracts', async () => {
-  await withFetch(json({ depot: { configured: true, enabled: true, mutationAuthority: false, maxResponseBytes: 1_048_576 } }), async () => assert.equal((await depotStatus()).configured, true))
+  await withFetch(json({ depot: { configured: true, enabled: true, authority: 'unknown', maxResponseBytes: 1_048_576 } }), async () => assert.equal((await depotStatus()).configured, true))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [artifact], total: 1 } }), async () => assert.equal((await depotCall<{result:{artifacts:Array<{id:string}>}}>('depot.artifacts.list', {})).result.artifacts[0]?.id, 'artifact-1'))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact } }), async () => assert.equal((await depotCall<{result:{artifact:{id:string}}}>('depot.artifacts.get', {})).result.artifact.id, 'artifact-1'))
 })
@@ -35,10 +35,60 @@ test('rejects artifacts without identity in list and detail results', async () =
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: { descriptor: { name: 'anonymous' } } } }), async () => assert.rejects(depotCall('depot.artifacts.get', {}), /artifact identity is missing/i))
 })
 
-test('rejects incompatible contracts and unknown operations', async () => {
+test('accepts the canonical operation catalog and generic operation results', async () => {
+  await withFetch(json({ operations: [{ name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] }), async () => assert.equal((await depotOperations())[0]?.name, 'depot.system.status'))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
+})
+
+test('sends destructive intent only when explicitly supplied', async () => {
+  const original = globalThis.fetch
+  const bodies: unknown[] = []
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+  }) as typeof fetch
+  try {
+    await depotCall('depot.system.status', {})
+    await depotCall('depot.tokens.revoke', { tokenId: 'token-1' }, undefined, { confirmed: true, idempotencyKey: 'intent-1' })
+  } finally { globalThis.fetch = original }
+  assert.deepEqual(bodies, [
+    { operation: 'depot.system.status', params: {} },
+    { operation: 'depot.tokens.revoke', params: { tokenId: 'token-1' }, destructiveIntent: { confirmed: true, idempotencyKey: 'intent-1' } },
+  ])
+})
+
+test('accepts the full operation catalog contract bound', async () => {
+  const operation = { name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object' as const } }
+  await withFetch(json({ operations: Array.from({ length: 1000 }, (_, index) => ({ ...operation, name: `depot.operation.${index}` })) }), async () => {
+    assert.equal((await depotOperations()).length, 1000)
+  })
+  await withFetch(json({ operations: Array.from({ length: 1001 }, (_, index) => ({ ...operation, name: `depot.operation.${index}` })) }), async () => {
+    await assert.rejects(depotOperations(), /operation catalog response/i)
+  })
+})
+
+test('does not surface privileged Depot rejection details', async () => {
+  await withFetch(json({ error: 'depot_rejected', status: 422, detail: JSON.stringify({ message: 'CAS audit requires a repair token', token: 'not surfaced' }) }, 502), async () => {
+    await assert.rejects(depotCall('depot.maintenance.cas_audit', {}), (error: Error) => error.message === 'Depot request failed (502, depot_rejected)')
+  })
+  await withFetch(json({ error: 'depot_rejected', detail: { reason: 'migration is already running', secret: 'not surfaced' } }, 502), async () => {
+    await assert.rejects(depotCall('depot.maintenance.migrate', {}), (error: Error) => !error.message.includes('migration'))
+  })
+})
+
+test('rejects operation schemas outside the bounded renderer subset', async () => {
+  const operation = (inputSchema: unknown) => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema }] })
+  await withFetch(operation({ type: 'object', properties: { bad: null } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  await withFetch(operation({ type: 'object', properties: { bad: { type: 'null' } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  await withFetch(operation({ type: 'object', properties: { bad: { type: 'string', pattern: '[' } } }), async () => assert.rejects(depotOperations(), /valid regular expression/i))
+  await withFetch(operation({ type: 'object', properties: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`p${index}`, { type: 'string' }])) }), async () => assert.rejects(depotOperations(), /128 properties/i))
+  await withFetch(operation({ type: 'object', properties: {}, required: ['missing'] }), async () => assert.rejects(depotOperations(), /not declared/i))
+})
+
+test('rejects incompatible contracts and generic envelopes', async () => {
   await withFetch(json({ result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))
-  await withFetch(json({ result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.admin.execute', {}), /Unsupported Depot operation/))
+  await withFetch(json({ result: { ok: true } }), async () => assert.rejects(depotCall('depot.admin.execute', {}), /schemaVersion/i))
 })
 
 test('preserves server error codes', async () => {

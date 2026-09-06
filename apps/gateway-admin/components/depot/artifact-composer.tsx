@@ -3,7 +3,7 @@
 import * as React from 'react'
 import {
   Check, ChevronDown, CircleAlert, CircleCheck, Clipboard,
-  FileType2, Lock, MoreHorizontal, RotateCcw, Settings2,
+  FileType2, MoreHorizontal, RotateCcw, Settings2,
 } from 'lucide-react'
 
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -76,7 +76,7 @@ export function ArtifactComposer() {
             {ARTIFACT_KINDS.map((option) => <DropdownMenuItem key={option} onSelect={() => setKind(option)}>{option === kind ? <Check /> : <span className="size-4" />}{option}</DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Badge variant="outline" className="h-8 gap-1.5 border-aurora-warn/45 text-aurora-warn"><Lock className="size-3" />Publishing unavailable</Badge>
+        <Button variant="outline" size="sm" asChild><a href="/administration/">Depot operations</a></Button>
         <DropdownMenu>
           <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" aria-label="More artifact actions"><MoreHorizontal /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
           <DropdownMenuContent align="end" className="min-w-52 border-aurora-border-strong bg-aurora-panel-strong">
@@ -96,7 +96,7 @@ export function ArtifactComposer() {
       <ConsoleHero
         eyebrow="Depot · Studio"
         title="Create artifact"
-        pulse={{ color: 'var(--aurora-warn)', label: 'read-only preview' }}
+        pulse={{ color: 'var(--aurora-success)', label: 'local draft' }}
         stats={[
           { label: 'Kind', value: kind, icon: <FileType2 className="size-3" /> },
           { label: 'Workspace', value: workspaceMode === 'artifact' ? 'Artifact' : 'Bundle', icon: <Settings2 className="size-3" /> },
@@ -108,7 +108,6 @@ export function ArtifactComposer() {
           <DropdownMenu><DropdownMenuTrigger className={buttonVariants({ variant: 'outline' })}><FileType2/>{kind}<ChevronDown/></DropdownMenuTrigger><DropdownMenuContent>{ARTIFACT_KINDS.map((option)=><DropdownMenuItem key={option} onSelect={()=>setKind(option)}>{option===kind?<Check/>:<span className="size-4"/>}{option}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
           <div className="flex items-center gap-2"><Badge variant="outline" className={issues.length?'border-aurora-warn/50 text-aurora-warn':'border-aurora-success/50 text-aurora-success'}>{issues.length} issue{issues.length===1?'':'s'}</Badge><div className="flex rounded-full border border-aurora-border-subtle bg-aurora-control-surface p-0.5"><button onClick={()=>setWorkspaceMode('artifact')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='artifact'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Artifact</button><button onClick={()=>setWorkspaceMode('bundle')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='bundle'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Bundle</button></div></div>
         </div>
-        <div role="status" className="mb-4 flex items-start gap-2 rounded-aurora-2 border border-aurora-warn/35 bg-aurora-warn/5 px-4 py-3 text-xs leading-5 text-aurora-text-muted"><Lock className="mt-0.5 size-4 shrink-0 text-aurora-warn"/><span><strong className="text-aurora-text-primary">Read-only authoring preview.</strong> Depot publishing and compilation are unavailable until delegated mutation authority is negotiated. You can edit and copy the complete source without changing Depot.</span></div>
         {workspaceMode==='artifact'?<div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_270px]">
           <section className="min-h-[680px] rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-8 shadow-aurora-panel">
             <input aria-label="Artifact name" value={metadata.name} onChange={(event)=>updateMetadata('name')(event.target.value)} className="w-full bg-transparent text-3xl font-bold text-aurora-text-primary outline-none"/>
@@ -119,7 +118,7 @@ export function ArtifactComposer() {
             <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-aurora-border-subtle pt-4">{['When to use','Steps','Examples','Constraints'].map((item)=><button key={item} onClick={()=>append(`## ${item}`)} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-xs text-aurora-text-muted hover:text-aurora-text-primary">/ {item}</button>)}<button onClick={()=>setFrontmatterOpen(!frontmatterOpen)} className="ml-auto text-xs text-aurora-text-muted">Frontmatter</button></div>
           </section>
           <aside className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium"><div className="border-b border-aurora-border-subtle px-4 py-3 text-[10px] font-bold uppercase tracking-[.16em] text-aurora-text-muted">Writing a {kind.toLowerCase()}</div>{[['Name is a slug',Boolean(metadata.name)],['Description is loadable',Boolean(metadata.description)],['At least two tags',true],['Body has sections',content.includes('## ')],['Body has substance',content.length>160],['Example transcript',content.includes('Example')]].map(([label,ok])=><div key={String(label)} className="flex gap-3 border-b border-aurora-border-subtle px-4 py-3"><span className={ok?'text-aurora-success':'text-aurora-warn'}>{ok?<CircleCheck className="size-4"/>:<CircleAlert className="size-4"/>}</span><div><strong className="block text-xs text-aurora-text-primary">{label}</strong><span className="text-[11px] text-aurora-text-muted">{ok?'Looks good.':'Optional — this makes the artifact easier to reuse.'}</span></div></div>)}</aside>
-        </div>:<section className="rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-8 shadow-aurora-panel"><h1 className="text-3xl font-bold">{metadata.name}</h1><div className="mt-4 flex flex-wrap gap-2 text-xs text-aurora-text-muted"><span className="font-bold uppercase tracking-wider">Potential targets</span>{['Loadout','Claude plugin.json','marketplace.json','gemini-extension.json','Agent Plugins','ARD ai-catalog.json'].map((item)=><Badge key={item} variant="outline">{item}</Badge>)}</div><div className="mt-7 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{bundleGroups.map(([group,items])=><div key={group} className="min-h-36 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-3"><div className="flex justify-between text-xs font-bold uppercase tracking-wider text-aurora-accent-primary"><span>{group}</span><span>{items.length}</span></div><div className="mt-3 space-y-2">{items.map((item)=><div key={item} className="rounded-aurora-1 bg-aurora-control-surface px-3 py-2 text-sm"><span>{item}</span></div>)}</div></div>)}</div><p className="mt-5 border-t border-aurora-border-subtle pt-4 text-right text-xs text-aurora-text-muted">Bundle editing and compilation require Depot mutation authority.</p></section>}
+        </div>:<section className="rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-8 shadow-aurora-panel"><h1 className="text-3xl font-bold">{metadata.name}</h1><div className="mt-4 flex flex-wrap gap-2 text-xs text-aurora-text-muted"><span className="font-bold uppercase tracking-wider">Potential targets</span>{['Loadout','Claude plugin.json','marketplace.json','gemini-extension.json','Agent Plugins','ARD ai-catalog.json'].map((item)=><Badge key={item} variant="outline">{item}</Badge>)}</div><div className="mt-7 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{bundleGroups.map(([group,items])=><div key={group} className="min-h-36 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-3"><div className="flex justify-between text-xs font-bold uppercase tracking-wider text-aurora-accent-primary"><span>{group}</span><span>{items.length}</span></div><div className="mt-3 space-y-2">{items.map((item)=><div key={item} className="rounded-aurora-1 bg-aurora-control-surface px-3 py-2 text-sm"><span>{item}</span></div>)}</div></div>)}</div></section>}
       </div>
     </div></div>
   </>
