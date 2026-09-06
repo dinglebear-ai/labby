@@ -43,6 +43,44 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    pub(crate) async fn claim_authority_projection_batch(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> AccessStoreResult<Vec<super::outbox::PendingProjection>> {
+        self.with_connection(move |connection| super::outbox::claim(connection, now, limit))
+            .await
+    }
+    pub(crate) async fn acknowledge_authority_projection(
+        &self,
+        organization_id: String,
+        highest: u64,
+        digest: String,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::acknowledge(connection, &organization_id, highest, &digest, now)
+        })
+        .await
+    }
+    pub(crate) async fn release_failed_authority_projection(
+        &self,
+        organization_id: String,
+        through: u64,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| {
+            super::outbox::release_failed(connection, &organization_id, through, now)
+        })
+        .await
+    }
+    pub(crate) async fn retain_authority_projection(
+        &self,
+        older_than: i64,
+    ) -> AccessStoreResult<usize> {
+        self.with_connection(move |connection| super::outbox::retain(connection, older_than))
+            .await
+    }
     pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
         let path = validated_access_path(&path)
             .map_err(|()| AccessStoreError::InsecurePath { path: path.clone() })?;

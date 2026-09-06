@@ -68,6 +68,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(super::store::map_sqlite_error)?;
@@ -265,6 +266,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .execute_batch(&bootstrap_trigger)
             .map_err(super::store::map_sqlite_error)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -922,6 +924,13 @@ fn install_dev_container_schema(connection: &Connection) -> AccessStoreResult<()
         .map_err(super::store::map_sqlite_error)
 }
 
+fn install_authority_outbox_schema(connection: &Connection) -> AccessStoreResult<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS authority_outbox_sequences(organization_id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL CHECK(next_sequence>0),FOREIGN KEY(organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT) STRICT;
+CREATE TABLE IF NOT EXISTS authority_projection_outbox(organization_id TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence>0),event_id TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','inflight','sent')),attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count>=0),next_attempt_at INTEGER NOT NULL DEFAULT 0,envelope_digest TEXT,created_at INTEGER NOT NULL,sent_at INTEGER,PRIMARY KEY(organization_id,sequence),FOREIGN KEY(organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,FOREIGN KEY(event_id) REFERENCES access_audit(event_id) ON DELETE RESTRICT) STRICT;
+CREATE INDEX IF NOT EXISTS authority_projection_outbox_delivery ON authority_projection_outbox(status,next_attempt_at,organization_id,sequence);
+CREATE TRIGGER IF NOT EXISTS enqueue_authority_projection_after_audit AFTER INSERT ON access_audit WHEN NEW.decision='allow' BEGIN INSERT OR IGNORE INTO authority_outbox_sequences(organization_id,next_sequence) VALUES(NEW.organization_id,1); INSERT INTO authority_projection_outbox(organization_id,sequence,event_id,payload_json,status,attempt_count,next_attempt_at,created_at) SELECT NEW.organization_id,next_sequence,NEW.event_id,json_object('resource_type',NEW.target_kind,'resource_id',NEW.target_fingerprint,'operation',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke' OR NEW.action LIKE '%.delete' THEN 'delete' ELSE 'upsert' END,'value',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke' OR NEW.action LIKE '%.delete' THEN NULL ELSE json_object('action',NEW.action,'policy_epoch',NEW.policy_epoch,'metadata',json(NEW.metadata_json)) END),'pending',0,0,NEW.occurred_at FROM authority_outbox_sequences WHERE organization_id=NEW.organization_id; UPDATE authority_outbox_sequences SET next_sequence=next_sequence+1 WHERE organization_id=NEW.organization_id; END;").map_err(super::store::map_sqlite_error)
+}
+
 pub(super) const DOMAIN_SCHEMA: &str = "
 CREATE TABLE organizations (
     organization_id TEXT PRIMARY KEY,
@@ -1036,6 +1045,51 @@ CREATE TABLE access_audit (
     FOREIGN KEY (organization_id, project_id)
       REFERENCES projects(organization_id, project_id) ON DELETE RESTRICT
 ) STRICT;
+
+CREATE TABLE authority_outbox_sequences (
+    organization_id TEXT PRIMARY KEY,
+    next_sequence INTEGER NOT NULL CHECK(next_sequence > 0),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE authority_projection_outbox (
+    organization_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    event_id TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','inflight','sent')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    envelope_digest TEXT,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    PRIMARY KEY (organization_id, sequence),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY (event_id) REFERENCES access_audit(event_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX authority_projection_outbox_delivery
+    ON authority_projection_outbox(status,next_attempt_at,organization_id,sequence);
+
+CREATE TRIGGER enqueue_authority_projection_after_audit
+AFTER INSERT ON access_audit
+WHEN NEW.decision='allow'
+BEGIN
+  INSERT OR IGNORE INTO authority_outbox_sequences(organization_id,next_sequence)
+  VALUES(NEW.organization_id,1);
+  INSERT INTO authority_projection_outbox(
+    organization_id,sequence,event_id,payload_json,status,attempt_count,next_attempt_at,created_at)
+  SELECT NEW.organization_id,next_sequence,NEW.event_id,
+    json_object('resource_type',NEW.target_kind,'resource_id',NEW.target_fingerprint,
+      'operation',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke'
+        OR NEW.action LIKE '%.delete' THEN 'delete' ELSE 'upsert' END,
+      'value',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke'
+        OR NEW.action LIKE '%.delete' THEN NULL ELSE json_object('action',NEW.action,
+        'policy_epoch',NEW.policy_epoch,'metadata',json(NEW.metadata_json)) END),
+    'pending',0,0,NEW.occurred_at
+  FROM authority_outbox_sequences WHERE organization_id=NEW.organization_id;
+  UPDATE authority_outbox_sequences SET next_sequence=next_sequence+1
+  WHERE organization_id=NEW.organization_id;
+END;
 
 ";
 

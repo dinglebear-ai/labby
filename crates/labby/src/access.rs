@@ -13,6 +13,8 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+mod outbox;
+pub(crate) use outbox::PendingProjection;
 #[cfg(test)]
 pub(crate) mod migration_fixture {
     pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;
