@@ -1,5 +1,5 @@
 use labby_auth::VerifiedIdentity;
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::domain::{Permission, ProjectRole};
 use super::error::{AccessStoreError, AccessStoreResult};
@@ -53,6 +53,8 @@ pub(crate) struct LibraryAccessSnapshot {
     pub(crate) project_id: String,
     pub(crate) role: ProjectRole,
     pub(crate) global_revision: u64,
+    pub(crate) team_ids: Vec<String>,
+    pub(crate) is_platform_admin: bool,
 }
 
 pub(super) fn authorize(
@@ -107,12 +109,49 @@ pub(super) fn authorize_library_in_transaction(
     if !selected.role.permissions().contains(&permission) {
         return Err(AccessStoreError::NotAuthorized);
     }
+    let team_ids = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT tm.team_id
+                 FROM team_memberships tm
+                 JOIN team_project_assignments assignment
+                   ON assignment.organization_id=tm.organization_id
+                  AND assignment.team_id=tm.team_id
+                 WHERE tm.organization_id=?1 AND tm.principal_id=?2
+                   AND tm.status='active' AND assignment.status='active'
+                   AND assignment.project_id=?3
+                 ORDER BY tm.team_id",
+            )
+            .map_err(map_sqlite_error)?;
+        statement
+            .query_map(
+                params![
+                    selected.organization_id,
+                    selected.principal_id,
+                    selected.project_id
+                ],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(map_sqlite_error)?
+    };
+    let is_platform_admin = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM platform_administrators
+             WHERE principal_id=?1 AND status='active')",
+            params![selected.principal_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
     let snapshot = LibraryAccessSnapshot {
         principal_id: selected.principal_id,
         organization_id: selected.organization_id,
         project_id: selected.project_id,
         role: selected.role,
         global_revision: selected.global_revision,
+        team_ids,
+        is_platform_admin,
     };
     Ok(snapshot)
 }

@@ -273,11 +273,24 @@ pub(crate) async fn handle(
                         true,
                     )
                 };
+                let selected_team_id = library_headers
+                    .get("x-labby-team-id")
+                    .map(|value| {
+                        value
+                            .to_str()
+                            .map(str::to_owned)
+                            .map_err(|_| ToolError::InvalidParam {
+                                message: "Skill Library team context is invalid".to_owned(),
+                                param: "x-labby-team-id".to_owned(),
+                            })
+                    })
+                    .transpose()?;
                 let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
                     identity,
                     auth.scopes,
                     transport,
-                );
+                )
+                .with_selected_team_id(selected_team_id);
                 let correlation =
                     crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(
                         correlation,

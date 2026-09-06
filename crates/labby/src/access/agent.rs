@@ -2,7 +2,7 @@
 
 use labby_primitives::access::OwnerScope;
 use labby_primitives::agent::{AgentDefinition, AgentState};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 use super::error::{AccessStoreError, AccessStoreResult};
@@ -29,7 +29,7 @@ impl AgentDefinitionStore {
             .map_err(|_| AccessStoreError::MalformedVocabulary)?;
         let (owner_kind, owner_id) = owner(&definition.owner);
         let state = state(definition.state);
-        let payload = serde_json::json!({"agentId": definition.id, "catalogGeneration": definition.revision.catalog_generation, "contentDigest": definition.revision.content_digest, "credentialReferences": definition.revision.credential_references}).to_string();
+        let payload = serde_json::json!({"agentId": definition.id, "catalogGeneration": definition.revision.catalog_generation, "contentDigest": definition.revision.content_digest, "repositoryDigest": definition.revision.repository_digest, "imageDigest": definition.revision.image_digest, "harnessDigest": definition.revision.harness_digest, "loadoutDigest": definition.revision.loadout_digest, "credentialReferences": definition.revision.credential_references}).to_string();
         let tx = self
             .connection
             .transaction()
@@ -59,6 +59,124 @@ impl AgentDefinitionStore {
         .map_err(super::store::map_sqlite_error)?;
         tx.commit().map_err(super::store::map_sqlite_error)
     }
+
+    pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<AgentDefinition>> {
+        self.connection.query_row("SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM agent_definitions WHERE agent_id=?1 AND state!='deleted'", [id], decode).optional().map_err(super::store::map_sqlite_error)
+    }
+
+    pub(crate) fn list(&self) -> AccessStoreResult<Vec<AgentDefinition>> {
+        let mut statement = self.connection.prepare("SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM agent_definitions WHERE state!='deleted' ORDER BY owner_kind,owner_id,agent_id").map_err(super::store::map_sqlite_error)?;
+        statement
+            .query_map([], decode)
+            .map_err(super::store::map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(super::store::map_sqlite_error)
+    }
+
+    pub(crate) fn set_state(
+        &mut self,
+        id: &str,
+        new_state: AgentState,
+        actor: &str,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(super::store::map_sqlite_error)?;
+        let action = match new_state {
+            AgentState::Active => "update",
+            AgentState::Suspended => "suspend",
+            AgentState::Deleted => "delete",
+        };
+        let changed = tx.execute("UPDATE agent_definitions SET state=?2,updated_at=?3 WHERE agent_id=?1 AND state!='deleted'", params![id,state(new_state),now]).map_err(super::store::map_sqlite_error)?;
+        if changed != 1 {
+            return Err(AccessStoreError::NotAuthorized);
+        }
+        let epoch: i64 = tx
+            .query_row(
+                "SELECT authority_epoch FROM agent_definitions WHERE agent_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        tx.execute(
+            "INSERT INTO agent_definition_audit VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                format!("agent-{id}-{action}-{now}"),
+                id,
+                actor,
+                action,
+                epoch,
+                now
+            ],
+        )
+        .map_err(super::store::map_sqlite_error)?;
+        tx.commit().map_err(super::store::map_sqlite_error)
+    }
+}
+
+fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> {
+    use labby_primitives::access::{InstallationId, PrincipalId, ProjectId, TeamId};
+    use labby_primitives::agent::{AgentRevision, RunningRevocationPolicy};
+    let kind: String = row.get(0)?;
+    let id: String = row.get(1)?;
+    let payload: String = row.get(3)?;
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let string = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let owner = match kind.as_str() {
+        "installation" => OwnerScope::Installation(
+            InstallationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        ),
+        "team" => OwnerScope::Team(TeamId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)?),
+        "project" => {
+            OwnerScope::Project(ProjectId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)?)
+        }
+        "personal" => {
+            OwnerScope::Personal(PrincipalId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)?)
+        }
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(AgentDefinition {
+        id: string("agentId"),
+        owner,
+        revision: AgentRevision {
+            version: u64::try_from(row.get::<_, i64>(2)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            content_digest: string("contentDigest"),
+            repository_digest: string("repositoryDigest"),
+            image_digest: string("imageDigest"),
+            harness_digest: string("harnessDigest"),
+            loadout_digest: string("loadoutDigest"),
+            catalog_generation: string("catalogGeneration"),
+            credential_references: value
+                .get("credentialReferences")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect(),
+        },
+        state: match row.get::<_, String>(4)?.as_str() {
+            "active" => AgentState::Active,
+            "suspended" => AgentState::Suspended,
+            _ => AgentState::Deleted,
+        },
+        required_capabilities: vec![],
+        authority_epoch: u64::try_from(row.get::<_, i64>(5)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        publication_epoch: u64::try_from(row.get::<_, i64>(6)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        revocation_policy: RunningRevocationPolicy::StopAtSafeBoundary,
+    })
 }
 
 fn owner(owner: &OwnerScope) -> (&'static str, &str) {

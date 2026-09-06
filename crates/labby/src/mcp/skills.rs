@@ -138,11 +138,14 @@ impl LabMcpServer {
                 true,
             )
         };
+        let selected_team_id =
+            optional_header_str(&parts.headers, "x-labby-team-id")?.map(str::to_owned);
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             identity.clone(),
             auth.scopes.clone(),
             transport,
-        );
+        )
+        .with_selected_team_id(selected_team_id);
         let request_id =
             optional_header_str(&parts.headers, "x-request-id")?.unwrap_or("mcp-skills-read");
         let correlation =
@@ -214,11 +217,14 @@ impl LabMcpServer {
         } else {
             crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true)
         };
+        let selected_team_id =
+            optional_header_str(&parts.headers, "x-labby-team-id")?.map(str::to_owned);
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             boundary.identity.clone(),
             boundary.scopes.clone(),
             transport,
-        );
+        )
+        .with_selected_team_id(selected_team_id);
         if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
             .iter()
             .any(|candidate| candidate.name == action)

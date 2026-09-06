@@ -458,6 +458,14 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     ));
 
     reg.register(RegisteredService::bootstrap_operator(
+        "agents",
+        "Create, manage, and run owner-scoped Agents",
+        "automation",
+        crate::dispatch::agents::ACTIONS,
+        dispatch_fn!(crate::dispatch::agents::dispatch_unbound),
+    ));
+
+    reg.register(RegisteredService::bootstrap_operator(
         "dev_containers",
         "Create and manage isolated development containers",
         "administration",

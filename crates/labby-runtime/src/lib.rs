@@ -31,6 +31,7 @@ pub mod dev_container;
 /// Pluggable Dev Container execution and restart recovery.
 pub mod dev_container_runtime;
 pub mod error;
+pub mod gateway_authority;
 pub mod gateway_config;
 pub mod helpers;
 pub mod path_safety;

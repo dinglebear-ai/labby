@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use labby_auth::{Authenticator, VerifiedIdentity};
 use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGrant};
 use labby_runtime::artifacts::{
-    LibraryActorId, LibraryAuthorization, LibraryGrant, LibraryOwnership, LibraryTenantId,
-    SkillVisibility,
+    LibraryActorId, LibraryAuthorization, LibraryGrant, LibraryOwnerKind, LibraryOwnership,
+    LibraryTenantId, SkillVisibility,
 };
 
 use crate::access::{AccessRuntime, AccessStoreError, Permission, ProjectRole};
@@ -211,6 +211,7 @@ pub(crate) struct SkillLibraryCaller {
     identity: VerifiedIdentity,
     scopes: BTreeSet<String>,
     transport: SkillLibraryTransport,
+    selected_team_id: Option<String>,
 }
 
 impl SkillLibraryCaller {
@@ -223,7 +224,15 @@ impl SkillLibraryCaller {
             identity,
             scopes: scopes.into_iter().collect(),
             transport,
+            selected_team_id: None,
         }
+    }
+
+    /// Bind an untrusted selector to this request. The access snapshot remains authoritative:
+    /// an unknown, suspended, unassigned, or non-member Team is denied below.
+    pub(crate) fn with_selected_team_id(mut self, selected_team_id: Option<String>) -> Self {
+        self.selected_team_id = selected_team_id;
+        self
     }
 }
 
@@ -265,6 +274,9 @@ pub(crate) struct SkillLibraryAuthorizationDecision {
     pub(crate) audit: SkillLibraryAuditEvent,
     actor_id: LibraryActorId,
     tenant_id: LibraryTenantId,
+    project_id: LibraryActorId,
+    team_ids: BTreeSet<LibraryActorId>,
+    authority_generation: u64,
     is_admin: bool,
 }
 
@@ -273,10 +285,48 @@ impl SkillLibraryAuthorizationDecision {
         &self.tenant_id
     }
 
+    pub(crate) fn cursor_binding(&self) -> (&str, &str, &str, u64) {
+        (
+            self.tenant_id.as_str(),
+            self.actor_id.as_str(),
+            self.project_id.as_str(),
+            self.authority_generation,
+        )
+    }
+
+    pub(crate) fn into_shared_create(
+        self,
+    ) -> (
+        LibraryAuthorization,
+        LibraryOwnership,
+        SkillLibraryAuditEvent,
+    ) {
+        let (owner_kind, scope_id) = self
+            .team_ids
+            .iter()
+            .next()
+            .filter(|_| self.team_ids.len() == 1)
+            .map_or(
+                (LibraryOwnerKind::Project, self.project_id.clone()),
+                |team_id| (LibraryOwnerKind::Team, team_id.clone()),
+            );
+        let ownership =
+            LibraryOwnership::scoped(self.tenant_id.clone(), owner_kind, scope_id.clone());
+        let authorization = LibraryAuthorization::from_authorized_scope_projection(
+            self.tenant_id,
+            self.actor_id,
+            owner_kind,
+            scope_id,
+        );
+        (authorization, ownership, self.audit)
+    }
+
     pub(crate) fn artifact_access_snapshot(&self) -> crate::skills::facade::ArtifactAccessSnapshot {
         crate::skills::facade::ArtifactAccessSnapshot::new(
             self.tenant_id.clone(),
             self.actor_id.clone(),
+            self.project_id.clone(),
+            self.team_ids.clone(),
             self.is_admin,
         )
     }
@@ -284,7 +334,8 @@ impl SkillLibraryAuthorizationDecision {
     /// This makes list/get collision handling O(1) access queries rather than one query per Skill.
     pub(crate) fn permits_personal(&self, ownership: &LibraryOwnership) -> bool {
         ownership.tenant_id == self.tenant_id
-            && (ownership.owner_id == self.actor_id || self.is_admin)
+            && ownership.owner_kind() == LibraryOwnerKind::Personal
+            && ownership.owner_id == self.actor_id
     }
 
     /// Privacy-safe ownership relationship for response projection.
@@ -293,7 +344,9 @@ impl SkillLibraryAuthorizationDecision {
         reason = "the two differently named canonical id dimensions are intentionally compared"
     )]
     pub(crate) fn owns(&self, ownership: &LibraryOwnership) -> bool {
-        (ownership.tenant_id == self.tenant_id) && (ownership.owner_id == self.actor_id)
+        (ownership.tenant_id == self.tenant_id)
+            && ownership.owner_kind() == LibraryOwnerKind::Personal
+            && (ownership.owner_id == self.actor_id)
     }
 
     /// Apply record visibility after one current membership snapshot without another access read.
@@ -307,8 +360,20 @@ impl SkillLibraryAuthorizationDecision {
         is_active: bool,
     ) -> bool {
         ownership.tenant_id == self.tenant_id
-            && (self.permits_personal(ownership)
-                || (visibility == SkillVisibility::Tenant && is_active))
+            && match ownership.owner_kind() {
+                LibraryOwnerKind::Personal => self.permits_personal(ownership),
+                LibraryOwnerKind::Project => {
+                    ownership.owner_id == self.project_id
+                        && (visibility == SkillVisibility::Tenant || self.is_admin)
+                        && is_active
+                }
+                LibraryOwnerKind::Team => {
+                    self.team_ids.len() == 1
+                        && self.team_ids.contains(&ownership.owner_id)
+                        && visibility == SkillVisibility::Tenant
+                        && is_active
+                }
+            }
     }
 }
 
@@ -385,7 +450,8 @@ pub(crate) async fn authorize_at_boundary(
     } else {
         Permission::AssetDiscover
     };
-    let snapshot = store
+    let selected_team_id = caller.selected_team_id.clone();
+    let mut snapshot = store
         .authorize_skill_library(caller.identity, project_id.to_owned(), permission)
         .await
         .map_err(|error| {
@@ -427,6 +493,17 @@ pub(crate) async fn authorize_at_boundary(
             policy_error
         })?;
 
+    if let Some(selected_team_id) = selected_team_id {
+        if !snapshot.team_ids.iter().any(|id| id == &selected_team_id) {
+            return Err(SkillLibraryAuthorizationError::Denied);
+        }
+        snapshot.team_ids.retain(|id| id == &selected_team_id);
+    } else {
+        // Absence of an explicit Team context means Project context. Never infer a Team from
+        // membership, since doing so makes ownership change as assignments are added or removed.
+        snapshot.team_ids.clear();
+    }
+
     decision_from_snapshot(snapshot, action, target_id, target, correlation_id, surface)
 }
 
@@ -464,31 +541,56 @@ fn decision_from_snapshot(
         .map_err(|_| projection_failure("organization_id"))?;
     let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id)
         .map_err(|_| projection_failure("principal_id"))?;
-    let is_admin = matches!(snapshot.role, ProjectRole::Owner | ProjectRole::Admin);
-    let (grant, ownership) = resolve_grant(&snapshot.role, &tenant_id, &actor_id, target)
-        .ok_or_else(|| {
-            audit_sink.record(
-                SkillLibraryAuditEvent::new(
-                    correlation_id.clone(),
-                    target_id,
-                    action,
-                    surface,
-                    SkillLibraryAuditOutcome::Deny,
-                    SkillLibraryAuditStage::Ownership,
-                )
-                .with_canonical_actor(
-                    tenant_id.clone(),
-                    actor_id.clone(),
-                    snapshot.global_revision,
-                ),
-            );
-            SkillLibraryAuthorizationError::Denied
-        })?;
-    let authorization = LibraryAuthorization::from_authorized_access_projection(
-        tenant_id.clone(),
-        actor_id.clone(),
-        grant,
-    );
+    let project_id = LibraryActorId::from_canonical_projection(snapshot.project_id)
+        .map_err(|_| projection_failure("project_id"))?;
+    let team_ids = snapshot
+        .team_ids
+        .into_iter()
+        .map(LibraryActorId::from_canonical_projection)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|_| projection_failure("team_id"))?;
+    let is_admin = snapshot.is_platform_admin
+        || matches!(snapshot.role, ProjectRole::Owner | ProjectRole::Admin);
+    let (grant, ownership) = resolve_grant(
+        &snapshot.role,
+        &tenant_id,
+        &actor_id,
+        &project_id,
+        &team_ids,
+        target,
+    )
+    .ok_or_else(|| {
+        audit_sink.record(
+            SkillLibraryAuditEvent::new(
+                correlation_id.clone(),
+                target_id,
+                action,
+                surface,
+                SkillLibraryAuditOutcome::Deny,
+                SkillLibraryAuditStage::Ownership,
+            )
+            .with_canonical_actor(
+                tenant_id.clone(),
+                actor_id.clone(),
+                snapshot.global_revision,
+            ),
+        );
+        SkillLibraryAuthorizationError::Denied
+    })?;
+    let authorization = if ownership.owner_kind() == LibraryOwnerKind::Personal {
+        LibraryAuthorization::from_authorized_access_projection(
+            tenant_id.clone(),
+            actor_id.clone(),
+            grant,
+        )
+    } else {
+        LibraryAuthorization::from_authorized_scope_projection(
+            tenant_id.clone(),
+            actor_id.clone(),
+            ownership.owner_kind(),
+            ownership.owner_id.clone(),
+        )
+    };
     let audit = SkillLibraryAuditEvent::new(
         correlation_id.clone(),
         target_id,
@@ -509,6 +611,9 @@ fn decision_from_snapshot(
         audit,
         actor_id,
         tenant_id,
+        project_id,
+        team_ids,
+        authority_generation: snapshot.global_revision,
         is_admin,
     })
 }
@@ -803,6 +908,8 @@ fn resolve_grant(
     role: &ProjectRole,
     tenant_id: &LibraryTenantId,
     actor_id: &LibraryActorId,
+    project_id: &LibraryActorId,
+    team_ids: &BTreeSet<LibraryActorId>,
     target: SkillLibraryTarget<'_>,
 ) -> Option<(LibraryGrant, LibraryOwnership)> {
     if target == SkillLibraryTarget::SharedActive {
@@ -829,11 +936,18 @@ fn resolve_grant(
     if ownership.tenant_id != *tenant_id {
         return None;
     }
-    if ownership.owner_id == *actor_id {
+    if ownership.owner_kind() == LibraryOwnerKind::Personal && ownership.owner_id == *actor_id {
         return Some((LibraryGrant::Owner, ownership));
     }
-    matches!(role, ProjectRole::Owner | ProjectRole::Admin)
-        .then_some((LibraryGrant::Admin, ownership))
+    match ownership.owner_kind() {
+        LibraryOwnerKind::Project if ownership.owner_id == *project_id => {
+            Some((LibraryGrant::Owner, ownership))
+        }
+        LibraryOwnerKind::Team if team_ids.len() == 1 && team_ids.contains(&ownership.owner_id) => {
+            Some((LibraryGrant::Owner, ownership))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1069,7 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_admin_can_act_for_owner_but_member_cannot_and_audit_keeps_actor() {
+    async fn project_roles_cannot_mutate_another_principals_personal_record() {
         let (_directory, runtime, _owner) = fixture().await;
         let store = runtime.store().await.unwrap();
         store.seed_loadout_roles_for_test().await.unwrap();
@@ -1087,13 +1201,8 @@ mod tests {
             SkillLibraryTarget::Mutation(&target),
             "request-admin",
         )
-        .await
-        .unwrap();
-        assert_eq!(
-            admin.audit.actor_id.as_ref().unwrap().as_str(),
-            "admin-principal"
-        );
-        assert_eq!(admin.ownership.owner_id.as_str(), "bootstrap-owner");
+        .await;
+        assert!(matches!(admin, Err(SkillLibraryAuthorizationError::Denied)));
 
         let member = decide(
             &runtime,
@@ -1143,7 +1252,7 @@ mod tests {
         .unwrap();
         assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
         assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, false));
-        assert!(member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, true));
+        assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, true));
 
         let cross_tenant = LibraryOwnership::canonical(
             LibraryTenantId::from_canonical_projection("other-tenant").unwrap(),
@@ -1166,7 +1275,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(admin.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
+        assert!(!admin.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
     }
 
     #[tokio::test]
@@ -1190,7 +1299,10 @@ mod tests {
         let visible = (0..256)
             .filter(|index| decision.permits_personal(if index % 2 == 0 { &own } else { &other }))
             .count();
-        assert_eq!(visible, 256, "project owner is a current administrator");
+        assert_eq!(
+            visible, 128,
+            "personal records remain private to their durable owner"
+        );
         assert_eq!(
             store.skill_library_authorization_count_for_test(),
             after_list_authorization
@@ -1463,16 +1575,26 @@ mod tests {
                 } else {
                     SkillLibraryTarget::Personal(&own)
                 };
-                assert!(resolve_grant(&role, &tenant, &actor, own_target).is_some());
+                assert!(
+                    resolve_grant(&role, &tenant, &actor, &actor, &BTreeSet::new(), own_target,)
+                        .is_some()
+                );
 
                 let other_target = if action.is_mutation() {
                     SkillLibraryTarget::Mutation(&other)
                 } else {
                     SkillLibraryTarget::Personal(&other)
                 };
-                assert_eq!(
-                    resolve_grant(&role, &tenant, &actor, other_target).is_some(),
-                    matches!(role, ProjectRole::Owner | ProjectRole::Admin),
+                assert!(
+                    resolve_grant(
+                        &role,
+                        &tenant,
+                        &actor,
+                        &actor,
+                        &BTreeSet::new(),
+                        other_target,
+                    )
+                    .is_none(),
                     "{role:?} {action:?}"
                 );
 
@@ -1481,7 +1603,17 @@ mod tests {
                 } else {
                     SkillLibraryTarget::Personal(&cross_company)
                 };
-                assert!(resolve_grant(&role, &tenant, &actor, cross_target).is_none());
+                assert!(
+                    resolve_grant(
+                        &role,
+                        &tenant,
+                        &actor,
+                        &actor,
+                        &BTreeSet::new(),
+                        cross_target,
+                    )
+                    .is_none()
+                );
             }
         }
     }

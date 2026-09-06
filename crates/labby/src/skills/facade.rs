@@ -8,7 +8,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use base64::Engine as _;
-use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
+use labby_runtime::artifacts::{
+    LibraryActorId, LibraryOwnerKind, LibraryTenantId, SkillVisibility,
+};
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::{
@@ -115,6 +117,8 @@ pub(crate) struct SkillRegistryContext {
 pub(crate) struct ArtifactAccessSnapshot {
     tenant_id: LibraryTenantId,
     actor_id: LibraryActorId,
+    project_id: LibraryActorId,
+    team_ids: BTreeSet<LibraryActorId>,
     is_admin: bool,
 }
 
@@ -122,11 +126,15 @@ impl ArtifactAccessSnapshot {
     pub(crate) fn new(
         tenant_id: LibraryTenantId,
         actor_id: LibraryActorId,
+        project_id: LibraryActorId,
+        team_ids: BTreeSet<LibraryActorId>,
         is_admin: bool,
     ) -> Self {
         Self {
             tenant_id,
             actor_id,
+            project_id,
+            team_ids,
             is_admin,
         }
     }
@@ -137,9 +145,18 @@ impl ArtifactAccessSnapshot {
         visibility: SkillVisibility,
     ) -> bool {
         ownership.tenant_id == self.tenant_id
-            && (ownership.owner_id == self.actor_id
-                || self.is_admin
-                || visibility == SkillVisibility::Tenant)
+            && match ownership.owner_kind() {
+                LibraryOwnerKind::Personal => ownership.owner_id == self.actor_id,
+                LibraryOwnerKind::Project => {
+                    ownership.owner_id == self.project_id
+                        && (visibility == SkillVisibility::Tenant || self.is_admin)
+                }
+                LibraryOwnerKind::Team => {
+                    self.team_ids.len() == 1
+                        && self.team_ids.contains(&ownership.owner_id)
+                        && visibility == SkillVisibility::Tenant
+                }
+            }
     }
 }
 
@@ -898,6 +915,8 @@ mod tests {
         ArtifactAccessSnapshot::new(
             LibraryTenantId::from_canonical_projection(tenant).unwrap(),
             LibraryActorId::from_canonical_projection(actor).unwrap(),
+            LibraryActorId::from_canonical_projection("project").unwrap(),
+            BTreeSet::new(),
             is_admin,
         )
     }

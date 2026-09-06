@@ -1696,6 +1696,74 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
+                    let auth = auth_context_from_extensions(&context.extensions);
+                    let identity = context
+                        .extensions
+                        .get::<labby_auth::VerifiedIdentity>()
+                        .cloned();
+                    let team_id = params
+                        .get("team_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let Some(identity) = identity else {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            "forbidden",
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    };
+                    let trusted_auth;
+                    let auth = if let Some(auth) = auth {
+                        auth
+                    } else {
+                        trusted_auth = labby_auth::auth_context::AuthContext {
+                            sub: "trusted-local".into(),
+                            actor_key: None,
+                            scopes: vec!["lab:admin".into()],
+                            issuer: "local".into(),
+                            via_session: false,
+                            csrf_token: None,
+                            email: None,
+                        };
+                        &trusted_auth
+                    };
+                    if crate::access::authorize_gateway_action(
+                        &self.access_runtime,
+                        identity,
+                        auth,
+                        "installation",
+                        team_id.as_deref(),
+                        &action,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            "forbidden",
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    }
+                    let params = match crate::access::qualify_team_gateway_params(
+                        &action,
+                        team_id.as_deref(),
+                        params,
+                    ) {
+                        Ok(params) => params,
+                        Err(_) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "forbidden",
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
                     let params = inject_gateway_origin_param(
                         &action,
                         params,
@@ -1703,19 +1771,31 @@ impl LabMcpServer {
                     );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                        oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                            auth_context_from_extensions(&context.extensions),
-                            self.request_subject(&context),
-                        )
-                        .map(|subject| subject.into_owned()),
+                        oauth_subject: crate::access::gateway_runtime_subject(
+                            &action,
+                            team_id.as_deref(),
+                            crate::mcp::context::oauth_upstream_subject_for_request(
+                                auth_context_from_extensions(&context.extensions),
+                                self.request_subject(&context),
+                            )
+                            .as_deref(),
+                        ),
                     };
-                    Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
-                        manager,
-                        &action,
-                        params,
-                        enrichment_scope,
-                    ))
-                    .await
+                    let response =
+                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
+                            manager,
+                            &action,
+                            params,
+                            enrichment_scope,
+                        ))
+                        .await;
+                    response.map(|mut response| {
+                        crate::access::filter_team_gateway_projection(
+                            team_id.as_deref(),
+                            &mut response,
+                        );
+                        response
+                    })
                 }
                 #[cfg(not(feature = "gateway"))]
                 {

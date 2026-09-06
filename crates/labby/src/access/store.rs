@@ -43,6 +43,56 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    pub(crate) async fn put_agent_definition(
+        &self,
+        definition: labby_primitives::agent::AgentDefinition,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.put(&definition, &actor, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn get_agent_definition(
+        &self,
+        id: String,
+    ) -> AccessStoreResult<Option<labby_primitives::agent::AgentDefinition>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.get(&id)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn list_agent_definitions(
+        &self,
+    ) -> AccessStoreResult<Vec<labby_primitives::agent::AgentDefinition>> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || super::agent::AgentDefinitionStore::open(&path)?.list())
+            .await
+            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn set_agent_definition_state(
+        &self,
+        id: String,
+        state: labby_primitives::agent::AgentState,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.set_state(&id, state, &actor, now)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
     pub(crate) async fn claim_authority_projection_batch(
         &self,
         now: i64,

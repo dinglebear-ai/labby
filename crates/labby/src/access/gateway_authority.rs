@@ -11,6 +11,7 @@ use super::{
     AccessRuntime, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
 };
 use crate::dispatch::error::ToolError;
+use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GatewayAuthorityClass {
@@ -40,6 +41,94 @@ pub(crate) fn gateway_authority_class(action: &str) -> Option<GatewayAuthorityCl
         action if action.starts_with("gateway.") => GatewayAuthorityClass::PlatformManage,
         _ => return None,
     })
+}
+
+pub(crate) fn qualify_team_gateway_params(
+    action: &str,
+    team_id: Option<&str>,
+    mut params: Value,
+) -> Result<Value, ToolError> {
+    if !matches!(
+        gateway_authority_class(action),
+        Some(GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage)
+    ) {
+        return Ok(params);
+    }
+    let team_id = team_id.ok_or_else(denied)?;
+    TeamId::new(team_id).map_err(|_| denied())?;
+    let prefix = format!("team:{team_id}:");
+    qualify_named_fields(&mut params, &prefix);
+    Ok(params)
+}
+
+pub(crate) fn gateway_runtime_subject(
+    action: &str,
+    team_id: Option<&str>,
+    subject: Option<&str>,
+) -> Option<String> {
+    let subject = subject?;
+    if matches!(
+        gateway_authority_class(action),
+        Some(GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage)
+    ) {
+        return team_id.map(|team| format!("team:{team}:{subject}"));
+    }
+    Some(subject.to_owned())
+}
+
+fn qualify_named_fields(value: &mut Value, prefix: &str) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if matches!(key.as_str(), "name" | "loadout") {
+                    if let Some(name) = child.as_str().filter(|name| !name.starts_with(prefix)) {
+                        *child = Value::String(format!("{prefix}{name}"));
+                    }
+                } else {
+                    qualify_named_fields(child, prefix);
+                }
+            }
+        }
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| qualify_named_fields(value, prefix)),
+        _ => {}
+    }
+}
+
+pub(crate) fn filter_team_gateway_projection(team_id: Option<&str>, value: &mut Value) {
+    let Some(team_id) = team_id else { return };
+    let prefix = format!("team:{team_id}:");
+    filter_projection(value, &prefix);
+}
+
+fn filter_projection(value: &mut Value, prefix: &str) -> bool {
+    match value {
+        Value::Array(values) => {
+            values.retain_mut(|value| filter_projection(value, prefix));
+            true
+        }
+        Value::Object(object) => {
+            if let Some(name) = object
+                .get_mut("name")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+            {
+                if !name.starts_with(prefix) {
+                    return false;
+                }
+                object.insert(
+                    "name".into(),
+                    Value::String(name[prefix.len()..].to_owned()),
+                );
+            }
+            for child in object.values_mut() {
+                filter_projection(child, prefix);
+            }
+            true
+        }
+        _ => true,
+    }
 }
 
 pub(crate) async fn authorize_gateway_action(
@@ -150,5 +239,23 @@ mod tests {
             Some(GatewayAuthorityClass::PlatformManage)
         );
         assert_eq!(gateway_authority_class("other.action"), None);
+    }
+
+    #[test]
+    fn team_names_are_qualified_and_other_team_rows_are_removed() {
+        let params = qualify_team_gateway_params(
+            "gateway.loadout.add",
+            Some("alpha"),
+            serde_json::json!({"loadout":{"name":"prod","upstreams":["shared"]}}),
+        )
+        .unwrap();
+        assert_eq!(params["loadout"]["name"], "team:alpha:prod");
+        let mut rows = serde_json::json!([{"name":"team:alpha:prod"},{"name":"team:beta:prod"}]);
+        filter_team_gateway_projection(Some("alpha"), &mut rows);
+        assert_eq!(rows, serde_json::json!([{"name":"prod"}]));
+        assert_ne!(
+            gateway_runtime_subject("gateway.loadout.get", Some("alpha"), Some("user")),
+            gateway_runtime_subject("gateway.loadout.get", Some("beta"), Some("user")),
+        );
     }
 }

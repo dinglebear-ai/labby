@@ -263,6 +263,22 @@ macro_rules! opaque_projection_id {
 opaque_projection_id!(LibraryTenantId, "tenant_id");
 opaque_projection_id!(LibraryActorId, "actor_id");
 
+/// Durable owner namespace. Missing values in v1 records migrate as personal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryOwnerKind {
+    #[default]
+    Personal,
+    Team,
+    Project,
+}
+
+impl LibraryOwnerKind {
+    fn is_personal(value: &Self) -> bool {
+        *value == Self::Personal
+    }
+}
+
 /// Canonical local ownership projection. It deliberately contains no auth-provider facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -270,6 +286,8 @@ pub struct LibraryOwnership {
     pub schema_version: u8,
     pub tenant_id: LibraryTenantId,
     pub owner_id: LibraryActorId,
+    #[serde(default, skip_serializing_if = "LibraryOwnerKind::is_personal")]
+    pub owner_kind: LibraryOwnerKind,
 }
 
 impl LibraryOwnership {
@@ -278,7 +296,26 @@ impl LibraryOwnership {
             schema_version: OWNERSHIP_PROJECTION_SCHEMA_VERSION,
             tenant_id,
             owner_id,
+            owner_kind: LibraryOwnerKind::Personal,
         }
+    }
+
+    pub fn scoped(
+        tenant_id: LibraryTenantId,
+        owner_kind: LibraryOwnerKind,
+        owner_id: LibraryActorId,
+    ) -> Self {
+        Self {
+            schema_version: OWNERSHIP_PROJECTION_SCHEMA_VERSION,
+            tenant_id,
+            owner_id,
+            owner_kind,
+        }
+    }
+
+    #[must_use]
+    pub const fn owner_kind(&self) -> LibraryOwnerKind {
+        self.owner_kind
     }
 
     fn validate(&self) -> Result<(), ArtifactError> {
@@ -305,6 +342,8 @@ pub struct LibraryAuthorization {
     tenant_id: LibraryTenantId,
     actor_id: LibraryActorId,
     grant: LibraryGrant,
+    owner_kind: LibraryOwnerKind,
+    scope_id: LibraryActorId,
 }
 
 impl LibraryAuthorization {
@@ -327,11 +366,30 @@ impl LibraryAuthorization {
         actor_id: LibraryActorId,
         grant: LibraryGrant,
     ) -> Self {
+        let scope_id = actor_id.clone();
         Self {
             schema_version: OWNERSHIP_PROJECTION_SCHEMA_VERSION,
             tenant_id,
             actor_id,
             grant,
+            owner_kind: LibraryOwnerKind::Personal,
+            scope_id,
+        }
+    }
+
+    pub fn from_authorized_scope_projection(
+        tenant_id: LibraryTenantId,
+        actor_id: LibraryActorId,
+        owner_kind: LibraryOwnerKind,
+        scope_id: LibraryActorId,
+    ) -> Self {
+        Self {
+            schema_version: OWNERSHIP_PROJECTION_SCHEMA_VERSION,
+            tenant_id,
+            actor_id,
+            grant: LibraryGrant::Owner,
+            owner_kind,
+            scope_id,
         }
     }
 
@@ -344,7 +402,9 @@ impl LibraryAuthorization {
         if self.tenant_id != ownership.tenant_id {
             return Err(ArtifactError::NotFound("library_record"));
         }
-        if self.grant == LibraryGrant::Owner && self.actor_id != ownership.owner_id {
+        let owner_scope_matches =
+            self.owner_kind == ownership.owner_kind && self.scope_id == ownership.owner_id;
+        if self.grant == LibraryGrant::Owner && !owner_scope_matches {
             return Err(ArtifactError::NotFound("library_record"));
         }
         Ok(())
@@ -2012,6 +2072,34 @@ mod tests {
 
     fn ts(value: &str) -> LibraryTimestamp {
         LibraryTimestamp::parse(value).unwrap()
+    }
+
+    #[test]
+    fn ownership_migrates_missing_kind_to_personal_and_round_trips_scoped_owners() {
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "tenantId": "org-1",
+            "ownerId": "principal-1"
+        });
+        let migrated: LibraryOwnership = serde_json::from_value(legacy).unwrap();
+        assert_eq!(migrated.owner_kind(), LibraryOwnerKind::Personal);
+        assert!(
+            serde_json::to_value(&migrated)
+                .unwrap()
+                .get("ownerKind")
+                .is_none()
+        );
+
+        for kind in [LibraryOwnerKind::Team, LibraryOwnerKind::Project] {
+            let scoped = LibraryOwnership::scoped(
+                LibraryTenantId::from_canonical_projection("org-1").unwrap(),
+                kind,
+                LibraryActorId::from_canonical_projection("scope-1").unwrap(),
+            );
+            let reopened: LibraryOwnership =
+                serde_json::from_value(serde_json::to_value(&scoped).unwrap()).unwrap();
+            assert_eq!(reopened, scoped);
+        }
     }
 
     fn idem(key: &str) -> LibraryIdempotency {

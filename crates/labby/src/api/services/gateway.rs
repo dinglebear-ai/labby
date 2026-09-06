@@ -332,6 +332,7 @@ async fn handle(
     )
     .await
     .map_err(ApiError::from)?;
+    let team_id = team_id.map(str::to_owned);
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let auth_for_dispatch = auth.clone();
     let manager = state
@@ -357,12 +358,22 @@ async fn handle(
             let subject = subject.clone();
             let auth = auth_for_dispatch.clone();
             async move {
+                let params = crate::access::qualify_team_gateway_params(
+                    &action,
+                    team_id.as_deref(),
+                    params,
+                )?;
                 let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
                 // Unlike trusted stdio MCP, an unauthenticated HTTP request
                 // must never inherit the shared gateway OAuth credential.
                 let oauth_subject =
                     http_oauth_subject(auth.as_ref().map(|value| &value.0), subject.as_deref());
-                crate::dispatch::gateway::dispatch_with_manager_scoped(
+                let oauth_subject = crate::access::gateway_runtime_subject(
+                    &action,
+                    team_id.as_deref(),
+                    oauth_subject.as_deref(),
+                );
+                let mut response = crate::dispatch::gateway::dispatch_with_manager_scoped(
                     &manager,
                     &action,
                     params,
@@ -371,7 +382,9 @@ async fn handle(
                         oauth_subject,
                     },
                 )
-                .await
+                .await?;
+                crate::access::filter_team_gateway_projection(team_id.as_deref(), &mut response);
+                Ok(response)
             }
         },
     )
