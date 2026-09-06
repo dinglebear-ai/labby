@@ -352,6 +352,7 @@ fn rust_changes_enable_compile_test_security_release_and_container_smoke() {
     assert_eq!(out["rust_compile"], "true");
     assert_eq!(out["rust_test"], "true");
     assert_eq!(out["security"], "true");
+    assert_eq!(out["javascript_advisories"], "false");
     assert_eq!(out["release"], "true");
     assert_eq!(out["docker"], "true");
     assert_eq!(out["web"], "false");
@@ -445,6 +446,49 @@ fn palette_changes_route_to_dedicated_checks() {
     assert_eq!(out["palette"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["web"], "false");
+}
+
+#[test]
+fn browser_extension_and_shared_protocol_changes_route_to_dedicated_checks() {
+    for path in [
+        "apps/browser-extension/manifest.json",
+        "apps/browser-extension/src/service_worker.js",
+        "apps/browser-extension/test/identity.test.js",
+        "apps/browser-extension/package.json",
+        "apps/browser-extension/package-lock.json",
+        "crates/labby-browser/src/protocol.rs",
+        "crates/labby/src/dispatch/browser/runtime.rs",
+        "crates/labby/src/api/browser_session.rs",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["browser_extension"], "true", "{path}");
+    }
+
+    let unrelated = classify("pull_request", &["apps/gateway-admin/src/app.tsx"]);
+    assert_eq!(unrelated["browser_extension"], "false");
+}
+
+#[test]
+fn every_javascript_dependency_graph_change_routes_to_advisory_checks() {
+    for path in [
+        "package.json",
+        "package-lock.json",
+        "apps/browser-extension/package.json",
+        "apps/browser-extension/package-lock.json",
+        "apps/gateway-admin/package.json",
+        "apps/gateway-admin/pnpm-lock.yaml",
+        "apps/palette-tauri/package.json",
+        "apps/palette-tauri/pnpm-lock.yaml",
+        "config/agent-clis/package.json",
+        "config/agent-clis/package-lock.json",
+        "packages/labby-mcp/package.json",
+        "packages/labby-mcp/pnpm-lock.yaml",
+        "scripts/ci/js-advisory-policy.json",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["javascript_advisories"], "true", "{path}");
+        assert_eq!(out["security"], "false", "{path}");
+    }
 }
 
 #[test]

@@ -48,6 +48,7 @@ export interface LabbyCatalog {
 export interface LauncherCatalog {
   fingerprint: string;
   entries: LauncherEntry[];
+  truncated?: boolean;
 }
 
 export interface LauncherSchema {
@@ -89,13 +90,54 @@ interface BridgeResult {
   payload: unknown;
 }
 
-export type CatalogResult =
-  | { notModified: true }
-  | { notModified: false; catalog: LabbyCatalog };
+export type CatalogResult = { notModified: true } | { notModified: false; catalog: LabbyCatalog };
 
 export type LauncherCatalogResult =
   | { notModified: true }
   | { notModified: false; catalog: LauncherCatalog };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isLauncherEntry(value: unknown): value is LauncherEntry {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.label !== "string" ||
+    typeof value.description !== "string" ||
+    typeof value.source !== "string" ||
+    typeof value.destructive !== "boolean" ||
+    !isOptionalString(value.contractHash) ||
+    !isOptionalString(value.schemaFingerprint)
+  ) {
+    return false;
+  }
+  if (value.kind === "mcpTool") {
+    return typeof value.upstream === "string" && typeof value.tool === "string";
+  }
+  if (value.kind === "labbyAction") {
+    return typeof value.service === "string" && typeof value.action === "string";
+  }
+  return false;
+}
+
+function decodeLauncherCatalog(payload: unknown): LauncherCatalog {
+  if (
+    !isRecord(payload) ||
+    typeof payload.fingerprint !== "string" ||
+    !Array.isArray(payload.entries) ||
+    !payload.entries.every(isLauncherEntry) ||
+    (payload.truncated !== undefined && typeof payload.truncated !== "boolean")
+  ) {
+    throw new Error("Launcher catalog response has an invalid shape.");
+  }
+  return payload as unknown as LauncherCatalog;
+}
 
 /**
  * Fetch the Labby action catalog. Passes `etag` as `If-None-Match`; a `304`
@@ -137,34 +179,42 @@ export async function dispatchAction(
  * Fetch the unified launcher catalog. HTTP-level failures resolve to the stable
  * payload from the bridge so callers can show Labby error envelopes directly.
  */
-export async function fetchLauncherCatalog(etag?: string | null): Promise<LauncherCatalogResult | PaletteResult> {
-  const result = await invoke<BridgeResult>("fetch_launcher_catalog", { etag: etag ?? null });
+export async function fetchLauncherCatalog(
+  query = "",
+  etag?: string | null,
+): Promise<LauncherCatalogResult | PaletteResult> {
+  const result = await invoke<BridgeResult>("fetch_launcher_catalog", {
+    query,
+    etag: etag ?? null,
+  });
   if (result.status === 304) return { notModified: true };
   if (!result.ok) {
     return {
       ok: false,
       status: result.status,
-      path: "/v1/palette/catalog",
+      path: "/v1/palette/search",
       method: "GET",
       payload: result.payload,
     };
   }
   return {
     notModified: false,
-    catalog: (result.payload ?? { fingerprint: "", entries: [] }) as LauncherCatalog,
+    catalog: decodeLauncherCatalog(result.payload),
   };
 }
 
 export async function fetchLauncherSchema(id: string): Promise<LauncherSchema> {
   const result = await invoke<BridgeResult>("fetch_launcher_schema", { id });
   if (!result.ok) {
-    throw new Error(resultErrorMessage({
-      ok: false,
-      status: result.status,
-      path: "/v1/palette/schema",
-      method: "GET",
-      payload: result.payload,
-    }));
+    throw new Error(
+      resultErrorMessage({
+        ok: false,
+        status: result.status,
+        path: "/v1/palette/schema",
+        method: "GET",
+        payload: result.payload,
+      }),
+    );
   }
   return (result.payload ?? { id, inputSchema: null }) as LauncherSchema;
 }

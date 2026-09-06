@@ -29,6 +29,7 @@ interface PaletteShellProps {
   hasQuery: boolean;
   listboxOpen: boolean;
   modeAction: LauncherEntry | null;
+  partialResults: boolean;
   onBack: () => void;
   onCollapse: () => void;
   onCopy: (text: string) => void;
@@ -118,13 +119,20 @@ export function PaletteShell(props: PaletteShellProps) {
           }
         >
           {props.showActionPanel && (
-            <ActionList
-              filtered={props.filtered}
-              selected={props.selected}
-              setSelected={props.setSelected}
-              onSubmit={props.onSubmitAction}
-              onEnterMode={props.onEnterMode}
-            />
+            <>
+              {props.partialResults ? (
+                <div className="palette-partial-results" role="status">
+                  Partial results — refine the search or retry to inspect more tools.
+                </div>
+              ) : null}
+              <ActionList
+                filtered={props.filtered}
+                selected={props.selected}
+                setSelected={props.setSelected}
+                onSubmit={props.onSubmitAction}
+                onEnterMode={props.onEnterMode}
+              />
+            </>
           )}
 
           {props.modeAction && !props.showResultsLayout ? (

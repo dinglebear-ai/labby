@@ -584,7 +584,9 @@ impl SqliteStore {
 
 fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<GoogleProviderCredentialRow> {
     let granted_scopes_json: String = row.get(3)?;
-    let granted_scopes = serde_json::from_str(&granted_scopes_json).unwrap_or_default();
+    let granted_scopes = serde_json::from_str(&granted_scopes_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+    })?;
     Ok(GoogleProviderCredentialRow {
         subject: row.get(0)?,
         email: row.get(1)?,

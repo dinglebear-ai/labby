@@ -929,8 +929,7 @@ async fn run_driver() -> Result<()> {
     let middle_base_url = format!("http://127.0.0.1:{middle_port}");
     let middle_token = "8c1f97449584ebcc6025655d738a8b40a3a488dd407ac89a1c42146864bd0179";
     let mut middle_child = Command::new(&labby_bin)
-        // Labby resolves ./config.toml before HOME-scoped config. Pin the
-        // fixture cwd so an unrelated caller cwd cannot shadow this test config.
+        // Keep process-relative fixture operations inside the isolated home.
         .current_dir(&middle_home)
         .arg("serve")
         .arg("--host")
@@ -944,9 +943,9 @@ async fn run_driver() -> Result<()> {
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
         .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
         .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
-        // Labby intentionally resolves ./config.toml before HOME-scoped config.
-        // Use an empty controlled cwd so an ambient developer/CI config cannot
-        // shadow the fixture configs written under middle_home.
+        // Use a controlled cwd so process-relative fixture operations cannot
+        // observe unrelated developer or CI files. Configuration is selected
+        // explicitly through LABBY_HOME above.
         .current_dir(&child_cwd)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -968,7 +967,7 @@ async fn run_driver() -> Result<()> {
 
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
-            // Keep the root fixture hermetic for the same reason as middle.
+            // Keep process-relative fixture operations inside the isolated home.
             .current_dir(&root_home)
             .arg("serve")
             .arg("mcp")
@@ -979,8 +978,8 @@ async fn run_driver() -> Result<()> {
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
             .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
-            // Same isolation as the middle daemon: never let a caller's cwd
-            // config.toml override the generated root fixture config.
+            // Match the middle daemon's controlled working directory;
+            // LABBY_HOME selects the generated root fixture configuration.
             .current_dir(&child_cwd);
     }))?;
     let wire_progress = Arc::new(Mutex::new(Vec::new()));

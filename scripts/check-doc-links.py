@@ -11,6 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_PREFIXES = (
+    # Immutable full-review snapshots preserve partial source trees for audit
+    # evidence; they are not maintained product-documentation roots.
+    ".full-review-archive/",
     "docs/archive/",
     "docs/sessions/",
     "docs/superpowers/",

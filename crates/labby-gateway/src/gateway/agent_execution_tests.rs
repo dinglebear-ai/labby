@@ -109,6 +109,28 @@ fn stale_delegation_and_context_fail_closed() {
 }
 
 #[test]
+fn corrupt_context_scopes_fail_as_storage_corruption() {
+    let (_dir, store) = store();
+    let context = context(&store);
+    store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE agent_contexts SET scopes_json='{not-json' WHERE id_hash=?1",
+            [digest(&context.execution_context_id)],
+        )
+        .unwrap();
+
+    let error = store
+        .bound_context(&context.execution_context_id, "axon-service")
+        .expect_err("malformed persisted scopes must not become empty authority");
+    assert!(
+        error.to_string().contains("storage failed"),
+        "corruption must surface through the stable storage boundary: {error}"
+    );
+}
+
+#[test]
 fn context_cannot_outlive_delegation_or_server_maximum() {
     let (_dir, store) = store();
     let delegation = store.issue_delegation("actor", "svc", &[]).unwrap();

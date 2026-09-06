@@ -10,11 +10,11 @@ updated: "2026-08-18"
 
 The `gateway` service owns upstream MCP configuration and runtime reconciliation. It does not own unrelated host identity or orchestration concerns.
 
-Use it when you want to inspect, test, add, update, remove, or reload `[[upstream]]` entries without editing `~/.config/labby/config.toml` by hand.
+Use it when you want to inspect, test, add, update, remove, or reload `[[upstream]]` entries without editing `$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`) by hand.
 
 ## Scope
 
-- `[[upstream]]` in `~/.config/labby/config.toml` remains the persisted source of truth.
+- `[[upstream]]` in `$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`) remains the persisted source of truth.
 - `gateway.*` actions mutate that config, reconcile runtime state, and trigger MCP list-changed notifications when the merged catalog changes.
 - In-flight MCP requests keep using the pool they already captured. New requests observe the swapped pool after reconcile completes.
 - gateway management is exposed by the running Labby gateway host through CLI, MCP, API, and web surfaces
@@ -386,7 +386,7 @@ native development flows, but is not accepted by the remote probe action.
 Every mutating action follows the same sequence:
 
 1. read and validate config
-2. write `~/.config/labby/config.toml` with temp-file-in-same-dir plus rename
+2. write `$LABBY_HOME/config.toml` with temp-file-in-same-dir plus rename
 3. build and lazy-seed a fresh upstream pool outside the config mutation lock
 4. atomically swap the runtime handle
 5. leave Code Mode catalog refresh to the next `codemode` call, which
@@ -538,7 +538,7 @@ http://node.internal.example:3100/mcp
 ```
 
 Persisted config lives in `[[protected_mcp_routes]]` entries in
-`~/.config/labby/config.toml`:
+`$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`):
 
 ```toml
 [[protected_mcp_routes]]

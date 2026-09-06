@@ -70,10 +70,9 @@ MCP client -> root Labby (stdio) -> middle Labby (authenticated HTTP) -> leaf MC
 ```
 
 Middle and root are warmed through Labby's real `gateway.reload` lifecycle,
-not by test-only pool mutation. Each child process also pins its working
-directory to its isolated temporary home because Labby intentionally resolves
-`./config.toml` before HOME-scoped configuration; a caller's unrelated working
-directory must never shadow the fixture. The leaf publishes more than one page
+not by test-only pool mutation. Each child process sets an absolute
+`LABBY_HOME` to its isolated temporary root; the working directory does not
+participate in configuration discovery and cannot shadow the fixture. The leaf publishes more than one page
 of every catalog family so the chain proves ownership and pagination beyond the
 first page.
 
