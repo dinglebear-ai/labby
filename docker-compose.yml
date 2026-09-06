@@ -26,7 +26,10 @@ services:
       # Hot-swap the locally built binary into the dev runtime.
       - ./bin/labby:/usr/local/bin/labby
       - .:/workspace/lab:ro
-      - ${LABBY_CONFIG_DIR:-./config}:/home/labby/.config/labby:ro
+      # Keep the installation root writable for durable state while making the
+      # operator-selected TOML file the exact path Labby resolves.
+      - ${LABBY_CONFIG_FILE:-./config/config.example.toml}:/home/labby/.labby/config.toml:ro
+      - ${LABBY_ENV_FILE:-./config/.env.example}:/home/labby/.labby/.env:ro
       - labby-home:/home/labby/.labby
       - labby-data:/home/labby/.local
       # Persist the npm/uv package caches across container recreates. stdio MCP
@@ -66,6 +69,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
     environment:
+      LABBY_HOME: "/home/labby/.labby"
       # Serve frontend assets from the bind-mounted workspace so `pnpm build`
       # changes are reflected immediately without a binary rebuild.
       LABBY_WEB_ASSETS_DIR: "/workspace/lab/apps/gateway-admin/out"

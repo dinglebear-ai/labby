@@ -106,6 +106,22 @@
   },
   {
     "service": "browser",
+    "action": "browser.session.get",
+    "canonical_action": null,
+    "applicable_surfaces": ["mcp", "api"],
+    "applicable_features": ["all", "default", "gateway-host"],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::browser::browser_session_get",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"session_id": "$fixture.session_id"}},
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "ephemeral",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "browser",
     "action": "browser.sessions",
     "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],

@@ -601,9 +601,13 @@ The development Compose stack mirrors the production process controls: a
 read-only root filesystem, dropped capabilities, `no-new-privileges`, loopback
 port binding, bounded logs, and named volumes for durable state and data. It
 also bind-mounts the source repository read-only so locally built web assets are
-visible without rebuilding the image. Set `LABBY_CONFIG_DIR` to the directory
-containing the selected read-only configuration; Labby-owned runtime state
-lives in the `labby-home` named volume. The image installs pinned Claude,
+visible without rebuilding the image. The clean-checkout defaults mount the
+tracked, non-secret `config/config.example.toml` and `config/.env.example`.
+Set `LABBY_CONFIG_FILE` and `LABBY_ENV_FILE` to select local runtime files;
+Compose mounts both read-only at their canonical paths beneath `$LABBY_HOME`. Labby-owned runtime
+state remains writable in the surrounding `labby-home` named volume. Startup logs and the
+setup settings state report `/home/labby/.labby/config.toml` as the effective
+source. The image installs pinned Claude,
 Codex, and Gemini CLIs for stdio upstreams that invoke provider tools.
 
 ### Releases

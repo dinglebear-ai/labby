@@ -28,7 +28,7 @@ struct CallParams {
 }
 
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
-    let bridge = browser_bridge()?;
+    let bridge = browser_bridge().await?;
     match action {
         "help" => Ok(help_payload("browser", ACTIONS)),
         "schema" => action_schema(ACTIONS, require_str(&params, "action")?),
@@ -42,6 +42,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             let browsers = bridge
                 .store()
                 .browsers()
+                .await
                 .map_err(map_error)?
                 .into_iter()
                 .map(|browser| {
@@ -61,18 +62,33 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         }
         "browser.revoke" => {
             let id = require_str(&params, "browser_id")?;
-            to_json(bridge.revoke_browser(&id).map_err(map_error)?)
+            to_json(bridge.revoke_browser(&id).await.map_err(map_error)?)
         }
         "browser.pairing.list" => to_json(json!({
-            "pairings": bridge.store().pending_pairings().map_err(map_error)?
+            "pairings": bridge.store().pending_pairings().await.map_err(map_error)?
         })),
         "browser.pairing.approve" => {
             let id = require_str(&params, "pairing_id")?;
-            to_json(bridge.approve_pairing(&id).map_err(map_error)?)
+            to_json(bridge.approve_pairing(&id).await.map_err(map_error)?)
         }
-        "browser.sessions" => to_json(json!({
-            "sessions": bridge.store().sessions().map_err(map_error)?
-        })),
+        "browser.sessions" => {
+            let cursor = params.get("cursor").and_then(Value::as_str);
+            let limit = params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|value| usize::try_from(value).unwrap_or(usize::MAX));
+            to_json(
+                bridge
+                    .store()
+                    .sessions(cursor, limit)
+                    .await
+                    .map_err(map_error)?,
+            )
+        }
+        "browser.session.get" => {
+            let id = require_str(&params, "session_id")?;
+            to_json(bridge.store().session(&id).await.map_err(map_error)?)
+        }
         "browser.session.enable" => {
             let id = require_str(&params, "session_id")?;
             let enabled = params
@@ -86,6 +102,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
                 bridge
                     .store()
                     .set_session_enabled(&id, enabled)
+                    .await
                     .map_err(map_error)?,
             )
         }

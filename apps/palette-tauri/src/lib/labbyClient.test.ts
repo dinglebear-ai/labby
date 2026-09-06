@@ -24,18 +24,43 @@ describe("launcher client wrappers", () => {
       status: 200,
       payload: {
         fingerprint: "fp",
-        entries: [{ kind: "mcpTool", id: "mcp:alpha::ping", label: "ping" }],
+        entries: [
+          {
+            kind: "mcpTool",
+            id: "mcp:alpha::ping",
+            label: "ping",
+            description: "Ping alpha",
+            source: "alpha",
+            destructive: false,
+            upstream: "alpha",
+            tool: "ping",
+          },
+        ],
       },
     });
 
-    const result = await fetchLauncherCatalog("etag-1");
+    const result = await fetchLauncherCatalog("", "etag-1");
 
-    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", { etag: "etag-1" });
+    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", {
+      query: "",
+      etag: "etag-1",
+    });
     expect(result).toEqual({
       notModified: false,
       catalog: {
         fingerprint: "fp",
-        entries: [{ kind: "mcpTool", id: "mcp:alpha::ping", label: "ping" }],
+        entries: [
+          {
+            kind: "mcpTool",
+            id: "mcp:alpha::ping",
+            label: "ping",
+            description: "Ping alpha",
+            source: "alpha",
+            destructive: false,
+            upstream: "alpha",
+            tool: "ping",
+          },
+        ],
       },
     });
   });
@@ -43,7 +68,11 @@ describe("launcher client wrappers", () => {
   it("executeLauncherEntry posts id params and options", async () => {
     invokeMock.mockResolvedValueOnce({ ok: true, status: 200, payload: { value: 1 } });
 
-    const result = await executeLauncherEntry(executableEntry, { q: "hello" }, { confirmDestructive: true });
+    const result = await executeLauncherEntry(
+      executableEntry,
+      { q: "hello" },
+      { confirmDestructive: true },
+    );
 
     expect(invokeMock).toHaveBeenCalledWith("execute_launcher_entry", {
       request: {
@@ -103,12 +132,41 @@ describe("launcher client wrappers", () => {
       payload: { kind: "invalid_param", message: "bad params" },
     });
 
-    await expect(fetchLauncherCatalog()).resolves.toEqual({
+    await expect(fetchLauncherCatalog("needle")).resolves.toEqual({
       ok: false,
       status: 422,
-      path: "/v1/palette/catalog",
+      path: "/v1/palette/search",
       method: "GET",
       payload: { kind: "invalid_param", message: "bad params" },
     });
+    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_catalog", {
+      query: "needle",
+      etag: null,
+    });
+  });
+
+  it.each([
+    null,
+    { fingerprint: "fp" },
+    { fingerprint: "fp", entries: "not-an-array" },
+    { fingerprint: "fp", entries: [], truncated: "yes" },
+    { fingerprint: "fp", entries: [{ kind: "mcpTool", id: "mcp:a::b" }] },
+    {
+      fingerprint: "fp",
+      entries: [
+        {
+          kind: "unknown",
+          id: "unknown:a",
+          label: "a",
+          description: "",
+          source: "a",
+          destructive: false,
+        },
+      ],
+    },
+  ])("rejects malformed successful launcher payload %#", async (payload) => {
+    invokeMock.mockResolvedValueOnce({ ok: true, status: 200, payload });
+
+    await expect(fetchLauncherCatalog()).rejects.toThrow("invalid shape");
   });
 });

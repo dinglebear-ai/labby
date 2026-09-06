@@ -17,6 +17,14 @@ const CHALLENGE_TTL_SECONDS: i64 = 60;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 32;
 const MAX_SESSIONS_PER_BROWSER: i64 = 256;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
+const DEFAULT_SESSION_PAGE_SIZE: usize = 50;
+const MAX_SESSION_PAGE_SIZE: usize = 100;
+// The facade owns one mutex-protected SQLite connection. Admit only one blocking
+// job at a time so contention waits asynchronously instead of occupying extra
+// blocking-pool threads while they wait for the same connection mutex.
+const MAX_BLOCKING_STORE_JOBS: usize = 1;
+pub(crate) const MAX_CANCELLATION_AUDIT_CLEANUPS: usize = 16;
 
 /// Durable paired browser.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -47,6 +55,31 @@ pub struct DocumentSession {
     pub enabled: bool,
     pub status: String,
     pub last_seen_at: i64,
+}
+
+/// Metadata-only session projection used by bounded administrative listings.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DocumentSessionSummary {
+    pub id: String,
+    pub browser_id: String,
+    pub tab_id: i64,
+    pub document_id: String,
+    pub origin: String,
+    pub sanitized_path: String,
+    pub page_title: String,
+    pub catalog_revision: i64,
+    pub catalog_fingerprint: String,
+    pub tool_count: usize,
+    pub enabled: bool,
+    pub status: String,
+    pub last_seen_at: i64,
+}
+
+/// One stable page of session summaries.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SessionPage {
+    pub sessions: Vec<DocumentSessionSummary>,
+    pub next_cursor: Option<String>,
 }
 
 /// Pairing state.
@@ -95,17 +128,266 @@ pub(crate) struct AuthChallenge {
     pub expires_at: i64,
 }
 
-/// Cloneable SQLite store with serialized access and WAL persistence.
+/// Cloneable async SQLite facade. Blocking work always runs on Tokio's blocking pool.
 #[derive(Clone)]
 pub struct Store {
-    path: Arc<PathBuf>,
-    connection: Arc<Mutex<Connection>>,
+    inner: Arc<BlockingStore>,
+    permits: Arc<tokio::sync::Semaphore>,
+    cancellation_cleanup_permits: Arc<tokio::sync::Semaphore>,
+}
+
+struct BlockingStore {
+    path: PathBuf,
+    connection: Mutex<Connection>,
 }
 
 impl Store {
-    /// Open a database and apply the idempotent browser schema.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) async fn hold_executor_for_test(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("browser store test executor remains open")
+    }
+
+    /// Open a database and apply the transactional browser schema.
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        Self::run_blocking(move || BlockingStore::open(path))
+            .await
+            .map(Self::from_blocking)
+    }
+
+    /// Open an in-memory store for tests.
+    pub async fn memory() -> Result<Self> {
+        Self::run_blocking(BlockingStore::memory)
+            .await
+            .map(Self::from_blocking)
+    }
+
+    /// Database path for diagnostics.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.inner.path.as_path()
+    }
+
+    fn from_blocking(inner: BlockingStore) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_BLOCKING_STORE_JOBS)),
+            cancellation_cleanup_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CANCELLATION_AUDIT_CLEANUPS,
+            )),
+        }
+    }
+
+    pub(crate) fn try_acquire_cancellation_cleanup(
+        &self,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.cancellation_cleanup_permits)
+            .try_acquire_owned()
+            .ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available_cancellation_cleanups(&self) -> usize {
+        self.cancellation_cleanup_permits.available_permits()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_cancellation_cleanups_for_test(&self) {
+        let permits = Arc::clone(&self.cancellation_cleanup_permits)
+            .acquire_many_owned(MAX_CANCELLATION_AUDIT_CLEANUPS as u32)
+            .await
+            .expect("browser cancellation cleanup semaphore remains open");
+        drop(permits);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn audit_outcome_for_test(
+        &self,
+        id: &str,
+    ) -> Result<(String, Option<String>)> {
+        let id = id.to_owned();
+        self.call(move |store| {
+            store
+                .lock()?
+                .query_row(
+                    "SELECT outcome,error_kind FROM invocation_audits WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    async fn call<T>(
+        &self,
+        operation: impl FnOnce(&BlockingStore) -> Result<T> + Send + 'static,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                BrowserError::InvalidRequest("browser store executor closed".to_string())
+            })?;
+        Self::run_blocking(move || {
+            let _permit = permit;
+            operation(&inner)
+        })
+        .await
+    }
+
+    async fn run_blocking<T>(operation: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T>
+    where
+        T: Send + 'static,
+    {
+        tokio::task::spawn_blocking(operation)
+            .await
+            .map_err(|error| {
+                BrowserError::InvalidRequest(format!("browser store worker failed: {error}"))
+            })?
+    }
+
+    pub async fn request_pairing(
+        &self,
+        display_name: &str,
+        extension_id: &str,
+        public_key: Vec<u8>,
+    ) -> Result<PairingRequest> {
+        let display_name = display_name.to_owned();
+        let extension_id = extension_id.to_owned();
+        self.call(move |store| store.request_pairing(&display_name, &extension_id, public_key))
+            .await
+    }
+    pub async fn pairing(&self, id: &str) -> Result<Option<PairingRequest>> {
+        let id = id.to_owned();
+        self.call(move |s| s.pairing(&id)).await
+    }
+    pub async fn pending_pairings(&self) -> Result<Vec<PairingRequest>> {
+        self.call(BlockingStore::pending_pairings).await
+    }
+    pub async fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+        let id = id.to_owned();
+        self.call(move |s| s.approve_pairing(&id)).await
+    }
+    pub async fn browser(&self, id: &str) -> Result<Option<BrowserRecord>> {
+        let id = id.to_owned();
+        self.call(move |s| s.browser(&id)).await
+    }
+    pub async fn browsers(&self) -> Result<Vec<BrowserRecord>> {
+        self.call(BlockingStore::browsers).await
+    }
+    pub async fn revoke_browser(&self, id: &str) -> Result<BrowserRecord> {
+        let id = id.to_owned();
+        self.call(move |s| s.revoke_browser(&id)).await
+    }
+    pub(crate) async fn create_challenge(&self, id: &str) -> Result<AuthChallenge> {
+        let id = id.to_owned();
+        self.call(move |s| s.create_challenge(&id)).await
+    }
+    pub(crate) async fn take_challenge(&self, id: &str) -> Result<AuthChallenge> {
+        let id = id.to_owned();
+        self.call(move |s| s.take_challenge(&id)).await
+    }
+    pub(crate) async fn touch_browser(&self, id: &str) -> Result<()> {
+        let id = id.to_owned();
+        self.call(move |s| s.touch_browser(&id)).await
+    }
+    pub async fn observe(&self, id: &str, observation: &CatalogObservation) -> Result<()> {
+        let id = id.to_owned();
+        let observation = observation.clone();
+        self.call(move |s| s.observe(&id, &observation)).await
+    }
+    pub async fn sessions(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<SessionPage> {
+        let cursor = cursor.map(str::to_owned);
+        self.call(move |s| s.sessions(cursor.as_deref(), limit))
+            .await
+    }
+    pub async fn session(&self, id: &str) -> Result<DocumentSession> {
+        let id = id.to_owned();
+        self.call(move |s| s.session(&id)).await
+    }
+    pub async fn set_session_enabled(&self, id: &str, enabled: bool) -> Result<DocumentSession> {
+        let id = id.to_owned();
+        self.call(move |s| s.set_session_enabled(&id, enabled))
+            .await
+    }
+    pub async fn close_document(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+    ) -> Result<()> {
+        let browser_id = browser_id.to_owned();
+        let document_id = document_id.to_owned();
+        self.call(move |s| s.close_document(&browser_id, tab_id, &document_id))
+            .await
+    }
+    pub async fn validate_call(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+        revision: i64,
+        tool_name: &str,
+    ) -> Result<String> {
+        let browser_id = browser_id.to_owned();
+        let document_id = document_id.to_owned();
+        let tool_name = tool_name.to_owned();
+        self.call(move |s| s.validate_call(&browser_id, tab_id, &document_id, revision, &tool_name))
+            .await
+    }
+    pub(crate) async fn begin_invocation(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+        tool_name: &str,
+        revision: i64,
+    ) -> Result<String> {
+        let browser_id = browser_id.to_owned();
+        let document_id = document_id.to_owned();
+        let tool_name = tool_name.to_owned();
+        self.call(move |s| {
+            s.begin_invocation(&browser_id, tab_id, &document_id, &tool_name, revision)
+        })
+        .await
+    }
+    pub(crate) async fn finish_invocation(
+        &self,
+        id: &str,
+        result: &Result<serde_json::Value>,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let id = id.to_owned();
+        let (outcome, error_kind) = match result {
+            Ok(_) => ("succeeded", None),
+            Err(error) => ("failed", Some(error.kind().to_string())),
+        };
+        self.call(move |s| {
+            s.finish_invocation_parts(&id, outcome, error_kind.as_deref(), duration_ms)
+        })
+        .await
+    }
+    pub(crate) async fn abandon_invocation(&self, id: &str, duration_ms: i64) -> Result<()> {
+        let id = id.to_owned();
+        self.call(move |s| s.abandon_invocation(&id, duration_ms))
+            .await
+    }
+}
+
+impl BlockingStore {
+    fn open(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 BrowserError::InvalidRequest(format!(
@@ -119,30 +401,24 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&connection)?;
         Ok(Self {
-            path: Arc::new(path),
-            connection: Arc::new(Mutex::new(connection)),
+            path,
+            connection: Mutex::new(connection),
         })
     }
 
     /// Open an in-memory store for tests.
-    pub fn memory() -> Result<Self> {
+    fn memory() -> Result<Self> {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&connection)?;
         Ok(Self {
-            path: Arc::new(PathBuf::from(":memory:")),
-            connection: Arc::new(Mutex::new(connection)),
+            path: PathBuf::from(":memory:"),
+            connection: Mutex::new(connection),
         })
     }
 
-    /// Database path for diagnostics.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        self.path.as_path()
-    }
-
     /// Create or refresh one pending pairing request.
-    pub fn request_pairing(
+    fn request_pairing(
         &self,
         display_name: &str,
         extension_id: &str,
@@ -168,7 +444,7 @@ impl Store {
     }
 
     /// Read current pairing state, expiring stale requests atomically.
-    pub fn pairing(&self, id: &str) -> Result<Option<PairingRequest>> {
+    fn pairing(&self, id: &str) -> Result<Option<PairingRequest>> {
         let now = now_seconds()?;
         let connection = self.lock()?;
         connection.execute(
@@ -179,7 +455,7 @@ impl Store {
     }
 
     /// List pending pairing requests for operator approval.
-    pub fn pending_pairings(&self) -> Result<Vec<PairingRequest>> {
+    fn pending_pairings(&self) -> Result<Vec<PairingRequest>> {
         let now = now_seconds()?;
         let connection = self.lock()?;
         connection.execute(
@@ -196,7 +472,7 @@ impl Store {
     }
 
     /// Approve a pairing and create the durable browser identity.
-    pub fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+    fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
         let now = now_seconds()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -233,7 +509,7 @@ impl Store {
     }
 
     /// Fetch an active or revoked browser by id.
-    pub fn browser(&self, id: &str) -> Result<Option<BrowserRecord>> {
+    fn browser(&self, id: &str) -> Result<Option<BrowserRecord>> {
         self.lock()?
             .query_row(
                 "SELECT id,display_name,extension_id,public_key,paired_at,last_seen_at,revoked_at FROM browsers WHERE id=?1",
@@ -245,7 +521,7 @@ impl Store {
     }
 
     /// List durable browsers without exposing public-key bytes.
-    pub fn browsers(&self) -> Result<Vec<BrowserRecord>> {
+    fn browsers(&self) -> Result<Vec<BrowserRecord>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
             "SELECT id,display_name,extension_id,public_key,paired_at,last_seen_at,revoked_at FROM browsers ORDER BY paired_at DESC",
@@ -257,7 +533,7 @@ impl Store {
     }
 
     /// Revoke one active browser identity and disable all of its sessions.
-    pub fn revoke_browser(&self, id: &str) -> Result<BrowserRecord> {
+    fn revoke_browser(&self, id: &str) -> Result<BrowserRecord> {
         let now = now_seconds()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -342,7 +618,7 @@ impl Store {
     }
 
     /// Persist a sanitized document/catalog observation.
-    pub fn observe(&self, browser_id: &str, observation: &CatalogObservation) -> Result<()> {
+    fn observe(&self, browser_id: &str, observation: &CatalogObservation) -> Result<()> {
         validate_observation(observation)?;
         let now = now_seconds()?;
         let catalog = serde_json::to_string(&observation.tools)?;
@@ -357,20 +633,56 @@ impl Store {
         Ok(())
     }
 
-    /// List sanitized document sessions. Executable page callbacks never enter SQLite.
-    pub fn sessions(&self) -> Result<Vec<DocumentSession>> {
+    /// List a bounded, metadata-only page in stable `(connected_at,id)` order.
+    fn sessions(&self, cursor: Option<&str>, limit: Option<usize>) -> Result<SessionPage> {
+        let limit = limit.unwrap_or(DEFAULT_SESSION_PAGE_SIZE);
+        if limit == 0 || limit > MAX_SESSION_PAGE_SIZE {
+            return Err(BrowserError::InvalidRequest(format!(
+                "session page limit must be between 1 and {MAX_SESSION_PAGE_SIZE}"
+            )));
+        }
+        let (cursor_connected, cursor_id) = cursor
+            .map(decode_session_cursor)
+            .transpose()?
+            .unwrap_or((i64::MAX, String::from("\u{10ffff}")));
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,enabled,status,last_seen_at FROM document_sessions ORDER BY last_seen_at DESC",
+            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,json_array_length(catalog_json),enabled,status,last_seen_at,connected_at FROM document_sessions WHERE (connected_at < ?1 OR (connected_at = ?1 AND id < ?2)) ORDER BY connected_at DESC,id DESC LIMIT ?3",
         )?;
-        statement
-            .query_map([], map_session)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let mut sessions = statement
+            .query_map(
+                params![
+                    cursor_connected,
+                    cursor_id,
+                    i64::try_from(limit + 1).unwrap_or(i64::MAX)
+                ],
+                |row| Ok((map_session_summary(row)?, row.get::<_, i64>(13)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let next_cursor = if sessions.len() > limit {
+            sessions.truncate(limit);
+            sessions
+                .last()
+                .map(|(session, connected_at)| encode_session_cursor(*connected_at, &session.id))
+        } else {
+            None
+        };
+        Ok(SessionPage {
+            sessions: sessions.into_iter().map(|(session, _)| session).collect(),
+            next_cursor,
+        })
+    }
+
+    /// Fetch one exact session including its bounded catalog.
+    fn session(&self, id: &str) -> Result<DocumentSession> {
+        self.lock()?.query_row(
+            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,enabled,status,last_seen_at FROM document_sessions WHERE id=?1",
+            [id], map_session,
+        ).optional()?.ok_or(BrowserError::NotFound)
     }
 
     /// Explicitly enable or disable calls for one immutable document session.
-    pub fn set_session_enabled(&self, session_id: &str, enabled: bool) -> Result<DocumentSession> {
+    fn set_session_enabled(&self, session_id: &str, enabled: bool) -> Result<DocumentSession> {
         let connection = self.lock()?;
         let changed = connection.execute(
             "UPDATE document_sessions SET enabled=?1 WHERE id=?2 AND status='active'",
@@ -389,7 +701,7 @@ impl Store {
     }
 
     /// Close an exact document without affecting another navigation in the same tab.
-    pub fn close_document(&self, browser_id: &str, tab_id: i64, document_id: &str) -> Result<()> {
+    fn close_document(&self, browser_id: &str, tab_id: i64, document_id: &str) -> Result<()> {
         self.lock()?.execute(
             "UPDATE document_sessions SET status='closed',enabled=0,last_seen_at=?1 WHERE browser_id=?2 AND tab_id=?3 AND document_id=?4",
             params![now_seconds()?, browser_id, tab_id, document_id],
@@ -398,7 +710,7 @@ impl Store {
     }
 
     /// Fail closed unless a call targets an enabled active session and an observed tool.
-    pub fn validate_call(
+    fn validate_call(
         &self,
         browser_id: &str,
         tab_id: i64,
@@ -451,16 +763,13 @@ impl Store {
     }
 
     /// Finish a previously accepted invocation without persisting arguments or results.
-    pub(crate) fn finish_invocation(
+    fn finish_invocation_parts(
         &self,
         id: &str,
-        result: &Result<serde_json::Value>,
+        outcome: &str,
+        error_kind: Option<&str>,
         duration_ms: i64,
     ) -> Result<()> {
-        let (outcome, error_kind) = match result {
-            Ok(_) => ("succeeded", None),
-            Err(error) => ("failed", Some(error.kind())),
-        };
         self.lock()?.execute(
             "UPDATE invocation_audits SET outcome=?1,error_kind=?2,duration_ms=?3 WHERE id=?4 AND outcome='started'",
             params![outcome, error_kind, duration_ms, id],
@@ -620,11 +929,80 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSession> {
     })
 }
 
+fn map_session_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSessionSummary> {
+    Ok(DocumentSessionSummary {
+        id: row.get(0)?,
+        browser_id: row.get(1)?,
+        tab_id: row.get(2)?,
+        document_id: row.get(3)?,
+        origin: row.get(4)?,
+        sanitized_path: row.get(5)?,
+        page_title: row.get(6)?,
+        catalog_revision: row.get(7)?,
+        catalog_fingerprint: row.get(8)?,
+        tool_count: usize::try_from(row.get::<_, i64>(9)?).unwrap_or(usize::MAX),
+        enabled: row.get(10)?,
+        status: row.get(11)?,
+        last_seen_at: row.get(12)?,
+    })
+}
+
+fn encode_session_cursor(connected_at: i64, id: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{connected_at}\n{id}"))
+}
+
+fn decode_session_cursor(cursor: &str) -> Result<(i64, String)> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| BrowserError::InvalidRequest("invalid session cursor".to_string()))?;
+    let value = String::from_utf8(bytes)
+        .map_err(|_| BrowserError::InvalidRequest("invalid session cursor".to_string()))?;
+    let (seen, id) = value
+        .split_once('\n')
+        .ok_or_else(|| BrowserError::InvalidRequest("invalid session cursor".to_string()))?;
+    let seen = seen
+        .parse()
+        .map_err(|_| BrowserError::InvalidRequest("invalid session cursor".to_string()))?;
+    if id.is_empty() {
+        return Err(BrowserError::InvalidRequest(
+            "invalid session cursor".to_string(),
+        ));
+    }
+    Ok((seen, id.to_string()))
+}
+
 fn migrate(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS browser_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        INSERT INTO browser_meta(key,value) VALUES('schema_version','1') ON CONFLICT(key) DO NOTHING;
+        INSERT INTO browser_meta(key,value) VALUES('schema_version','0') ON CONFLICT(key) DO NOTHING;
+        "
+    )?;
+        let version_text: String = connection.query_row(
+            "SELECT value FROM browser_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        let version: i64 = version_text.parse().map_err(|_| {
+            BrowserError::InvalidRequest(
+                "browser database has an invalid schema version".to_string(),
+            )
+        })?;
+        if version > CURRENT_SCHEMA_VERSION {
+            return Err(BrowserError::InvalidRequest(format!(
+                "browser database schema version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+            )));
+        }
+        if version < 0 {
+            return Err(BrowserError::InvalidRequest(
+                "browser database has an invalid schema version".to_string(),
+            ));
+        }
+        if version == 0 {
+            connection.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS browsers(
           id TEXT PRIMARY KEY,display_name TEXT NOT NULL,extension_id TEXT NOT NULL,
           public_key BLOB NOT NULL,paired_at INTEGER NOT NULL,last_seen_at INTEGER,revoked_at INTEGER
@@ -655,12 +1033,46 @@ fn migrate(connection: &Connection) -> Result<()> {
           error_kind TEXT,duration_ms INTEGER NOT NULL,created_at INTEGER NOT NULL
         );
         ",
-    )?;
-    connection.execute(
+        )?;
+            connection.execute(
+                "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
+                [1_i64],
+            )?;
+        }
+        if version <= 1 {
+            connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS document_sessions_page ON document_sessions(last_seen_at DESC,id DESC);",
+        )?;
+            connection.execute(
+                "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
+                [2_i64],
+            )?;
+        }
+        if version <= 2 {
+            connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS document_sessions_connected_page ON document_sessions(connected_at DESC,id DESC);",
+            )?;
+            connection.execute(
+                "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
+                [CURRENT_SCHEMA_VERSION],
+            )?;
+        }
+        connection.execute(
         "UPDATE invocation_audits SET outcome='abandoned',error_kind='process_restarted' WHERE outcome='started'",
         [],
     )?;
-    Ok(())
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            connection.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(error) => {
+            drop(connection.execute_batch("ROLLBACK"));
+            Err(error)
+        }
+    }
 }
 
 /// Decode a base64url public key for pairing adapters.
@@ -680,7 +1092,7 @@ mod tests {
 
     #[test]
     fn pairing_is_single_use_and_creates_browser() {
-        let store = Store::memory().unwrap();
+        let store = BlockingStore::memory().unwrap();
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
@@ -692,7 +1104,7 @@ mod tests {
 
     #[test]
     fn rejects_oversized_catalog() {
-        let store = Store::memory().unwrap();
+        let store = BlockingStore::memory().unwrap();
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
@@ -729,7 +1141,7 @@ mod tests {
 
     #[test]
     fn revocation_closes_and_disables_active_sessions() {
-        let store = Store::memory().unwrap();
+        let store = BlockingStore::memory().unwrap();
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
@@ -754,19 +1166,19 @@ mod tests {
                 },
             )
             .unwrap();
-        let session = store.sessions().unwrap().remove(0);
+        let session = store.sessions(None, None).unwrap().sessions.remove(0);
         store.set_session_enabled(&session.id, true).unwrap();
 
         let revoked = store.revoke_browser(&browser.id).unwrap();
         assert!(revoked.revoked_at.is_some());
-        let session = store.sessions().unwrap().remove(0);
+        let session = store.sessions(None, None).unwrap().sessions.remove(0);
         assert!(!session.enabled);
         assert_eq!(session.status, "closed");
     }
 
     #[test]
     fn catalog_change_revokes_exact_session_consent() {
-        let store = Store::memory().unwrap();
+        let store = BlockingStore::memory().unwrap();
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
@@ -787,12 +1199,12 @@ mod tests {
             }],
         };
         store.observe(&browser.id, &observation).unwrap();
-        let session = store.sessions().unwrap().remove(0);
+        let session = store.sessions(None, None).unwrap().sessions.remove(0);
         store.set_session_enabled(&session.id, true).unwrap();
         observation.catalog_revision = 2;
         observation.catalog_fingerprint = "two".into();
         store.observe(&browser.id, &observation).unwrap();
-        let changed = store.sessions().unwrap().remove(0);
+        let changed = store.sessions(None, None).unwrap().sessions.remove(0);
         assert!(!changed.enabled);
         assert_eq!(
             store
@@ -808,7 +1220,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("browser.sqlite3");
         let browser_id = {
-            let store = Store::open(&path).unwrap();
+            let store = BlockingStore::open(path.clone()).unwrap();
             let request = store
                 .request_pairing("Chrome", extension_id(), vec![7; 32])
                 .unwrap();
@@ -816,7 +1228,7 @@ mod tests {
             store.revoke_browser(&browser.id).unwrap();
             browser.id
         };
-        let reopened = Store::open(&path).unwrap();
+        let reopened = BlockingStore::open(path).unwrap();
         assert!(
             reopened
                 .browser(&browser_id)
@@ -826,5 +1238,182 @@ mod tests {
                 .is_some()
         );
         assert!(reopened.pending_pairings().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_store_contention_does_not_starve_tokio_workers() {
+        let store = Store::memory().await.unwrap();
+        assert_eq!(store.permits.available_permits(), 1);
+        let inner = Arc::clone(&store.inner);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _connection = inner.connection.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+        let blocked_query = tokio::spawn({
+            let store = store.clone();
+            async move { store.browsers().await }
+        });
+        tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            while store.permits.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            tokio::task::yield_now().await;
+        })
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+        blocker.await.unwrap();
+        blocked_query.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_future_schema_without_changing_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("browser.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE browser_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\
+             INSERT INTO browser_meta VALUES('schema_version','999');",
+            )
+            .unwrap();
+        drop(connection);
+        let opened = Store::open(&path).await;
+        assert!(opened.is_err(), "future schema unexpectedly opened");
+        let error = opened.err().unwrap();
+        assert!(error.to_string().contains("newer than supported"));
+        let marker: String = Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM browser_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "999");
+    }
+
+    #[tokio::test]
+    async fn migrates_version_one_fixture_transactionally() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("browser.sqlite3");
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX document_sessions_page;\
+             UPDATE browser_meta SET value='1' WHERE key='schema_version';",
+            )
+            .unwrap();
+        drop(connection);
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(path).unwrap();
+        let marker: String = connection
+            .query_row(
+                "SELECT value FROM browser_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let index_count: i64 = connection.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='document_sessions_page'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(marker, CURRENT_SCHEMA_VERSION.to_string());
+        assert_eq!(index_count, 1);
+    }
+
+    #[tokio::test]
+    async fn session_pages_are_bounded_stable_summaries_with_exact_detail() {
+        let store = Store::memory().await.unwrap();
+        let pairing = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .await
+            .unwrap();
+        let browser = store.approve_pairing(&pairing.id).await.unwrap();
+        for tab_id in 0..5 {
+            store
+                .observe(
+                    &browser.id,
+                    &CatalogObservation {
+                        tab_id,
+                        document_id: format!("doc-{tab_id}"),
+                        origin: "https://example.com".into(),
+                        sanitized_path: "/".into(),
+                        page_title: "Example".into(),
+                        catalog_revision: 1,
+                        catalog_fingerprint: format!("hash-{tab_id}"),
+                        tools: vec![crate::protocol::ToolDescriptor {
+                            name: "search".into(),
+                            description: "large detail".repeat(100),
+                            input_schema: serde_json::json!({"type":"object"}),
+                            annotations: serde_json::Value::Null,
+                        }],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let first = store.sessions(None, Some(2)).await.unwrap();
+        assert_eq!(first.sessions.len(), 2);
+        assert!(first.next_cursor.is_some());
+        assert!(serde_json::to_vec(&first).unwrap().len() < 4096);
+        let all_ids = store
+            .sessions(None, Some(100))
+            .await
+            .unwrap()
+            .sessions
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+        let refreshed_id = all_ids
+            .iter()
+            .find(|id| !first.sessions.iter().any(|session| &session.id == *id))
+            .unwrap()
+            .clone();
+        store
+            .call(move |store| {
+                store.lock()?.execute(
+                    "UPDATE document_sessions SET last_seen_at=last_seen_at+1000 WHERE id=?1",
+                    [refreshed_id],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let second = store
+            .sessions(first.next_cursor.as_deref(), Some(2))
+            .await
+            .unwrap();
+        assert_eq!(second.sessions.len(), 2);
+        assert!(
+            first
+                .sessions
+                .iter()
+                .all(|left| second.sessions.iter().all(|right| left.id != right.id))
+        );
+        let third = store
+            .sessions(second.next_cursor.as_deref(), Some(2))
+            .await
+            .unwrap();
+        let traversed = first
+            .sessions
+            .iter()
+            .chain(&second.sessions)
+            .chain(&third.sessions)
+            .map(|session| session.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(traversed.len(), all_ids.len());
+        assert!(all_ids.iter().all(|id| traversed.contains(id.as_str())));
+        let detail = store.session(&first.sessions[0].id).await.unwrap();
+        assert_eq!(detail.tools.len(), 1);
     }
 }

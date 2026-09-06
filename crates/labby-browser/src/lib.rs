@@ -13,4 +13,7 @@ mod store;
 pub use error::{BrowserError, Result};
 pub use hub::{BrowserBridge, BrowserConnection, BrowserEvent};
 pub use protocol::{BrowserEnvelope, BrowserMessage, CatalogObservation, ToolDescriptor};
-pub use store::{BrowserRecord, DocumentSession, PairingRequest, PairingStatus, Store};
+pub use store::{
+    BrowserRecord, DocumentSession, DocumentSessionSummary, PairingRequest, PairingStatus,
+    SessionPage, Store,
+};

@@ -4,8 +4,12 @@
 # must be absolute and defaults to ~/.labby. Labby does not implicitly read a
 # working-directory or XDG fallback config.
 #
-# Docker: set LABBY_CONFIG_DIR to the directory containing config.toml; Compose
-# mounts that directory read-only at /home/labby/.config/labby.
+# Docker development: this file and config/.env.example are the non-secret
+# clean-checkout defaults. Set LABBY_CONFIG_FILE and LABBY_ENV_FILE to select
+# local runtime files. Production instead uses LABBY_CONFIG_DIR. Compose mounts
+# both files read-only at their canonical paths beneath /home/labby/.labby and
+# sets LABBY_HOME=/home/labby/.labby. The surrounding named volume remains
+# writable for durable state.
 #
 # Secrets (API keys, tokens, passwords, URLs) belong in $LABBY_HOME/.env
 # (normally ~/.labby/.env).

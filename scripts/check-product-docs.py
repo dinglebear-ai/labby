@@ -162,7 +162,14 @@ def validate_duplicates(paths: list[Path], failures: list[str]) -> None:
 
 
 def validate_instruction_symlinks(failures: list[str]) -> None:
-    ignored_dirs = {".git", "target", "node_modules", ".next", "out"}
+    ignored_dirs = {
+        ".git",
+        ".full-review-archive",
+        "target",
+        "node_modules",
+        ".next",
+        "out",
+    }
     for claude in sorted(ROOT.rglob("CLAUDE.md")):
         if any(part in ignored_dirs for part in claude.parts):
             continue

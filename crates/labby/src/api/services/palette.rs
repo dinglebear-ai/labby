@@ -9,7 +9,7 @@ use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
-    PaletteExecutionReceipt,
+    PaletteExecutionReceipt, PaletteSearchQuery,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
@@ -72,7 +72,7 @@ async fn catalog(
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
     let mut catalog =
-        compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0)).await?;
+        compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0), None).await?;
     catalog.entries.sort_by(compare_launcher_entries);
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(catalog_response(headers, catalog))
@@ -104,6 +104,7 @@ async fn search(
     Query(query): Query<SearchQuery>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
     let auth = auth.as_ref().map(|auth| &auth.0);
+    let normalized_query = PaletteSearchQuery::new(&query.q)?;
     let query_id = query.q.trim();
     let exact_labby = exact_launcher_query(query_id, "labby:");
     let exact_mcp = exact_launcher_query(query_id, "mcp:");
@@ -119,6 +120,7 @@ async fn search(
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         if exact_labby && query_id.starts_with("labby:") {
             append_labby_actions(&mut catalog, &state, auth);
@@ -132,8 +134,13 @@ async fn search(
         compact_catalog_schemas(&mut catalog);
         catalog
     } else {
-        let mut catalog = compact_palette_catalog(&state, &headers, auth).await?;
-        catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
+        let mut catalog =
+            compact_palette_catalog(&state, &headers, auth, Some(&normalized_query)).await?;
+        let limit = query.limit.clamp(1, 100);
+        let (entries, search_truncated) =
+            search_entries_normalized(catalog.entries, &normalized_query, limit);
+        catalog.entries = entries;
+        catalog.truncated |= search_truncated;
         catalog
     };
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
@@ -161,8 +168,18 @@ async fn compact_palette_catalog(
     state: &AppState,
     headers: &HeaderMap,
     auth: Option<&AuthContext>,
+    query: Option<&PaletteSearchQuery>,
 ) -> Result<LauncherCatalogView, ApiError> {
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    if query.is_some_and(|query| !query.is_empty()) {
+        let caller = palette_caller(auth, request_id(headers))?;
+        let mut catalog = manager
+            .palette_catalog_snapshot_matching(&caller, query.expect("non-empty query checked"))
+            .await?;
+        append_labby_actions(&mut catalog, state, auth);
+        compact_catalog_schemas(&mut catalog);
+        return Ok(catalog);
+    }
     let cache_key = palette_catalog_cache_key(state, &manager, auth);
     let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     {
@@ -376,21 +393,32 @@ fn compare_launcher_entries(
         .then_with(|| entry_id(left).cmp(entry_id(right)))
 }
 
+#[cfg(test)]
 fn search_entries(
     entries: Vec<LauncherEntryView>,
     query: &str,
     limit: usize,
-) -> Vec<LauncherEntryView> {
+) -> (Vec<LauncherEntryView>, bool) {
     let needle = query.trim().to_ascii_lowercase();
+    let query = PaletteSearchQuery::new(&needle).expect("test query is bounded");
+    search_entries_normalized(entries, &query, limit)
+}
+
+fn search_entries_normalized(
+    entries: Vec<LauncherEntryView>,
+    query: &PaletteSearchQuery,
+    limit: usize,
+) -> (Vec<LauncherEntryView>, bool) {
     let mut scored = entries
         .into_iter()
         .filter_map(|entry| {
-            let score = launcher_search_score(&entry, &needle);
-            (score > 0 || needle.is_empty()).then_some((entry, score))
+            let score = query.score_entry(&entry);
+            (score > 0 || query.is_empty()).then_some((entry, score))
         })
         .collect::<Vec<_>>();
     let limit = limit.max(1);
-    if scored.len() > limit {
+    let truncated = scored.len() > limit;
+    if truncated {
         scored.select_nth_unstable_by(limit, |(left, left_score), (right, right_score)| {
             right_score
                 .cmp(left_score)
@@ -403,84 +431,10 @@ fn search_entries(
             .cmp(left_score)
             .then_with(|| compare_launcher_entries(left, right))
     });
-    scored
-        .into_iter()
-        .take(limit)
-        .map(|(entry, _)| entry)
-        .collect()
-}
-
-fn launcher_search_score(entry: &LauncherEntryView, needle: &str) -> u16 {
-    if needle.is_empty() {
-        return 1;
-    }
-    match entry {
-        LauncherEntryView::LabbyAction(entry) => [
-            entry.id.as_str(),
-            entry.label.as_str(),
-            entry.description.as_str(),
-            entry.source.as_str(),
-            entry.service.as_str(),
-            entry.action.as_str(),
-        ]
-        .into_iter()
-        .map(|field| field_score(field, needle))
-        .max()
-        .unwrap_or(0),
-        LauncherEntryView::McpTool(entry) => [
-            entry.id.as_str(),
-            entry.label.as_str(),
-            entry.description.as_str(),
-            entry.source.as_str(),
-            entry.upstream.as_str(),
-            entry.tool.as_str(),
-        ]
-        .into_iter()
-        .map(|field| field_score(field, needle))
-        .max()
-        .unwrap_or(0),
-    }
-}
-
-fn field_score(field: &str, needle: &str) -> u16 {
-    let field = field.to_ascii_lowercase();
-    let field = field.as_str();
-    if field == needle {
-        100
-    } else if field.starts_with(needle) {
-        80
-    } else if field
-        .split([' ', ':', '.', '_', '-'])
-        .any(|part| part.starts_with(needle))
-    {
-        60
-    } else if field.contains(needle) {
-        30
-    } else if is_subsequence(needle, field) {
-        10
-    } else {
-        0
-    }
-}
-
-fn is_subsequence(needle: &str, haystack: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    let mut chars = needle.chars();
-    let Some(mut current) = chars.next() else {
-        return true;
-    };
-    for ch in haystack.chars() {
-        if ch == current {
-            if let Some(next) = chars.next() {
-                current = next;
-            } else {
-                return true;
-            }
-        }
-    }
-    false
+    (
+        scored.into_iter().map(|(entry, _)| entry).collect(),
+        truncated,
+    )
 }
 
 fn launcher_rank(entry: &LauncherEntryView) -> u8 {
@@ -1892,12 +1846,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-        // A fuzzy search still inspects the full snapshot and detects the poison
-        // schemas, proving exact searches above did not process those entries.
+        // A fuzzy search still inspects every matching snapshot entry and detects
+        // the poison schemas, proving exact searches above did not process them.
         let full = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/palette/search?q=ping")
+                    .uri("/v1/palette/search?q=poison")
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .body(Body::empty())
                     .unwrap(),
@@ -1912,7 +1866,7 @@ mod tests {
 
     #[test]
     fn palette_search_ranks_case_insensitive_partial_mcp_tool_matches() {
-        let entries = search_entries(
+        let (entries, truncated) = search_entries(
             vec![
                 LauncherEntryView::McpTool(labby_gateway::gateway::palette::McpToolLauncherEntry {
                     id: "mcp:github::list_issues".to_string(),
@@ -1945,6 +1899,10 @@ mod tests {
 
         assert_eq!(entry_id(&entries[0]), "mcp:github::search_repos");
         assert_eq!(entries.len(), 1);
+        assert!(!truncated, "filtering alone must not imply truncation");
+
+        let (_, truncated) = search_entries(vec![entries[0].clone(), entries[0].clone()], "", 1);
+        assert!(truncated);
     }
 
     #[test]
@@ -2132,6 +2090,7 @@ mod tests {
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         append_labby_actions(&mut catalog, &state, Some(&auth));
 
@@ -2165,6 +2124,7 @@ mod tests {
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         append_labby_actions(&mut catalog, &state, Some(&auth));
 

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -295,7 +295,7 @@ impl AgentExecutionStore {
         self.conn()?.query_row(
             "SELECT actor,service,loadout_id,loadout_revision,scopes_json FROM agent_contexts WHERE id_hash=?1 AND service=?2 AND expires_at>?3",
             params![digest(context_id), service, now_ms()],
-            |row| { let scopes_json: String = row.get(4)?; Ok(BoundContext { actor: row.get(0)?, service: row.get(1)?, loadout_id: row.get(2)?, loadout_revision: row.get::<_, i64>(3)? as u64, scopes: serde_json::from_str(&scopes_json).unwrap_or_default() }) },
+            |row| { let scopes_json: String = row.get(4)?; Ok(BoundContext { actor: row.get(0)?, service: row.get(1)?, loadout_id: row.get(2)?, loadout_revision: row.get::<_, i64>(3)? as u64, scopes: parse_scopes_json(4, &scopes_json)? }) },
         ).optional().map_err(storage_error)?.ok_or_else(|| policy("execution context is invalid, expired, or service-mismatched"))
     }
 
@@ -308,7 +308,7 @@ impl AgentExecutionStore {
         let context = self.conn()?.query_row(
             "SELECT actor,service,loadout_id,loadout_revision,scopes_json FROM agent_contexts WHERE id_hash=?1 AND actor=?2 AND expires_at>?3",
             params![digest(context_id), actor, now_ms()],
-            |row| { let scopes_json: String = row.get(4)?; Ok(BoundContext { actor: row.get(0)?, service: row.get(1)?, loadout_id: row.get(2)?, loadout_revision: row.get::<_, i64>(3)? as u64, scopes: serde_json::from_str(&scopes_json).unwrap_or_default() }) },
+            |row| { let scopes_json: String = row.get(4)?; Ok(BoundContext { actor: row.get(0)?, service: row.get(1)?, loadout_id: row.get(2)?, loadout_revision: row.get::<_, i64>(3)? as u64, scopes: parse_scopes_json(4, &scopes_json)? }) },
         ).optional().map_err(storage_error)?;
         context.ok_or_else(|| policy("execution context is invalid, expired, or actor-mismatched"))
     }
@@ -468,6 +468,12 @@ impl AgentExecutionStore {
         }
         Ok(())
     }
+}
+
+fn parse_scopes_json(column: usize, value: &str) -> rusqlite::Result<Vec<String>> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
 }
 
 fn migrate_schema(connection: &mut Connection) -> Result<(), ToolError> {

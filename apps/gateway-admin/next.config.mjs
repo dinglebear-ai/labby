@@ -53,14 +53,6 @@ const nextConfig = {
   },
   trailingSlash: true,
   allowedDevOrigins,
-  typescript: {
-    // `pnpm exec tsc --noEmit` passes for the app source. The failure in
-    // `next build` comes from Next 16's generated `.next/types/validator.ts`
-    // importing `./routes.js` during its internal build-time check. Keep the
-    // standalone TypeScript check available, but do not let Next's generated
-    // validator block `labby serve` boot.
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },

@@ -19,6 +19,86 @@ class ContainerTopology(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
+    def render_compose(self, descriptor, config_dir):
+        env = {
+            **os.environ,
+            "LABBY_CONFIG_DIR": str(config_dir),
+            "LABBY_CONFIG_FILE": str(config_dir / "config.toml"),
+            "LABBY_ENV_FILE": str(config_dir / ".env"),
+            "LABBY_IMAGE": f"ghcr.io/dinglebear-ai/labby@sha256:{'a' * 64}",
+        }
+        rendered = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(ROOT / descriptor),
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        return json.loads(rendered.stdout)
+
+    def test_compose_config_mount_is_the_canonical_runtime_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = pathlib.Path(directory)
+            config_file = config_dir / "config.toml"
+            config_file.write_text('[mcp]\nport = 18765\n')
+            env_file = config_dir / ".env"
+            env_file.write_text("LABBY_AUTH_MODE=bearer\n")
+
+            for descriptor in ["docker-compose.yml", "docker-compose.prod.yml"]:
+                with self.subTest(descriptor=descriptor):
+                    service = self.render_compose(descriptor, config_dir)["services"]["labby-master"]
+                    self.assertEqual(service["environment"]["LABBY_HOME"], "/home/labby/.labby")
+                    volumes = service["volumes"]
+                    config_mount = next(
+                        mount for mount in volumes
+                        if mount["target"] == "/home/labby/.labby/config.toml"
+                    )
+                    self.assertEqual(pathlib.Path(config_mount["source"]), config_file)
+                    self.assertTrue(config_mount["read_only"])
+                    env_mount = next(
+                        mount for mount in volumes
+                        if mount["target"] == "/home/labby/.labby/.env"
+                    )
+                    self.assertEqual(pathlib.Path(env_mount["source"]), env_file)
+                    self.assertTrue(env_mount["read_only"])
+                    home_mount = next(
+                        mount for mount in volumes
+                        if mount["target"] == "/home/labby/.labby"
+                    )
+                    self.assertEqual(home_mount["type"], "volume")
+                    self.assertFalse(home_mount.get("read_only", False))
+
+    def test_active_docs_do_not_advertise_retired_config_authorities(self):
+        forbidden = [
+            re.compile(r"~/.config/labby/config\.toml"),
+            re.compile(r"/home/labby/\.config/labby"),
+            re.compile(r"first `config\.toml` found at `\./config\.toml`"),
+            re.compile(r"intentionally resolves\s+`\./config\.toml`"),
+        ]
+        roots = [ROOT / "README.md", ROOT / "config", ROOT / "docs"]
+        protected = [ROOT / "docs/sessions", ROOT / "docs/superpowers", ROOT / "docs/archive"]
+        for root in roots:
+            paths = [root] if root.is_file() else root.rglob("*")
+            for path in paths:
+                if not path.is_file() or any(parent in path.parents for parent in protected):
+                    continue
+                if path.suffix not in {".md", ".toml", ".example"} and not path.name.startswith("Dockerfile"):
+                    continue
+                text = path.read_text(errors="replace")
+                for pattern in forbidden:
+                    with self.subTest(path=path.relative_to(ROOT), pattern=pattern.pattern):
+                        self.assertIsNone(pattern.search(text))
+
     def test_compose_base_is_minimal_and_recoverable(self):
         text = self.text("docker-compose.prod.yml")
         self.assertNotIn("container_name:", text)
@@ -63,6 +143,8 @@ class ContainerTopology(unittest.TestCase):
         env = dict(os.environ)
         env.pop("LABBY_IMAGE", None)
         env.pop("LABBY_CONFIG_DIR", None)
+        env.pop("LABBY_CONFIG_FILE", None)
+        env.pop("LABBY_ENV_FILE", None)
         rendered = subprocess.run(
             ["docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "config"],
             cwd=ROOT,
@@ -73,6 +155,8 @@ class ContainerTopology(unittest.TestCase):
         )
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         self.assertIn("/workspace/lab", rendered.stdout)
+        self.assertIn(str(ROOT / "config/config.example.toml"), rendered.stdout)
+        self.assertIn(str(ROOT / "config/.env.example"), rendered.stdout)
         self.assertIn("host.docker.internal", rendered.stdout)
         self.assertIn("axon: null", rendered.stdout)
         self.assertIn("lab: null", rendered.stdout)
@@ -291,6 +375,11 @@ class ContainerTopology(unittest.TestCase):
         self.assertNotIn(":/usr/local/bin/labby", text)
         self.assertIn("LABBY_N_MINUS_ONE_PREVIOUS_IMAGE", text)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_IMAGE", text)
+        self.assertIn('"config_path":"/home/labby/.labby/config.toml"', text)
+        for stage in ["install-previous)", "verify-candidate)", "verify-rollback)"]:
+            branch = text[text.index(stage):]
+            branch = branch[:branch.index(";;")]
+            self.assertIn("config_authority", branch)
 
     def test_incus_pointer_uses_one_leased_generation_manifest(self):
         text = self.text("scripts/ci/promote-incus-pointer.sh")

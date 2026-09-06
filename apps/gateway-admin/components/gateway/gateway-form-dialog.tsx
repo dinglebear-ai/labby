@@ -233,6 +233,7 @@ export function GatewayFormDialog({
   const nameAutoRef = useRef(false)
   const skipUrlOauthResetRef = useRef(false)
   const autoOauthAttemptedForRef = useRef<string | null>(null)
+  const oauthConnectGenerationRef = useRef(0)
   const protectedRouteHydratedForRef = useRef<string | null>(null)
   const protectedRouteTouchedRef = useRef(false)
   const { data: supportedServices } = useSupportedServices()
@@ -247,7 +248,14 @@ export function GatewayFormDialog({
   const [protectedPublicPath, setProtectedPublicPath] = useState('')
   const [command, setCommand] = useState('')
   const [stdioEnv, setStdioEnv] = useState<Record<string, string>>({})
-  const [authMode, setAuthMode] = useState<GatewayAuthMode>('none')
+  const [authMode, setAuthModeState] = useState<GatewayAuthMode>('none')
+  const setAuthMode = useCallback((next: GatewayAuthMode | ((current: GatewayAuthMode) => GatewayAuthMode)) => {
+    // Authentication mode is part of the OAuth target. Invalidate first so a
+    // caller that intentionally switches to OAuth can launch against the new
+    // generation in the same event/effect.
+    oauthConnectGenerationRef.current += 1
+    setAuthModeState(next)
+  }, [])
   const [authSource, setAuthSource] = useState<GatewayAuthSource>('paste')
   const [bearerTokenEnv, setBearerTokenEnv] = useState('')
   const [bearerTokenValue, setBearerTokenValue] = useState('')
@@ -389,28 +397,7 @@ export function GatewayFormDialog({
       setIsProbing(false)
       clearTimeout(timer)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, transport])
-
-  useEffect(() => {
-    if (!oauthProbed) return
-    if (!shouldAutoConnectOauth({
-      open,
-      isEditing,
-      transport,
-      authMode,
-      oauthDiscovered: oauthProbed.oauth_discovered,
-      upstream: oauthProbed.upstream,
-    })) return
-
-    const attemptKey = `${url.trim()}::${oauthProbed.upstream}`
-    if (autoOauthAttemptedForRef.current === attemptKey) return
-    autoOauthAttemptedForRef.current = attemptKey
-
-    setAuthMode('oauth')
-    void runOauthConnect({ authTab: null, auto: true, probeOverride: oauthProbed })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authMode, isEditing, oauthProbed, open, transport, url])
+  }, [authMode, protectedPublicPath, setAuthMode, setIsProbing, setOauthProbed, transport, url])
 
   // Auto-fill the name from the URL hostname when the user hasn't typed a name yet.
   useEffect(() => {
@@ -429,10 +416,9 @@ export function GatewayFormDialog({
     } catch {
       // invalid URL, skip
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url])
+  }, [isEditing, transport, url])
 
-  async function runOauthConnect({
+  const runOauthConnect = useCallback(async ({
     authTab,
     auto,
     probeOverride,
@@ -440,8 +426,10 @@ export function GatewayFormDialog({
     authTab: Window | null
     auto: boolean
     probeOverride?: NonNullable<typeof oauthProbed>
-  }) {
+  }) => {
     if (!url.trim()) return
+    const generation = oauthConnectGenerationRef.current
+    const isCurrent = () => oauthConnectGenerationRef.current === generation
     setOauthState({ kind: 'probing' })
     try {
       const requestedUpstream = name.trim() || undefined
@@ -450,6 +438,10 @@ export function GatewayFormDialog({
       const probe = reusableProbe
         ? probeOverride
         : await upstreamOauthApi.probe(url.trim(), undefined, requestedUpstream)
+      if (!isCurrent()) {
+        authTab?.close()
+        return
+      }
       if (!probe.oauth_discovered) {
         authTab?.close()
         setOauthState({ kind: 'error', message: 'This server does not advertise OAuth support' })
@@ -459,6 +451,10 @@ export function GatewayFormDialog({
       setOauthState({ kind: 'discovered', upstream: probe.upstream, issuer: probe.issuer, scopes: probe.scopes })
       probeInfoRef.current = { registration_strategy: probe.registration_strategy ?? 'dynamic', scopes: probe.scopes }
       const { authorization_url } = await upstreamOauthApi.start(probe.upstream)
+      if (!isCurrent()) {
+        authTab?.close()
+        return
+      }
 
       const targetTab = authTab ?? openIsolatedOauthPopup()
       if (!targetTab || targetTab.closed) {
@@ -473,9 +469,33 @@ export function GatewayFormDialog({
       setOauthState({ kind: 'authorizing', upstream: probe.upstream })
     } catch (err: unknown) {
       authTab?.close()
+      if (!isCurrent()) return
       setOauthState({ kind: 'error', message: err instanceof Error ? err.message : 'OAuth connection failed' })
     }
-  }
+  }, [name, setOauthProbed, setOauthState, url])
+
+  useEffect(() => {
+    oauthConnectGenerationRef.current += 1
+  }, [gateway?.id, name, open, transport, url])
+
+  useEffect(() => {
+    if (!oauthProbed) return
+    if (!shouldAutoConnectOauth({
+      open,
+      isEditing,
+      transport,
+      authMode,
+      oauthDiscovered: oauthProbed.oauth_discovered,
+      upstream: oauthProbed.upstream,
+    })) return
+
+    const attemptKey = `${url.trim()}::${oauthProbed.upstream}`
+    if (autoOauthAttemptedForRef.current === attemptKey) return
+    autoOauthAttemptedForRef.current = attemptKey
+
+    setAuthMode('oauth')
+    void runOauthConnect({ authTab: null, auto: true, probeOverride: oauthProbed })
+  }, [authMode, isEditing, oauthProbed, open, runOauthConnect, setAuthMode, transport, url])
 
   async function handleOauthConnect() {
     if (!url.trim()) return
@@ -557,7 +577,7 @@ export function GatewayFormDialog({
         nameAutoRef.current = false
       }
     setErrors({})
-  }, [open, gateway, protectedRoutes, setErrors, setJsonDrawerOpen, setOauthProbed, setOauthState])
+  }, [open, gateway, protectedRoutes, setAuthMode, setErrors, setJsonDrawerOpen, setOauthProbed, setOauthState])
 
   useEffect(() => {
     if (!open || !gateway || gateway.source === 'in_process') return
@@ -569,7 +589,7 @@ export function GatewayFormDialog({
     protectedRouteHydratedForRef.current = gateway.id
     setProtectedPublicPath(protectedRoutePathInputValue(protectedRoute))
     setAuthMode((current) => (current === 'bearer' ? current : 'oauth'))
-  }, [existingProtectedRoute, gateway, open])
+  }, [existingProtectedRoute, gateway, open, setAuthMode])
 
   useEffect(() => {
     setServiceValues({})
@@ -604,7 +624,7 @@ export function GatewayFormDialog({
     setOauthProbed(null)
     setBearerTokenEnv('')
     setBearerTokenValue('')
-  }, [protectedPublicPath, setOauthProbed, setOauthState, transport])
+  }, [protectedPublicPath, setAuthMode, setOauthProbed, setOauthState, transport])
 
   useEffect(() => {
     if (!serviceMeta || !serviceConfig) return
@@ -990,7 +1010,7 @@ export function GatewayFormDialog({
     setTimeout(() => { syncingRef.current = false }, 0)
   }
 
-  const buildJsonFromForm = (): object | null => {
+  const buildJsonFromForm = useCallback((): object | null => {
     const n = name.trim()
     if (!n) return null
     const cfg: Record<string, unknown> = {}
@@ -1016,17 +1036,16 @@ export function GatewayFormDialog({
     cfg.proxy_skills = proxySkills
     cfg.expose_skills = exposeAllSkills ? null : (parseSkillPatternsText(skillPatternsText) ?? [])
     cfg.proxy_mcp_ui = proxyMcpUi
-    cfg.proxy_skills = proxySkills
     return { [n]: cfg }
-  }
+  }, [command, exposeAllSkills, name, proxyMcpUi, proxyPrompts, proxyResources, proxySkills, skillPatternsText, stdioEnv, transport, url])
 
-  const isJsonEditorFocused = () => (
+  const isJsonEditorFocused = useCallback(() => (
     jsonDrawerOpen &&
     typeof document !== 'undefined' &&
     Boolean(document.activeElement?.closest?.('[data-gateway-json-drawer] .cm-editor'))
-  )
+  ), [jsonDrawerOpen])
 
-  const onFormChange = () => {
+  const onFormChange = useCallback(() => {
     if (syncingRef.current || !jsonDrawerOpen || isJsonEditorFocused()) return
     syncingRef.current = true
     const json = buildJsonFromForm()
@@ -1040,10 +1059,9 @@ export function GatewayFormDialog({
     // Defer reset so it runs AFTER React flushes batched state — otherwise the
     // useEffect watching [name, url, ...] fires with guard already false and loops.
     setTimeout(() => { syncingRef.current = false }, 0)
-  }
+  }, [buildJsonFromForm, isJsonEditorFocused, jsonDrawerOpen])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxySkills, exposeAllSkills, skillPatternsText, proxyMcpUi, jsonDrawerOpen])
+  useEffect(() => { onFormChange() }, [onFormChange])
 
   useEffect(() => {
     if (syncingRef.current || !open || mode !== 'custom') return

@@ -44,9 +44,9 @@ test('Depot and Workspace navigation match the unified product information archi
   assert.deepEqual(workspace?.items.map((item) => item.label), [
     'Agents',
     'Tasks',
-    'Stash',
     'Dev Containers',
   ])
+  assert.equal(consoleNavItems.some((item) => item.href === '/stash'), false)
   assert.equal(consoleNavItems.some((item) => item.label === 'Loadouts'), false)
   assert.equal(consoleNavItems.some((item) => item.label === 'Snippets'), false)
 })

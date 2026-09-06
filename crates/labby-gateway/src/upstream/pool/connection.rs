@@ -323,6 +323,46 @@ impl UpstreamPool {
             .await
     }
 
+    /// Return one exact cached subject-scoped tool without cloning the complete
+    /// schema-bearing catalog. A cache miss still performs normal bounded
+    /// discovery, then consumes the newly returned catalog to select the tool.
+    pub(super) async fn acquire_or_connect_subject_tool(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        tool_name: &str,
+    ) -> anyhow::Result<(
+        rmcp::service::Peer<rmcp::RoleClient>,
+        Option<rmcp::model::Tool>,
+    )> {
+        self.drain_oauth_client_capacity_evictions().await;
+        let key = (config.name.clone(), subject.to_string());
+        {
+            let mut cache = self.subject_connections.write().await;
+            if let Some(entry) = cache.get_mut(&key) {
+                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL {
+                    entry.last_used = Instant::now();
+                    let tool = entry
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name.as_ref() == tool_name)
+                        .cloned();
+                    return Ok((entry.peer.clone(), tool));
+                }
+                cache.remove(&key);
+            }
+        }
+        let (peer, tools) = self
+            .acquire_or_connect_subject_guarded(config, subject)
+            .await?;
+        Ok((
+            peer,
+            tools
+                .into_iter()
+                .find(|tool| tool.name.as_ref() == tool_name),
+        ))
+    }
+
     /// Subject connection acquisition when the caller already holds the OAuth
     /// invalidation read barrier for the complete checked invocation.
     pub(super) async fn acquire_or_connect_subject_guarded(

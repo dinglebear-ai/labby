@@ -42,6 +42,18 @@ const SUBJECT_SCOPED_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct SerializedByteCounter(usize);
 
+struct SubjectScopedToolsResult {
+    tools: Vec<(String, Vec<rmcp::model::Tool>)>,
+    inspected: usize,
+    incomplete: bool,
+}
+
+pub(crate) struct BoundedUpstreamToolsResult {
+    pub tools: Vec<UpstreamTool>,
+    pub inspected: usize,
+    pub incomplete: bool,
+}
+
 impl Write for SerializedByteCounter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len());
@@ -53,9 +65,15 @@ impl Write for SerializedByteCounter {
     }
 }
 
+fn serialized_tool_bytes(tool: &rmcp::model::Tool) -> usize {
+    let mut counter = SerializedByteCounter(0);
+    serde_json::to_writer(&mut counter, tool).map_or(usize::MAX, |()| counter.0)
+}
+
 fn tool_catalog_bytes(tool: &UpstreamTool) -> usize {
-    let mut counter = SerializedByteCounter(tool.upstream_name.len());
-    serde_json::to_writer(&mut counter, &tool.tool).map_or(usize::MAX, |()| counter.0)
+    tool.upstream_name
+        .len()
+        .saturating_add(serialized_tool_bytes(&tool.tool))
 }
 
 fn upstream_allowed(allowed: Option<&BTreeSet<String>>, upstream: &str) -> bool {
@@ -262,6 +280,118 @@ impl UpstreamPool {
         tools
     }
 
+    /// Return at most `limit` exposed, routable tools for one upstream in name order.
+    ///
+    /// Selection happens against borrowed catalog entries so callers serving a
+    /// bounded projection do not clone schemas that they will immediately discard.
+    pub async fn healthy_tools_for_upstream_bounded(
+        &self,
+        upstream: &str,
+        limit: usize,
+    ) -> Vec<UpstreamTool> {
+        let catalog = self.catalog.read().await;
+        let Some(entry) = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())
+        else {
+            return Vec::new();
+        };
+        let mut selected = Vec::with_capacity(limit.min(entry.tools.len()));
+        for tool in entry
+            .tools
+            .values()
+            .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+        {
+            let insert_at = selected
+                .binary_search_by(|existing: &&UpstreamTool| {
+                    existing.tool.name.cmp(&tool.tool.name)
+                })
+                .unwrap_or_else(std::convert::identity);
+            if insert_at < limit {
+                selected.insert(insert_at, tool);
+                if selected.len() > limit {
+                    selected.pop();
+                }
+            }
+        }
+        selected.into_iter().cloned().collect()
+    }
+
+    /// Inspect at most `inspection_limit` exposed tools and retain the highest
+    /// scoring `limit` without cloning discarded schemas.
+    pub async fn healthy_tools_for_upstream_ranked_bounded(
+        &self,
+        upstream: &str,
+        limit: usize,
+        inspection_limit: usize,
+        score: impl Fn(&UpstreamTool) -> u16,
+    ) -> (Vec<(UpstreamTool, u16)>, usize, bool) {
+        let catalog = self.catalog.read().await;
+        let Some(entry) = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())
+        else {
+            return (Vec::new(), 0, false);
+        };
+        let mut selected = Vec::<(&UpstreamTool, u16)>::with_capacity(limit.min(entry.tools.len()));
+        let mut inspected = 0usize;
+        let mut exhausted = false;
+        for tool in entry
+            .tools
+            .values()
+            .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+        {
+            if inspected == inspection_limit {
+                exhausted = true;
+                break;
+            }
+            inspected += 1;
+            let candidate_score = score(tool);
+            if candidate_score == 0 {
+                continue;
+            }
+            let insert_at = selected
+                .binary_search_by(|(existing, existing_score)| {
+                    existing_score
+                        .cmp(&candidate_score)
+                        .reverse()
+                        .then_with(|| existing.tool.name.cmp(&tool.tool.name))
+                })
+                .unwrap_or_else(std::convert::identity);
+            if insert_at < limit {
+                selected.insert(insert_at, (tool, candidate_score));
+                if selected.len() > limit {
+                    selected.pop();
+                }
+            }
+        }
+        (
+            selected
+                .into_iter()
+                .map(|(tool, score)| (tool.clone(), score))
+                .collect(),
+            inspected,
+            exhausted,
+        )
+    }
+
+    /// Return one exact exposed, routable tool without cloning its siblings.
+    pub async fn healthy_tool_for_upstream(
+        &self,
+        upstream: &str,
+        tool_name: &str,
+    ) -> Option<UpstreamTool> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        let tool = entry.tools.get(tool_name)?;
+        entry
+            .exposure_policy
+            .matches(tool.tool.name.as_ref())
+            .then(|| tool.clone())
+    }
+
     pub(super) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
         let catalog = self.catalog.read().await;
         catalog.get(upstream).is_some_and(|entry| {
@@ -395,8 +525,15 @@ impl UpstreamPool {
         configs: &[UpstreamConfig],
         subject: &str,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
-        self.subject_scoped_tools_inner(configs, subject, None)
-            .await
+        self.subject_scoped_tools_inner(
+            configs,
+            subject,
+            None,
+            None,
+            SUBJECT_SCOPED_ENUMERATION_TIMEOUT,
+        )
+        .await
+        .tools
     }
 
     /// Return at most `limit` OAuth subject-scoped tools in deterministic
@@ -410,7 +547,26 @@ impl UpstreamPool {
         subject: &str,
         limit: usize,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
-        self.subject_scoped_tools_inner(configs, subject, Some(limit))
+        self.subject_scoped_tools_inner(
+            configs,
+            subject,
+            Some(limit),
+            None,
+            SUBJECT_SCOPED_ENUMERATION_TIMEOUT,
+        )
+        .await
+        .tools
+    }
+
+    async fn subject_scoped_tools_matching_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        limit: usize,
+        predicate: &(dyn Fn(&str, &rmcp::model::Tool) -> bool + Sync),
+        deadline: Duration,
+    ) -> SubjectScopedToolsResult {
+        self.subject_scoped_tools_inner(configs, subject, Some(limit), Some(predicate), deadline)
             .await
     }
 
@@ -662,6 +818,22 @@ impl UpstreamPool {
         subject: &str,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<UpstreamTool> {
+        self.subject_scoped_upstream_tools_allowed_bounded(
+            configs,
+            subject,
+            allowed,
+            MAX_UPSTREAM_TOOLS,
+        )
+        .await
+    }
+
+    pub async fn subject_scoped_upstream_tools_allowed_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+        limit: usize,
+    ) -> Vec<UpstreamTool> {
         let configs = configs
             .iter()
             .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
@@ -669,16 +841,96 @@ impl UpstreamPool {
             .collect::<Vec<_>>();
         let mut routed = Vec::new();
         for (upstream, tools) in self
-            .subject_scoped_tools_bounded(&configs, subject, MAX_UPSTREAM_TOOLS)
+            .subject_scoped_tools_bounded(&configs, subject, limit)
             .await
         {
             let upstream_name = std::sync::Arc::<str>::from(upstream);
             for tool in tools {
                 let (_, tool) = cached_upstream_tool(tool, &upstream_name);
-                insert_bounded_upstream_tool(&mut routed, tool, MAX_UPSTREAM_TOOLS);
+                insert_bounded_upstream_tool(&mut routed, tool, limit);
             }
         }
         routed
+    }
+
+    /// Return a bounded routed projection after filtering the complete visible
+    /// subject catalog. All eligible OAuth upstreams share one request deadline
+    /// and the pool's catalog-fanout concurrency semaphore.
+    pub(crate) async fn subject_scoped_upstream_tools_allowed_matching_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+        limit: usize,
+        predicate: &(dyn Fn(&str, &rmcp::model::Tool) -> bool + Sync),
+        deadline: Duration,
+    ) -> BoundedUpstreamToolsResult {
+        let configs = configs
+            .iter()
+            .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut routed = Vec::new();
+        let result = self
+            .subject_scoped_tools_matching_bounded(&configs, subject, limit, predicate, deadline)
+            .await;
+        for (upstream, tools) in result.tools {
+            let upstream_name = std::sync::Arc::<str>::from(upstream);
+            for tool in tools {
+                let (_, tool) = cached_upstream_tool(tool, &upstream_name);
+                insert_bounded_upstream_tool(&mut routed, tool, limit);
+            }
+        }
+        BoundedUpstreamToolsResult {
+            tools: routed,
+            inspected: result.inspected,
+            incomplete: result.incomplete,
+        }
+    }
+
+    /// Resolve one exact OAuth subject-scoped tool before constructing the
+    /// schema-bearing routed projection for any of its siblings.
+    pub async fn subject_scoped_upstream_tool_allowed(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        tool_name: &str,
+    ) -> Option<UpstreamTool> {
+        if !config.enabled || config.oauth.is_none() {
+            return None;
+        }
+        let exposure_policy =
+            resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+        let result = tokio::time::timeout(SUBJECT_SCOPED_ENUMERATION_TIMEOUT, async {
+            let _permit = self
+                .acquire_catalog_fanout_permit()
+                .await
+                .map_err(anyhow::Error::msg)?;
+            self.acquire_or_connect_subject_tool(config, subject, tool_name)
+                .await
+        })
+        .await;
+        let tool = match result {
+            Ok(Ok((_peer, tool))) => tool,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    upstream = %config.name,
+                    error = %error,
+                    "subject-scoped upstream exact tool discovery failed"
+                );
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    upstream = %config.name,
+                    "subject-scoped upstream exact tool discovery timed out"
+                );
+                return None;
+            }
+        };
+        let tool = tool.filter(|tool| exposure_policy.matches(tool.name.as_ref()))?;
+        let upstream_name = std::sync::Arc::<str>::from(config.name.as_str());
+        Some(cached_upstream_tool(tool, &upstream_name).1)
     }
 
     async fn subject_scoped_tools_inner(
@@ -686,7 +938,9 @@ impl UpstreamPool {
         configs: &[UpstreamConfig],
         subject: &str,
         limit: Option<usize>,
-    ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
+        predicate: Option<&(dyn Fn(&str, &rmcp::model::Tool) -> bool + Sync)>,
+        deadline_duration: Duration,
+    ) -> SubjectScopedToolsResult {
         let eligible_count = configs
             .iter()
             .filter(|config| config.enabled && config.oauth.is_some())
@@ -697,14 +951,95 @@ impl UpstreamPool {
                 limit = MAX_SUBJECT_SCOPED_UPSTREAMS,
                 "subject-scoped OAuth upstream registry exceeds limit; failing closed"
             );
-            return Vec::new();
+            return SubjectScopedToolsResult {
+                tools: Vec::new(),
+                inspected: 0,
+                incomplete: true,
+            };
         }
-        let deadline = tokio::time::Instant::now() + SUBJECT_SCOPED_ENUMERATION_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + deadline_duration;
+        let mut discovered = Vec::new();
+        let mut bounded = Vec::new();
+        let mut exposed_count = 0usize;
+        let mut exposed_bytes = 0usize;
+        let mut remaining_inspections = if predicate.is_some() {
+            limit.unwrap_or(usize::MAX)
+        } else {
+            usize::MAX
+        };
+        let mut inspected = 0usize;
+        let mut incomplete = false;
+        let mut cached_names = BTreeSet::new();
+
+        if let Some(predicate) = predicate {
+            let cache = self.subject_connections.read().await;
+            'cached: for config in configs
+                .iter()
+                .filter(|config| config.enabled && config.oauth.is_some())
+            {
+                let key = (config.name.clone(), subject.to_string());
+                let Some(entry) = cache
+                    .get(&key)
+                    .filter(|entry| entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL)
+                else {
+                    continue;
+                };
+                cached_names.insert(config.name.clone());
+                let exposure_policy =
+                    resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+                let mut hidden_count = 0usize;
+                for tool in &entry.tools {
+                    if remaining_inspections == 0 {
+                        incomplete = true;
+                        break 'cached;
+                    }
+                    remaining_inspections -= 1;
+                    inspected += 1;
+                    if !exposure_policy.matches(tool.name.as_ref()) {
+                        hidden_count += 1;
+                        continue;
+                    }
+                    if predicate(&config.name, tool) {
+                        exposed_count += 1;
+                        exposed_bytes = exposed_bytes.saturating_add(serialized_tool_bytes(tool));
+                        if exposed_bytes > max_response_bytes() {
+                            return SubjectScopedToolsResult {
+                                tools: Vec::new(),
+                                inspected,
+                                incomplete: true,
+                            };
+                        }
+                        insert_bounded_subject_tool(
+                            &mut bounded,
+                            config.name.clone(),
+                            tool.clone(),
+                            limit.unwrap_or(usize::MAX),
+                        );
+                    }
+                }
+                if hidden_count > 0 {
+                    tracing::debug!(
+                        upstream = %config.name,
+                        hidden_count,
+                        "subject-scoped upstream tools hidden by exposure policy"
+                    );
+                }
+            }
+            if remaining_inspections == 0
+                && configs.iter().any(|config| {
+                    config.enabled && config.oauth.is_some() && !cached_names.contains(&config.name)
+                })
+            {
+                incomplete = true;
+            }
+        }
         let mut futures = FuturesUnordered::new();
-        for config in configs
-            .iter()
-            .filter(|config| config.enabled && config.oauth.is_some())
-        {
+        for config in configs.iter().filter(|config| {
+            remaining_inspections > 0
+                && config.enabled
+                && config.oauth.is_some()
+                && !cached_names.contains(&config.name)
+        }) {
             let config = config.clone();
             let subject = subject.to_string();
             let pool = self.clone();
@@ -726,16 +1061,13 @@ impl UpstreamPool {
             });
         }
 
-        let mut discovered = Vec::new();
-        let mut bounded = Vec::new();
-        let mut exposed_count = 0usize;
-        let mut exposed_bytes = 0usize;
         loop {
             let next = match tokio::time::timeout_at(deadline, futures.next()).await {
                 Ok(next) => next,
                 Err(_) => {
                     tracing::warn!("subject-scoped OAuth registry enumeration timed out");
-                    return Vec::new();
+                    incomplete = true;
+                    break;
                 }
             };
             let Some((name, exposure_policy, result)) = next else {
@@ -743,26 +1075,38 @@ impl UpstreamPool {
             };
             match result {
                 Ok((_peer, tools)) => {
-                    let discovered_count = tools.len();
-                    let mut exposed: Vec<rmcp::model::Tool> = tools
-                        .into_iter()
-                        .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
-                        .collect();
+                    let mut inspection_budget_exhausted = false;
+                    let mut exposed = Vec::new();
+                    let mut hidden_count = 0usize;
+                    for tool in tools {
+                        if remaining_inspections == 0 {
+                            inspection_budget_exhausted = true;
+                            break;
+                        }
+                        remaining_inspections -= 1;
+                        inspected += 1;
+                        if !exposure_policy.matches(tool.name.as_ref()) {
+                            hidden_count += 1;
+                        } else if predicate.is_none_or(|predicate| predicate(&name, &tool)) {
+                            exposed.push(tool);
+                        }
+                    }
                     exposed.sort_by(|left, right| left.name.cmp(&right.name));
                     for tool in &exposed {
-                        exposed_bytes = exposed_bytes.saturating_add(
-                            serde_json::to_vec(tool).map_or(usize::MAX, |value| value.len()),
-                        );
+                        exposed_bytes = exposed_bytes.saturating_add(serialized_tool_bytes(tool));
                         if exposed_bytes > max_response_bytes() {
                             tracing::warn!(
                                 candidate_bytes = exposed_bytes,
                                 limit = max_response_bytes(),
                                 "subject-scoped OAuth registry exceeds byte budget; failing closed"
                             );
-                            return Vec::new();
+                            return SubjectScopedToolsResult {
+                                tools: Vec::new(),
+                                inspected,
+                                incomplete: true,
+                            };
                         }
                     }
-                    let hidden_count = discovered_count - exposed.len();
                     if hidden_count > 0 {
                         tracing::debug!(
                             upstream = %name,
@@ -783,12 +1127,25 @@ impl UpstreamPool {
                                 limit = MAX_UPSTREAM_TOOLS,
                                 "subject-scoped OAuth registry exceeds item budget; failing closed"
                             );
-                            return Vec::new();
+                            return SubjectScopedToolsResult {
+                                tools: Vec::new(),
+                                inspected,
+                                incomplete: true,
+                            };
                         }
                         discovered.push((name, exposed));
                     }
+                    if inspection_budget_exhausted {
+                        incomplete = true;
+                        tracing::warn!(
+                            inspection_limit = limit.unwrap_or(usize::MAX),
+                            "subject-scoped OAuth registry inspection budget exhausted"
+                        );
+                        break;
+                    }
                 }
                 Err(error) => {
+                    incomplete = true;
                     tracing::warn!(
                         upstream = %name,
                         error = %error,
@@ -809,10 +1166,18 @@ impl UpstreamPool {
             for (upstream, tool) in bounded {
                 by_upstream.entry(upstream).or_default().push(tool);
             }
-            return by_upstream.into_iter().collect();
+            return SubjectScopedToolsResult {
+                tools: by_upstream.into_iter().collect(),
+                inspected,
+                incomplete: incomplete || exposed_count > limit,
+            };
         }
         discovered.sort_by(|left, right| left.0.cmp(&right.0));
-        discovered
+        SubjectScopedToolsResult {
+            tools: discovered,
+            inspected,
+            incomplete,
+        }
     }
 
     /// Return the names of upstreams currently routable for a capability.
@@ -1714,6 +2079,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn per_upstream_full_listing_stays_complete_while_bounded_listing_caps() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("large");
+        let names = (0..128)
+            .rev()
+            .map(|index| format!("tool_{index:04}"))
+            .collect::<Vec<_>>();
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let tools = test_upstream_tools(&upstream_name, &name_refs);
+        pool.catalog.write().await.insert(
+            "large".to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name), tools),
+        );
+
+        let full = pool.healthy_tools_for_upstream("large").await;
+        let bounded = pool.healthy_tools_for_upstream_bounded("large", 10).await;
+
+        assert_eq!(full.len(), 128);
+        assert!(
+            full.windows(2)
+                .all(|pair| pair[0].tool.name <= pair[1].tool.name)
+        );
+        assert_eq!(bounded.len(), 10);
+        assert_eq!(
+            bounded
+                .iter()
+                .map(|tool| tool.tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            full[..10]
+                .iter()
+                .map(|tool| tool.tool.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
     async fn hidden_upstream_tools_cannot_be_called_directly() {
         let pool = UpstreamPool::new();
         let upstream_name: Arc<str> = Arc::from("github");
@@ -1967,6 +2368,17 @@ mod tests {
             .insert(upstream_name.to_string(), entry);
 
         assert!(pool.healthy_tools().await.is_empty());
+    }
+
+    #[test]
+    fn allocation_free_tool_byte_counter_matches_json_encoding() {
+        let upstream: Arc<str> = Arc::from("fixture");
+        let tools = test_upstream_tools(&upstream, &["search"]);
+        let tool = &tools.get("search").expect("fixture tool").tool;
+        assert_eq!(
+            serialized_tool_bytes(tool),
+            serde_json::to_vec(tool).expect("serialize fixture").len()
+        );
     }
 
     #[tokio::test]
