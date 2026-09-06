@@ -262,7 +262,7 @@ impl DepotClient {
         }
         let catalogs = self.operation_catalogs.lock().await;
         let catalog = catalogs.get(actor).ok_or(DepotError::InvalidCatalog)?;
-        if catalog.observed_at.elapsed() > Duration::from_secs(5 * 60) {
+        if catalog.observed_at.elapsed() > Duration::from_mins(5) {
             return Err(DepotError::InvalidCatalog);
         }
         catalog
@@ -319,7 +319,7 @@ impl DepotClient {
                     if requests.len() >= 1024 {
                         requests.retain(|_, state| {
                             now.duration_since(state.observed_at())
-                                < Duration::from_secs(24 * 60 * 60)
+                                < Duration::from_hours(24)
                         });
                     }
                     if requests.len() >= 1024 {
