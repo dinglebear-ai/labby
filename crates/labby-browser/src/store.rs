@@ -195,6 +195,15 @@ impl Store {
     }
 
     #[cfg(test)]
+    pub(crate) async fn wait_for_cancellation_cleanups_for_test(&self) {
+        let permits = Arc::clone(&self.cancellation_cleanup_permits)
+            .acquire_many_owned(MAX_CANCELLATION_AUDIT_CLEANUPS as u32)
+            .await
+            .expect("browser cancellation cleanup semaphore remains open");
+        drop(permits);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn audit_outcome_for_test(
         &self,
         id: &str,
