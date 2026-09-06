@@ -794,7 +794,9 @@ mod tests {
 
         assert_eq!(bridge.store().available_cancellation_cleanups(), 0);
         drop(store_permit);
-        tokio::time::timeout(Duration::from_secs(1), async {
+        // Windows CI can take several seconds to schedule and drain all sixteen
+        // serialized SQLite cleanup jobs under full workspace load.
+        tokio::time::timeout(Duration::from_secs(10), async {
             while bridge.store().available_cancellation_cleanups()
                 != crate::store::MAX_CANCELLATION_AUDIT_CLEANUPS
             {
