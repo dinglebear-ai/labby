@@ -1678,17 +1678,6 @@ impl LabMcpServer {
                         required_scopes: Vec::new(),
                     }),
                 }
-            } else if self.registry.dispatch_capability(&service)
-                == Some(crate::registry::DispatchCapability::CallerBound)
-            {
-                self.dispatch_caller_bound_service(
-                    &service,
-                    &action,
-                    params,
-                    &context,
-                    request.meta.as_ref(),
-                )
-                .await
             } else if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
@@ -1704,6 +1693,17 @@ impl LabMcpServer {
                 {
                     (entry.dispatch)(action.clone(), params).await
                 }
+            } else if self.registry.dispatch_capability(&service)
+                == Some(crate::registry::DispatchCapability::CallerBound)
+            {
+                self.dispatch_caller_bound_service(
+                    &service,
+                    &action,
+                    params,
+                    &context,
+                    request.meta.as_ref(),
+                )
+                .await
             } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {

@@ -207,7 +207,7 @@ pub(crate) async fn dispatch(
             _ => return Err(denied()),
         };
         let owner = owner_scope(kind, owner_id)?;
-        let (lease, epochs) = authorize(&context, &store, action, owner.clone(), &instance_id)
+        let (lease, _) = authorize(&context, &store, action, owner.clone(), &instance_id)
             .await
             .map_err(|_| denied())?;
         let secrets = params
@@ -233,6 +233,17 @@ pub(crate) async fn dispatch(
         )
         .await
         .map_err(|_| unavailable())?;
+        // The durable admission write above is an asynchronous boundary. Fetch
+        // current epochs immediately before the engine call so a membership or
+        // policy revocation cannot reuse the earlier authorization snapshot.
+        let epochs = crate::access::refresh_authority_epochs(
+            &store,
+            context.identity.clone(),
+            created.instance.owner().clone(),
+            required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+        )
+        .await
+        .map_err(|_| denied())?;
         create(
             context.access_runtime.dev_container_runtime().as_ref(),
             &lease,
@@ -267,7 +278,8 @@ pub(crate) async fn dispatch(
         .find(|item| item.instance_id == instance_id)
         .ok_or_else(denied)?;
     let owner = owner_scope(record.owner_kind, &record.owner_id)?;
-    let (lease, epochs) = authorize(&context, &store, action, owner, instance_id)
+    let capability = required_capability(action, owner.kind()).ok_or_else(denied)?;
+    let (lease, _) = authorize(&context, &store, action, owner.clone(), instance_id)
         .await
         .map_err(|_| denied())?;
     let desired = match action {
@@ -299,6 +311,16 @@ pub(crate) async fn dispatch(
         instance_id: DevContainerId::new(record.instance_id.clone()).map_err(|_| unavailable())?,
         lifecycle_nonce: LifecycleNonce::new(record.lifecycle_nonce).map_err(|_| unavailable())?,
     };
+    // Desired-state persistence is not authority for a later host effect.
+    // Re-read epochs at the final boundary so revocation invalidates the lease.
+    let epochs = crate::access::refresh_authority_epochs(
+        &store,
+        context.identity.clone(),
+        owner,
+        capability,
+    )
+    .await
+    .map_err(|_| denied())?;
     let result = reconcile(
         context.access_runtime.dev_container_runtime().as_ref(),
         &lease,
