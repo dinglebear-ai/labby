@@ -26,6 +26,7 @@ use tokio_util::{
     io::{ReaderStream, StreamReader},
     sync::CancellationToken,
 };
+use tracing::Instrument as _;
 
 use crate::{
     api::{
@@ -1020,10 +1021,14 @@ impl DownloadObservation {
             finished: false,
         }));
         let watchdog_state = Arc::clone(&state);
-        tokio::spawn(async move {
-            cancel.cancelled().await;
-            finish_download_observation(&watchdog_state, "error", Some("timeout"));
-        });
+        let request_span = tracing::Span::current();
+        tokio::spawn(
+            async move {
+                cancel.cancelled().await;
+                finish_download_observation(&watchdog_state, "error", Some("timeout"));
+            }
+            .instrument(request_span),
+        );
         Self { state }
     }
 
@@ -1285,11 +1290,16 @@ mod tests {
         partial_cancel.cancel();
 
         let timeout_cancel = CancellationToken::new();
-        let timeout = DownloadObservation::new(
-            "01ARZ3NDEKTSV4RRFFQ69G5FAX".into(),
-            std::time::Instant::now(),
-            timeout_cancel.clone(),
-        );
+        let timeout = {
+            let request =
+                tracing::info_span!("http.request", request_id = "request-download-timeout-123");
+            let _request = request.enter();
+            DownloadObservation::new(
+                "01ARZ3NDEKTSV4RRFFQ69G5FAX".into(),
+                std::time::Instant::now(),
+                timeout_cancel.clone(),
+            )
+        };
         timeout_cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -1310,6 +1320,11 @@ mod tests {
         assert!(output.contains("\"kind\":\"cancelled\""));
         assert!(output.contains("\"byte_count\":3"));
         assert_eq!(output.matches("\"kind\":\"timeout\"").count(), 1);
+        let timeout_event = output
+            .lines()
+            .find(|line| line.contains("\"kind\":\"timeout\""))
+            .expect("timeout terminal event");
+        assert!(timeout_event.contains("request-download-timeout-123"));
     }
 
     #[test]

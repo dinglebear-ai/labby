@@ -191,12 +191,16 @@ impl LabMcpServer {
             },
         )
         .await
-        .map_err(|error| match error.kind() {
-            "quota_exceeded" => quota_exceeded(uri),
-            "not_found" => unknown(uri),
-            "busy" => busy(uri),
-            _ => unavailable(uri),
-        })
+        .map_err(|error| map_resource_read_error(&error, uri))
+    }
+}
+
+fn map_resource_read_error(error: &ToolError, uri: &str) -> ErrorData {
+    match error.kind() {
+        "invalid_param" | "forbidden" | "not_found" => unknown(uri),
+        "quota_exceeded" => quota_exceeded(uri),
+        "busy" => busy(uri),
+        _ => unavailable(uri),
     }
 }
 
@@ -330,6 +334,31 @@ mod tests {
             error.data.as_ref().and_then(|data| data["kind"].as_str()),
             Some("quota_exceeded")
         );
+    }
+
+    #[test]
+    fn resource_read_validation_auth_and_absence_are_non_enumerating() {
+        let uri = "stash://me/files/01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let errors = [
+            ToolError::InvalidParam {
+                param: "uri".to_owned(),
+                message: "invalid File Stash parameter".to_owned(),
+            },
+            forbidden(),
+            ToolError::Sdk {
+                sdk_kind: "not_found".to_owned(),
+                message: "File Stash operation failed".to_owned(),
+            },
+        ];
+        for error in errors {
+            let response = map_resource_read_error(&error, uri);
+            assert_eq!(response.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+            assert_eq!(response.message, "File Stash resource is unavailable");
+            assert_eq!(
+                response.data.as_ref().and_then(|data| data["uri"].as_str()),
+                Some(uri)
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
