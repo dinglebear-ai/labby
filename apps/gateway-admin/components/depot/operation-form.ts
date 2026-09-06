@@ -1,10 +1,18 @@
 export type OperationProperty = {
-  type?: string
+  type: 'string' | 'boolean' | 'integer' | 'number' | 'array' | 'object'
   description?: string
-  enum?: unknown[]
+  enum?: Array<string | number>
   minimum?: number
   maximum?: number
-  items?: { type?: string; enum?: unknown[] }
+  minLength?: number
+  maxLength?: number
+  pattern?: string
+  minItems?: number
+  maxItems?: number
+  uniqueItems?: boolean
+  minProperties?: number
+  maxProperties?: number
+  items?: Omit<OperationProperty, 'items' | 'default'>
   default?: unknown
 }
 
@@ -51,6 +59,7 @@ export function operationParams(
       }
       if (property.minimum !== undefined && parsed < property.minimum) throw new Error(`${name} must be at least ${property.minimum}.`)
       if (property.maximum !== undefined && parsed > property.maximum) throw new Error(`${name} must be at most ${property.maximum}.`)
+      if (property.enum && !property.enum.includes(parsed)) throw new Error(`${name} is not an allowed value.`)
       params[name] = parsed
       continue
     }
@@ -61,21 +70,63 @@ export function operationParams(
           ? JSON.parse(value)
           : value.split(',').map(item => item.trim()).filter(Boolean)
         if (!Array.isArray(parsed)) throw new Error()
-        params[name] = parsed
+        if (property.minItems !== undefined && parsed.length < property.minItems) throw new Error(`${name} must contain at least ${property.minItems} items.`)
+        if (property.maxItems !== undefined && parsed.length > property.maxItems) throw new Error(`${name} must contain at most ${property.maxItems} items.`)
+        const items = property.items
+        const typed = items ? parsed.map((item, index) => coerceArrayItem(name, index, item, items)) : parsed
+        if (property.uniqueItems && new Set(typed.map(item => JSON.stringify(item))).size !== typed.length) throw new Error(`${name} must contain unique items.`)
+        params[name] = typed
         continue
-      } catch { throw new Error(`${name} must be a JSON array or comma-separated list.`) }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith(`${name} `)) throw error
+        throw new Error(`${name} must be a JSON array or comma-separated list.`, { cause: error })
+      }
     }
     if (property.type === 'object') {
       try {
         const parsed = JSON.parse(value) as unknown
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+        const size = Object.keys(parsed).length
+        if (property.minProperties !== undefined && size < property.minProperties) throw new Error(`${name} must contain at least ${property.minProperties} properties.`)
+        if (property.maxProperties !== undefined && size > property.maxProperties) throw new Error(`${name} must contain at most ${property.maxProperties} properties.`)
         params[name] = parsed
         continue
-      } catch { throw new Error(`${name} must be a JSON object.`) }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith(`${name} `)) throw error
+        throw new Error(`${name} must be a JSON object.`, { cause: error })
+      }
     }
+    if (property.minLength !== undefined && value.length < property.minLength) throw new Error(`${name} must contain at least ${property.minLength} characters.`)
+    if (property.maxLength !== undefined && value.length > property.maxLength) throw new Error(`${name} must contain at most ${property.maxLength} characters.`)
+    if (property.pattern !== undefined && !new RegExp(property.pattern).test(value)) throw new Error(`${name} has an invalid format.`)
+    if (property.enum && !property.enum.includes(value)) throw new Error(`${name} is not an allowed value.`)
     params[name] = value
   }
   return params
+}
+
+function coerceArrayItem(name: string, index: number, value: unknown, property: Omit<OperationProperty, 'items' | 'default'>): unknown {
+  let parsed = value
+  if (property.type === 'string') {
+    if (typeof value !== 'string') throw new Error(`${name} item ${index + 1} must be a string.`)
+    if (property.minLength !== undefined && value.length < property.minLength) throw new Error(`${name} item ${index + 1} is too short.`)
+    if (property.maxLength !== undefined && value.length > property.maxLength) throw new Error(`${name} item ${index + 1} is too long.`)
+    if (property.pattern !== undefined && !new RegExp(property.pattern).test(value)) throw new Error(`${name} item ${index + 1} has an invalid format.`)
+  } else if (property.type === 'number' || property.type === 'integer') {
+    parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+    if (!Number.isFinite(parsed) || (property.type === 'integer' && !Number.isInteger(parsed))) throw new Error(`${name} item ${index + 1} must be ${property.type === 'integer' ? 'an integer' : 'a number'}.`)
+    if (property.minimum !== undefined && (parsed as number) < property.minimum) throw new Error(`${name} item ${index + 1} must be at least ${property.minimum}.`)
+    if (property.maximum !== undefined && (parsed as number) > property.maximum) throw new Error(`${name} item ${index + 1} must be at most ${property.maximum}.`)
+  } else if (property.type === 'boolean') {
+    if (value === true || value === false) parsed = value
+    else if (value === 'true') parsed = true
+    else if (value === 'false') parsed = false
+    else throw new Error(`${name} item ${index + 1} must be a boolean.`)
+  } else if (property.type === 'object') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} item ${index + 1} must be an object.`)
+  } else if (!Array.isArray(value)) throw new Error(`${name} item ${index + 1} must be an array.`)
+  if (property.enum && !property.enum.includes(parsed as string | number)) throw new Error(`${name} item ${index + 1} is not an allowed value.`)
+  return parsed
 }
 
 export function isDestructiveOperation(annotations?: Record<string, unknown>): boolean {

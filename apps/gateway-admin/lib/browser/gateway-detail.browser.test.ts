@@ -273,22 +273,22 @@ test('Depot Administration renders live schemas and guards destructive operation
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-  const calls: Array<{ operation: string; params: Record<string, unknown> }> = []
+  const calls: Array<{ operation: string; params: Record<string, unknown>; destructiveIntent?: { confirmed: boolean; idempotencyKey: string } }> = []
 
   await page.route('**/v1/depot/status', route => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify({ depot: { configured: true, enabled: true, mutationAuthority: true, maxResponseBytes: 1_048_576 } }),
+    body: JSON.stringify({ depot: { configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 } }),
   }))
   await page.route('**/v1/depot/operations', async route => {
     if (route.request().method() === 'GET') {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ operations: [
-        { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.' } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
-        { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
-        { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+        { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', group: 'access', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.', items: { type: 'string' } } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
+        { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', group: 'access', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+        { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', group: 'operations', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
       ] }) })
       return
     }
-    calls.push(route.request().postDataJSON() as { operation: string; params: Record<string, unknown> })
+    calls.push(route.request().postDataJSON() as { operation: string; params: Record<string, unknown>; destructiveIntent?: { confirmed: boolean; idempotencyKey: string } })
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }) })
   })
 
@@ -310,7 +310,11 @@ test('Depot Administration renders live schemas and guards destructive operation
   await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isEnabled(), true))
   await page.getByRole('button', { name: 'Run destructive operation' }).click()
   await page.getByText('"ok": true').waitFor()
-  assert.deepEqual(calls[1], { operation: 'depot.tokens.revoke', params: { tokenId: 'token-1' } })
+  assert.equal(calls[1]?.operation, 'depot.tokens.revoke')
+  assert.deepEqual(calls[1]?.params, { tokenId: 'token-1' })
+  assert.equal(calls[1]?.destructiveIntent?.confirmed, true)
+  assert.match(calls[1]?.destructiveIntent?.idempotencyKey ?? '', /^[0-9a-f-]{36}$/)
+  await assert.doesNotReject(async () => assert.equal(await page.getByLabel('Confirm permanent operation').isChecked(), false))
 
   await page.getByRole('button', { name: 'Close' }).first().click()
   await page.getByRole('button', { name: /Revoke access token/ }).click()
@@ -320,7 +324,17 @@ test('Depot Administration renders live schemas and guards destructive operation
   await page.getByLabel('Confirm permanent operation').check()
   await page.getByRole('button', { name: 'Run destructive operation' }).click()
   await page.getByText('"ok": true').waitFor()
-  assert.deepEqual(calls[2], { operation: 'depot.tokens.revoke', params: { tokenId: 'token-2' } })
+  assert.equal(calls[2]?.operation, 'depot.tokens.revoke')
+  assert.deepEqual(calls[2]?.params, { tokenId: 'token-2' })
+  assert.notEqual(calls[2]?.destructiveIntent?.idempotencyKey, calls[1]?.destructiveIntent?.idempotencyKey)
+
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 390, height: 844 })
+  const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  assert.equal(hasHorizontalOverflow, false)
+  await page.getByRole('button', { name: /^Overview/ }).focus()
+  await page.keyboard.press('Tab')
+  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Catalog/)
 })
 
 test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {

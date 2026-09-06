@@ -27,11 +27,13 @@ requests.
 
 ## Authority and supported operations
 
-The first compatibility slice is read-only and exposes only bounded artifact
-list and detail. A configured service credential does not establish mutation
-authority. Intake, fork, follow, publication, license, uploads, ingest jobs, and
-exact Skill Library import stay absent until Labby negotiates their operation
-fingerprints, delegated actor policy, authority epoch, and typed import contract.
+Discovery remains bounded and read-oriented. The authenticated Administration
+surface additionally exposes only operations present in the current actor-filtered,
+fingerprinted Depot catalog. A configured credential alone establishes no mutation
+authority: Labby reports authority as unknown until attested, revalidates current
+browser scope, requires `lab:admin` plus CSRF for mutations, and uses a server-bound
+intent for destructive or replay-sensitive execution. Exact Skill Library import
+uses the selected provider, artifact, and revision without substitution.
 
 ## Static routes and accessibility
 

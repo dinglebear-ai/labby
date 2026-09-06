@@ -12,11 +12,15 @@ relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.
 
-The checked federated manifest at
-[`fixtures/depot-control-plane/compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
-is the release denominator. A UI action is available only when its required
+The release denominator is the joint pair of checked manifests:
+[`compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
+defines the authenticated exact-import and Administration contract, while
+[`compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
+defines federated discovery. Both must pass `just docs-check`. A UI action is available only when its required
 operation and contract fingerprint are present. Administration renders Depot's
-published input schemas as typed controls. Missing or unknown required contracts
+published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
+cardinality limits, authority states, fingerprint binding, and fail-closed
+`incompatible` behavior are machine-readable in compatibility-v1. Missing, oversized, or unknown required contracts
 render `incompatible`; Labby never invents an unadvertised operation.
 
 ## Actor and mount policy

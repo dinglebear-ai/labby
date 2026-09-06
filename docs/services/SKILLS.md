@@ -125,13 +125,17 @@ service families:
   the bounded authenticated `PUT /v1/uploads/{id}` route;
 - `bundles.*` curates and publishes immutable Artifact collections.
 
-These are fixed Labby actions mapped to a server-held authority. Callers cannot
-select arbitrary provider operations, endpoints, headers, or credentials.
-Depot's token administration, maintenance/garbage collection, sidecar repair,
-and capacity benchmark operations stay authority-internal and are not projected
-through Labby. Direct provider `skills.*` read/ingest methods are likewise not
-forwarded: Labby uses native Agent Skills reads, local Artifact lifecycle
-actions, and durable `jobs.start` ingestion instead.
+The authenticated Administration browser surface also projects the actor-filtered
+canonical Depot operation catalog, including token administration, garbage
+collection, sidecar repair, migration, and other maintenance operations that
+Depot advertises to the configured credential. These operations remain excluded
+from model-facing MCP. Labby revalidates current browser authority, requires
+`lab:admin` plus session CSRF for mutations, binds execution to the validated
+catalog/intent, and Depot independently enforces its write scope and resource
+policy. Callers cannot select arbitrary endpoints, headers, or credentials.
+Direct provider `skills.*` methods are available only when present in that
+validated operator catalog; ordinary Labby MCP continues to use native Agent
+Skills reads and durable `jobs.start` ingestion.
 
 One Depot connection can provide exact acquisition and the remote control plane,
 but those URLs are separate contracts:

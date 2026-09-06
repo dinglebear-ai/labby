@@ -7,7 +7,7 @@
     "surface": "authenticated-browser-http"
   },
   "depot": {
-    "contractCommit": "b6aaad0",
+    "contractCommit": "b957e72",
     "durableSchemaGeneration": 2,
     "sessionContractVersion": 1,
     "artifactInterchange": "dinglebear.artifact-interchange/v1",
@@ -31,6 +31,26 @@
   "actorPolicy": {
     "delegatedOAuth": "mutations-and-import",
     "serviceCredential": "mutations-require-labby-admin-csrf-and-depot-write-scope"
+  },
+  "administrationContract": {
+    "version": 1,
+    "operationFingerprint": {
+      "algorithm": "sha256-canonical-json",
+      "required": true,
+      "binds": ["name", "inputSchema", "annotations", "actor", "authorityEpoch"]
+    },
+    "inputSchema": {
+      "dialect": "labby.depot-operation-schema/v1",
+      "types": ["string", "boolean", "integer", "number", "array", "object"],
+      "maxProperties": 128,
+      "maxRequired": 128,
+      "maxEnumValues": 256,
+      "maxKeyBytes": 128,
+      "unsupportedBehavior": "incompatible"
+    },
+    "authorityStates": ["unknown", "read", "write"],
+    "destructiveIntent": "single-use-actor-operation-params-epoch-bound",
+    "ambiguousMutation": "indeterminate-until-reconciled"
   },
   "limits": {
     "artifactPage": 200,

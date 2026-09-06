@@ -23,6 +23,14 @@ struct OperationRequest {
     operation: String,
     #[serde(default)]
     params: Value,
+    destructive_intent: Option<DestructiveIntent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DestructiveIntent {
+    confirmed: bool,
+    idempotency_key: String,
 }
 
 pub fn routes(_state: AppState) -> RouteGroup {
@@ -288,7 +296,7 @@ async fn provider_operation(
     Extension(authority): Extension<BrowserAuthority>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let grant = authority.revalidate().await.map_err(|_| forbidden())?;
-    if !grant.has_scope("lab:admin") {
+    if !grant.has_scope("lab:read") || !grant.has_scope("lab:admin") {
         return Err(forbidden());
     }
     state
@@ -373,11 +381,15 @@ fn map_discovery_error(error: DiscoveryError) -> (StatusCode, Json<Value>) {
 
 async fn status(
     State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    actor(auth, identity)?;
-    Ok(Json(json!({"depot": state.depot.status()})))
+    require_read(&authority).await?;
+    let actor = actor(auth, identity)?;
+    Ok(Json(
+        json!({"depot": state.depot.status_for_actor(&actor).await}),
+    ))
 }
 
 fn actor(
@@ -487,11 +499,19 @@ mod tests {
     async fn upstream() -> (url::Url, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let app = Router::new().fallback(move || {
+        let app = Router::new().fallback(move |request: Request<Body>| {
             let observed = Arc::clone(&observed);
             async move {
                 observed.fetch_add(1, Ordering::SeqCst);
-                Json(json!({"result":{"ok":true}}))
+                if request.uri().path() == "/api/operations" {
+                    Json(json!({"operations":[
+                        {"name":"depot.system.status","annotations":{"readOnlyHint":true,"destructiveHint":false}},
+                        {"name":"depot.sources.refresh","annotations":{"readOnlyHint":false,"destructiveHint":false}},
+                        {"name":"depot.tokens.revoke","annotations":{"readOnlyHint":false,"destructiveHint":true}}
+                    ]}))
+                } else {
+                    Json(json!({"result":{"ok":true}}))
+                }
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -528,6 +548,26 @@ mod tests {
         request
             .body(Body::from(
                 json!({"operation":operation,"params":{}}).to_string(),
+            ))
+            .unwrap()
+    }
+
+    fn destructive_operation_request(operation: &str, key: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/operations")
+            .header("content-type", "application/json")
+            .header(
+                labby_auth::session::BROWSER_CSRF_HEADER_NAME,
+                "depot-route-csrf",
+            )
+            .body(Body::from(
+                json!({
+                    "operation": operation,
+                    "params": {"tokenId":"token-1"},
+                    "destructiveIntent":{"confirmed":true,"idempotencyKey":key}
+                })
+                .to_string(),
             ))
             .unwrap()
     }
@@ -615,6 +655,11 @@ mod tests {
             base_url,
             "read-token",
         ));
+        state
+            .depot
+            .operations(&identity.safe_fingerprint())
+            .await
+            .unwrap();
 
         let response = operation_router(state, authority, auth, identity)
             .oneshot(operation_request("depot.system.status", None))
@@ -622,55 +667,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
-    async fn mutation_without_admin_is_rejected_before_depot() {
-        let (base_url, calls) = upstream().await;
-        let (_temp, authority, auth, identity) = browser_context(&["lab:read"]).await;
-        let mut state = AppState::new();
-        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
-            base_url,
-            "write-token",
-        ));
-
-        let response = operation_router(state, authority, auth, identity)
-            .oneshot(operation_request(
-                "depot.sources.refresh",
-                Some("depot-route-csrf"),
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn mutation_without_valid_csrf_is_rejected_before_depot() {
-        for csrf in [None, Some("wrong-csrf")] {
+    async fn current_read_revocation_rejects_every_direct_depot_read_without_upstream_calls() {
+        for (method, uri, body) in [
+            ("GET", "/status", ""),
+            ("GET", "/session", ""),
+            ("GET", "/operations", ""),
+            (
+                "POST",
+                "/operations",
+                r#"{"operation":"depot.system.status","params":{}}"#,
+            ),
+        ] {
             let (base_url, calls) = upstream().await;
-            let (_temp, authority, auth, identity) =
-                browser_context(&["lab:read", "lab:admin"]).await;
+            let (_temp, authority, auth, identity) = browser_context(&[]).await;
             let mut state = AppState::new();
             state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
                 base_url,
-                "write-token",
+                "read-token",
             ));
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
 
             let response = operation_router(state, authority, auth, identity)
-                .oneshot(operation_request("depot.sources.refresh", csrf))
+                .oneshot(request)
                 .await
                 .unwrap();
 
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "{method} {uri}");
         }
     }
 
     #[tokio::test]
-    async fn mutation_with_admin_and_csrf_reaches_depot() {
+    async fn operation_execution_requires_a_current_actor_catalog_without_refetching() {
         let (base_url, calls) = upstream().await;
         let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
         let mut state = AppState::new();
@@ -687,16 +724,140 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn mutation_without_admin_is_rejected_before_depot() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "write-token",
+        ));
+        state
+            .depot
+            .operations(&identity.safe_fingerprint())
+            .await
+            .unwrap();
+
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request(
+                "depot.sources.refresh",
+                Some("depot-route-csrf"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mutation_without_valid_csrf_is_rejected_before_depot() {
+        for csrf in [None, Some("wrong-csrf")] {
+            let (base_url, calls) = upstream().await;
+            let (_temp, authority, auth, identity) =
+                browser_context(&["lab:read", "lab:admin"]).await;
+            let mut state = AppState::new();
+            state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+                base_url,
+                "write-token",
+            ));
+            state
+                .depot
+                .operations(&identity.safe_fingerprint())
+                .await
+                .unwrap();
+
+            let response = operation_router(state, authority, auth, identity)
+                .oneshot(operation_request("depot.sources.refresh", csrf))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_with_admin_and_csrf_reaches_depot() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "write-token",
+        ));
+        state
+            .depot
+            .operations(&identity.safe_fingerprint())
+            .await
+            .unwrap();
+
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request(
+                "depot.sources.refresh",
+                Some("depot-route-csrf"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn destructive_execution_requires_intent_and_replays_the_bound_success() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "write-token",
+        ));
+        state
+            .depot
+            .operations(&identity.safe_fingerprint())
+            .await
+            .unwrap();
+        let router = operation_router(state, authority, auth, identity);
+
+        let missing = router
+            .clone()
+            .oneshot(operation_request(
+                "depot.tokens.revoke",
+                Some("depot-route-csrf"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(destructive_operation_request(
+                    "depot.tokens.revoke",
+                    "revoke-token-1",
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
 
 async fn session(
     State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_read(&authority).await?;
     let actor = actor(auth, identity)?;
     state
         .depot
@@ -708,9 +869,11 @@ async fn session(
 
 async fn operations(
     State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_read(&authority).await?;
     let actor = actor(auth, identity)?;
     state
         .depot
@@ -729,21 +892,55 @@ async fn call(
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let actor = actor(Some(Extension(auth.clone())), identity)?;
-    if !crate::dispatch::depot::operation_is_read_only(&request.operation) {
+    require_read(&authority).await?;
+    let policy = state
+        .depot
+        .operation_policy(&request.operation, &actor)
+        .await
+        .map_err(map_error)?;
+    if !policy.read_only {
         require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
     }
+    let idempotency_key = if policy.destructive {
+        let intent = request
+            .destructive_intent
+            .as_ref()
+            .filter(|intent| intent.confirmed)
+            .ok_or_else(|| map_error(DepotError::DestructiveIntentRequired))?;
+        Some(intent.idempotency_key.as_str())
+    } else {
+        None
+    };
     state
         .depot
-        .call(&request.operation, request.params, &actor)
+        .call(
+            &request.operation,
+            request.params,
+            &actor,
+            policy,
+            idempotency_key,
+        )
         .await
         .map(Json)
         .map_err(map_error)
+}
+
+async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, Json<Value>)> {
+    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
+    grant
+        .has_scope("lab:read")
+        .then_some(())
+        .ok_or_else(forbidden)
 }
 
 fn map_error(error: DepotError) -> (StatusCode, Json<Value>) {
     let status = match &error {
         DepotError::Disabled | DepotError::Unconfigured => StatusCode::SERVICE_UNAVAILABLE,
         DepotError::UnsupportedOperation => StatusCode::BAD_REQUEST,
+        DepotError::InvalidCatalog => StatusCode::BAD_GATEWAY,
+        DepotError::DestructiveIntentRequired => StatusCode::UNPROCESSABLE_ENTITY,
+        DepotError::IdempotencyConflict => StatusCode::CONFLICT,
+        DepotError::OutcomeIndeterminate => StatusCode::CONFLICT,
         DepotError::Upstream(status, _) => *status,
         DepotError::ResponseTooLarge => StatusCode::BAD_GATEWAY,
         DepotError::QueueTimeout => StatusCode::SERVICE_UNAVAILABLE,

@@ -15,25 +15,63 @@ const contractSchema = z.object({
   contractVersion: z.literal(1).optional(),
 }).passthrough()
 
+const schemaScalar = z.union([z.string().max(4096), z.number().safe()])
+const schemaItem = z.object({
+  type: z.enum(['string', 'boolean', 'integer', 'number', 'object', 'array']),
+  enum: z.array(schemaScalar).max(100).optional(),
+  minimum: z.number().safe().optional(), maximum: z.number().safe().optional(),
+  minLength: z.number().int().min(0).max(16_384).optional(), maxLength: z.number().int().min(0).max(16_384).optional(),
+  pattern: bounded(512).optional(),
+  minProperties: z.number().int().min(0).max(256).optional(), maxProperties: z.number().int().min(0).max(256).optional(),
+}).strict()
+const operationPropertySchema = schemaItem.extend({
+  description: bounded(4096).optional(),
+  default: z.union([schemaScalar, z.boolean(), z.array(schemaScalar).max(100), z.record(z.string(), schemaScalar)]).optional(),
+  minItems: z.number().int().min(0).max(1000).optional(), maxItems: z.number().int().min(0).max(1000).optional(),
+  uniqueItems: z.boolean().optional(), items: schemaItem.optional(),
+}).strict().superRefine((property, context) => {
+  if (property.minimum !== undefined && property.maximum !== undefined && property.minimum > property.maximum) context.addIssue({ code: 'custom', message: 'minimum exceeds maximum' })
+  if (property.minLength !== undefined && property.maxLength !== undefined && property.minLength > property.maxLength) context.addIssue({ code: 'custom', message: 'minLength exceeds maxLength' })
+  if (property.minItems !== undefined && property.maxItems !== undefined && property.minItems > property.maxItems) context.addIssue({ code: 'custom', message: 'minItems exceeds maxItems' })
+  if (property.minProperties !== undefined && property.maxProperties !== undefined && property.minProperties > property.maxProperties) context.addIssue({ code: 'custom', message: 'minProperties exceeds maxProperties' })
+  if (property.pattern !== undefined) try { new RegExp(property.pattern) } catch { context.addIssue({ code: 'custom', message: 'pattern is not a valid regular expression' }) }
+  const hasNumeric = property.minimum !== undefined || property.maximum !== undefined
+  const hasString = property.minLength !== undefined || property.maxLength !== undefined || property.pattern !== undefined
+  const hasArray = property.minItems !== undefined || property.maxItems !== undefined || property.uniqueItems !== undefined || property.items !== undefined
+  const hasObject = property.minProperties !== undefined || property.maxProperties !== undefined
+  if (hasNumeric && property.type !== 'integer' && property.type !== 'number') context.addIssue({ code: 'custom', message: 'numeric constraints require a numeric type' })
+  if (hasString && property.type !== 'string') context.addIssue({ code: 'custom', message: 'string constraints require a string type' })
+  if (hasArray && property.type !== 'array') context.addIssue({ code: 'custom', message: 'array constraints require an array type' })
+  if (hasObject && property.type !== 'object') context.addIssue({ code: 'custom', message: 'object constraints require an object type' })
+})
+const operationPropertiesSchema = z.record(bounded(128), operationPropertySchema).superRefine((properties, context) => {
+  if (Object.keys(properties).length > 128) context.addIssue({ code: 'custom', message: 'schema contains more than 128 properties' })
+})
 const operationSchema = z.object({
   name: bounded(256),
   title: bounded(512),
   description: bounded(4096),
   inputSchema: z.object({
     type: z.literal('object'),
-    properties: z.record(z.string(), z.unknown()).optional(),
-    required: z.array(z.string()).optional(),
+    properties: operationPropertiesSchema.optional(),
+    required: z.array(bounded(128)).max(128).optional(),
     additionalProperties: z.boolean().optional(),
-  }).passthrough(),
-  annotations: z.record(z.string(), z.unknown()).optional(),
-}).passthrough()
+  }).strict().superRefine((schema, context) => {
+    const names = new Set(Object.keys(schema.properties ?? {}))
+    for (const required of schema.required ?? []) if (!names.has(required)) context.addIssue({ code: 'custom', path: ['required'], message: `required property ${required} is not declared` })
+    if (schema.additionalProperties === true) context.addIssue({ code: 'custom', path: ['additionalProperties'], message: 'additional properties are not supported' })
+  }),
+  annotations: z.object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional(), idempotentHint: z.boolean().optional(), openWorldHint: z.boolean().optional() }).passthrough().optional(),
+  group: z.enum(['catalog', 'access', 'operations']).optional(),
+}).strict()
 const operationsSchema = z.object({ operations: z.array(operationSchema).max(1000) }).passthrough()
 const genericResultSchema = contractSchema.extend({ result: z.unknown() })
 
 export type DepotOperation = z.infer<typeof operationSchema>
 
 const depotStatusSchema = z.object({
-  configured: z.boolean(), enabled: z.boolean(), mutationAuthority: z.boolean(),
+  configured: z.boolean(), enabled: z.boolean(), mutationAuthority: z.boolean().optional(),
+  authority: z.enum(['unknown', 'read', 'write']).optional(),
   maxResponseBytes: z.number().int().nonnegative(),
 })
 
@@ -89,24 +127,13 @@ async function parse(response: Response): Promise<unknown> {
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
     const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Depot request failed (${response.status})`
-    const detail = depotRejectionDetail(error.detail)
-    throw new Error(detail ? `${summary}: ${detail}` : summary)
+    throw new Error(safeDepotError(summary, response.status))
   }
   return body
 }
 
-function depotRejectionDetail(value: unknown): string | null {
-  let detail = value
-  if (typeof detail === 'string') {
-    const text = detail
-    try { detail = JSON.parse(text) as unknown } catch { return text.trim().slice(0, 1000) || null }
-  }
-  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
-  const record = detail as Record<string, unknown>
-  for (const key of ['message', 'error', 'detail', 'reason']) {
-    if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim().slice(0, 1000)
-  }
-  return null
+function safeDepotError(value: string, status: number): string {
+  return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Depot request failed (${status}, ${value})` : `Depot request failed (${status})`
 }
 
 function validate<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
@@ -127,9 +154,9 @@ export async function depotOperations(signal?: AbortSignal): Promise<DepotOperat
   return validate(operationsSchema, await parse(response), 'operation catalog response').operations
 }
 
-export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal, destructiveIntent?: { confirmed: true; idempotencyKey: string }): Promise<T> {
   const init = gatewayRequestInit(operation, params, undefined, signal)
-  init.body = JSON.stringify({ operation, params })
+  init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
   const value = await parse(await fetch('/v1/depot/operations', init))
   if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
   if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
