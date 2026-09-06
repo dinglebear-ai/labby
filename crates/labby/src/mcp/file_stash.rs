@@ -195,6 +195,19 @@ impl LabMcpServer {
         if !caller.can_read() {
             return Ok(Vec::new());
         }
+        let has_verified_identity = context
+            .extensions
+            .get::<Parts>()
+            .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
+            .is_some();
+        let has_private_principal = propagated_file_stash_principal(
+            self.transport_label,
+            propagated_caller_auth(Some(&context.meta)),
+        )
+        .is_some();
+        if !has_verified_identity && !has_private_principal {
+            return Ok(Vec::new());
+        }
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resources.list",
