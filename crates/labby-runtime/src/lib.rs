@@ -40,6 +40,7 @@ pub mod redact;
 pub mod response_body;
 pub mod secure_atomic_file;
 pub mod skills;
+pub mod task_runtime;
 
 pub use helpers::{env_non_empty, home_dir, lab_home};
 
