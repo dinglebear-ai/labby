@@ -633,6 +633,36 @@ async fn legacy_plaintext_google_provider_row_is_not_served_without_a_key() {
 }
 
 #[tokio::test]
+async fn malformed_google_provider_scopes_fail_as_storage_corruption() {
+    let path = temp_db_path();
+    let store = SqliteStore::open(path).await.unwrap();
+    let now = now_unix();
+    store
+        .with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO google_provider_credentials (
+                    subject, client_id, granted_scopes_json, refresh_token,
+                    generation, created_at, updated_at
+                 ) VALUES (?1, ?2, '{not-json', ?3, 1, ?4, ?4)",
+                params!["corrupt-scopes", "google-client", "refresh", now],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let error = store
+        .find_google_provider_credential("corrupt-scopes")
+        .await
+        .expect_err("malformed persisted scopes must not become an empty grant");
+    assert!(
+        matches!(error, crate::error::AuthError::Storage(ref message) if message.contains("sqlite error")),
+        "malformed persisted scopes must surface as a typed storage error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn opening_with_a_key_encrypts_legacy_plaintext_provider_tokens() {
     let path = temp_db_path();
     let plaintext_store = SqliteStore::open(path.clone()).await.unwrap();

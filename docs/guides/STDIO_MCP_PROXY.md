@@ -109,17 +109,16 @@ publication failure stops startup; a runtime failure begins owned cleanup.
 The effective order is:
 
 1. one-run CLI options;
-2. existing process environment, then values loaded from
-   `$LABBY_HOME/.env` (normally `~/.labby/.env`), then a current-directory
-   `.env` for unset names;
-3. the first `config.toml` found at `./config.toml`,
-   `$LABBY_HOME/config.toml`, or `~/.config/labby/config.toml`;
+2. existing process environment, then values loaded from exactly
+   `$LABBY_HOME/.env` (normally `~/.labby/.env`) for unset names;
+3. exactly `$LABBY_HOME/config.toml` when the absolute override is set,
+   otherwise `~/.labby/config.toml`;
 4. built-in defaults.
 
 Only secret and executable/logging controls use environment variables. Proxy
-preference keys do not have implicit one-to-one environment aliases. A
-current-directory `config.toml` can therefore mask values written by
-`labby setup proxy` to `$LABBY_HOME/config.toml`.
+preference keys do not have implicit one-to-one environment aliases. The
+working directory does not participate in configuration discovery. See
+[Runtime Configuration](../runtime/CONFIG.md) for the canonical path contract.
 
 Complete `[proxy]` table:
 
@@ -338,8 +337,8 @@ mapping.
 
 `bearer auth requires ...`
 : Run `labby setup proxy --yes --auth bearer`, export the configured key, or
-  pipe the secret to `--bearer-token-stdin`. Confirm a current-directory config
-  is not changing `bearer_token_env`.
+  pipe the secret to `--bearer-token-stdin`. Confirm the effective
+  `$LABBY_HOME/config.toml` sets the intended `bearer_token_env`.
 
 `proxy OAuth requires a stable Labby public issuer`
 : Configure OAuth and `LABBY_PUBLIC_URL`, start `labby serve`, and verify the

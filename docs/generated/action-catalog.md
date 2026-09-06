@@ -45,7 +45,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `browser` | `browser.pairing.list` | false | false | true | lab:admin |  | `BrowserPairingList` | mcp, api |
 | `browser` | `browser.revoke` | false | false | true | lab:admin | `browser_id*: string` | `Browser` | mcp, api |
 | `browser` | `browser.session.enable` | false | false | true | lab:admin | `session_id*: string`<br>`enabled*: boolean` | `BrowserSession` | mcp, api |
-| `browser` | `browser.sessions` | false | false | true | lab:admin |  | `BrowserSessionList` | mcp, api |
+| `browser` | `browser.session.get` | false | false | true | lab:admin | `session_id*: string` | `BrowserSession` | mcp, api |
+| `browser` | `browser.sessions` | false | false | true | lab:admin | `cursor: string`<br>`limit: integer` | `BrowserSessionList` | mcp, api |
 | `browser` | `browser.status` | false | false | false |  |  | `BrowserBridgeStatus` | mcp, api |
 | `browser` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
 | `browser` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |

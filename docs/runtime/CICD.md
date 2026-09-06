@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-03"
+updated: "2026-09-05"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-03
+Last updated: 2026-09-05
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -15,8 +15,10 @@ This document is the authoritative contract for CI, release, and artifact delive
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
-`palette`, `npm`, `docker`, `security`, `release`, and `unraid`. Scheduled and
-manual runs enable every category so periodic/manual validation stays broad.
+`palette`, `browser_extension`, `npm`, `docker`, `security`,
+`javascript_advisories`, `release`, and
+`unraid`. Scheduled and manual runs enable every category so periodic/manual
+validation stays broad.
 
 On pull requests the `changes` job runs the classifier from the pull request's
 **base commit** rather than the branch's own copy. Be precise about what that
@@ -136,6 +138,7 @@ jobs when their changed-path category is enabled:
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
+| Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
 | Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
@@ -144,6 +147,7 @@ jobs when their changed-path category is enabled:
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
 | Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
+| JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
@@ -198,6 +202,8 @@ land the required code/tests and the baseline update together.
 - **Job split:**
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
+  - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
+  - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
@@ -408,6 +414,10 @@ short retention so failed runs can be inspected without scraping logs.
 must include a dependency-path comment and should be removed once the upstream
 dependency path is gone. The weekly scheduled CI run keeps those exceptions
 visible even if no pull request touches dependency policy.
+
+## JavaScript Advisories
+
+`scripts/ci/js-advisory-policy.json` is the exhaustive ownership inventory for committed npm and pnpm manifests and lockfiles. `scripts/ci/js_advisory_gate.py` fails when a dependency file has no owner, has multiple owners, an audit cannot produce usable results, or a high/critical advisory is present. Any exception must record the advisory ID, a non-empty rationale, and an ISO date expiry; expired or malformed exceptions fail before network scanning. Pull requests changing any JavaScript manifest or lockfile route to this required job, and the weekly CI schedule scans all graphs even without a dependency change.
 
 ## Size Policy
 
