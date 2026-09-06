@@ -68,6 +68,13 @@ URI therefore works for owner and grantee. It stays bound to that one object
 until deletion; rename, deletion, and a later upload never reuse or retarget it.
 Owner and shared files with equal display names remain unambiguous.
 
+MCP clients select a Team-owned resource view per request with the
+`ai.dinglebear.labby/stashOwner` request `_meta` object, for example
+`{"kind":"team","id":"team-id"}`. Omitting it (or selecting
+`{"kind":"personal"}`) uses the caller's Personal Stash. This is only a
+scope selector: Labby resolves the verified identity and rechecks current Team
+membership and read capability before listing or opening any resource.
+
 The client filename is display metadata only and never becomes a storage path.
 For multipart input, take only the final path component after splitting the raw
 filename on both `/` and `\\`, in that order before Unicode normalization; this

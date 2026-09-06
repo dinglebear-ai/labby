@@ -686,6 +686,7 @@ fn credential_runtime_error(error: AccessStoreError) -> CredentialLifecycleError
 mod tests {
     use super::*;
     use labby_auth::{Authenticator, VerifiedIdentity};
+    use labby_primitives::access::{Capability, OwnerScope, TeamId};
 
     fn secure_test_path(directory: &tempfile::TempDir) -> PathBuf {
         #[cfg(unix)]
@@ -1068,5 +1069,149 @@ mod tests {
                 AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable)
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn team_stash_rechecks_membership_while_an_open_handle_and_personal_scope_survive() {
+        use crate::access::{AddTeamMemberInput, CreateTeamInput, TeamMembershipInput, TeamRole};
+        use rusqlite::params;
+        use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let runtime = AccessRuntime::initialize(path).await;
+        let owner = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        let store = runtime.store().await.unwrap();
+        let member = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "member",
+        )
+        .unwrap();
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES('member-principal','bootstrap-local','user','active',NULL,2,2)",
+                    [],
+                ).map_err(super::super::store::map_sqlite_error)?;
+                connection.execute(
+                    "INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES('member-link','member-principal','external','https://accounts.google.com',?1,NULL,'active',1,1,2,2)",
+                    params!["member"],
+                ).map_err(super::super::store::map_sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        store
+            .create_team(CreateTeamInput::new(owner.clone(), "stash-team", "Stash Team").unwrap())
+            .await
+            .unwrap();
+        store
+            .add_team_member(
+                AddTeamMemberInput::new(
+                    owner.clone(),
+                    "stash-team",
+                    "member-principal",
+                    TeamRole::Member,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let team = OwnerScope::Team(TeamId::new("stash-team").unwrap());
+        let ceiling = crate::access::AuthorityCeiling::trusted_local();
+        assert!(
+            runtime
+                .resolve_file_stash_owner(
+                    member.clone(),
+                    ceiling.clone(),
+                    team.clone(),
+                    "stash.list",
+                    Capability::ScopeRead,
+                    10
+                )
+                .await
+                .is_ok()
+        );
+        assert!(
+            runtime
+                .resolve_file_stash_owner(
+                    member.clone(),
+                    ceiling.clone(),
+                    team.clone(),
+                    "stash.rename",
+                    Capability::ScopeManage,
+                    10
+                )
+                .await
+                .is_err()
+        );
+
+        store
+            .set_team_member_role(
+                AddTeamMemberInput::new(
+                    owner.clone(),
+                    "stash-team",
+                    "member-principal",
+                    TeamRole::Admin,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .resolve_file_stash_owner(
+                    member.clone(),
+                    ceiling.clone(),
+                    team.clone(),
+                    "stash.rename",
+                    Capability::ScopeManage,
+                    11
+                )
+                .await
+                .is_ok()
+        );
+
+        let blob_path = directory.path().join("already-open");
+        tokio::fs::write(&blob_path, b"finish me").await.unwrap();
+        let mut already_open = tokio::fs::File::open(&blob_path).await.unwrap();
+        store
+            .remove_team_member(
+                TeamMembershipInput::new(owner, "stash-team", "member-principal").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .resolve_file_stash_owner(
+                    member.clone(),
+                    ceiling,
+                    team,
+                    "stash.list",
+                    Capability::ScopeRead,
+                    12
+                )
+                .await
+                .is_err()
+        );
+        let personal = runtime.resolve_file_stash_principal(member).await;
+        assert!(
+            personal.is_ok(),
+            "team removal must not remove personal storage"
+        );
+        already_open.rewind().await.unwrap();
+        let mut bytes = Vec::new();
+        already_open.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"finish me", "an admitted open may finish");
     }
 }

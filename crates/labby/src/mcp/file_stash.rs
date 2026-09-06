@@ -16,7 +16,18 @@ use crate::mcp::context::{
 use crate::mcp::server::LabMcpServer;
 
 pub(crate) const TEMPLATE_URI: &str = "stash://me/files/{file_id}";
+/// Request-scoped Stash owner selection. This value chooses a scope; it grants
+/// no authority and is always re-evaluated against the verified caller.
+pub(crate) const OWNER_META_KEY: &str = "ai.dinglebear.labby/stashOwner";
 const PRIVATE_IN_PROCESS_TRANSPORT: &str = "in-process";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StashOwnerSelection {
+    kind: String,
+    #[serde(default)]
+    id: Option<String>,
+}
 
 impl LabMcpServer {
     pub(crate) fn file_stash_caller_bound(&self) -> bool {
@@ -153,6 +164,24 @@ impl LabMcpServer {
         if let Some(parts) = context.extensions.get::<Parts>()
             && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
         {
+            if let Some(owner) = selected_stash_owner(meta, identity, &self.access_runtime).await? {
+                let ceiling = auth_context_from_extensions(&context.extensions).map_or_else(
+                    crate::access::AuthorityCeiling::trusted_local,
+                    crate::access::AuthorityCeiling::from_auth_context,
+                );
+                return self
+                    .access_runtime
+                    .resolve_file_stash_owner(
+                        identity.clone(),
+                        ceiling,
+                        owner,
+                        "stash.resources.read",
+                        labby_primitives::access::Capability::ScopeRead,
+                        unix_millis(),
+                    )
+                    .await
+                    .map_err(|_| forbidden());
+            }
             return self
                 .access_runtime
                 .resolve_file_stash_principal(identity.clone())
@@ -235,6 +264,34 @@ impl LabMcpServer {
         )
         .with_mime_type("application/octet-stream");
         Ok(ReadResourceResult::new(vec![contents]).into())
+    }
+}
+
+async fn selected_stash_owner(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+    identity: &labby_auth::VerifiedIdentity,
+    runtime: &crate::access::AccessRuntime,
+) -> Result<Option<labby_primitives::access::OwnerScope>, ToolError> {
+    use labby_primitives::access::{OwnerScope, PrincipalId, TeamId};
+    let Some(value) = meta.and_then(|meta| meta.get(OWNER_META_KEY)) else {
+        return Ok(None);
+    };
+    let selection: StashOwnerSelection =
+        serde_json::from_value(value.clone()).map_err(|_| forbidden())?;
+    match selection.kind.as_str() {
+        "personal" if selection.id.is_none() => {
+            let principal = runtime
+                .resolve_file_stash_principal(identity.clone())
+                .await
+                .map_err(|_| forbidden())?;
+            Ok(Some(OwnerScope::Personal(
+                PrincipalId::new(principal.as_str()).map_err(|_| forbidden())?,
+            )))
+        }
+        "team" => Ok(Some(OwnerScope::Team(
+            TeamId::new(selection.id.as_deref().ok_or_else(forbidden)?).map_err(|_| forbidden())?,
+        ))),
+        _ => Err(forbidden()),
     }
 }
 
