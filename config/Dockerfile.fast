@@ -43,7 +43,7 @@ RUN curl -fsSLo /tmp/uv.tar.gz --connect-timeout 10 --max-time 300 "https://gith
  && uv --version \
  && uvx --version
 
-RUN mkdir -p /home/labby/.labby /home/labby/.config/labby /home/labby/.local/state/labby /home/labby/.local/share/labby /home/labby/.npm /home/labby/.cache \
+RUN mkdir -p /home/labby/.labby /home/labby/.local/state/labby /home/labby/.local/share/labby /home/labby/.npm /home/labby/.cache \
  && chown -R 1000:1000 /home/labby
 COPY bin/labby /usr/local/bin/labby
 COPY --chmod=0755 scripts/ci/container-healthcheck.sh /usr/local/bin/labby-healthcheck

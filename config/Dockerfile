@@ -229,12 +229,12 @@ RUN curl -fsSLo /tmp/uv.tar.gz --connect-timeout 10 --max-time 300 "https://gith
  && uv --version \
  && uvx --version
 
-# Pre-create XDG directories so the binary never needs mkdir at runtime.
-#   ~/.local/state/labby  — master.lock and runtime state
-#   ~/.local/share/labby  — SQLite databases (node log, registry, auth)
-#   ~/.config/labby       — config.toml (mounted read-only from host)
+# Pre-create the canonical installation root and XDG state directories so the
+# binary never needs to create their parents at runtime. Compose mounts the
+# reviewed config.toml and .env read-only at their paths beneath ~/.labby while
+# the surrounding named volume remains writable for durable state.
 RUN mkdir -p \
-      /home/labby/.config/labby \
+      /home/labby/.labby \
       /home/labby/.local/state/labby \
       /home/labby/.local/share/labby \
  && chown -R 1000:1000 /home/labby

@@ -19,10 +19,12 @@ OUTPUT_KEYS = [
     "rust_compile",
     "rust_test",
     "web",
+    "browser_extension",
     "palette",
     "npm",
     "docker",
     "security",
+    "javascript_advisories",
     "release",
     "unraid",
 ]
@@ -63,6 +65,17 @@ def is_auth_conformance_input(path: str) -> bool:
     )
 
 
+def is_js_dependency_input(path: str) -> bool:
+    return path.endswith(("/package.json", "/package-lock.json", "/pnpm-lock.yaml")) or path in {
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "scripts/ci/js-advisory-policy.json",
+        "scripts/ci/js_advisory_gate.py",
+        "scripts/ci/test_ci_supply_policy.py",
+    }
+
+
 def classify(event: str, paths: list[str]) -> dict[str, bool]:
     if event in {"schedule", "workflow_dispatch"}:
         return {key: True for key in OUTPUT_KEYS}
@@ -95,6 +108,10 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/lifecycle-scripts.json",
             "scripts/ci/check-lifecycle-scripts.sh",
             "scripts/ci/test_release_hardening.py",
+            "scripts/ci/check_node_toolchain_sync.py",
+            "scripts/ci/js-advisory-policy.json",
+            "scripts/ci/js_advisory_gate.py",
+            "scripts/ci/test_ci_supply_policy.py",
             "crates/labby/tests/ci_changed_paths.rs",
             "install.sh",
             "scripts/install.sh",
@@ -134,6 +151,18 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         },
     )
     web = any_match(paths, lambda p: starts(p, "apps/gateway-admin/"))
+    browser_extension = any_match(
+        paths,
+        lambda p: starts(
+            p,
+            "apps/browser-extension/",
+            "crates/labby-browser/",
+            "crates/labby/src/api/browser_session.rs",
+            "crates/labby/src/api/services/browser.rs",
+            "crates/labby/src/dispatch/browser.rs",
+            "crates/labby/src/dispatch/browser/",
+        ),
+    )
     palette = any_match(paths, lambda p: starts(p, "apps/palette-tauri/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
     rust_sources = any_match(
@@ -168,6 +197,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),
     )
     security = security or rust_sources
+    javascript_advisories = any_match(paths, is_js_dependency_input)
     docs_check = docs_check or rust_sources
     docker_inputs = any_match(
         paths,
@@ -203,10 +233,12 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "rust_compile": rust_compile,
         "rust_test": rust_test,
         "web": web,
+        "browser_extension": browser_extension,
         "palette": palette,
         "npm": npm,
         "docker": docker,
         "security": security,
+        "javascript_advisories": javascript_advisories,
         "release": release,
         "unraid": unraid,
     }

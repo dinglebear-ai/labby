@@ -4,6 +4,7 @@ import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
 import {parseLoopbackBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
+import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
 
 /** @typedef {{url: string, title: string, tools: unknown[], tab_id: number, document_id: string}} Observation */
 
@@ -23,6 +24,11 @@ const pendingCalls = new Map();
 let pairingPollTimer;
 /** @type {number | undefined} */
 let pairingPollExpiresAt;
+const identityManager = createIdentityManager({
+  keyStore: new IndexedDbIdentityStore(indexedDB),
+  storage: chrome.storage.local,
+  subtle: crypto.subtle
+});
 
 /**
  * The channel is created by `initialize()`, which runs at worker start and
@@ -102,7 +108,7 @@ async function reportBridgeFailure(error, context) {
   console.error("Labby browser bridge connection failed", {message, context});
   await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
   if (message === "auth_failed") {
-    await chrome.storage.local.remove(["browserId", "pairingId"]);
+    await identityManager.revoke();
     if (channel) channel.browserId = undefined;
   }
   if (message === "pairing_not_pending") {
@@ -113,27 +119,19 @@ async function reportBridgeFailure(error, context) {
 }
 
 /**
- * @returns {Promise<{publicKey?: string, privateKey?: JsonWebKey, browserId?: string}>}
+ * @returns {Promise<{publicKey: string, privateKey: CryptoKey, browserId?: string}>}
  */
 async function ensureIdentity() {
-  const current = /** @type {{publicKey?: string, privateKey?: JsonWebKey, browserId?: string}} */ (
-    await chrome.storage.local.get(["publicKey", "privateKey", "browserId"])
-  );
-  if (current.publicKey && current.privateKey) return current;
-  const pair = await crypto.subtle.generateKey({name: "Ed25519"}, true, ["sign", "verify"]);
-  const publicKey = encode(await crypto.subtle.exportKey("raw", pair.publicKey));
-  const privateKey = await crypto.subtle.exportKey("jwk", pair.privateKey);
-  await chrome.storage.local.set({publicKey, privateKey});
-  return {publicKey, privateKey};
+  const identity = await identityManager.ensure();
+  const {browserId} = await chrome.storage.local.get("browserId");
+  return {...identity, browserId};
 }
 
 /**
  * @param {{nonce: string, challenge_id: string}} challenge
  */
 async function authenticate(challenge) {
-  const {privateKey} = /** @type {{privateKey: JsonWebKey}} */ (await chrome.storage.local.get("privateKey"));
-  const key = await crypto.subtle.importKey("jwk", privateKey, {name: "Ed25519"}, false, ["sign"]);
-  const signature = await crypto.subtle.sign("Ed25519", key, decode(challenge.nonce));
+  const signature = await identityManager.sign(challenge.nonce);
   await requireChannel().messageNow("auth.respond", {challenge_id: challenge.challenge_id, signature: encode(signature)});
   const welcome = await requireChannel().messageNow("browser.hello", {});
   await persistIgnoredOrigins(welcome);

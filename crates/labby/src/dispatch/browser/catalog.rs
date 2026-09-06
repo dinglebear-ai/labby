@@ -55,11 +55,37 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "browser.sessions",
-        description: "List observed browser documents and sanitized WebMCP catalogs",
+        description: "List a bounded page of observed browser document summaries",
         destructive: false,
         requires_admin: true,
         returns: "BrowserSessionList",
-        params: &[],
+        params: &[
+            ParamSpec {
+                name: "cursor",
+                ty: "string",
+                required: false,
+                description: "Opaque cursor from the previous page",
+            },
+            ParamSpec {
+                name: "limit",
+                ty: "integer",
+                required: false,
+                description: "Page size from 1 through 100",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "browser.session.get",
+        description: "Fetch one exact observed document including its bounded WebMCP catalog",
+        destructive: false,
+        requires_admin: true,
+        returns: "BrowserSession",
+        params: &[ParamSpec {
+            name: "session_id",
+            ty: "string",
+            required: true,
+            description: "Observed document session id",
+        }],
     },
     ActionSpec {
         name: "browser.session.enable",

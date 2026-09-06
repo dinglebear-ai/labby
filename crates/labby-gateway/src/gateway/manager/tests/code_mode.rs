@@ -966,6 +966,405 @@ async fn palette_catalog_discovers_configured_upstream_tools() {
     assert_eq!(entry.id, "mcp:alpha::ping");
     assert_eq!(entry.source, "alpha");
     assert_eq!(entry.tool, "ping");
+    assert!(
+        entry.input_schema.is_none(),
+        "catalog rows must not retain exact schemas"
+    );
+    assert!(!catalog.truncated);
+}
+
+#[tokio::test]
+async fn palette_catalog_caps_cross_upstream_projection_but_exact_lookup_remains_available() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    for upstream in ["alpha", "beta"] {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let tools = (0..600)
+            .map(|index| {
+                let name = format!("tool_{index:04}");
+                let tool = rmcp::model::Tool::new(
+                    name.clone(),
+                    "bounded palette fixture",
+                    Arc::new(serde_json::Map::new()),
+                );
+                (
+                    name,
+                    UpstreamTool {
+                        tool,
+                        input_schema: Some(json!({"type": "object"})),
+                        output_schema: None,
+                        upstream_name: Arc::clone(&upstream_name),
+                        destructive: false,
+                    },
+                )
+            })
+            .collect();
+        pool.insert_entry_for_tests(upstream, fixture_upstream_entry(upstream, tools))
+            .await;
+    }
+
+    let caller = crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1"));
+    let catalog = manager
+        .palette_catalog_snapshot(&caller)
+        .await
+        .expect("bounded catalog");
+    assert_eq!(catalog.entries.len(), 1_000);
+    assert!(catalog.truncated);
+    assert!(catalog.entries.iter().all(|entry| match entry {
+        crate::gateway::palette::LauncherEntryView::McpTool(entry) => entry.input_schema.is_none(),
+        crate::gateway::palette::LauncherEntryView::LabbyAction(_) => false,
+    }));
+
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &caller,
+            &crate::gateway::palette::PaletteSearchQuery::new("mcp:beta").expect("valid query"),
+        )
+        .await
+        .expect("query is applied before the cross-upstream cap");
+    assert_eq!(searched.entries.len(), 600);
+    assert!(!searched.truncated);
+    assert!(searched.entries.iter().any(|entry| match entry {
+        crate::gateway::palette::LauncherEntryView::McpTool(entry) => {
+            entry.id == "mcp:beta::tool_0599"
+        }
+        crate::gateway::palette::LauncherEntryView::LabbyAction(_) => false,
+    }));
+
+    let exact = manager
+        .palette_catalog_snapshot_for_tool(&caller, "mcp:beta::tool_0599")
+        .await
+        .expect("exact lookup outside bounded catalog");
+    assert_eq!(exact.entries.len(), 1);
+    assert!(!exact.truncated);
+}
+
+#[tokio::test]
+async fn palette_search_filters_before_single_upstream_catalog_cap() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let mut tools = (0..1_100)
+        .map(|index| {
+            let name = format!("tool_{index:04}");
+            let tool = rmcp::model::Tool::new(
+                name.clone(),
+                "ordinary fixture",
+                Arc::new(serde_json::Map::new()),
+            );
+            (
+                name,
+                UpstreamTool {
+                    tool,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name: Arc::clone(&upstream_name),
+                    destructive: false,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let name = "zzzz_unique_match".to_string();
+    tools.insert(
+        name.clone(),
+        UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                name,
+                "ordinary fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: None,
+            output_schema: None,
+            upstream_name,
+            destructive: false,
+        },
+    );
+    pool.insert_entry_for_tests("alpha", fixture_upstream_entry("alpha", tools))
+        .await;
+
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("unique_match").expect("valid query"),
+        )
+        .await
+        .expect("search catalog");
+    assert_eq!(searched.entries.len(), 1);
+    assert!(matches!(
+        &searched.entries[0],
+        crate::gateway::palette::LauncherEntryView::McpTool(entry)
+            if entry.id == "mcp:alpha::zzzz_unique_match"
+    ));
+}
+
+#[tokio::test]
+async fn palette_search_global_cap_keeps_later_exact_match_over_weak_matches() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let weak = (0..1_000)
+        .map(|index| {
+            let name = format!("weak_{index:04}");
+            (
+                name.clone(),
+                UpstreamTool {
+                    tool: rmcp::model::Tool::new(
+                        name,
+                        "contains needle somewhere",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name: Arc::clone(&upstream_name),
+                    destructive: false,
+                },
+            )
+        })
+        .collect();
+    pool.insert_entry_for_tests("alpha", fixture_upstream_entry("alpha", weak))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "needle"))
+        .await;
+
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("needle").expect("valid query"),
+        )
+        .await
+        .expect("search catalog");
+    assert!(searched.entries.iter().any(|entry| matches!(
+        entry,
+        crate::gateway::palette::LauncherEntryView::McpTool(entry)
+            if entry.id == "mcp:beta::needle"
+    )));
+}
+
+#[tokio::test]
+async fn palette_search_reports_truncation_when_global_inspection_budget_is_exhausted() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    for upstream in ["alpha", "beta"] {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let tools = (0..6_000)
+            .map(|index| {
+                let name = format!("tool_{index:04}");
+                (
+                    name.clone(),
+                    UpstreamTool {
+                        tool: rmcp::model::Tool::new(
+                            name,
+                            "ordinary fixture",
+                            Arc::new(serde_json::Map::new()),
+                        ),
+                        input_schema: None,
+                        output_schema: None,
+                        upstream_name: Arc::clone(&upstream_name),
+                        destructive: false,
+                    },
+                )
+            })
+            .collect();
+        pool.insert_entry_for_tests(upstream, fixture_upstream_entry(upstream, tools))
+            .await;
+    }
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("absent").expect("valid query"),
+        )
+        .await
+        .expect("bounded search");
+    assert!(searched.entries.is_empty());
+    assert!(searched.truncated);
+}
+
+#[tokio::test]
+async fn palette_search_matches_description_subsequences_before_catalog_cap() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let tool = rmcp::model::Tool::new(
+        "otherwise_hidden",
+        "Deploy Production Safely",
+        Arc::new(serde_json::Map::new()),
+    );
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([(
+                "otherwise_hidden".to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name,
+                    destructive: false,
+                },
+            )]),
+        ),
+    )
+    .await;
+
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("dps").expect("valid query"),
+        )
+        .await
+        .expect("search catalog");
+    assert_eq!(searched.entries.len(), 1);
+}
+
+#[tokio::test]
+async fn palette_search_scores_only_the_visible_sanitized_description() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let hidden = rmcp::model::Tool::new(
+        "hidden",
+        format!("{}needle", "x".repeat(512)),
+        Arc::new(serde_json::Map::new()),
+    );
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([(
+                "hidden".to_string(),
+                UpstreamTool {
+                    tool: hidden,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name,
+                    destructive: false,
+                },
+            )]),
+        ),
+    )
+    .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "needle"))
+        .await;
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("needle").expect("valid query"),
+        )
+        .await
+        .expect("search catalog");
+    assert_eq!(searched.entries.len(), 1);
+    assert!(matches!(
+        &searched.entries[0],
+        crate::gateway::palette::LauncherEntryView::McpTool(entry)
+            if entry.id == "mcp:beta::needle"
+    ));
+}
+
+#[tokio::test]
+async fn palette_search_many_delayed_oauth_upstreams_has_one_bounded_deadline() {
+    use labby_auth::upstream::cache::OauthClientCache;
+    use labby_auth::upstream::manager::UpstreamOauthManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed OAuth fixture");
+    let addr = listener.local_addr().expect("listener address");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_for_server = Arc::clone(&accepted);
+    let server = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            accepted_for_server.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            });
+        }
+    });
+    let upstreams = (0..32)
+        .map(|index| {
+            fixture_oauth_upstream(&format!("oauth_{index:02}"), &format!("http://{addr}/mcp"))
+        })
+        .collect::<Vec<_>>();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sqlite, key, redirect_uri) = fixture_oauth_resources(&dir).await;
+    let managers = Arc::new(dashmap::DashMap::new());
+    for upstream in &upstreams {
+        managers.insert(
+            upstream.name.clone(),
+            UpstreamOauthManager::new(
+                sqlite.clone(),
+                key.clone(),
+                upstream.clone(),
+                redirect_uri.clone(),
+            ),
+        );
+    }
+    let cache = OauthClientCache::new(Arc::clone(&managers));
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new().with_oauth_client_cache(cache.clone()));
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime)
+        .with_upstream_oauth_managers(managers)
+        .with_oauth_client_cache(cache)
+        .with_oauth_resources(sqlite, key, redirect_uri);
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams.clone(),
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.install_test_subject_tools_for_upstream(
+        &upstreams[0],
+        "admin",
+        vec![rmcp::model::Tool::new(
+            "needle",
+            "fast OAuth match",
+            Arc::new(serde_json::Map::new()),
+        )],
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let searched = manager
+        .palette_catalog_snapshot_matching(
+            &crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1")),
+            &crate::gateway::palette::PaletteSearchQuery::new("needle").expect("valid query"),
+        )
+        .await
+        .expect("deadline degrades to a partial catalog");
+    let elapsed = started.elapsed();
+    server.abort();
+
+    assert!(searched.entries.iter().any(|entry| matches!(
+        entry,
+        crate::gateway::palette::LauncherEntryView::McpTool(entry)
+            if entry.id == "mcp:oauth_00::needle"
+    )));
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "many delayed upstreams must share one deadline: {elapsed:?}"
+    );
+    assert!(
+        accepted.load(Ordering::SeqCst) < 32,
+        "catalog fanout must bound simultaneous delayed connection work"
+    );
 }
 
 #[tokio::test]

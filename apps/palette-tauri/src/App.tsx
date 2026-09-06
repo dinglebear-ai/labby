@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
-import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
+import {
+  launcherEntryMatches,
+  type LauncherEntry,
+  useLauncherCatalog,
+} from "@/lib/launcherCatalog";
 import { executeLauncherEntry, fetchLauncherSchema, resultErrorMessage } from "@/lib/labbyClient";
 import { endpointStatus, endpointStatusMessage } from "@/lib/endpointStatus";
 import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
@@ -41,7 +45,13 @@ export default function App() {
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
   const schemaCacheRef = useRef(new Map<string, unknown>());
 
-  const { actions: catalogActions, loading: catalogLoading, error: catalogError, refresh: refreshCatalog } = useLauncherCatalog();
+  const {
+    actions: catalogActions,
+    loading: catalogLoading,
+    error: catalogError,
+    truncated: catalogTruncated,
+    refresh: refreshCatalog,
+  } = useLauncherCatalog(mode === "browse" ? query : "");
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
 
   usePaletteLifecycle(
@@ -75,7 +85,8 @@ export default function App() {
 
   const hasQuery = query.trim().length > 0;
   const showResultsLayout = run.kind !== "idle";
-  const showContent = settingsOpen || showResultsLayout || mode === "argument" || hasQuery || browseOpen;
+  const showContent =
+    settingsOpen || showResultsLayout || mode === "argument" || hasQuery || browseOpen;
   const compact = !showContent;
   const showActionPanel = mode === "browse" && !showResultsLayout && !settingsOpen;
   const listboxOpen = showContent && showActionPanel;
@@ -115,60 +126,65 @@ export default function App() {
       ? "Invalid JSON — fix and press Enter"
       : mode === "argument" && active && !argumentValidation.valid
         ? (argumentValidation.message ?? "Params do not match schema")
-      : !active
-        ? "No matching action"
-        : pendingConfirm === active.id
-          ? "Press Enter again to confirm this destructive action"
-          : "";
+        : !active
+          ? "No matching action"
+          : pendingConfirm === active.id
+            ? "Press Enter again to confirm this destructive action"
+            : "";
 
-  const runAction = useCallback(async (action: LauncherEntry, params: unknown) => {
-    const requestId = runRequestIdRef.current + 1;
-    runRequestIdRef.current = requestId;
-    lastParamsRef.current = params;
-    setRun({ kind: "running", title: action.label });
-    try {
-      const result = await executeLauncherEntry(action, params, { confirmDestructive: action.destructive });
-      recordPaletteLaunch(action, result);
-      if (runRequestIdRef.current !== requestId) return;
-      if (
-        !result.ok &&
-        result.payload &&
-        typeof result.payload === "object" &&
-        !Array.isArray(result.payload) &&
-        (result.payload as Record<string, unknown>).kind === "contract_changed"
-      ) {
-        refreshCatalog();
-        schemaCacheRef.current.clear();
-        setPendingConfirm(null);
-        setMode("browse");
-        modeRef.current = "browse";
-        activeActionIdRef.current = null;
-        setActiveAction(null);
+  const runAction = useCallback(
+    async (action: LauncherEntry, params: unknown) => {
+      const requestId = runRequestIdRef.current + 1;
+      runRequestIdRef.current = requestId;
+      lastParamsRef.current = params;
+      setRun({ kind: "running", title: action.label });
+      try {
+        const result = await executeLauncherEntry(action, params, {
+          confirmDestructive: action.destructive,
+        });
+        recordPaletteLaunch(action, result);
+        if (runRequestIdRef.current !== requestId) return;
+        if (
+          !result.ok &&
+          result.payload &&
+          typeof result.payload === "object" &&
+          !Array.isArray(result.payload) &&
+          (result.payload as Record<string, unknown>).kind === "contract_changed"
+        ) {
+          refreshCatalog();
+          schemaCacheRef.current.clear();
+          setPendingConfirm(null);
+          setMode("browse");
+          modeRef.current = "browse";
+          activeActionIdRef.current = null;
+          setActiveAction(null);
+        }
+        setRun(
+          result.ok
+            ? { kind: "success", title: action.label, result }
+            : { kind: "error", title: action.label, result, message: resultErrorMessage(result) },
+        );
+      } catch (err) {
+        if (runRequestIdRef.current !== requestId) return;
+        const message = err instanceof Error ? err.message : String(err);
+        const result = {
+          ok: false,
+          status: 0,
+          path: "/v1/palette/execute",
+          method: "POST",
+          payload: { error: message },
+        };
+        recordPaletteLaunch(action, result);
+        setRun({
+          kind: "error",
+          title: action.label,
+          result,
+          message,
+        });
       }
-      setRun(
-        result.ok
-          ? { kind: "success", title: action.label, result }
-          : { kind: "error", title: action.label, result, message: resultErrorMessage(result) },
-      );
-    } catch (err) {
-      if (runRequestIdRef.current !== requestId) return;
-      const message = err instanceof Error ? err.message : String(err);
-      const result = {
-        ok: false,
-        status: 0,
-        path: "/v1/palette/execute",
-        method: "POST",
-        payload: { error: message },
-      };
-      recordPaletteLaunch(action, result);
-      setRun({
-        kind: "error",
-        title: action.label,
-        result,
-        message,
-      });
-    }
-  }, [refreshCatalog]);
+    },
+    [refreshCatalog],
+  );
 
   const hydrateSchema = useCallback(async (action: LauncherEntry) => {
     if (action.inputSchema || !action.schemaFingerprint) return action;
@@ -334,7 +350,11 @@ export default function App() {
     }
   }
 
-  const endpointLabel = config ? hostLabel(config.serverUrl) : configError ? "Config error" : "Loading";
+  const endpointLabel = config
+    ? hostLabel(config.serverUrl)
+    : configError
+      ? "Config error"
+      : "Loading";
   const endpointState = { configured: Boolean(config), catalogLoading, configError, catalogError };
   const endpointTone = endpointStatus(endpointState);
   const endpointMessage = endpointStatusMessage({ ...endpointState, endpointLabel });
@@ -355,6 +375,7 @@ export default function App() {
       filtered={filtered}
       hasQuery={hasQuery}
       listboxOpen={listboxOpen}
+      partialResults={catalogTruncated}
       modeAction={modeAction}
       onBack={onBack}
       onCollapse={onCollapse}

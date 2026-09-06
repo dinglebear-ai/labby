@@ -4007,6 +4007,7 @@
               "browser.pairing.list",
               "browser.pairing.approve",
               "browser.sessions",
+              "browser.session.get",
               "browser.session.enable",
               "browser.call"
             ]
@@ -4083,6 +4084,28 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "BrowserBrowserSessionGetParams": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserBrowserSessionsParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
           }
         }
       },

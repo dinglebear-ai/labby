@@ -77,14 +77,45 @@
         },
         {
           "name": "browser.sessions",
-          "description": "List observed browser documents and sanitized WebMCP catalogs",
+          "description": "List a bounded page of observed browser document summaries",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
           ],
-          "params": [],
+          "params": [
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Opaque cursor from the previous page"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size from 1 through 100"
+            }
+          ],
           "returns": "BrowserSessionList"
+        },
+        {
+          "name": "browser.session.get",
+          "description": "Fetch one exact observed document including its bounded WebMCP catalog",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "session_id",
+              "ty": "string",
+              "required": true,
+              "description": "Observed document session id"
+            }
+          ],
+          "returns": "BrowserSession"
         },
         {
           "name": "browser.session.enable",
