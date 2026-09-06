@@ -269,6 +269,77 @@ impl AccessRuntime {
             })
     }
 
+    /// Resolve a typed Stash owner only after current domain authorization.
+    /// Personal remains the default and retains the historical principal key;
+    /// Team storage keys are explicitly namespaced and cannot collide.
+    pub(crate) async fn resolve_file_stash_owner(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        ceiling: super::AuthorityCeiling,
+        owner: labby_primitives::access::OwnerScope,
+        action: &str,
+        capability: labby_primitives::access::Capability,
+        now_millis: u64,
+    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
+        use labby_primitives::access::{ActionRef, ResourceFamily, ResourceId, ResourceRef};
+        let store = self.store().await?;
+        let personal_principal =
+            if let labby_primitives::access::OwnerScope::Personal(expected) = &owner {
+                let principal = store
+                    .resolve_file_stash_principal(identity.clone())
+                    .await
+                    .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+                (principal.as_str() == expected.as_str())
+                    .then_some(principal)
+                    .ok_or(FileStashPrincipalResolutionError::IdentityUnavailable)
+                    .map(Some)?
+            } else {
+                None
+            };
+        let action_ref = ActionRef::new("stash", action)
+            .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+        super::authorize_action(
+            &store,
+            super::AuthorityRequest::new(
+                identity,
+                super::ActionAuthoritySpec::SCHEMA_VERSION,
+                action_ref.clone(),
+                ResourceRef::new(
+                    owner.clone(),
+                    ResourceFamily::Stash,
+                    ResourceId::new(owner.id())
+                        .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?,
+                ),
+                ceiling,
+                None,
+                now_millis,
+                vec![
+                    labby_runtime::authority::AuthoritySafeBoundary::BeforeDispatch,
+                    labby_runtime::authority::AuthoritySafeBoundary::BeforeCommit,
+                ],
+                vec![super::ActionAuthoritySpec::new(
+                    action_ref,
+                    ResourceFamily::Stash,
+                    capability,
+                )],
+            ),
+        )
+        .await
+        .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+        if let Some(principal) = personal_principal {
+            return Ok(principal);
+        }
+        let key = match owner {
+            labby_primitives::access::OwnerScope::Team(id) => format!("team:{}", id.as_str()),
+            labby_primitives::access::OwnerScope::Project(id) => format!("project:{}", id.as_str()),
+            labby_primitives::access::OwnerScope::Installation(id) => {
+                format!("installation:{}", id.as_str())
+            }
+            labby_primitives::access::OwnerScope::Personal(_) => unreachable!(),
+        };
+        Ok(super::AccessPrincipalId(key))
+    }
+
     pub(crate) async fn lease_active_file_stash_principal(
         &self,
         principal: super::AccessPrincipalId,

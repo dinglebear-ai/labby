@@ -67,3 +67,17 @@ test('recipient discovery keeps identity queries out of URLs and requires csrf',
   assert.equal(requested?.headers.get('x-csrf-token'), 'csrf-stash')
   assert.deepEqual(JSON.parse(await requested!.text()), { query: 'private person' })
 })
+
+test('selected team is sent explicitly and download remains a same-origin URI', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf-stash', isAdmin: false,
+    authority: { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team', id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 1 },
+  })
+  let requested: Request | undefined
+  globalThis.fetch = async (input, init) => { requested = new Request(new URL(String(input), 'http://labby.test'), init); return Response.json({ files: [], next_cursor: null }) }
+  await listFiles()
+  assert.equal(requested?.headers.get('x-labby-owner-kind'), 'team')
+  assert.equal(requested?.headers.get('x-labby-owner-id'), 'team-1')
+  assert.equal(downloadUrl('file-1'), '/v1/stash/files/file-1/content?owner_kind=team&owner_id=team-1')
+})

@@ -67,7 +67,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         "stash.stats",
         "Read authoritative owned-file usage",
         false,
-        &[],
+        OWNER_PARAMS,
         "StashStats",
     ),
     action(
@@ -130,12 +130,29 @@ const fn action(
         returns,
     }
 }
-const FILE_PARAM: &[ParamSpec] = &[ParamSpec {
-    name: "file_id",
+const OWNER_KIND_PARAM: ParamSpec = ParamSpec {
+    name: "owner_kind",
+    ty: "personal|team",
+    required: false,
+    description: "Explicit owner scope; defaults to personal",
+};
+const OWNER_ID_PARAM: ParamSpec = ParamSpec {
+    name: "owner_id",
     ty: "string",
-    required: true,
-    description: "Opaque immutable file ID",
-}];
+    required: false,
+    description: "Required with Team ownership",
+};
+const OWNER_PARAMS: &[ParamSpec] = &[OWNER_KIND_PARAM, OWNER_ID_PARAM];
+const FILE_PARAM: &[ParamSpec] = &[
+    ParamSpec {
+        name: "file_id",
+        ty: "string",
+        required: true,
+        description: "Opaque immutable file ID",
+    },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
+];
 const LIST_PARAMS: &[ParamSpec] = &[
     ParamSpec {
         name: "cursor",
@@ -149,6 +166,8 @@ const LIST_PARAMS: &[ParamSpec] = &[
         required: false,
         description: "Page size from 1 to the configured maximum",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 const SEARCH_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -169,6 +188,8 @@ const SEARCH_PARAMS: &[ParamSpec] = &[
         required: false,
         description: "Page size from 1 to the configured maximum",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 const RENAME_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -183,6 +204,8 @@ const RENAME_PARAMS: &[ParamSpec] = &[
         required: true,
         description: "New display filename",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 const GRANT_CREATE_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -197,6 +220,8 @@ const GRANT_CREATE_PARAMS: &[ParamSpec] = &[
         required: true,
         description: "AccessStore-resolved durable PrincipalId",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 const GRANT_LIST_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -217,6 +242,8 @@ const GRANT_LIST_PARAMS: &[ParamSpec] = &[
         required: false,
         description: "Page size from 1 to the configured maximum",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 const GRANT_REVOKE_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -231,6 +258,8 @@ const GRANT_REVOKE_PARAMS: &[ParamSpec] = &[
         required: true,
         description: "Opaque grant ID",
     },
+    OWNER_KIND_PARAM,
+    OWNER_ID_PARAM,
 ];
 
 #[derive(Clone)]

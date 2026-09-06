@@ -1,7 +1,7 @@
 # File Stash
 
-File Stash is Labby's built-in service for principal-scoped arbitrary
-files owned by an authenticated principal. Labby will own the local metadata and
+File Stash is Labby's built-in service for personal- or Team-scoped arbitrary
+files owned by an authenticated principal or one explicitly selected Team. Labby owns the local metadata and
 blob lifecycle, so this capability meets the built-in-service exception. Depot
 is not a dependency and an explicitly configured remote target never falls back
 to File Stash.
@@ -33,6 +33,17 @@ mapped to an active service/bootstrap Principal in AccessStore. Missing,
 ambiguous, inactive, or unavailable resolution fails closed before any filename,
 object, grant, quota, or recipient lookup. Observability actor keys are not
 authorization identities.
+
+Personal is the compatibility default and retains the historical durable
+principal key. Team operations require explicit `owner_kind=team` plus an
+opaque Team ID (HTTP uses the corresponding `X-Labby-Owner-*` headers; browser
+downloads use same-origin query parameters because links cannot attach
+headers). Labby resolves current Team capability before lookup, and mutations
+and opened downloads re-observe authority at their final boundary. Team members
+may read Team files; Team administrators may manage them according to the fixed
+role templates. Removing membership blocks new opens without affecting the
+caller's personal files. Durable Team keys are type-prefixed, so no principal
+or Team identifier can alias another owner's quota or objects.
 
 Grant recipients are selected by a validated opaque AccessStore `PrincipalId`
 from an authoritative, non-enumerating identity-selection surface, never by

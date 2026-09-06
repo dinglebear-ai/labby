@@ -30,7 +30,7 @@ impl LabMcpServer {
         action: &str,
         params: serde_json::Value,
         context: &RequestContext<RoleServer>,
-        meta: Option<&rmcp::model::RequestMetaObject>,
+        _meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<serde_json::Value, ToolError> {
         match service {
             "agents" | "tasks" => {
@@ -79,7 +79,37 @@ impl LabMcpServer {
                 }
             }
             "stash" => {
-                let principal = self.file_stash_principal(context, meta).await?;
+                let identity = context
+                    .extensions
+                    .get::<labby_auth::VerifiedIdentity>()
+                    .cloned()
+                    .or_else(|| {
+                        context
+                            .extensions
+                            .get::<Parts>()
+                            .and_then(|p| p.extensions.get::<labby_auth::VerifiedIdentity>())
+                            .cloned()
+                    })
+                    .ok_or_else(forbidden)?;
+                let owner =
+                    stash_owner_from_params(&params, &identity, &self.access_runtime).await?;
+                let capability = stash_capability(action);
+                let ceiling = auth_context_from_extensions(&context.extensions).map_or_else(
+                    crate::access::AuthorityCeiling::trusted_local,
+                    crate::access::AuthorityCeiling::from_auth_context,
+                );
+                let principal = self
+                    .access_runtime
+                    .resolve_file_stash_owner(
+                        identity,
+                        ceiling,
+                        owner,
+                        action,
+                        capability,
+                        unix_millis(),
+                    )
+                    .await
+                    .map_err(|_| forbidden())?;
                 crate::dispatch::file_stash::dispatch_for_principal(
                     &self.file_stash_service(),
                     &principal,
@@ -206,6 +236,51 @@ impl LabMcpServer {
         .with_mime_type("application/octet-stream");
         Ok(ReadResourceResult::new(vec![contents]).into())
     }
+}
+
+async fn stash_owner_from_params(
+    params: &serde_json::Value,
+    identity: &labby_auth::VerifiedIdentity,
+    runtime: &crate::access::AccessRuntime,
+) -> Result<labby_primitives::access::OwnerScope, ToolError> {
+    use labby_primitives::access::{OwnerScope, PrincipalId, TeamId};
+    match params.get("owner_kind").and_then(serde_json::Value::as_str) {
+        None | Some("personal") => {
+            let principal = runtime
+                .resolve_file_stash_principal(identity.clone())
+                .await
+                .map_err(|_| forbidden())?;
+            Ok(OwnerScope::Personal(
+                PrincipalId::new(principal.as_str()).map_err(|_| forbidden())?,
+            ))
+        }
+        Some("team") => Ok(OwnerScope::Team(
+            TeamId::new(
+                params
+                    .get("owner_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(forbidden)?,
+            )
+            .map_err(|_| forbidden())?,
+        )),
+        _ => Err(forbidden()),
+    }
+}
+fn stash_capability(action: &str) -> labby_primitives::access::Capability {
+    use labby_primitives::access::Capability;
+    match action {
+        "stash.list" | "stash.search" | "stash.stats" | "stash.metadata" => Capability::ScopeRead,
+        "stash.delete" => Capability::ScopeDelete,
+        "stash.rename" | "stash.grants.create" | "stash.grants.list" | "stash.grants.revoke" => {
+            Capability::ScopeManage
+        }
+        _ => Capability::ScopeRead,
+    }
+}
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |v| u64::try_from(v.as_millis()).unwrap_or(u64::MAX))
 }
 
 async fn collect_file_stash_resources(
