@@ -243,6 +243,9 @@ fn gateway_action_requires_admin(action: &str) -> bool {
     if bare == "help" || bare == "schema" {
         return false;
     }
+    if !crate::access::gateway_transport_requires_admin(action) {
+        return false;
+    }
     crate::dispatch::gateway::ACTIONS
         .iter()
         .find(|spec| spec.name == action)
@@ -1270,5 +1273,17 @@ mod tests {
         })
         .into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn team_policy_actions_reach_domain_authorization_without_admin_scope() {
+        assert!(!gateway_action_requires_admin("gateway.loadout.list"));
+        assert!(!gateway_action_requires_admin("gateway.loadout.add"));
+        assert!(!gateway_action_requires_admin(
+            "gateway.protected_route.remove"
+        ));
+        assert!(gateway_action_requires_admin("gateway.add"));
+        assert!(gateway_action_requires_admin("gateway.oauth.clear"));
+        assert!(gateway_action_requires_admin("gateway.unknown"));
     }
 }

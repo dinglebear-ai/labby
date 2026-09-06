@@ -2,6 +2,7 @@
 
 use labby_primitives::access::OwnerScope;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct GatewayAuthorityKey {
@@ -15,14 +16,36 @@ pub struct GatewayAuthorityKey {
 impl GatewayAuthorityKey {
     #[must_use]
     pub fn partition_key(&self) -> String {
-        format!(
-            "{}:{}:{}:{}:{}",
-            self.owner.id(),
-            self.project_id.as_deref().unwrap_or("-"),
-            self.loadout,
-            self.authority_epoch,
-            self.credential_generation
-        )
+        // This value is routinely used in cache and pool keys. Hash the
+        // length-delimited authority tuple so logs/debug output cannot disclose
+        // tenant, project, loadout, or credential metadata and so differently
+        // typed owners with the same textual id never alias.
+        let owner_kind: &[u8] = match self.owner.kind() {
+            labby_primitives::access::OwnerKind::Installation => b"installation",
+            labby_primitives::access::OwnerKind::Team => b"team",
+            labby_primitives::access::OwnerKind::Project => b"project",
+            labby_primitives::access::OwnerKind::Personal => b"personal",
+        };
+        let mut digest = Sha256::new();
+        for field in [
+            owner_kind,
+            self.owner.id().as_bytes(),
+            self.project_id.as_deref().unwrap_or("").as_bytes(),
+            self.loadout.as_bytes(),
+            &self.authority_epoch.to_be_bytes(),
+            &self.credential_generation.to_be_bytes(),
+        ] {
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field);
+        }
+        let digest = digest.finalize();
+        let mut encoded = String::with_capacity(3 + digest.len() * 2);
+        encoded.push_str("g1:");
+        for byte in digest {
+            use std::fmt::Write as _;
+            write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        encoded
     }
 }
 
@@ -35,6 +58,7 @@ pub enum TeamCredentialStatus {
 
 /// Metadata only: secret bytes remain in the host credential store.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamCredentialBinding {
     pub binding_id: String,
     pub team_id: String,
@@ -50,6 +74,26 @@ impl TeamCredentialBinding {
     pub const fn usable(&self, expected_generation: u64) -> bool {
         matches!(self.status, TeamCredentialStatus::Active)
             && self.generation == expected_generation
+    }
+
+    /// Reject malformed metadata before it can become a cache or policy key.
+    /// Secret material is intentionally absent from this projection.
+    pub fn validate(&self) -> bool {
+        self.generation > 0
+            && self.rotated_at_millis > 0
+            && [
+                self.binding_id.as_str(),
+                self.team_id.as_str(),
+                self.upstream_name.as_str(),
+                self.custodian_principal_id.as_str(),
+            ]
+            .into_iter()
+            .all(|value| {
+                !value.is_empty()
+                    && value.trim() == value
+                    && value.len() <= 256
+                    && !value.chars().any(char::is_control)
+            })
     }
 }
 
@@ -73,6 +117,7 @@ mod tests {
         revoked.authority_epoch = 2;
         assert_ne!(base.partition_key(), rotated.partition_key());
         assert_ne!(base.partition_key(), revoked.partition_key());
+        assert!(!base.partition_key().contains("default"));
     }
 
     #[test]
@@ -90,5 +135,26 @@ mod tests {
         assert!(!json.contains("token"));
         assert!(binding.usable(3));
         assert!(!binding.usable(2));
+        assert!(binding.validate());
+        assert!(serde_json::from_str::<TeamCredentialBinding>(
+            r#"{"binding_id":"b","team_id":"a","upstream_name":"u","custodian_principal_id":"p","generation":3,"rotated_at_millis":4,"status":"active","token":"secret"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn typed_owner_kind_participates_in_partition_identity() {
+        use labby_primitives::access::{PrincipalId, TeamId};
+        let key = |owner| GatewayAuthorityKey {
+            owner,
+            project_id: None,
+            loadout: "default".into(),
+            authority_epoch: 1,
+            credential_generation: 1,
+        };
+        assert_ne!(
+            key(OwnerScope::Team(TeamId::new("same").unwrap())).partition_key(),
+            key(OwnerScope::Personal(PrincipalId::new("same").unwrap())).partition_key()
+        );
     }
 }

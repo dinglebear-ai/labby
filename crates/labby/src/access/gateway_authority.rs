@@ -43,6 +43,16 @@ pub(crate) fn gateway_authority_class(action: &str) -> Option<GatewayAuthorityCl
     })
 }
 
+/// OAuth transport scopes are only the outer admission ceiling. Team-scoped
+/// policy actions are authorized by the domain evaluator below and therefore
+/// must not be pre-emptively classified as platform-admin operations.
+pub(crate) fn gateway_transport_requires_admin(action: &str) -> bool {
+    matches!(
+        gateway_authority_class(action),
+        Some(GatewayAuthorityClass::PlatformManage)
+    )
+}
+
 pub(crate) fn qualify_team_gateway_params(
     action: &str,
     team_id: Option<&str>,
@@ -79,6 +89,10 @@ pub(crate) fn gateway_runtime_subject(
 fn qualify_named_fields(value: &mut Value, prefix: &str) {
     match value {
         Value::Object(object) => {
+            // `team_id` is an authorization selector, not part of any Gateway
+            // action schema. Consume it at this boundary so strict dispatch
+            // deserializers do not reject otherwise-authorized MCP requests.
+            object.remove("team_id");
             for (key, child) in object {
                 if matches!(key.as_str(), "name" | "loadout") {
                     if let Some(name) = child.as_str().filter(|name| !name.starts_with(prefix)) {
@@ -239,6 +253,8 @@ mod tests {
             Some(GatewayAuthorityClass::PlatformManage)
         );
         assert_eq!(gateway_authority_class("other.action"), None);
+        assert!(!gateway_transport_requires_admin("gateway.loadout.add"));
+        assert!(gateway_transport_requires_admin("gateway.add"));
     }
 
     #[test]
@@ -246,10 +262,11 @@ mod tests {
         let params = qualify_team_gateway_params(
             "gateway.loadout.add",
             Some("alpha"),
-            serde_json::json!({"loadout":{"name":"prod","upstreams":["shared"]}}),
+            serde_json::json!({"team_id":"alpha","loadout":{"name":"prod","upstreams":["shared"]}}),
         )
         .unwrap();
         assert_eq!(params["loadout"]["name"], "team:alpha:prod");
+        assert!(params.get("team_id").is_none());
         let mut rows = serde_json::json!([{"name":"team:alpha:prod"},{"name":"team:beta:prod"}]);
         filter_team_gateway_projection(Some("alpha"), &mut rows);
         assert_eq!(rows, serde_json::json!([{"name":"prod"}]));

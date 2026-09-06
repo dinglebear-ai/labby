@@ -1517,6 +1517,7 @@ impl LabMcpServer {
         }
 
         if let Some(entry) = svc
+            && !(service == "gateway" && !crate::access::gateway_transport_requires_admin(&action))
             && !tool_execute_builtin_action_allowed(
                 entry,
                 &action,
