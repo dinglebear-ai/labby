@@ -39,6 +39,7 @@ pub fn routes(_state: AppState) -> RouteGroup {
                 ("GET", "/") => get(list),
                 ("POST", "/") => post(action),
                 ("GET", "/stats") => get(stats),
+                ("POST", "/recipients") => post(recipients),
                 ("POST", "/uploads") => post(upload),
                 ("GET", "/files/{file_id}") => get(metadata),
                 ("GET", "/files/{file_id}/content") => get(download),
@@ -58,6 +59,12 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
         ("GET", "/", "stash_list", "none_expected"),
         ("POST", "/", "stash_action", "action-defined"),
         ("GET", "/stats", "stash_stats", "none_expected"),
+        (
+            "POST",
+            "/recipients",
+            "stash_recipients",
+            "directory lookup",
+        ),
         ("POST", "/uploads", "stash_upload", "creates a file"),
         ("GET", "/files/{file_id}", "stash_metadata", "none_expected"),
         (
@@ -117,8 +124,8 @@ struct PageQuery {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UploadQuery {
-    display_name: String,
+struct RecipientQuery {
+    query: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -238,6 +245,39 @@ async fn stats(
     let principal = principal(&state, identity).await?;
     Ok(result(service(&state).stats(&principal).await?))
 }
+async fn recipients(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
+    Json(q): Json<RecipientQuery>,
+) -> Result<Response, ApiError> {
+    mutation_csrf(&headers, auth.as_ref(), "stash.recipients.search")?;
+    if !auth
+        .as_ref()
+        .is_some_and(|context| context.0.scopes.iter().any(|scope| scope == "lab:admin"))
+    {
+        return Err(stable("not_found"));
+    }
+    let principal = principal(&state, identity).await?;
+    let query = q.query.trim();
+    if query.chars().count() < 3 || query.len() > 128 {
+        return Err(stable("validation_failed"));
+    }
+    let store = state
+        .access_runtime
+        .store()
+        .await
+        .map_err(|_| stable("service_unavailable"))?;
+    let values = tokio::time::timeout(
+        std::time::Duration::from_millis(state.config.file_stash.database_deadline_ms),
+        store.search_file_stash_recipients(principal, query.to_owned(), 20),
+    )
+    .await
+    .map_err(|_| stable("busy"))?
+    .map_err(|_| stable("service_unavailable"))?;
+    Ok(result(serde_json::json!({"recipients": values})))
+}
 async fn metadata(
     State(state): State<AppState>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
@@ -329,17 +369,26 @@ async fn upload(
     headers: HeaderMap,
     auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
-    Query(q): Query<UploadQuery>,
     body: Body,
 ) -> Result<Response, ApiError> {
     validate_header_budget(&headers, state.config.file_stash.max_header_bytes)?;
     mutation_csrf(&headers, auth.as_ref(), "stash.upload")?;
     let principal = principal(&state, identity).await?;
+    let display_name = headers
+        .get("x-labby-stash-filename")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .ok()
+        })
+        .map(|value| value.into_owned())
+        .ok_or_else(|| stable("validation_failed"))?;
     let declared = exact_content_length(&headers)?;
     validate_transfer_headers(&headers)?;
     let svc = service(&state);
     let (reservation, admission) = svc
-        .reserve_upload(&principal, &q.display_name, declared)
+        .reserve_upload(&principal, &display_name, declared)
         .await?;
     let stream = body.into_data_stream().map_err(std::io::Error::other);
     let reader = StreamReader::new(stream);
@@ -580,7 +629,7 @@ mod tests {
     #[test]
     fn route_inventory_is_private_authenticated_and_non_enumerating() {
         let descriptors = descriptors();
-        assert_eq!(descriptors.len(), 11);
+        assert_eq!(descriptors.len(), 12);
         assert!(descriptors.iter().all(|route| route.auth == RouteAuth::V1));
         assert!(
             descriptors
@@ -666,7 +715,8 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/stash/uploads?display_name=a.txt")
+                    .uri("/v1/stash/uploads")
+                    .header("x-labby-stash-filename", "a.txt")
                     .header("x-fill", oversized)
                     .header(header::CONTENT_LENGTH, "0")
                     .body(Body::empty())
@@ -790,7 +840,8 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/stash/uploads?display_name=a.txt")
+                    .uri("/v1/stash/uploads")
+                    .header("x-labby-stash-filename", "a.txt")
                     .header(header::CONTENT_LENGTH, "2")
                     .body(Body::from("x"))
                     .unwrap(),
@@ -816,7 +867,8 @@ mod tests {
         let pending = futures::stream::pending::<Result<Bytes, std::io::Error>>();
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/stash/uploads?display_name=pending.txt")
+            .uri("/v1/stash/uploads")
+            .header("x-labby-stash-filename", "pending.txt")
             .header(header::CONTENT_LENGTH, "1")
             .body(Body::from_stream(pending))
             .unwrap();

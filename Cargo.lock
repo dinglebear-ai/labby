@@ -2030,6 +2030,7 @@ dependencies = [
  "landlock",
  "nix",
  "oauth2",
+ "percent-encoding",
  "process-wrap",
  "proptest",
  "rcgen",

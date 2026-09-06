@@ -33,6 +33,12 @@ mod workflow;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct AccessPrincipalId(String);
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct FileStashRecipient {
+    pub(crate) principal_id: String,
+    pub(crate) display_name: String,
+}
+
 impl AccessPrincipalId {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
