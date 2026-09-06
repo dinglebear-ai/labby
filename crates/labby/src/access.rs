@@ -11,6 +11,8 @@ mod error;
 #[cfg(feature = "gateway")]
 mod gateway_authority;
 #[cfg(feature = "gateway")]
+mod gateway_credential;
+#[cfg(feature = "gateway")]
 mod gateway_loadout;
 mod health;
 mod integrity;
@@ -101,8 +103,11 @@ pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 pub(crate) use gateway_authority::{
     authorize_gateway_action, filter_team_gateway_projection, gateway_runtime_subject,
-    qualify_team_gateway_params,
+    gateway_transport_requires_admin, qualify_team_gateway_params,
 };
+#[cfg(feature = "gateway")]
+#[allow(unused_imports)]
+pub(crate) use gateway_credential::PutTeamCredentialBinding;
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
 pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_project_loadout};

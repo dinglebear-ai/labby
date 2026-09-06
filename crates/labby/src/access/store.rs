@@ -43,6 +43,39 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn put_team_gateway_credential_binding(
+        &self,
+        input: super::gateway_credential::PutTeamCredentialBinding,
+    ) -> AccessStoreResult<labby_runtime::gateway_authority::TeamCredentialBinding> {
+        self.with_connection(move |connection| super::gateway_credential::put(connection, &input))
+            .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn list_team_gateway_credential_bindings(
+        &self,
+        team_id: String,
+    ) -> AccessStoreResult<Vec<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::list(connection, &team_id)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn revoke_team_gateway_credential_binding(
+        &self,
+        team_id: String,
+        upstream_name: String,
+        now_millis: u64,
+    ) -> AccessStoreResult<Option<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::revoke(connection, &team_id, &upstream_name, now_millis)
+        })
+        .await
+    }
+
     pub(crate) async fn create_agent_task(
         &self,
         intent: labby_primitives::task::TaskIntent,

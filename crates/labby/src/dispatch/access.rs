@@ -81,6 +81,25 @@ pub const ACTIONS: &[ActionSpec] = &[
         &[string("team_id"), string("project_id"), string("role")],
     ),
     action(
+        "access.gateway_credential.list",
+        "List redacted Team Gateway credential bindings",
+        &[string("team_id")],
+    ),
+    action(
+        "access.gateway_credential.bind",
+        "Bind a host-custodied credential to a Team upstream",
+        &[
+            string("team_id"),
+            string("upstream_name"),
+            string("binding_id"),
+        ],
+    ),
+    action(
+        "access.gateway_credential.revoke",
+        "Revoke a Team Gateway credential binding",
+        &[string("team_id"), string("upstream_name")],
+    ),
+    action(
         "access.project.effective.list",
         "List effective project roles",
         &[],
@@ -283,6 +302,49 @@ pub(crate) async fn dispatch(
                 .map_err(map_access_error)?;
             json!({"projects": values.into_iter().map(|value| json!({"project_id": value.project_id, "role": project_role_name(value.role), "direct": value.direct, "team_derived": value.team_derived, "global_revision": value.global_revision})).collect::<Vec<_>>()})
         }
+        #[cfg(feature = "gateway")]
+        "access.gateway_credential.list" => {
+            let values = context
+                .store
+                .list_team_gateway_credential_bindings(required_string(&params, "team_id")?)
+                .await
+                .map_err(map_access_error)?;
+            json!({"bindings": values})
+        }
+        #[cfg(feature = "gateway")]
+        "access.gateway_credential.bind" => {
+            let now = now_millis()?;
+            let custodian = context
+                .store
+                .resolve_file_stash_principal(context.identity.clone())
+                .await
+                .map_err(map_access_error)?;
+            let value = context
+                .store
+                .put_team_gateway_credential_binding(crate::access::PutTeamCredentialBinding {
+                    binding_id: required_string(&params, "binding_id")?,
+                    team_id: required_string(&params, "team_id")?,
+                    upstream_name: required_string(&params, "upstream_name")?,
+                    custodian_principal_id: custodian.as_str().to_owned(),
+                    rotated_at_millis: now,
+                })
+                .await
+                .map_err(map_access_error)?;
+            serde_json::to_value(value).map_err(|_| unavailable())?
+        }
+        #[cfg(feature = "gateway")]
+        "access.gateway_credential.revoke" => {
+            let value = context
+                .store
+                .revoke_team_gateway_credential_binding(
+                    required_string(&params, "team_id")?,
+                    required_string(&params, "upstream_name")?,
+                    now_millis()?,
+                )
+                .await
+                .map_err(map_access_error)?;
+            json!({"binding": value})
+        }
         "access.platform_admin.grant" | "access.platform_admin.revoke" => {
             let input = PlatformAdministratorInput::new(
                 context.identity,
@@ -336,8 +398,14 @@ async fn authorize_administration(
             OwnerScope::Team(TeamId::new(team_id.clone()).map_err(|_| invalid("team_id"))?),
             ResourceFamily::Platform,
             team_id,
-            if action == "access.team_project.assign" {
-                Capability::ScopeManage
+            if action == "access.team_project.assign"
+                || action.starts_with("access.gateway_credential.")
+            {
+                if action.ends_with(".list") {
+                    Capability::ScopeRead
+                } else {
+                    Capability::ScopeManage
+                }
             } else {
                 Capability::MembershipManage
             },
@@ -373,6 +441,23 @@ async fn authorize_administration(
     .await
     .map_err(map_access_error)?;
     Ok(())
+}
+
+fn now_millis() -> Result<u64, ToolError> {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| unavailable())?
+            .as_millis(),
+    )
+    .map_err(|_| unavailable())
+}
+
+fn unavailable() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "service_unavailable".to_owned(),
+        message: "access administration is unavailable".to_owned(),
+    }
 }
 
 fn required_string(params: &Value, name: &str) -> Result<String, ToolError> {
@@ -487,7 +572,7 @@ mod tests {
 
     #[test]
     fn catalog_registers_only_canonical_access_actions() {
-        assert_eq!(ACTIONS.len(), 14);
+        assert_eq!(ACTIONS.len(), 17);
         assert!(ACTIONS.iter().all(|spec| spec.name.starts_with("access.")));
         assert!(ACTIONS.iter().all(|spec| !spec.destructive));
     }

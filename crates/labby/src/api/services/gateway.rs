@@ -438,7 +438,7 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use super::{http_oauth_subject, inject_gateway_owner};
+    use super::{gateway_action_requires_admin, http_oauth_subject, inject_gateway_owner};
 
     use crate::api::oauth::AuthContext;
     use crate::api::{

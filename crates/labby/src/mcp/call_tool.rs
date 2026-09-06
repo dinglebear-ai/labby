@@ -1517,7 +1517,7 @@ impl LabMcpServer {
         }
 
         if let Some(entry) = svc
-            && !(service == "gateway" && !crate::access::gateway_transport_requires_admin(&action))
+            && !gateway_team_policy_bypasses_admin_gate(&service, &action)
             && !tool_execute_builtin_action_allowed(
                 entry,
                 &action,
@@ -1999,6 +1999,16 @@ impl LabMcpServer {
             )),
         }
     }
+}
+
+#[cfg(feature = "gateway")]
+fn gateway_team_policy_bypasses_admin_gate(service: &str, action: &str) -> bool {
+    service == "gateway" && !crate::access::gateway_transport_requires_admin(action)
+}
+
+#[cfg(not(feature = "gateway"))]
+const fn gateway_team_policy_bypasses_admin_gate(_service: &str, _action: &str) -> bool {
+    false
 }
 
 #[cfg(not(feature = "gateway"))]

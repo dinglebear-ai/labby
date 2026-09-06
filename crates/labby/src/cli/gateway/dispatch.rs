@@ -149,6 +149,7 @@ fn loadout_from_create_args(args: GatewayLoadoutCreateArgs) -> GatewayLoadoutCon
         description: args.description,
         upstreams: args.upstreams,
         services: args.services,
+        credential_bindings: Vec::new(),
         expose_code_mode: args.code_mode,
         expose_tools: !args.no_tools,
         expose_resources: !args.no_resources,

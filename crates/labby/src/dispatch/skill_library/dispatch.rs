@@ -171,6 +171,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     &ownership,
                 )?;
                 let target_id = materialized.interchange.descriptor.id.clone();
+                let audit = audit.with_target(&CanonicalArtifactId::parse(target_id.clone())?);
                 let request_digest =
                     bind_idempotency_to_owner(&request_digest, &ownership, project_id)?;
                 let audited_revision_id = revision_id.clone();
@@ -573,6 +574,11 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     )?;
                 }
                 let artifact_id = candidate_artifact.interchange.descriptor.id.clone();
+                let audit = if action == SkillLibraryAction::Create {
+                    audit.with_target(&CanonicalArtifactId::parse(artifact_id.clone())?)
+                } else {
+                    audit
+                };
                 let request_digest =
                     bind_idempotency_to_owner(&request_digest, &ownership, project_id)?;
                 let mutation = if action == SkillLibraryAction::Create {
