@@ -308,15 +308,30 @@ test('Depot Administration renders live schemas and guards destructive operation
   await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isDisabled(), true))
   await page.getByLabel('Confirm permanent operation').check()
   await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isEnabled(), true))
+  await page.getByRole('button', { name: 'Run destructive operation' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[1], { operation: 'depot.tokens.revoke', params: { tokenId: 'token-1' } })
+
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /Revoke access token/ }).click()
+  await page.getByLabel('tokenId').fill('token-2')
+  await assert.doesNotReject(async () => assert.equal(await page.getByLabel('Confirm permanent operation').isChecked(), false))
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Run destructive operation' }).isDisabled(), true))
+  await page.getByLabel('Confirm permanent operation').check()
+  await page.getByRole('button', { name: 'Run destructive operation' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[2], { operation: 'depot.tokens.revoke', params: { tokenId: 'token-2' } })
 })
 
-test('Depot Discovery imports the selected exact revision through its matching acquisition connection', { concurrency: false }, async (t) => {
+test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const actionCalls: Array<{ action: string; params: Record<string, unknown> }> = []
+  let connections = [{ id: 'different-depot' }]
+  let libraryVersion: unknown = 12
 
   await page.route('**/v1/depot/providers', route => route.fulfill({
     contentType: 'application/json',
@@ -342,9 +357,9 @@ test('Depot Discovery imports the selected exact revision through its matching a
     const call = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
     actionCalls.push(call)
     if (call.action === 'artifacts.list_connections') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ connections: [{ id: 'team-depot' }] }) })
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ connections }) })
     } else if (call.action === 'artifacts.list') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifacts: [], library_version: 12 }) })
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifacts: [], library_version: libraryVersion }) })
     } else {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifact: { id: 'local-1' }, library_version: 13 }) })
     }
@@ -353,6 +368,20 @@ test('Depot Discovery imports the selected exact revision through its matching a
   await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
   await assert.doesNotReject(() => page.getByRole('link', { name: /Release helper/ }).waitFor())
   await page.goto(`${baseUrl}/depot/?artifactProvider=team-depot&artifact=artifact-1`, { waitUntil: 'networkidle' })
+
+  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByText('Configure an Artifact acquisition connection named “team-depot” before importing from this provider.').waitFor()
+  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+
+  connections = [{ id: 'team-depot' }]
+  libraryVersion = 'not-a-version'
+  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByText('Labby did not return a valid current library version.').waitFor()
+  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+
+  libraryVersion = 12
   await page.getByRole('button', { name: 'Send to Labby' }).click()
   await page.getByText('Exact Artifact imported into Labby').waitFor()
 

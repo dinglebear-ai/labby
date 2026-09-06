@@ -8,7 +8,7 @@ export type OperationProperty = {
   default?: unknown
 }
 
-export type OperationFormValue = string | boolean
+export type OperationFormValue = string | boolean | undefined
 export type OperationFormState = Record<string, OperationFormValue>
 
 export function initialOperationForm(
@@ -16,7 +16,9 @@ export function initialOperationForm(
 ): OperationFormState {
   return Object.fromEntries(Object.entries(properties).map(([name, raw]) => {
     const property = raw as OperationProperty
-    if (property.type === 'boolean') return [name, property.default === true]
+    if (property.type === 'boolean') {
+      return [name, typeof property.default === 'boolean' ? property.default : undefined]
+    }
     if (property.default !== undefined) {
       return [name, typeof property.default === 'string' ? property.default : JSON.stringify(property.default)]
     }
@@ -33,7 +35,11 @@ export function operationParams(
   for (const [name, raw] of Object.entries(properties)) {
     const property = raw as OperationProperty
     const value = state[name]
-    if (property.type === 'boolean') { params[name] = value === true; continue }
+    if (property.type === 'boolean') {
+      if (typeof value === 'boolean') params[name] = value
+      else if (required.includes(name)) throw new Error(`${name} is required.`)
+      continue
+    }
     if (typeof value !== 'string' || value.trim() === '') {
       if (required.includes(name)) throw new Error(`${name} is required.`)
       continue
@@ -50,7 +56,8 @@ export function operationParams(
     }
     if (property.type === 'array') {
       try {
-        const parsed = value.trim().startsWith('[')
+        const trimmed = value.trim()
+        const parsed = trimmed.startsWith('[') || trimmed.startsWith('{')
           ? JSON.parse(value)
           : value.split(',').map(item => item.trim()).filter(Boolean)
         if (!Array.isArray(parsed)) throw new Error()

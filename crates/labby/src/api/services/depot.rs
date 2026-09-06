@@ -408,7 +408,129 @@ fn forbidden() -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use labby_auth::Authenticator;
+    use axum::{Router, body::Body, http::Request};
+    use labby_auth::{
+        Authenticator,
+        browser_authority::{BrowserPolicy, PermissionState, PolicyFuture},
+        sqlite::SqliteStore,
+        types::BrowserSessionRow,
+        util::now_unix,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    struct Policy {
+        scopes: Vec<String>,
+    }
+
+    impl BrowserPolicy for Policy {
+        fn current<'a>(&'a self, _: &'a BrowserSessionRow) -> PolicyFuture<'a> {
+            Box::pin(async move {
+                Ok(PermissionState {
+                    epoch: "1".to_owned(),
+                    scopes: self.scopes.clone(),
+                })
+            })
+        }
+    }
+
+    async fn browser_context(
+        scopes: &[&str],
+    ) -> (TempDir, BrowserAuthority, AuthContext, VerifiedIdentity) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(temp.path().join("auth.db"))
+            .await
+            .unwrap();
+        let now = now_unix();
+        let row = BrowserSessionRow {
+            session_id: "depot-route-session".to_owned(),
+            subject: "depot-route-subject".to_owned(),
+            email: Some("operator@example.test".to_owned()),
+            csrf_token: "depot-route-csrf".to_owned(),
+            created_at: now,
+            expires_at: now + 3600,
+            project_binding: None,
+        };
+        store.upsert_browser_session(row.clone()).await.unwrap();
+        let authority = BrowserAuthority::verify(
+            store,
+            &row.session_id,
+            "depot-route-test",
+            Arc::new(Policy {
+                scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            }),
+        )
+        .await
+        .unwrap();
+        let auth = AuthContext {
+            sub: row.subject.clone(),
+            actor_key: None,
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            issuer: "browser-session".to_owned(),
+            via_session: true,
+            csrf_token: Some(row.csrf_token),
+            email: row.email,
+        };
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            &row.subject,
+        )
+        .unwrap();
+        (temp, authority, auth, identity)
+    }
+
+    async fn upstream() -> (url::Url, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let app = Router::new().fallback(move || {
+            let observed = Arc::clone(&observed);
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"result":{"ok":true}}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (
+            url::Url::parse(&format!("http://{address}/")).unwrap(),
+            calls,
+        )
+    }
+
+    fn operation_router(
+        state: AppState,
+        authority: BrowserAuthority,
+        auth: AuthContext,
+        identity: VerifiedIdentity,
+    ) -> Router {
+        routes(state.clone())
+            .router
+            .with_state(state)
+            .layer(Extension(identity))
+            .layer(Extension(auth))
+            .layer(Extension(authority))
+    }
+
+    fn operation_request(operation: &str, csrf: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/operations")
+            .header("content-type", "application/json");
+        if let Some(csrf) = csrf {
+            request = request.header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, csrf);
+        }
+        request
+            .body(Body::from(
+                json!({"operation":operation,"params":{}}).to_string(),
+            ))
+            .unwrap()
+    }
 
     #[test]
     fn depot_rejects_web_ui_auth_disabled_identity() {
@@ -482,6 +604,91 @@ mod tests {
             assert_eq!(route.auth, RouteAuth::V1);
             assert_eq!(route.cache_posture, "private, no-store");
         }
+    }
+
+    #[tokio::test]
+    async fn read_operation_reaches_depot_without_admin_or_csrf() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "read-token",
+        ));
+
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request("depot.system.status", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mutation_without_admin_is_rejected_before_depot() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "write-token",
+        ));
+
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request(
+                "depot.sources.refresh",
+                Some("depot-route-csrf"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn mutation_without_valid_csrf_is_rejected_before_depot() {
+        for csrf in [None, Some("wrong-csrf")] {
+            let (base_url, calls) = upstream().await;
+            let (_temp, authority, auth, identity) =
+                browser_context(&["lab:read", "lab:admin"]).await;
+            let mut state = AppState::new();
+            state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+                base_url,
+                "write-token",
+            ));
+
+            let response = operation_router(state, authority, auth, identity)
+                .oneshot(operation_request("depot.sources.refresh", csrf))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_with_admin_and_csrf_reaches_depot() {
+        let (base_url, calls) = upstream().await;
+        let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
+        let mut state = AppState::new();
+        state.depot = Arc::new(crate::dispatch::depot::DepotClient::for_test(
+            base_url,
+            "write-token",
+        ));
+
+        let response = operation_router(state, authority, auth, identity)
+            .oneshot(operation_request(
+                "depot.sources.refresh",
+                Some("depot-route-csrf"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 

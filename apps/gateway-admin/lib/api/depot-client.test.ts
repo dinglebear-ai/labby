@@ -40,6 +40,25 @@ test('accepts the canonical operation catalog and generic operation results', as
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
 })
 
+test('accepts the full operation catalog contract bound', async () => {
+  const operation = { name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object' as const } }
+  await withFetch(json({ operations: Array.from({ length: 1000 }, (_, index) => ({ ...operation, name: `depot.operation.${index}` })) }), async () => {
+    assert.equal((await depotOperations()).length, 1000)
+  })
+  await withFetch(json({ operations: Array.from({ length: 1001 }, (_, index) => ({ ...operation, name: `depot.operation.${index}` })) }), async () => {
+    await assert.rejects(depotOperations(), /operation catalog response/i)
+  })
+})
+
+test('surfaces bounded structured Depot rejection details', async () => {
+  await withFetch(json({ error: 'depot_rejected', status: 422, detail: JSON.stringify({ message: 'CAS audit requires a repair token', token: 'not surfaced' }) }, 502), async () => {
+    await assert.rejects(depotCall('depot.maintenance.cas_audit', {}), /depot_rejected: CAS audit requires a repair token/)
+  })
+  await withFetch(json({ error: 'depot_rejected', detail: { reason: 'migration is already running', secret: 'not surfaced' } }, 502), async () => {
+    await assert.rejects(depotCall('depot.maintenance.migrate', {}), /migration is already running/)
+  })
+})
+
 test('rejects incompatible contracts and generic envelopes', async () => {
   await withFetch(json({ result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))

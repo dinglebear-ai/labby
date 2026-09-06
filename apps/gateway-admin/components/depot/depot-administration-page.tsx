@@ -62,6 +62,7 @@ function OperationGrid({ operations, workspace }: { operations: DepotOperation[]
 
   const execute = async () => {
     if (!selected) return
+    setResult(null)
     let parsed: Record<string, unknown>
     try { parsed = operationParams(selected.inputSchema.properties ?? {}, selected.inputSchema.required ?? [], form) }
     catch (error) { toast.error(getErrorMessage(error, 'Review the operation parameters.')); return }
@@ -127,7 +128,11 @@ export function DepotAdministrationPage() {
     try {
       const [nextStatus, nextOperations] = await Promise.all([depotStatus(), depotOperations()])
       setStatus(nextStatus); setOperations(nextOperations)
-    } catch (cause) { setError(getErrorMessage(cause, 'Unable to load Depot administration.')) }
+    } catch (cause) {
+      setStatus(null)
+      setOperations([])
+      setError(getErrorMessage(cause, 'Unable to load Depot administration.'))
+    }
     finally { setLoading(false) }
   }, [])
   useEffect(() => { void load() }, [load])
@@ -137,7 +142,7 @@ export function DepotAdministrationPage() {
     access: operations.filter(operation => operationWorkspace(operation.name) === 'access').length,
     operations: operations.filter(operation => operationWorkspace(operation.name) === 'operations').length,
   }), [operations])
-  const hasWriteAuthority = operations.some(operation => !READ_OPERATIONS.has(operation.name))
+  const hasWriteAuthority = status?.mutationAuthority === true && operations.some(operation => !READ_OPERATIONS.has(operation.name))
 
   return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={AURORA_PAGE_FRAME}>
     <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate every capability published by the selected Depot authority through Labby’s authenticated control plane." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? 'Authority connected' : 'Authority unavailable' }} actions={<div className="flex gap-2"><Button variant="outline" size="sm" asChild><a href="/settings/depot/"><Database className="size-4" />Authorities</a></Button><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Refresh</Button></div>} stats={[
@@ -149,9 +154,9 @@ export function DepotAdministrationPage() {
     ]} />
     <nav aria-label="Depot administration workspaces" className="flex overflow-x-auto border-b border-aurora-border-subtle px-1 sm:px-3">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex shrink-0 items-center gap-2 border-b-2 border-transparent px-4 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-4" />{label}{id !== 'overview' ? <span className={cn(AURORA_BADGE_LABEL, 'opacity-70')}>{counts[id]}</span> : null}</button>)}</nav>
     {error ? <DashboardPanel title="Depot unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
-    {workspace === 'overview' ? <div className="grid gap-4 lg:grid-cols-3"><DashboardPanel title="Catalog lifecycle" icon={<Boxes className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Discovery, canonical artifacts, sources, durable jobs, uploads, bundles, and publication share one workspace.</p><Button className="mt-4" size="sm" onClick={() => setWorkspace('catalog')}>Open Catalog</Button></DashboardPanel><DashboardPanel title="Access & governance" icon={<ShieldCheck className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Token administration and publication policy use Depot’s canonical schemas and Labby’s admin guard.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('access')}>Open Access</Button></DashboardPanel><DashboardPanel title="System operations" icon={<Wrench className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Status, CAS audits, maintenance, and migrations remain explicit, reviewable operations.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('operations')}>Open Operations</Button></DashboardPanel></div> : null}
-    {workspace === 'catalog' ? <div className="space-y-5"><ArtifactControlPlane /><DashboardPanel title="Canonical catalog operations" icon={<Boxes className="size-4" />}><p className="mb-4 text-sm text-aurora-text-muted">Direct access to every catalog operation advertised by this Depot authority.</p><OperationGrid operations={operations} workspace="catalog" /></DashboardPanel></div> : null}
-    {workspace === 'access' ? <OperationGrid operations={operations} workspace="access" /> : null}
-    {workspace === 'operations' ? <div className="space-y-5"><DepotProvidersPage /><DashboardPanel title="Depot maintenance" icon={<Wrench className="size-4" />}><OperationGrid operations={operations} workspace="operations" /></DashboardPanel></div> : null}
+    {!error && workspace === 'overview' ? <div className="grid gap-4 lg:grid-cols-3"><DashboardPanel title="Catalog lifecycle" icon={<Boxes className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Discovery, canonical artifacts, sources, durable jobs, uploads, bundles, and publication share one workspace.</p><Button className="mt-4" size="sm" onClick={() => setWorkspace('catalog')}>Open Catalog</Button></DashboardPanel><DashboardPanel title="Access & governance" icon={<ShieldCheck className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Token administration and publication policy use Depot’s canonical schemas and Labby’s admin guard.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('access')}>Open Access</Button></DashboardPanel><DashboardPanel title="System operations" icon={<Wrench className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Status, CAS audits, maintenance, and migrations remain explicit, reviewable operations.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('operations')}>Open Operations</Button></DashboardPanel></div> : null}
+    {!error && workspace === 'catalog' ? <div className="space-y-5"><ArtifactControlPlane /><DashboardPanel title="Canonical catalog operations" icon={<Boxes className="size-4" />}><p className="mb-4 text-sm text-aurora-text-muted">Direct access to every catalog operation advertised by this Depot authority.</p><OperationGrid operations={operations} workspace="catalog" /></DashboardPanel></div> : null}
+    {!error && workspace === 'access' ? <OperationGrid operations={operations} workspace="access" /> : null}
+    {!error && workspace === 'operations' ? <div className="space-y-5"><DepotProvidersPage /><DashboardPanel title="Depot maintenance" icon={<Wrench className="size-4" />}><OperationGrid operations={operations} workspace="operations" /></DashboardPanel></div> : null}
   </div></>
 }

@@ -144,10 +144,24 @@ impl DepotClient {
         DepotStatus {
             configured,
             enabled: self.enabled,
-            // This reports whether Labby can forward admin-authorized writes.
-            // Depot still evaluates the credential's scope for every call.
-            mutation_authority: self.enabled && configured,
+            // Configuration proves only that Labby can attempt a request. Depot
+            // remains authoritative for token scopes, so local state must not
+            // claim write authority that Depot has not attested.
+            mutation_authority: false,
             max_response_bytes: MAX_RESPONSE_BYTES,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: Url, token: &str) -> Self {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        Self {
+            http: Client::builder().no_proxy().build().unwrap(),
+            base_url: Some(base_url),
+            token: Some(Arc::from(token)),
+            enabled: true,
+            interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
+            queue_timeout: QUEUE_TIMEOUT,
         }
     }
 
@@ -432,13 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn configured_enabled_client_reports_forwarding_mutation_authority() {
+    fn configured_enabled_client_does_not_claim_unverified_mutation_authority() {
         let client = test_client(
             Url::parse("https://depot.invalid/").unwrap(),
             1,
             Duration::from_secs(1),
         );
-        assert!(client.status().mutation_authority);
+        assert!(!client.status().mutation_authority);
         assert!(!DepotClient::disabled().status().mutation_authority);
     }
 

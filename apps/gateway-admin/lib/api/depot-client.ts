@@ -27,7 +27,7 @@ const operationSchema = z.object({
   }).passthrough(),
   annotations: z.record(z.string(), z.unknown()).optional(),
 }).passthrough()
-const operationsSchema = z.object({ operations: z.array(operationSchema).max(128) }).passthrough()
+const operationsSchema = z.object({ operations: z.array(operationSchema).max(1000) }).passthrough()
 const genericResultSchema = contractSchema.extend({ result: z.unknown() })
 
 export type DepotOperation = z.infer<typeof operationSchema>
@@ -88,9 +88,25 @@ async function parse(response: Response): Promise<unknown> {
   try { body = await response.json() } catch { throw new Error(`Depot returned invalid JSON (${response.status})`) }
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
-    throw new Error(typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Depot request failed (${response.status})`)
+    const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Depot request failed (${response.status})`
+    const detail = depotRejectionDetail(error.detail)
+    throw new Error(detail ? `${summary}: ${detail}` : summary)
   }
   return body
+}
+
+function depotRejectionDetail(value: unknown): string | null {
+  let detail = value
+  if (typeof detail === 'string') {
+    const text = detail
+    try { detail = JSON.parse(text) as unknown } catch { return text.trim().slice(0, 1000) || null }
+  }
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
+  const record = detail as Record<string, unknown>
+  for (const key of ['message', 'error', 'detail', 'reason']) {
+    if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim().slice(0, 1000)
+  }
+  return null
 }
 
 function validate<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
