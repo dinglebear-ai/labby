@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ArgMode, ParamEntry } from "@/lib/actions";
-import { type LauncherCatalog, type LauncherEntry as BridgeLauncherEntry, fetchLauncherCatalog } from "@/lib/labbyClient";
+import {
+  type LauncherCatalog,
+  type LauncherEntry as BridgeLauncherEntry,
+  fetchLauncherCatalog,
+} from "@/lib/labbyClient";
 import { resultErrorMessage } from "@/lib/labbyClient";
 
 export type LauncherEntry = NormalizedLabbyActionEntry | NormalizedMcpToolEntry;
@@ -36,7 +40,7 @@ export interface NormalizedMcpToolEntry extends BaseLauncherEntry {
 }
 
 export function normalizeLauncherCatalog(catalog: LauncherCatalog): LauncherEntry[] {
-  return (catalog.entries ?? []).map(normalizeEntry);
+  return catalog.entries.map(normalizeEntry);
 }
 
 function normalizeEntry(entry: BridgeLauncherEntry): LauncherEntry {
@@ -122,6 +126,7 @@ export interface LauncherCatalogState {
   actions: LauncherEntry[];
   loading: boolean;
   error: string | null;
+  truncated: boolean;
   refresh: () => void;
 }
 
@@ -129,6 +134,7 @@ export function useLauncherCatalog(query: string): LauncherCatalogState {
   const [actions, setActions] = useState<LauncherEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const etagRef = useRef<string | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -137,27 +143,37 @@ export function useLauncherCatalog(query: string): LauncherCatalogState {
     let active = true;
     setLoading(true);
     const normalizedQuery = query.trim();
-    const timer = window.setTimeout(() => fetchLauncherCatalog(normalizedQuery, normalizedQuery ? null : etagRef.current)
-      .then((result) => {
-        if (!active) return;
-        if ("ok" in result) {
-          setError(resultErrorMessage(result));
-          return;
-        }
-        if (result.notModified) {
-          setError(null);
-          return;
-        }
-        setActions(normalizeLauncherCatalog(result.catalog));
-        setError(null);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      }), normalizedQuery ? 150 : 0);
+    const timer = window.setTimeout(
+      () =>
+        fetchLauncherCatalog(normalizedQuery, normalizedQuery ? null : etagRef.current)
+          .then((result) => {
+            if (!active) return;
+            if ("ok" in result) {
+              setTruncated(false);
+              setError(resultErrorMessage(result));
+              return;
+            }
+            if (result.notModified) {
+              setError(null);
+              return;
+            }
+            setActions(normalizeLauncherCatalog(result.catalog));
+            setTruncated(result.catalog.truncated === true);
+            if (!normalizedQuery) {
+              etagRef.current = `"${result.catalog.fingerprint}"`;
+            }
+            setError(null);
+          })
+          .catch((err) => {
+            if (!active) return;
+            setTruncated(false);
+            setError(err instanceof Error ? err.message : String(err));
+          })
+          .finally(() => {
+            if (active) setLoading(false);
+          }),
+      normalizedQuery ? 150 : 0,
+    );
     return () => {
       active = false;
       window.clearTimeout(timer);
@@ -166,5 +182,5 @@ export function useLauncherCatalog(query: string): LauncherCatalogState {
 
   const refresh = useCallback(() => setTick((value) => value + 1), []);
 
-  return { actions, loading, error, refresh };
+  return { actions, loading, error, truncated, refresh };
 }

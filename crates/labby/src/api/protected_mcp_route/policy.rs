@@ -9,7 +9,6 @@ pub(in crate::api::router) struct ProtectedRouteExposureDenial {
     item: String,
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) enum ProtectedRouteExposureDecision {
     NotApplicable,
     Allowed,
@@ -17,13 +16,11 @@ pub(in crate::api::router) enum ProtectedRouteExposureDecision {
     Malformed { capability: &'static str },
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) struct PreparedProtectedRouteRequest {
     pub(in crate::api::router) forwarded: Option<serde_json::Value>,
     pub(in crate::api::router) errors: Vec<serde_json::Value>,
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn prepare_protected_route_request(
     config: &crate::config::UpstreamConfig,
     request: serde_json::Value,
@@ -77,7 +74,6 @@ pub(in crate::api::router) fn prepare_protected_route_request(
     PreparedProtectedRouteRequest { forwarded, errors }
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn protected_route_json_rpc_error(
     id: serde_json::Value,
     code: i32,
@@ -88,7 +84,6 @@ pub(in crate::api::router) fn protected_route_json_rpc_error(
     serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{"code":code, "message":message, "data":{"kind":kind, "capability":capability}}})
 }
 
-#[cfg(feature = "gateway")]
 pub(super) fn protected_route_policy_only_response(
     errors: Vec<serde_json::Value>,
 ) -> axum::response::Response {
@@ -103,7 +98,6 @@ pub(super) fn protected_route_policy_only_response(
     (StatusCode::OK, Json(body)).into_response()
 }
 
-#[cfg(feature = "gateway")]
 pub(super) fn merge_protected_route_policy_errors(
     body: &mut Vec<u8>,
     errors: &[serde_json::Value],
@@ -124,7 +118,6 @@ pub(super) fn merge_protected_route_policy_errors(
     }
 }
 
-#[cfg(feature = "gateway")]
 pub(super) async fn read_bounded_protected_response(
     response: reqwest::Response,
     max: usize,
@@ -141,7 +134,6 @@ pub(super) async fn read_bounded_protected_response(
     Ok(bytes::Bytes::from(body))
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn filter_protected_route_sse_stream(
     stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + Unpin + 'static,
     config: crate::config::UpstreamConfig,
@@ -235,7 +227,6 @@ pub(in crate::api::router) fn filter_protected_route_sse_stream(
     )
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
     let lf = buffer
         .windows(2)
@@ -252,7 +243,6 @@ pub(in crate::api::router) fn find_sse_event_end(buffer: &[u8]) -> Option<usize>
     }
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn filter_protected_route_sse_event(
     config: &crate::config::UpstreamConfig,
     request: &serde_json::Value,
@@ -283,7 +273,6 @@ pub(in crate::api::router) fn filter_protected_route_sse_event(
     Ok(bytes::Bytes::from(output))
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn protected_route_exposure_decision(
     config: &crate::config::UpstreamConfig,
     request: &serde_json::Value,
@@ -377,7 +366,6 @@ pub(in crate::api::router) fn protected_route_exposure_decision(
     }
 }
 
-#[cfg(feature = "gateway")]
 pub(super) fn protected_route_has_list_request(request: &serde_json::Value) -> bool {
     request
         .as_array()
@@ -390,7 +378,6 @@ pub(super) fn protected_route_has_list_request(request: &serde_json::Value) -> b
             })
 }
 
-#[cfg(feature = "gateway")]
 pub(in crate::api::router) fn filter_protected_route_list_response(
     config: &crate::config::UpstreamConfig,
     request: &serde_json::Value,
@@ -445,7 +432,6 @@ pub(in crate::api::router) fn filter_protected_route_list_response(
     serde_json::to_vec(&response).ok()
 }
 
-#[cfg(feature = "gateway")]
 pub(super) fn filter_protected_route_list_result(
     config: &crate::config::UpstreamConfig,
     req: &serde_json::Value,

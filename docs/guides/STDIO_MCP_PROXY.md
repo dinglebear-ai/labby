@@ -337,8 +337,8 @@ mapping.
 
 `bearer auth requires ...`
 : Run `labby setup proxy --yes --auth bearer`, export the configured key, or
-  pipe the secret to `--bearer-token-stdin`. Confirm a current-directory config
-  is not changing `bearer_token_env`.
+  pipe the secret to `--bearer-token-stdin`. Confirm the effective
+  `$LABBY_HOME/config.toml` sets the intended `bearer_token_env`.
 
 `proxy OAuth requires a stable Labby public issuer`
 : Configure OAuth and `LABBY_PUBLIC_URL`, start `labby serve`, and verify the

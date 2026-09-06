@@ -1025,6 +1025,13 @@ impl UpstreamPool {
                     );
                 }
             }
+            if remaining_inspections == 0
+                && configs.iter().any(|config| {
+                    config.enabled && config.oauth.is_some() && !cached_names.contains(&config.name)
+                })
+            {
+                incomplete = true;
+            }
         }
         let mut futures = FuturesUnordered::new();
         for config in configs.iter().filter(|config| {
@@ -1068,12 +1075,9 @@ impl UpstreamPool {
             };
             match result {
                 Ok((_peer, tools)) => {
-                    let hidden_count = tools
-                        .iter()
-                        .filter(|tool| !exposure_policy.matches(tool.name.as_ref()))
-                        .count();
                     let mut inspection_budget_exhausted = false;
                     let mut exposed = Vec::new();
+                    let mut hidden_count = 0usize;
                     for tool in tools {
                         if remaining_inspections == 0 {
                             inspection_budget_exhausted = true;
@@ -1081,9 +1085,9 @@ impl UpstreamPool {
                         }
                         remaining_inspections -= 1;
                         inspected += 1;
-                        if exposure_policy.matches(tool.name.as_ref())
-                            && predicate.is_none_or(|predicate| predicate(&name, &tool))
-                        {
+                        if !exposure_policy.matches(tool.name.as_ref()) {
+                            hidden_count += 1;
+                        } else if predicate.is_none_or(|predicate| predicate(&name, &tool)) {
                             exposed.push(tool);
                         }
                     }

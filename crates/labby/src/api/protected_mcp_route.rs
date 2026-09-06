@@ -197,7 +197,6 @@ async fn protected_mcp_route_entry(
     proxy_protected_mcp_route(&state, request, route).await
 }
 
-#[cfg(feature = "gateway")]
 pub(super) async fn protected_mcp_intercept(
     State(state): State<AppState>,
     request: Request<Body>,

@@ -94,6 +94,43 @@ async fn matching_many_cached_subject_catalogs_share_one_inspection_budget() {
     assert!(result.tools.is_empty());
 }
 
+#[tokio::test]
+async fn exact_cached_budget_marks_unvisited_oauth_cache_miss_incomplete() {
+    let pool = static_catalog_pool("cached").await;
+    move_connection_to_subject_cache_with_tools(
+        &pool,
+        "cached",
+        "alice",
+        (0..10_000)
+            .map(|index| test_tool(&format!("ordinary_{index:05}")))
+            .collect(),
+    )
+    .await;
+    let configs = [
+        UpstreamConfig {
+            expose_tools: None,
+            ..oauth_upstream_config("cached", &["*"])
+        },
+        UpstreamConfig {
+            expose_tools: None,
+            ..oauth_upstream_config("cache_miss", &["*"])
+        },
+    ];
+    let result = pool
+        .subject_scoped_upstream_tools_allowed_matching_bounded(
+            &configs,
+            "alice",
+            None,
+            10_000,
+            &|_, _| false,
+            Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(result.inspected, 10_000);
+    assert!(result.incomplete);
+    assert!(result.tools.is_empty());
+}
+
 fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
     UpstreamConfig {
         expose_tools: Some(expose_tools.iter().map(|s| (*s).to_string()).collect()),

@@ -68,7 +68,6 @@ pub(super) struct AuthenticatedProtectedRoute {
     pub(super) product_bound: Option<BoundAccessGrant>,
 }
 
-#[cfg(feature = "gateway")]
 pub(super) async fn authenticate_protected_route_request(
     request: &mut Request<Body>,
     route: &crate::config::ProtectedMcpRouteConfig,

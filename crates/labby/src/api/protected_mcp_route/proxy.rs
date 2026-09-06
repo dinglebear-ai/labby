@@ -290,7 +290,6 @@ pub(super) async fn proxy_protected_mcp_route(
     })
 }
 
-#[cfg(feature = "gateway")]
 pub(super) async fn protected_route_upstream_target(
     state: &AppState,
     route: &crate::config::ProtectedMcpRouteConfig,
