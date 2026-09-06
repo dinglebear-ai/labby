@@ -318,8 +318,7 @@ impl DepotClient {
                     let now = tokio::time::Instant::now();
                     if requests.len() >= 1024 {
                         requests.retain(|_, state| {
-                            now.duration_since(state.observed_at())
-                                < Duration::from_hours(24)
+                            now.duration_since(state.observed_at()) < Duration::from_hours(24)
                         });
                     }
                     if requests.len() >= 1024 {
