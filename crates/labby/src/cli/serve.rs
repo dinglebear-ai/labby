@@ -363,6 +363,19 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    let file_stash_runtime = match crate::config::file_stash_root_path(config) {
+        Ok(root) => Arc::new(
+            crate::file_stash::FileStashRuntime::initialize_with_preferences(
+                root,
+                config.file_stash.clone(),
+            )
+            .await,
+        ),
+        Err(_) => {
+            tracing::warn!("file stash runtime unavailable: state root could not be resolved");
+            Arc::new(crate::file_stash::FileStashRuntime::blocked())
+        }
+    };
 
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
@@ -442,6 +455,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::new(registry),
                 Arc::clone(&gateway_manager),
                 Arc::clone(&access_runtime),
+                Arc::clone(&file_stash_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -453,6 +467,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             return run_stdio(
                 Arc::new(registry),
                 Arc::clone(&access_runtime),
+                Arc::clone(&file_stash_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -618,6 +633,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 .join("depot-transactions"),
         )
         .with_access_runtime(Arc::clone(&access_runtime))
+        .with_file_stash_runtime(Arc::clone(&file_stash_runtime))
         .with_http_bind_host(host.clone());
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
@@ -798,7 +814,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         "startup plan resolved"
     );
 
-    run_http(
+    let result = run_http(
         &host,
         port,
         bearer_token,
@@ -812,7 +828,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         unix_listener_config,
         peer_auth_enabled,
     )
-    .await
+    .await;
+    file_stash_runtime.shutdown().await;
+    result
 }
 
 #[cfg(feature = "fs")]
@@ -1918,6 +1936,7 @@ fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
     access_runtime: Arc<AccessRuntime>,
+    file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -1969,6 +1988,7 @@ fn run_stdio(
         let server = LabMcpServer {
             registry,
             access_runtime,
+            file_stash_runtime,
             #[cfg(feature = "gateway")]
             gateway_manager: Some(Arc::clone(&gateway_manager)),
             peers: Arc::clone(&notifier.peers),
@@ -2068,6 +2088,7 @@ fn build_mcp_service_with_scope(
 ) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
     let registry = Arc::clone(&state.registry);
     let access_runtime = Arc::clone(&state.access_runtime);
+    let file_stash_runtime = Arc::clone(&state.file_stash_runtime);
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
@@ -2117,6 +2138,7 @@ fn build_mcp_service_with_scope(
         move || {
             let reg = Arc::clone(&registry);
             let access_runtime = Arc::clone(&access_runtime);
+            let file_stash_runtime = Arc::clone(&file_stash_runtime);
             #[cfg(feature = "gateway")]
             let manager = gateway_manager.clone();
             #[cfg(feature = "gateway")]
@@ -2143,6 +2165,7 @@ fn build_mcp_service_with_scope(
             Ok(LabMcpServer {
                 registry: reg,
                 access_runtime,
+                file_stash_runtime,
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
                 peers,

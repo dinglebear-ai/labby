@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import {
-  Bot, Box, CheckCircle2, CirclePlus, Clock3, Code2, Download, ExternalLink,
-  FileArchive, FileCode2, FileJson, FileText, Grid2X2, Inbox, Layers3, List,
-  Pause, Play, Search, Square, Table2, Upload, X, ChevronDown, ArrowUpDown, ScrollText,
+  Bot, Box, CheckCircle2, CirclePlus, Clock3, ExternalLink,
+  FileCode2, FileText, Grid2X2, Layers3, List,
+  Pause, Play, Search, Square, Table2, ChevronDown, ArrowUpDown, ScrollText,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
@@ -166,14 +166,6 @@ function TaskFields({name,setName,definition,setDefinition,schedule,setSchedule,
 
 function TaskDialog({row,onOpenChange,onSave}:{row:string[]|null;onOpenChange:(open:boolean)=>void;onSave:(row:string[])=>void}){const [editing,setEditing]=useState(false),[name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console');const begin=()=>{if(!row)return;setName(row[1]);setSchedule(row[2]);setLoadout(row[3]);setDefinition(row[5]);setEditing(true)};return <Dialog open={Boolean(row)} onOpenChange={open=>{onOpenChange(open);if(!open)setEditing(false)}}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>{editing?'Edit task':row?.[1]??'Task'}</DialogTitle><DialogDescription>{editing?'Change the task definition, schedule, or loadout.':'Workspace details and controls.'}</DialogDescription>{editing?<TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/>:<><p className="rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-3 text-sm leading-6 text-aurora-text-primary">{row?.[5]}</p><dl className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low px-4">{[['State',row?.[0]],['Schedule',row?.[2]],['Loadout',row?.[3]],['Next run',row?.[4]]].map(([label,value])=><div key={label} className="flex justify-between gap-4 py-3 text-sm"><dt className="text-aurora-text-muted">{label}</dt><dd className="font-medium text-aurora-text-primary">{value}</dd></div>)}</dl></>}<div className="flex flex-wrap justify-end gap-2">{editing?<><Button variant="outline" onClick={()=>setEditing(false)}>Cancel</Button><Button onClick={()=>{if(row)onSave([row[0],name,schedule,loadout,row[4],definition,row[6]]);setEditing(false)}}>Save changes</Button></>:<><Button variant="outline" onClick={begin}>Edit task</Button><Button variant="outline"><Pause/>Pause task</Button><Button><Play/>Run now</Button><Button variant="outline" asChild><a href="/logs"><ScrollText/>View last run logs</a></Button></>}</div></DialogContent></Dialog>}
 
-const files = [
-  ['Data','fleet-snapshot.json','stash://me/fleet-snapshot.json','412 KB','2h ago'],
-  ['Doc','reconcile-notes.md','stash://me/reconcile-notes.md','18 KB','5h ago'],
-  ['Archive','gateway-trace.log','stash://me/gateway-trace.log','96 MB','1d ago'],
-  ['Code','schema.prisma','stash://me/schema.prisma','11 KB','1d ago'],
-]
-export function StashPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Stash'}]}/><PageFrame><ConsoleHero eyebrow="Workspace · Stash" title="Stash" pulse={{color:'var(--aurora-success)'}} actions={<Button><Upload/>Upload</Button>} stats={[{label:'Files',value:4,icon:<Inbox size={12}/>},{label:'Size',value:'96.4 MB',icon:<FileText size={12}/>},{label:'Shared',value:2,icon:<Bot size={12}/>} ]}/><button className="group w-full rounded-aurora-2 border border-dashed border-aurora-accent-primary/50 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--aurora-accent-primary)_8%,transparent),color-mix(in_srgb,var(--aurora-success)_7%,transparent))] p-7 text-center text-sm text-aurora-text-muted transition-colors hover:border-aurora-accent-primary"><Upload className="mx-auto mb-2 size-6 text-aurora-accent-primary"/><strong className="block text-aurora-text-primary">Drop files here or browse</strong>Available to agents through <code className="text-aurora-success">stash://</code></button><StashCollection/></PageFrame></> }
-
 export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
 
 const logRows = [
@@ -191,5 +183,3 @@ function DataTable({ headings, rows }: { headings: string[]; rows: string[][] })
 
 type ViewMode = 'table'|'list'|'cards'
 function ViewModes({value,onChange}:{value:ViewMode;onChange:(value:ViewMode)=>void}) { return <div className="flex rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode])=><button key={mode} type="button" onClick={()=>onChange(mode)} aria-pressed={value===mode} aria-label={`${label} view`} title={`${label} view`} className={`rounded p-1.5 ${value===mode?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted hover:text-aurora-text-primary'}`}><Icon className="size-3.5"/></button>)}</div> }
-
-function StashCollection(){const [view,setView]=useState<ViewMode>('table');return <DashboardPanel title="Files" action={<ViewModes value={view} onChange={setView}/>}><div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':view==='list'?'divide-y divide-aurora-border-subtle':'divide-y divide-aurora-border-subtle'}>{files.map((file,index)=><div key={file[1]} className={view==='cards'?'rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4':'grid grid-cols-[34px_minmax(0,1fr)_120px_90px] items-center gap-3 px-3 py-3 hover:bg-aurora-hover-bg'}><span className={`grid size-8 place-items-center rounded-aurora-1 ${index===0?'bg-aurora-accent-primary/10 text-aurora-accent-primary':index===1?'bg-aurora-success/10 text-aurora-success':index===2?'bg-aurora-error/10 text-aurora-error':'bg-aurora-warn/10 text-aurora-warn'}`}>{index===0?<FileJson/>:index===1?<FileText/>:index===2?<FileArchive/>:<Code2/>}</span><div className={view==='cards'?'mt-3':''}><strong className="text-sm text-aurora-text-primary">{file[1]}</strong><code className="block truncate text-xs text-aurora-text-muted">{file[2]}</code></div><span className="text-xs text-aurora-text-muted">{file[3]}</span><div className="flex items-center justify-end gap-1"><Button size="icon-sm" variant="ghost" aria-label="Download"><Download/></Button><Button size="icon-sm" variant="ghost" aria-label="Remove"><X/></Button></div></div>)}</div></DashboardPanel>}

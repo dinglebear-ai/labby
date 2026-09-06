@@ -2708,6 +2708,162 @@
         ]
       }
     },
+    "/v1/stash": {
+      "post": {
+        "tags": [
+          "stash"
+        ],
+        "summary": "Dispatch action to stash",
+        "description": "Execute an action on the stash service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StashActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/uploads": {
       "post": {
         "tags": [
@@ -6562,6 +6718,143 @@
             "type": "string"
           },
           "id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "stash.list",
+              "stash.search",
+              "stash.stats",
+              "stash.metadata",
+              "stash.rename",
+              "stash.delete",
+              "stash.grants.create",
+              "stash.grants.list",
+              "stash.grants.revoke"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "StashStashDeleteParams": {
+        "type": "object",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashStashGrantsCreateParams": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "grantee_principal_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "grantee_principal_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashStashGrantsListParams": {
+        "type": "object",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "StashStashGrantsRevokeParams": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "grant_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashStashListParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "StashStashMetadataParams": {
+        "type": "object",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashStashRenameParams": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StashStashSearchParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
             "type": "string"
           }
         }

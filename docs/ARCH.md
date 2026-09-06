@@ -285,10 +285,14 @@ The binary resolves those inputs, then constructs clients explicitly.
 
 Feature-gated product slices are `gateway` and `fs`. The supported always-on
 operator services are `doctor`, `server_logs`, `setup`, and `snippets`;
-`lab_admin` is runtime-conditional. Retired ACP, Registry-browser, Marketplace,
-Fleet/device runtime, Deploy-product, and Stash implementations are deleted from
-current source, manifests, packaging, CI, and generated product catalogs rather
-than retained as sleeping aliases.
+`lab_admin` is runtime-conditional. The approved principal-scoped File Stash
+contract reserves owned local state for eventual `gateway-host` composition; it
+is not registered yet and is not a separate Cargo feature. Qualification must
+promote it into current-service documentation only after implementation.
+Retired ACP, Registry-browser, Marketplace, Fleet/device runtime, Deploy-product,
+and Agent Artifact Manager implementations are deleted rather than retained as
+sleeping aliases. File Stash must not restore their component, revision,
+workspace, provider, deploy-target, Marketplace-fork, or drift semantics.
 
 For a first-class service or capability, add only the surfaces it actually
 supports:

@@ -50,6 +50,7 @@ pub mod catalog;
 pub mod depot;
 pub mod dev_containers;
 pub mod doctor;
+pub mod file_stash;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod oauth_relay;
