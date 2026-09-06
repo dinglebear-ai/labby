@@ -27,7 +27,7 @@ fn every_registered_action_has_exactly_one_authority_classification() {
         let name = action["action"].as_str().expect("action name");
         let classification = by_service
             .get(service)
-            .unwrap_or_else(|| panic!("unclassified registered action {service}:{name}"));
+            .expect("every registered service must have an authority classification");
         for field in [
             "resourceFamily",
             "readCapability",

@@ -433,8 +433,9 @@ impl LibraryAuthorization {
         if self.tenant_id != ownership.tenant_id {
             return Err(ArtifactError::NotFound("library_record"));
         }
-        let owner_scope_matches =
-            self.owner_kind == ownership.owner_kind && self.scope_id == ownership.owner_id;
+        let owner_kind_matches = self.owner_kind == ownership.owner_kind;
+        let owner_id_matches = self.scope_id == ownership.owner_id;
+        let owner_scope_matches = owner_kind_matches && owner_id_matches;
         if self.grant == LibraryGrant::Owner && !owner_scope_matches {
             return Err(ArtifactError::NotFound("library_record"));
         }
