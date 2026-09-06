@@ -35,6 +35,7 @@ The goal is not merely to add roles. Labby must be able to answer, consistently 
 - [PROGRESS.md](./PROGRESS.md) tracks decisions, implementation status, tests, migrations, and documentation follow-through.
 - [MULTI_USER_AUTHORITY.md](./MULTI_USER_AUTHORITY.md) freezes the v1 multi-user/Team authority, ownership, projection, delegation, migration, recovery, and audit contract shared with Depot.
 - [authority-matrix-v1.json](./authority-matrix-v1.json) is the checked role/capability/resource/service classification registry.
+- [MIGRATION.md](./MIGRATION.md) defines the production-shaped ownership migration rehearsal, activation boundary, backup/restore set, quarantine, and rollback proof.
 
 ## Existing contracts this design preserves
 

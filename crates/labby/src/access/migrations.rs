@@ -626,6 +626,7 @@ CREATE TABLE access_audit (
 #[cfg(test)]
 mod credential_migration_tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn legacy_metadata_reader_preserves_operational_sqlite_errors() {
@@ -706,6 +707,124 @@ mod credential_migration_tests {
             .pragma_update(None, "user_version", V4_SCHEMA_VERSION)
             .unwrap();
         connection
+    }
+
+    fn production_shaped_v4() -> Connection {
+        let connection = canonical_v4();
+        connection
+            .execute_batch(
+                "INSERT INTO organizations VALUES
+                   ('org-production', 'Production Équipe', 'active', 17, 100, 200);
+                 INSERT INTO principals VALUES
+                   ('principal-owner', 'org-production', 'user', 'active', 'Owner', 100, 200),
+                   ('principal-member', 'org-production', 'user', 'active', 'Member', 101, 201),
+                   ('principal-disabled', 'org-production', 'user', 'disabled', NULL, 102, 202);
+                 INSERT INTO principal_links VALUES
+                   ('link-owner', 'principal-owner', 'external', 'https://issuer.example', 'owner-subject', NULL, 'active', 1, 1, 100, 200),
+                   ('link-member', 'principal-member', 'external', 'https://issuer.example', 'member-subject', NULL, 'active', 1, 2, 101, 201),
+                   ('link-disabled', 'principal-disabled', 'local_credential', NULL, NULL, 'legacy-disabled', 'revoked', 1, 3, 102, 202);
+                 INSERT INTO projects VALUES
+                   ('project-alpha', 'org-production', 'Alpha', 'active', 9, 110, 210),
+                   ('project-beta', 'org-production', 'Beta', 'suspended', 4, 111, 211);
+                 INSERT INTO project_memberships VALUES
+                   ('membership-owner', 'org-production', 'project-alpha', 'principal-owner', 'owner', 'active', 'principal-owner', 120, 220),
+                   ('membership-member', 'org-production', 'project-alpha', 'principal-member', 'member', 'active', 'principal-owner', 121, 221),
+                   ('membership-viewer', 'org-production', 'project-beta', 'principal-member', 'viewer', 'suspended', 'principal-owner', 122, 222);
+                 INSERT INTO project_loadouts VALUES
+                   ('org-production', 'project-alpha', 'production-default', 'principal-owner', 130, 230);
+                 INSERT INTO access_audit VALUES
+                   ('audit-owner', 140, 'correlation-1', 'principal-owner', 'org-production', 'project-alpha', 'project.read', 'project', 'sha256:alpha', 'allow', 'membership', 17, '{}'),
+                   ('audit-deny', 141, 'correlation-2', 'principal-member', 'org-production', 'project-beta', 'project.use', 'project', 'sha256:beta', 'deny', 'project_suspended', 17, '{}');
+                 INSERT INTO project_policy_publications VALUES
+                   ('project-alpha', zeroblob(32), 9, 230);",
+            )
+            .unwrap();
+        connection
+    }
+
+    fn production_shaped_v5() -> Connection {
+        let mut connection = production_shaped_v4();
+        migrate(&mut connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO access_admission_buckets VALUES
+                   ('credential_peer', zeroblob(32), 300, 3, 303);
+                 INSERT INTO access_security_events VALUES
+                   ('security-deny', 304, 'credential_verify', 'deny',
+                    'credential_invalid', zeroblob(32), NULL, '{}');",
+            )
+            .unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        connection
+    }
+
+    fn logical_inventory(connection: &Connection) -> Vec<(String, i64, String)> {
+        use rusqlite::types::ValueRef;
+
+        let mut tables = connection
+            .prepare(
+                "SELECT name FROM sqlite_schema
+                 WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .unwrap();
+        let names = tables
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        drop(tables);
+
+        let mut inventory = Vec::with_capacity(names.len());
+        for table in names {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            let mut rows = statement.query([]).unwrap();
+            let mut count = 0_i64;
+            let mut digest = Sha256::new();
+            while let Some(row) = rows.next().unwrap() {
+                count += 1;
+                digest.update([0xff]);
+                for index in 0..columns {
+                    match row.get_ref(index).unwrap() {
+                        ValueRef::Null => digest.update([0]),
+                        ValueRef::Integer(value) => {
+                            digest.update([1]);
+                            digest.update(value.to_be_bytes());
+                        }
+                        ValueRef::Real(value) => {
+                            digest.update([2]);
+                            digest.update(value.to_bits().to_be_bytes());
+                        }
+                        ValueRef::Text(value) => {
+                            digest.update([3]);
+                            digest.update(value.len().to_be_bytes());
+                            digest.update(value);
+                        }
+                        ValueRef::Blob(value) => {
+                            digest.update([4]);
+                            digest.update(value.len().to_be_bytes());
+                            digest.update(value);
+                        }
+                    }
+                }
+            }
+            let digest = digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            inventory.push((table, count, digest));
+        }
+        inventory
+    }
+
+    fn snapshot_into(connection: &Connection, path: &std::path::Path) {
+        connection
+            .execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
+            .unwrap();
     }
 
     #[test]
@@ -825,6 +944,133 @@ mod credential_migration_tests {
                     .get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn production_shaped_v4_rehearsal_preserves_inventory_reopens_and_restores() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("production-v4.db");
+        let checkpoint_path = directory.path().join("production-v4.backup.db");
+        let restored_path = directory.path().join("restored-v4.db");
+
+        let source = production_shaped_v4();
+        let before = logical_inventory(&source);
+        snapshot_into(&source, &source_path);
+        snapshot_into(&source, &checkpoint_path);
+        drop(source);
+
+        let mut migrated = Connection::open(&source_path).unwrap();
+        migrated.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate(&mut migrated).unwrap();
+        super::super::integrity::validate(&migrated).unwrap();
+        assert_eq!(
+            migrated
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let after = logical_inventory(&migrated);
+        for (table, expected_count, expected_digest) in &before {
+            if matches!(
+                table.as_str(),
+                "access_metadata" | "access_admission_buckets" | "access_security_events"
+            ) {
+                continue;
+            }
+            let (_, actual_count, actual_digest) = after
+                .iter()
+                .find(|(candidate, _, _)| candidate == table)
+                .unwrap_or_else(|| panic!("table disappeared: {table}"));
+            assert_eq!(
+                actual_count, expected_count,
+                "row count changed for {table}"
+            );
+            assert_eq!(
+                actual_digest, expected_digest,
+                "content changed for {table}"
+            );
+        }
+        drop(migrated);
+
+        for _ in 0..2 {
+            let reopened = Connection::open(&source_path).unwrap();
+            reopened.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+            super::super::integrity::validate(&reopened).unwrap();
+        }
+
+        std::fs::copy(&checkpoint_path, &restored_path).unwrap();
+        let restored = Connection::open(&restored_path).unwrap();
+        restored.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        validate_migratable(&restored, V4_SCHEMA_VERSION).unwrap();
+        assert_eq!(logical_inventory(&restored), before);
+        assert_eq!(
+            restored
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            V4_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn production_shaped_v5_checkpoint_restores_exact_logical_inventory() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint_path = directory.path().join("production-v5.backup.db");
+        let restored_path = directory.path().join("restored-v5.db");
+        let source = production_shaped_v5();
+        let expected = logical_inventory(&source);
+        snapshot_into(&source, &checkpoint_path);
+        drop(source);
+
+        std::fs::copy(&checkpoint_path, &restored_path).unwrap();
+        for _ in 0..2 {
+            let restored = Connection::open(&restored_path).unwrap();
+            restored.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+            super::super::integrity::validate(&restored).unwrap();
+            assert_eq!(logical_inventory(&restored), expected);
+            assert_eq!(
+                restored
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn rehearsal_failures_leave_v4_inventory_and_version_unchanged() {
+        let mut malformed = production_shaped_v4();
+        malformed
+            .execute_batch("DROP INDEX project_credentials_authority;")
+            .unwrap();
+        let malformed_before = logical_inventory(&malformed);
+        assert!(matches!(
+            migrate(&mut malformed),
+            Err(AccessStoreError::IntegrityViolation {
+                check: "schema_manifest"
+            })
+        ));
+        assert_eq!(logical_inventory(&malformed), malformed_before);
+        assert_eq!(
+            malformed
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            V4_SCHEMA_VERSION
+        );
+
+        let mut read_only = production_shaped_v4();
+        let read_only_before = logical_inventory(&read_only);
+        read_only.execute_batch("PRAGMA query_only=ON;").unwrap();
+        assert!(matches!(
+            migrate(&mut read_only),
+            Err(AccessStoreError::ReadOnly)
+        ));
+        assert_eq!(logical_inventory(&read_only), read_only_before);
+        assert_eq!(
+            read_only
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            V4_SCHEMA_VERSION
         );
     }
 
