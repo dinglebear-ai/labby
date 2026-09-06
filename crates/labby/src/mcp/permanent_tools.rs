@@ -211,6 +211,7 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         "fs" | "lab_admin" => (true, derived_destructive, true, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
+        "access" => (false, derived_destructive, false, false),
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
         | "sources" | "uploads" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such

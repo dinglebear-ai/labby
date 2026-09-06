@@ -1,3 +1,4 @@
+pub(crate) mod access;
 pub(crate) mod access_bootstrap;
 #[cfg(feature = "skills")]
 pub(crate) mod artifact_control;

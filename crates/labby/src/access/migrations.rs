@@ -675,6 +675,60 @@ CREATE INDEX team_memberships_principal
 CREATE INDEX team_memberships_team
     ON team_memberships(organization_id, team_id, status, role, principal_id);
 
+CREATE TABLE team_invitations (
+    invitation_digest BLOB PRIMARY KEY CHECK(length(invitation_digest) = 32),
+    organization_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+    invited_principal_id TEXT NOT NULL,
+    inviter_principal_id TEXT NOT NULL,
+    team_membership_epoch INTEGER NOT NULL CHECK(team_membership_epoch > 0),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked', 'expired')),
+    accepted_principal_id TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
+    accepted_at INTEGER,
+    revoked_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    CHECK ((status = 'accepted') =
+      (accepted_principal_id IS NOT NULL AND accepted_at IS NOT NULL)),
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+    FOREIGN KEY (organization_id, team_id)
+      REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, inviter_principal_id)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, invited_principal_id)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, accepted_principal_id)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX team_invitations_pending
+    ON team_invitations(organization_id, team_id, status, expires_at);
+
+CREATE TABLE team_project_assignments (
+    assignment_id TEXT PRIMARY KEY CHECK(length(trim(assignment_id)) > 0),
+    organization_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member', 'viewer')),
+    status TEXT NOT NULL CHECK(status IN ('active', 'suspended', 'revoked')),
+    assignment_epoch INTEGER NOT NULL CHECK(assignment_epoch > 0),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+    UNIQUE (organization_id, team_id, project_id),
+    FOREIGN KEY (organization_id, team_id)
+      REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
+    FOREIGN KEY (organization_id, project_id)
+      REFERENCES projects(organization_id, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (organization_id, created_by)
+      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX team_project_assignments_project
+    ON team_project_assignments(organization_id, project_id, status, team_id);
+
 CREATE TRIGGER team_memberships_keep_last_owner_delete
 BEFORE DELETE ON team_memberships
 WHEN OLD.role = 'owner' AND OLD.status = 'active'

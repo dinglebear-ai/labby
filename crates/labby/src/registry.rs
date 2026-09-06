@@ -450,6 +450,14 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
 
     reg.register(RegisteredService::bootstrap_operator(
+        "access",
+        "Manage teams, memberships, invitations, and project assignments",
+        "administration",
+        crate::dispatch::access::ACTIONS,
+        dispatch_fn!(crate::dispatch::access::dispatch_unbound),
+    ));
+
+    reg.register(RegisteredService::bootstrap_operator(
         "browser",
         "Bridge browser-native WebMCP tools into Labby",
         "bootstrap",
@@ -813,6 +821,7 @@ mod tests {
     fn registry_and_router_service_sets_are_identical() {
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
+            s.insert("access");
             s.insert("browser");
             #[cfg(feature = "gateway")]
             s.insert("gateway");

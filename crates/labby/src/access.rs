@@ -32,6 +32,7 @@ mod workflow;
 #[allow(unused_imports)]
 pub(crate) use authority::{
     ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+    resolve_personal_owner,
 };
 #[allow(unused_imports)]
 pub(crate) use authorization::{
@@ -49,7 +50,7 @@ pub(crate) use credential_verifier::{
     LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
 };
 #[allow(unused_imports)]
-pub(crate) use domain::{Permission, ProjectRole};
+pub(crate) use domain::{Permission, ProjectRole, TeamRole};
 pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
@@ -75,8 +76,10 @@ pub(crate) use runtime::{
 pub(crate) use store::AccessStore;
 #[allow(unused_imports)]
 pub(crate) use team::{
-    AddTeamMemberInput, CreateTeamInput, PlatformAdministratorInput, TeamMembershipInput,
-    TeamMembershipSnapshot, TeamSnapshot,
+    AcceptTeamInvitationInput, AddTeamMemberInput, AssignTeamProjectInput, CreateTeamInput,
+    CreateTeamInvitationInput, EffectiveProjectRoleSnapshot, PlatformAdministratorInput,
+    TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
+    TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
 #[allow(unused_imports)]
 pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};

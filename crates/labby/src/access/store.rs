@@ -17,8 +17,10 @@ use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 use super::team::{
-    AddTeamMemberInput, CreateTeamInput, PlatformAdministratorInput, TeamMembershipInput,
-    TeamMembershipSnapshot, TeamSnapshot,
+    AcceptTeamInvitationInput, AddTeamMemberInput, AssignTeamProjectInput, CreateTeamInput,
+    CreateTeamInvitationInput, EffectiveProjectRoleSnapshot, PlatformAdministratorInput,
+    TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
+    TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -191,6 +193,40 @@ impl AccessStore {
     ) -> AccessStoreResult<()> {
         self.with_connection(move |connection| {
             super::team::revoke_platform_admin(connection, &input)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_team_invitation(
+        &self,
+        input: CreateTeamInvitationInput,
+    ) -> AccessStoreResult<TeamInvitationSnapshot> {
+        self.with_connection(move |connection| super::team::create_invitation(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn accept_team_invitation(
+        &self,
+        input: AcceptTeamInvitationInput,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        self.with_connection(move |connection| super::team::accept_invitation(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn assign_team_project(
+        &self,
+        input: AssignTeamProjectInput,
+    ) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
+        self.with_connection(move |connection| super::team::assign_team_project(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn list_effective_projects(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<EffectiveProjectRoleSnapshot>> {
+        self.with_connection(move |connection| {
+            super::team::list_effective_projects(connection, &identity)
         })
         .await
     }

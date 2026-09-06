@@ -1591,7 +1591,57 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "artifacts" {
+            let result = if service == "access" {
+                let auth = auth_context_from_extensions(&context.extensions);
+                let identity = context
+                    .extensions
+                    .get::<labby_auth::VerifiedIdentity>()
+                    .cloned();
+                let installation_id = context
+                    .extensions
+                    .get::<labby_primitives::product_credential::BoundAccessGrant>()
+                    .map(|grant| grant.installation_id.clone());
+                match (identity, self.access_runtime.store().await) {
+                    (Some(identity), Ok(store)) => {
+                        let ceiling = auth.map_or_else(
+                            crate::access::AuthorityCeiling::trusted_local,
+                            crate::access::AuthorityCeiling::from_auth_context,
+                        );
+                        let installation_id = installation_id.unwrap_or_default();
+                        if installation_id.is_empty()
+                            && matches!(
+                                action.as_str(),
+                                "access.team.create"
+                                    | "access.platform_admin.grant"
+                                    | "access.platform_admin.revoke"
+                            )
+                        {
+                            Err(ToolError::Sdk {
+                                sdk_kind: "service_unavailable".to_owned(),
+                                message: "installation-bound access administration is unavailable"
+                                    .to_owned(),
+                            })
+                        } else {
+                            crate::dispatch::access::dispatch(
+                                crate::dispatch::access::AccessDispatchContext {
+                                    store,
+                                    identity,
+                                    ceiling,
+                                    installation_id,
+                                },
+                                &action,
+                                params,
+                            )
+                            .await
+                        }
+                    }
+                    _ => Err(ToolError::Forbidden {
+                        message: "access administration requires host-established identity"
+                            .to_owned(),
+                        required_scopes: Vec::new(),
+                    }),
+                }
+            } else if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
                     self.dispatch_artifact_tool_boxed(

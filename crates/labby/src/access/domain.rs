@@ -437,6 +437,61 @@ impl ProjectRole {
             _ => None,
         }
     }
+
+    pub(super) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Member => "member",
+            Self::Viewer => "viewer",
+        }
+    }
+
+    pub(super) const fn precedence(self) -> u8 {
+        match self {
+            Self::Owner => 4,
+            Self::Admin => 3,
+            Self::Member => 2,
+            Self::Viewer => 1,
+        }
+    }
+
+    pub(super) const fn max(self, other: Self) -> Self {
+        if self.precedence() >= other.precedence() {
+            self
+        } else {
+            other
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum InvitationStatus {
+    Pending,
+    Accepted,
+    Revoked,
+    Expired,
+}
+
+impl InvitationStatus {
+    pub(super) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub(super) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "accepted" => Some(Self::Accepted),
+            "revoked" => Some(Self::Revoked),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -714,6 +769,23 @@ mod tests {
             ProjectRole::Viewer.permissions(),
             &[Permission::ProjectRead, Permission::AssetDiscover]
         );
+    }
+
+    #[test]
+    fn project_role_precedence_is_explicit_and_stable() {
+        assert_eq!(
+            ProjectRole::Viewer.max(ProjectRole::Member),
+            ProjectRole::Member
+        );
+        assert_eq!(
+            ProjectRole::Member.max(ProjectRole::Admin),
+            ProjectRole::Admin
+        );
+        assert_eq!(
+            ProjectRole::Admin.max(ProjectRole::Owner),
+            ProjectRole::Owner
+        );
+        assert_eq!(ProjectRole::Owner.as_persisted(), "owner");
     }
 
     #[test]

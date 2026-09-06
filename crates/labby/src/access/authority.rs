@@ -193,6 +193,27 @@ pub(crate) async fn authorize_action(
     .map_err(|error| AccessStoreError::Unavailable(error.to_string()))
 }
 
+/// Resolve the caller's personal owner scope from verified durable identity facts. This avoids
+/// accepting a principal identifier from an untrusted adapter payload.
+pub(crate) async fn resolve_personal_owner(
+    store: &AccessStore,
+    identity: VerifiedIdentity,
+) -> AccessStoreResult<OwnerScope> {
+    let principal_id = store
+        .with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(map_sqlite_error)?;
+            let principal = resolve_principal(&transaction, &identity).map_err(collapse_denial)?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(principal.id)
+        })
+        .await?;
+    Ok(OwnerScope::Personal(
+        PrincipalId::new(principal_id).map_err(|_| AccessStoreError::MalformedVocabulary)?,
+    ))
+}
+
 fn resolve_authority(
     transaction: &Transaction<'_>,
     identity: &VerifiedIdentity,

@@ -38,6 +38,7 @@ pub(crate) fn require_session_csrf(
 pub mod auth_admin;
 pub mod browser;
 
+pub mod access;
 /// Browser-session-only owner bootstrap (`/v1/access/bootstrap-owner`).
 pub mod access_bootstrap;
 pub mod access_bootstrap_proof;
