@@ -252,6 +252,7 @@ pub(crate) struct ManagedProjectSnapshot {
     pub(crate) status: String,
     pub(crate) role: String,
     pub(crate) policy_epoch: u64,
+    pub(crate) can_manage: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -896,6 +897,7 @@ pub(super) fn create_managed_project(
         status: "active".into(),
         role: "admin".into(),
         policy_epoch: 1,
+        can_manage: true,
     })
 }
 
@@ -908,7 +910,9 @@ pub(super) fn get_managed_project(
         .map_err(map_sqlite_error)?;
     let actor = resolve_principal(&tx, &input.actor)?;
     require_team_member(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
-    let result=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3 AND a.status='active'",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?})).optional().map_err(map_sqlite_error)?.ok_or(AccessStoreError::TeamUnavailable)?;
+    let can_manage =
+        require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id).is_ok();
+    let result=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3 AND a.status='active'",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?,can_manage})).optional().map_err(map_sqlite_error)?.ok_or(AccessStoreError::TeamUnavailable)?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(result)
 }
@@ -921,7 +925,7 @@ pub(super) fn list_managed_projects(
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
     let actor = resolve_principal(&tx, identity)?;
-    let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id JOIN team_memberships m ON m.organization_id=a.organization_id AND m.team_id=a.team_id WHERE p.organization_id=?1 AND m.principal_id=?2 AND m.status='active' AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
+    let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch,m.role FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id JOIN team_memberships m ON m.organization_id=a.organization_id AND m.team_id=a.team_id WHERE p.organization_id=?1 AND m.principal_id=?2 AND m.status='active' AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
     let values = statement
         .query_map(params![actor.organization_id, actor.id], |r| {
             Ok(ManagedProjectSnapshot {
@@ -932,6 +936,7 @@ pub(super) fn list_managed_projects(
                 role: r.get(4)?,
                 policy_epoch: u64::try_from(r.get::<_, i64>(5)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                can_manage: matches!(r.get::<_, String>(6)?.as_str(), "owner" | "admin"),
             })
         })
         .map_err(map_sqlite_error)?
@@ -963,7 +968,7 @@ pub(super) fn update_managed_project(
     if changed != 1 {
         return Err(AccessStoreError::TeamUnavailable);
     }
-    let snapshot=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?})).map_err(map_sqlite_error)?;
+    let snapshot=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?,can_manage:true})).map_err(map_sqlite_error)?;
     advance_global_revision(&tx, now)?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(snapshot)

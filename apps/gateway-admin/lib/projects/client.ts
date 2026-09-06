@@ -1,5 +1,5 @@
 import { getSessionAuthority, getSessionCsrfToken } from '@/lib/auth/session-store'
-export type ProjectView={project_id:string;team_id:string;name:string;status:string;role:string;policy_epoch:number}
+export type ProjectView={project_id:string;team_id:string;name:string;status:string;role:string;policy_epoch:number;can_manage:boolean}
 async function action<T>(name:string,params:Record<string,unknown>={},mutation=false):Promise<T>{const headers=new Headers({'content-type':'application/json'});if(mutation){const token=getSessionCsrfToken();if(token)headers.set('x-csrf-token',token)}const response=await fetch('/v1/projects/',{method:'POST',credentials:'include',cache:'no-store',headers,body:JSON.stringify({action:name,params})});if(!response.ok)throw new Error(`Project request failed (${response.status})`);return response.json() as Promise<T>}
 export const listProjects=()=>action<ProjectView[]>('projects.list')
 export function activeTeamId():string|undefined{return getSessionAuthority()?.activeTeamId}
