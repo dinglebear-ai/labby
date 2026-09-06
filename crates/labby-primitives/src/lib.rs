@@ -21,3 +21,4 @@ pub mod plugin;
 pub mod plugin_ui;
 pub mod product_credential;
 pub mod ssrf;
+pub mod task;

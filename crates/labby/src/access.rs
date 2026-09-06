@@ -30,6 +30,7 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+mod task;
 mod team;
 #[cfg(test)]
 mod test_support;
