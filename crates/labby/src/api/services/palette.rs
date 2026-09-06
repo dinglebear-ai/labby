@@ -1846,12 +1846,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-        // A fuzzy search still inspects the full snapshot and detects the poison
-        // schemas, proving exact searches above did not process those entries.
+        // A fuzzy search still inspects every matching snapshot entry and detects
+        // the poison schemas, proving exact searches above did not process them.
         let full = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/palette/search?q=ping")
+                    .uri("/v1/palette/search?q=poison")
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .body(Body::empty())
                     .unwrap(),
