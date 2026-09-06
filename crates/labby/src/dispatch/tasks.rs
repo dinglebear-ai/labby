@@ -62,6 +62,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("owner_kind"),
             param("owner_id"),
             param("agent_id"),
+            param("input_digest"),
         ],
     ),
     action("tasks.list", "List caller-visible Agent Tasks", &[]),
@@ -354,7 +355,11 @@ async fn execute_queued(
     match execute_task(
         &TASK_SCHEDULER,
         &ledger,
-        &FixedAuthority(epochs),
+        &LiveExecutionAuthority {
+            store: context.store.clone(),
+            identity: context.identity.clone(),
+            owner: record.intent.owner.clone(),
+        },
         &DisabledExecutor,
         task,
         Cancellation::new(),
@@ -370,10 +375,21 @@ async fn execute_queued(
     }
 }
 
-struct FixedAuthority(AuthorityEpochVector);
-impl AgentAuthority for FixedAuthority {
+struct LiveExecutionAuthority {
+    store: crate::access::AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+}
+impl AgentAuthority for LiveExecutionAuthority {
     async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
-        Ok(self.0.clone())
+        refresh_authority_epochs(
+            &self.store,
+            self.identity.clone(),
+            self.owner.clone(),
+            Capability::ScopeOperate,
+        )
+        .await
+        .map_err(|_| AgentRuntimeError::AuthorityUnavailable)
     }
 }
 struct DisabledExecutor;
@@ -547,6 +563,16 @@ mod tests {
     fn catalog_is_complete() {
         assert_eq!(ACTIONS.len(), 6);
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("tasks.")));
+        let create = ACTIONS
+            .iter()
+            .find(|action| action.name == "tasks.create")
+            .unwrap();
+        assert!(
+            create
+                .params
+                .iter()
+                .any(|param| param.name == "input_digest" && param.required)
+        );
     }
     #[tokio::test]
     async fn unbound_is_non_enumerating() {

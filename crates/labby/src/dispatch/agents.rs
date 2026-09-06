@@ -54,7 +54,17 @@ pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.create",
         "Create an Agent definition",
-        &[param("agent_id"), param("owner_kind"), param("owner_id")],
+        &[
+            param("agent_id"),
+            param("owner_kind"),
+            param("owner_id"),
+            param("content_digest"),
+            param("repository_digest"),
+            param("image_digest"),
+            param("harness_digest"),
+            param("loadout_digest"),
+            param("catalog_generation"),
+        ],
     ),
     action("agents.list", "List caller-visible Agents", &[]),
     action(
@@ -284,7 +294,11 @@ pub(crate) async fn dispatch(
                 },
             };
             let result = execute_agent(
-                &FixedAuthority(epochs),
+                &LiveExecutionAuthority {
+                    store: context.store.clone(),
+                    identity: context.identity.clone(),
+                    owner: definition.owner.clone(),
+                },
                 &DisabledExecutor,
                 request,
                 Cancellation::new(),
@@ -341,10 +355,21 @@ pub(crate) async fn dispatch(
     }
 }
 
-struct FixedAuthority(AuthorityEpochVector);
-impl AgentAuthority for FixedAuthority {
+struct LiveExecutionAuthority {
+    store: crate::access::AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+}
+impl AgentAuthority for LiveExecutionAuthority {
     async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
-        Ok(self.0.clone())
+        refresh_authority_epochs(
+            &self.store,
+            self.identity.clone(),
+            self.owner.clone(),
+            Capability::ScopeOperate,
+        )
+        .await
+        .map_err(|_| AgentRuntimeError::AuthorityUnavailable)
     }
 }
 struct DisabledExecutor;
@@ -563,6 +588,25 @@ mod tests {
     #[test]
     fn catalog_is_complete_and_unbound_denies() {
         assert_eq!(ACTIONS.len(), 8);
+        let create = ACTIONS
+            .iter()
+            .find(|action| action.name == "agents.create")
+            .unwrap();
+        for required in [
+            "content_digest",
+            "repository_digest",
+            "image_digest",
+            "harness_digest",
+            "loadout_digest",
+            "catalog_generation",
+        ] {
+            assert!(
+                create
+                    .params
+                    .iter()
+                    .any(|param| param.name == required && param.required)
+            );
+        }
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
     }
     #[tokio::test]
