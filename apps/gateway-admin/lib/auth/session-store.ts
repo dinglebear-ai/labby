@@ -1,17 +1,8 @@
-export type AuthorityOwner =
-  | { kind: 'installation'; id: string }
-  | { kind: 'team'; id: string }
-  | { kind: 'project'; id: string }
-  | { kind: 'personal'; id: string }
+import { invalidateAuthorityRequests } from './authority-context.ts'
+import { MalformedAuthorityResponseError, parseAuthoritySnapshot, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
 
-export type SessionAuthority = {
-  principalId: string
-  activeOwner: AuthorityOwner
-  activeTeamId?: string
-  activeProjectId?: string
-  capabilities: readonly string[]
-  generation: number
-}
+export type SessionAuthority = AuthoritySnapshot
+export type { AuthorityOwner, AuthoritySnapshot }
 
 export type BrowserSessionState =
   | { status: 'loading' }
@@ -52,6 +43,11 @@ type SessionPayload =
       active_project_id?: string | null
       capabilities?: unknown
       authority_generation?: number | null
+      owner?: unknown
+      organization_id?: unknown
+      teams?: unknown
+      projects?: unknown
+      project?: unknown
     }
   | {
       authenticated: false
@@ -75,7 +71,10 @@ function emit() {
 function setState(next: BrowserSessionState) {
   const previousIdentity = sessionIdentity(currentState)
   const nextIdentity = sessionIdentity(next)
-  if (previousIdentity !== nextIdentity) sessionGeneration += 1
+  if (previousIdentity !== nextIdentity) {
+    sessionGeneration += 1
+    invalidateAuthorityRequests(sessionGeneration)
+  }
   currentState = next
   emit()
 }
@@ -98,36 +97,8 @@ function sessionIdentity(state: BrowserSessionState) {
 }
 
 function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: true }>): SessionAuthority | undefined {
-  const principalId = nonEmpty(payload.principal_id)
-  const generation = payload.authority_generation
-  if (!principalId || !Number.isSafeInteger(generation) || Number(generation) < 0) return undefined
-
-  const capabilities = Array.isArray(payload.capabilities)
-    ? [...new Set(payload.capabilities.filter((value): value is string => nonEmpty(value) !== undefined))].sort()
-    : []
-  const projectedOwner = payload.active_owner
-  const kind = projectedOwner?.kind
-  const id = nonEmpty(projectedOwner?.id)
-  const activeOwner = id && isOwnerKind(kind)
-    ? { kind, id } as AuthorityOwner
-    : { kind: 'personal' as const, id: principalId }
-
-  return {
-    principalId,
-    activeOwner,
-    activeTeamId: nonEmpty(payload.active_team_id),
-    activeProjectId: nonEmpty(payload.active_project_id ?? payload.project_id),
-    capabilities,
-    generation: Number(generation),
-  }
-}
-
-function nonEmpty(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value : undefined
-}
-
-function isOwnerKind(value: unknown): value is AuthorityOwner['kind'] {
-  return value === 'installation' || value === 'team' || value === 'project' || value === 'personal'
+  const hasProjection = payload.authority_generation !== undefined || payload.organization_id !== undefined || payload.owner !== undefined || payload.active_owner !== undefined
+  return hasProjection ? parseAuthoritySnapshot(payload as unknown as Record<string, unknown>) : undefined
 }
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
@@ -173,6 +144,13 @@ export function sessionHasCapability(capability: string) {
   return getSessionAuthority()?.capabilities.includes(capability) ?? false
 }
 
+export function selectSessionWorkspace(selection: { teamId?: string | null; projectId?: string | null }) {
+  if (currentState.status !== 'authenticated' || !currentState.authority) throw new Error('Authority is unavailable')
+  const authority = selectAuthorityWorkspace(currentState.authority, selection)
+  setState({ ...currentState, authority, projectId: authority.activeProjectId })
+  return authority
+}
+
 /** Authority-adjacent cache generation. Never expose the subject in cache keys. */
 export function getBrowserSessionEpoch() {
   return sessionGeneration
@@ -202,11 +180,15 @@ export async function loadBrowserSession() {
         requestId: response.headers.get('x-request-id') ?? undefined,
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof MalformedAuthorityResponseError) {
+      next = { status: 'auth_error', kind: 'incompatible_authority', message: error.message }
+    } else {
     next = {
       status: 'auth_error',
       kind: 'network_error',
       message: SESSION_ERROR_MESSAGE,
+    }
     }
   }
 
