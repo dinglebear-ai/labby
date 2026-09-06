@@ -35,6 +35,7 @@ mod store;
 mod task;
 pub(crate) use task::TaskRecord;
 mod team;
+pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
 #[cfg(test)]
 mod test_support;
 mod workflow;

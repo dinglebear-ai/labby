@@ -23,6 +23,7 @@ pub mod lab_admin;
 #[cfg(feature = "gateway")]
 pub mod oauth_subject;
 pub mod path_safety;
+pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]
 pub mod remote_control;

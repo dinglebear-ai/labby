@@ -244,6 +244,47 @@ pub(crate) struct TeamProjectAssignmentSnapshot {
     pub(crate) assignment_epoch: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct ManagedProjectSnapshot {
+    pub(crate) project_id: String,
+    pub(crate) team_id: String,
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) role: String,
+    pub(crate) policy_epoch: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ManageTeamProjectInput {
+    actor: VerifiedIdentity,
+    team_id: String,
+    project_id: String,
+    name: Option<String>,
+}
+impl ManageTeamProjectInput {
+    pub(crate) fn new(
+        actor: VerifiedIdentity,
+        team_id: impl Into<String>,
+        project_id: impl Into<String>,
+        name: Option<String>,
+    ) -> AccessStoreResult<Self> {
+        let team_id = team_id.into();
+        let project_id = project_id.into();
+        if !valid_id(&team_id)
+            || !valid_id(&project_id)
+            || name.as_deref().is_some_and(|v| !valid_name(v))
+        {
+            return Err(AccessStoreError::InvalidTeamInput);
+        }
+        Ok(Self {
+            actor,
+            team_id,
+            project_id,
+            name,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EffectiveProjectRoleSnapshot {
     pub(crate) organization_id: String,
@@ -832,6 +873,102 @@ pub(super) fn assign_team_project(
     })
 }
 
+pub(super) fn create_managed_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+) -> AccessStoreResult<ManagedProjectSnapshot> {
+    let tx = immediate(connection)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    let name = input
+        .name
+        .as_deref()
+        .ok_or(AccessStoreError::InvalidTeamInput)?;
+    let now = unix_now()?;
+    tx.execute("INSERT INTO projects(project_id,organization_id,name,status,project_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,'active',1,?4,?4)",params![input.project_id,actor.organization_id,name,now]).map_err(map_sqlite_error)?;
+    tx.execute("INSERT INTO team_project_assignments(assignment_id,organization_id,team_id,project_id,role,status,assignment_epoch,created_by,created_at,updated_at,revoked_at) VALUES(?1,?2,?3,?4,'admin','active',1,?5,?6,?6,NULL)",params![format!("team-project-{}-{}",input.team_id,input.project_id),actor.organization_id,input.team_id,input.project_id,actor.id,now]).map_err(map_sqlite_error)?;
+    advance_global_revision(&tx, now)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(ManagedProjectSnapshot {
+        project_id: input.project_id.clone(),
+        team_id: input.team_id.clone(),
+        name: name.into(),
+        status: "active".into(),
+        role: "admin".into(),
+        policy_epoch: 1,
+    })
+}
+
+pub(super) fn get_managed_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+) -> AccessStoreResult<ManagedProjectSnapshot> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_member(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    let result=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3 AND a.status='active'",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?})).optional().map_err(map_sqlite_error)?.ok_or(AccessStoreError::TeamUnavailable)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(result)
+}
+
+pub(super) fn list_managed_projects(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+) -> AccessStoreResult<Vec<ManagedProjectSnapshot>> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let actor = resolve_principal(&tx, identity)?;
+    let mut statement=tx.prepare("SELECT p.project_id,a.team_id,p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id JOIN team_memberships m ON m.organization_id=a.organization_id AND m.team_id=a.team_id WHERE p.organization_id=?1 AND m.principal_id=?2 AND m.status='active' AND a.status='active' AND p.status!='disabled' ORDER BY a.team_id,p.project_id").map_err(map_sqlite_error)?;
+    let values = statement
+        .query_map(params![actor.organization_id, actor.id], |r| {
+            Ok(ManagedProjectSnapshot {
+                project_id: r.get(0)?,
+                team_id: r.get(1)?,
+                name: r.get(2)?,
+                status: r.get(3)?,
+                role: r.get(4)?,
+                policy_epoch: u64::try_from(r.get::<_, i64>(5)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            })
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    drop(statement);
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(values)
+}
+
+pub(super) fn update_managed_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+    archive: bool,
+) -> AccessStoreResult<ManagedProjectSnapshot> {
+    let tx = immediate(connection)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    let assigned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM team_project_assignments WHERE organization_id=?1 AND team_id=?2 AND project_id=?3 AND status='active')",params![actor.organization_id,input.team_id,input.project_id],|r|r.get(0)).map_err(map_sqlite_error)?;
+    if !assigned {
+        return Err(AccessStoreError::TeamUnavailable);
+    }
+    let now = unix_now()?;
+    let changed = if archive {
+        tx.execute("UPDATE projects SET status='disabled',project_policy_epoch=project_policy_epoch+1,updated_at=?1 WHERE organization_id=?2 AND project_id=?3 AND status='active'",params![now,actor.organization_id,input.project_id]).map_err(map_sqlite_error)?
+    } else {
+        tx.execute("UPDATE projects SET name=?1,project_policy_epoch=project_policy_epoch+1,updated_at=?2 WHERE organization_id=?3 AND project_id=?4 AND status='active'",params![input.name.as_deref().ok_or(AccessStoreError::InvalidTeamInput)?,now,actor.organization_id,input.project_id]).map_err(map_sqlite_error)?
+    };
+    if changed != 1 {
+        return Err(AccessStoreError::TeamUnavailable);
+    }
+    let snapshot=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?})).map_err(map_sqlite_error)?;
+    advance_global_revision(&tx, now)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
 pub(super) fn list_effective_projects(
     connection: &mut Connection,
     identity: &VerifiedIdentity,
@@ -979,6 +1116,22 @@ fn require_team_manager(
         return Ok(());
     }
     let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM team_memberships m JOIN groups g ON g.organization_id=m.organization_id AND g.group_id=m.team_id WHERE m.organization_id=?1 AND m.team_id=?2 AND m.principal_id=?3 AND m.status='active' AND m.role IN ('owner','admin') AND g.status='active')",params![organization_id,team_id,principal_id],|r|r.get(0)).map_err(map_sqlite_error)?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(AccessStoreError::NotAuthorized)
+    }
+}
+fn require_team_member(
+    tx: &Transaction<'_>,
+    principal_id: &str,
+    organization_id: &str,
+    team_id: &str,
+) -> AccessStoreResult<()> {
+    if is_platform_admin(tx, principal_id)? {
+        return Ok(());
+    }
+    let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM team_memberships m JOIN groups g ON g.organization_id=m.organization_id AND g.group_id=m.team_id WHERE m.organization_id=?1 AND m.team_id=?2 AND m.principal_id=?3 AND m.status='active' AND g.status='active')",params![organization_id,team_id,principal_id],|r|r.get(0)).map_err(map_sqlite_error)?;
     if allowed {
         Ok(())
     } else {
@@ -1237,6 +1390,105 @@ mod tests {
             Err(AccessStoreError::NotAuthorized)
         ));
         store.suspend_team(admin, "team-a".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn team_project_lifecycle_is_manager_owned_and_non_members_cannot_enumerate() {
+        let (_directory, store, owner) = store().await;
+        let member = identity("member-projects");
+        let outsider = identity("outsider-projects");
+        seed_principal(&store, "member-projects-principal", "member-projects").await;
+        seed_principal(&store, "outsider-projects-principal", "outsider-projects").await;
+        store
+            .create_team(
+                CreateTeamInput::new(owner.clone(), "project-team", "Project Team").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .add_team_member(
+                AddTeamMemberInput::new(
+                    owner.clone(),
+                    "project-team",
+                    "member-projects-principal",
+                    TeamRole::Member,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let created = store
+            .create_managed_project(
+                ManageTeamProjectInput::new(
+                    owner.clone(),
+                    "project-team",
+                    "project-a",
+                    Some("Project A".into()),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.team_id, "project-team");
+        assert_eq!(
+            store
+                .list_managed_projects(member.clone())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .list_managed_projects(outsider)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            store
+                .update_managed_project(
+                    ManageTeamProjectInput::new(
+                        member.clone(),
+                        "project-team",
+                        "project-a",
+                        Some("Nope".into())
+                    )
+                    .unwrap(),
+                    false
+                )
+                .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        let updated = store
+            .update_managed_project(
+                ManageTeamProjectInput::new(
+                    owner.clone(),
+                    "project-team",
+                    "project-a",
+                    Some("Renamed".into()),
+                )
+                .unwrap(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Renamed");
+        store
+            .update_managed_project(
+                ManageTeamProjectInput::new(owner, "project-team", "project-a", None).unwrap(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .list_managed_projects(member)
+                .await
+                .unwrap()
+                .is_empty(),
+            "archive invalidates future selection/listing"
+        );
     }
 
     #[tokio::test]

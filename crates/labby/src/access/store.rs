@@ -522,6 +522,35 @@ impl AccessStore {
         })
         .await
     }
+    pub(crate) async fn create_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::create_managed_project(c, &input))
+            .await
+    }
+    pub(crate) async fn get_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::get_managed_project(c, &input))
+            .await
+    }
+    pub(crate) async fn list_managed_projects(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<super::ManagedProjectSnapshot>> {
+        self.with_connection(move |c| super::team::list_managed_projects(c, &identity))
+            .await
+    }
+    pub(crate) async fn update_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+        archive: bool,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::update_managed_project(c, &input, archive))
+            .await
+    }
 
     pub(crate) async fn list_accessible_projects(
         &self,
