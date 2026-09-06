@@ -140,7 +140,7 @@ but those URLs are separate contracts:
 [[artifacts.sources]]
 id = "primary"
 kind = "depot"
-endpoint = "https://depot.example/v1/artifacts/exact"
+endpoint = "https://depot.example/api/artifacts/exact"
 control_plane_url = "https://depot.example"
 pinned_addresses = ["93.184.216.34"]
 bearer_token_env = "LABBY_DEPOT_TOKEN"

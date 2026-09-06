@@ -15,6 +15,23 @@ const contractSchema = z.object({
   contractVersion: z.literal(1).optional(),
 }).passthrough()
 
+const operationSchema = z.object({
+  name: bounded(256),
+  title: bounded(512),
+  description: bounded(4096),
+  inputSchema: z.object({
+    type: z.literal('object'),
+    properties: z.record(z.string(), z.unknown()).optional(),
+    required: z.array(z.string()).optional(),
+    additionalProperties: z.boolean().optional(),
+  }).passthrough(),
+  annotations: z.record(z.string(), z.unknown()).optional(),
+}).passthrough()
+const operationsSchema = z.object({ operations: z.array(operationSchema).max(128) }).passthrough()
+const genericResultSchema = contractSchema.extend({ result: z.unknown() })
+
+export type DepotOperation = z.infer<typeof operationSchema>
+
 const depotStatusSchema = z.object({
   configured: z.boolean(), enabled: z.boolean(), mutationAuthority: z.boolean(),
   maxResponseBytes: z.number().int().nonnegative(),
@@ -89,13 +106,18 @@ export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
   return validate(z.object({ depot: depotStatusSchema }).passthrough(), await parse(response), 'status response').depot
 }
 
+export async function depotOperations(signal?: AbortSignal): Promise<DepotOperation[]> {
+  const response = await fetch('/v1/depot/operations', { credentials: 'same-origin', cache: 'no-store', signal })
+  return validate(operationsSchema, await parse(response), 'operation catalog response').operations
+}
+
 export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const init = gatewayRequestInit(operation, params, undefined, signal)
   init.body = JSON.stringify({ operation, params })
   const value = await parse(await fetch('/v1/depot/operations', init))
   if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
   if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
-  throw new Error(`Unsupported Depot operation: ${operation}`)
+  return validate(genericResultSchema, value, 'operation response') as T
 }
 
 const federatedArtifactSchema = z.object({

@@ -140,13 +140,13 @@ impl DepotClient {
 
     #[must_use]
     pub fn status(&self) -> DepotStatus {
+        let configured = self.base_url.is_some() && self.token.is_some();
         DepotStatus {
-            configured: self.base_url.is_some() && self.token.is_some(),
+            configured,
             enabled: self.enabled,
-            // A configured shared service credential is read-only. Mutation
-            // authority requires negotiated actor/epoch/capability support,
-            // which this first compatibility slice does not yet implement.
-            mutation_authority: false,
+            // This reports whether Labby can forward admin-authorized writes.
+            // Depot still evaluates the credential's scope for every call.
+            mutation_authority: self.enabled && configured,
             max_response_bytes: MAX_RESPONSE_BYTES,
         }
     }
@@ -294,8 +294,81 @@ async fn decode_response(mut response: reqwest::Response) -> Result<Value, Depot
     }
 }
 
+pub(crate) fn operation_is_read_only(operation: &str) -> bool {
+    matches!(
+        operation,
+        "depot.skills.search"
+            | "depot.skills.load"
+            | "depot.skills.read"
+            | "depot.artifacts.list"
+            | "depot.artifacts.get"
+            | "depot.artifacts.exact"
+            | "depot.skills.list"
+            | "depot.skills.get"
+            | "depot.skills.search_skills_sh"
+            | "depot.skills.search_ard"
+            | "depot.skills.search_marketplace"
+            | "depot.bundles.list"
+            | "depot.bundles.get"
+            | "depot.sources.list"
+            | "depot.system.status"
+            | "depot.mcp_registry.list"
+            | "depot.acp_registry.list"
+            | "depot.ingest.list"
+            | "depot.ingest.get"
+    )
+}
+
 fn allowed_operation(operation: &str) -> bool {
-    matches!(operation, "depot.artifacts.list" | "depot.artifacts.get")
+    operation_is_read_only(operation)
+        || matches!(
+            operation,
+            "depot.artifacts.list_candidates"
+                | "depot.artifacts.intake_candidate"
+                | "depot.artifacts.follow"
+                | "depot.artifacts.fork"
+                | "depot.artifacts.set_publication"
+                | "depot.artifacts.set_license"
+                | "depot.skills.ingest_repo"
+                | "depot.skills.ingest_well_known"
+                | "depot.skills.ingest_skills_sh"
+                | "depot.skills.ingest_ard_catalog"
+                | "depot.skills.ingest_marketplace"
+                | "depot.skills.ingest_mcp"
+                | "depot.skills.ingest_mcp_registry"
+                | "depot.skills.ingest_acp_registry"
+                | "depot.skills.delete"
+                | "depot.bundles.create"
+                | "depot.bundles.add_skill"
+                | "depot.bundles.remove_skill"
+                | "depot.bundles.set_visibility"
+                | "depot.bundles.publish"
+                | "depot.bundles.delete"
+                | "depot.sources.configure"
+                | "depot.sources.refresh"
+                | "depot.sources.delete"
+                | "depot.ingest.start"
+                | "depot.ingest.retry"
+                | "depot.ingest.cancel"
+                | "depot.uploads.create"
+                | "depot.uploads.get"
+                | "depot.uploads.delete"
+                | "depot.tokens.list"
+                | "depot.tokens.create"
+                | "depot.tokens.revoke"
+                | "depot.maintenance.gc"
+                | "depot.maintenance.cas_audit"
+                | "depot.maintenance.sidecars"
+                | "depot.maintenance.upstream"
+                | "depot.maintenance.cas_migration.plan"
+                | "depot.maintenance.cas_migration.copy"
+                | "depot.maintenance.cas_migration.verify"
+                | "depot.maintenance.cas_migration.cutover"
+                | "depot.maintenance.cas_migration.rollback"
+                | "depot.maintenance.cas_migration.audit"
+                | "depot.maintenance.cas_migration.status"
+                | "depot.maintenance.cas_migration.end_retention"
+        )
 }
 
 pub fn error_body(error: &DepotError) -> Value {
@@ -336,12 +409,37 @@ mod tests {
     }
 
     #[test]
-    fn operation_allowlist_excludes_generic_and_destructive_unknowns() {
+    fn operation_allowlist_covers_canonical_operations_and_excludes_unknowns() {
         assert!(allowed_operation("depot.artifacts.list"));
         assert!(allowed_operation("depot.artifacts.get"));
-        assert!(!allowed_operation("depot.ingest.start"));
+        assert!(allowed_operation("depot.ingest.start"));
+        assert!(allowed_operation("depot.tokens.revoke"));
+        assert!(allowed_operation("depot.tokens.list"));
+        assert!(allowed_operation("depot.uploads.get"));
+        assert!(allowed_operation("depot.maintenance.cas_audit"));
+        assert!(allowed_operation("depot.maintenance.cas_migration.audit"));
+        assert!(allowed_operation("depot.maintenance.cas_migration.status"));
+        assert!(allowed_operation("depot.maintenance.cas_migration.cutover"));
         assert!(!allowed_operation("depot.artifacts.delete"));
         assert!(!allowed_operation("depot.admin.execute"));
+        assert!(operation_is_read_only("depot.system.status"));
+        assert!(!operation_is_read_only("depot.sources.refresh"));
+        assert!(!operation_is_read_only("depot.tokens.list"));
+        assert!(!operation_is_read_only("depot.uploads.get"));
+        assert!(!operation_is_read_only(
+            "depot.maintenance.cas_migration.status"
+        ));
+    }
+
+    #[test]
+    fn configured_enabled_client_reports_forwarding_mutation_authority() {
+        let client = test_client(
+            Url::parse("https://depot.invalid/").unwrap(),
+            1,
+            Duration::from_secs(1),
+        );
+        assert!(client.status().mutation_authority);
+        assert!(!DepotClient::disabled().status().mutation_authority);
     }
 
     #[test]

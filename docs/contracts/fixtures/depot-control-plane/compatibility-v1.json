@@ -30,7 +30,7 @@
   },
   "actorPolicy": {
     "delegatedOAuth": "mutations-and-import",
-    "serviceCredential": "read-only-unless-explicitly-approved"
+    "serviceCredential": "mutations-require-labby-admin-csrf-and-depot-write-scope"
   },
   "limits": {
     "artifactPage": 200,
@@ -46,13 +46,14 @@
     "bootstrap": {"status": "supported", "operations": []},
     "bazaarBrowse": {"status": "supported", "operations": ["depot.artifacts.list"]},
     "artifactDetail": {"status": "supported", "operations": ["depot.artifacts.get"]},
-    "sendToLabby": {"status": "deferred", "operations": [], "exactExport": false},
-    "candidateIntake": {"status": "expansion", "operations": ["depot.artifacts.intake_candidate"]},
-    "fork": {"status": "expansion", "operations": ["depot.artifacts.fork"]},
-    "publication": {"status": "expansion", "operations": ["depot.artifacts.set_publication"]},
-    "license": {"status": "expansion", "operations": ["depot.artifacts.set_license"]},
-    "archive": {"status": "excluded", "operations": []},
-    "delete": {"status": "excluded", "operations": []},
-    "browserCredentialAdministration": {"status": "deferred", "operations": []}
+    "sendToLabby": {"status": "supported", "operations": ["artifacts.import"], "exactExport": true},
+    "candidateIntake": {"status": "supported", "operations": ["depot.artifacts.intake_candidate"]},
+    "fork": {"status": "supported", "operations": ["depot.artifacts.fork"]},
+    "publication": {"status": "supported", "operations": ["depot.artifacts.set_publication"]},
+    "license": {"status": "supported", "operations": ["depot.artifacts.set_license"]},
+    "archive": {"status": "supported", "operations": ["depot.uploads.create", "depot.uploads.get", "depot.uploads.delete", "depot.ingest.start"]},
+    "delete": {"status": "supported", "operations": ["depot.skills.delete", "depot.bundles.delete"]},
+    "browserCredentialAdministration": {"status": "supported", "operations": ["depot.tokens.list", "depot.tokens.create", "depot.tokens.revoke"]},
+    "maintenance": {"status": "supported", "operationPrefix": "depot.maintenance."}
   }
 }

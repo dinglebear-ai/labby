@@ -40,7 +40,7 @@ test('Depot and Workspace navigation match the unified product information archi
   const depot = consoleNavSections.find((section) => section.id === 'Depot')
   const workspace = consoleNavSections.find((section) => section.id === 'Workspace')
 
-  assert.deepEqual(depot?.items.map((item) => item.label), ['Discover', 'Create', 'Library'])
+  assert.deepEqual(depot?.items.map((item) => item.label), ['Discover', 'Create', 'Library', 'Administration'])
   assert.deepEqual(workspace?.items.map((item) => item.label), [
     'Agents',
     'Tasks',

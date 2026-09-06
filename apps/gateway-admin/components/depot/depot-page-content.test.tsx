@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { mergeArtifactPages } from './depot-page-content'
+import { exactImportConnection, mergeArtifactPages } from './depot-page-content'
 
 test('mergeArtifactPages appends unique cursor results in order', () => {
   const current: DepotArtifact[] = [
@@ -24,4 +24,12 @@ test('mergeArtifactPages appends unique cursor results in order', () => {
 
 test('mergeArtifactPages drops cursor rows without a stable artifact identity', () => {
   assert.deepEqual(mergeArtifactPages([], [{ title: 'Missing identity' }]), [])
+})
+
+test('exactImportConnection requires a source connection matching the discovery provider', () => {
+  assert.equal(exactImportConnection('team-depot', [{ id: 'public-depot' }, { id: 'team-depot' }]), 'team-depot')
+  assert.throws(
+    () => exactImportConnection('team-depot', [{ id: 'different-depot' }]),
+    /Configure an Artifact acquisition connection named “team-depot”/,
+  )
 })

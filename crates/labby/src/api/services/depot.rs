@@ -515,11 +515,16 @@ async fn operations(
 
 async fn call(
     State(state): State<AppState>,
-    auth: Option<Extension<AuthContext>>,
+    Extension(authority): Extension<BrowserAuthority>,
+    Extension(auth): Extension<AuthContext>,
     identity: Option<Extension<VerifiedIdentity>>,
+    headers: HeaderMap,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(auth, identity)?;
+    let actor = actor(Some(Extension(auth.clone())), identity)?;
+    if !crate::dispatch::depot::operation_is_read_only(&request.operation) {
+        require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
+    }
     state
         .depot
         .call(&request.operation, request.params, &actor)
