@@ -24,17 +24,27 @@ impl AgentDefinitionStore {
         actor: &str,
         now: i64,
     ) -> AccessStoreResult<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(super::store::map_sqlite_error)?;
+        Self::put_in_transaction(&tx, definition, actor, now)?;
+        tx.commit().map_err(super::store::map_sqlite_error)
+    }
+
+    pub(super) fn put_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        definition: &AgentDefinition,
+        actor: &str,
+        now: i64,
+    ) -> AccessStoreResult<()> {
         definition
             .validate()
             .map_err(|_| AccessStoreError::MalformedVocabulary)?;
         let (owner_kind, owner_id) = owner(&definition.owner);
         let state = state(definition.state);
         let payload = serde_json::json!({"agentId": definition.id, "catalogGeneration": definition.revision.catalog_generation, "contentDigest": definition.revision.content_digest, "repositoryDigest": definition.revision.repository_digest, "imageDigest": definition.revision.image_digest, "harnessDigest": definition.revision.harness_digest, "loadoutDigest": definition.revision.loadout_digest, "credentialReferences": definition.revision.credential_references}).to_string();
-        let tx = self
-            .connection
-            .transaction()
-            .map_err(super::store::map_sqlite_error)?;
-        let changed = tx.execute("INSERT INTO agent_definitions VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(agent_id) DO UPDATE SET owner_kind=excluded.owner_kind,owner_id=excluded.owner_id,version=excluded.version,definition_json=excluded.definition_json,state=excluded.state,authority_epoch=excluded.authority_epoch,publication_epoch=excluded.publication_epoch,updated_at=excluded.updated_at WHERE excluded.version=agent_definitions.version+1", params![definition.id,owner_kind,owner_id,i64::try_from(definition.revision.version).map_err(|_|AccessStoreError::MalformedVocabulary)?,payload,state,i64::try_from(definition.authority_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?,i64::try_from(definition.publication_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?,now]).map_err(super::store::map_sqlite_error)?;
+        let changed = tx.execute("INSERT INTO agent_definitions VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(agent_id) DO UPDATE SET version=excluded.version,definition_json=excluded.definition_json,state=excluded.state,authority_epoch=excluded.authority_epoch,publication_epoch=excluded.publication_epoch,updated_at=excluded.updated_at WHERE excluded.version=agent_definitions.version+1 AND excluded.owner_kind=agent_definitions.owner_kind AND excluded.owner_id=agent_definitions.owner_id", params![definition.id,owner_kind,owner_id,i64::try_from(definition.revision.version).map_err(|_|AccessStoreError::MalformedVocabulary)?,payload,state,i64::try_from(definition.authority_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?,i64::try_from(definition.publication_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?,now]).map_err(super::store::map_sqlite_error)?;
         if changed != 1 {
             return Err(AccessStoreError::IntegrityViolation {
                 check: "agent_version",
@@ -57,7 +67,7 @@ impl AgentDefinitionStore {
             ],
         )
         .map_err(super::store::map_sqlite_error)?;
-        tx.commit().map_err(super::store::map_sqlite_error)
+        Ok(())
     }
 
     pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<AgentDefinition>> {
@@ -82,8 +92,19 @@ impl AgentDefinitionStore {
     ) -> AccessStoreResult<()> {
         let tx = self
             .connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(super::store::map_sqlite_error)?;
+        Self::set_state_in_transaction(&tx, id, new_state, actor, now)?;
+        tx.commit().map_err(super::store::map_sqlite_error)
+    }
+
+    pub(super) fn set_state_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        new_state: AgentState,
+        actor: &str,
+        now: i64,
+    ) -> AccessStoreResult<()> {
         let action = match new_state {
             AgentState::Active => "update",
             AgentState::Suspended => "suspend",
@@ -112,7 +133,7 @@ impl AgentDefinitionStore {
             ],
         )
         .map_err(super::store::map_sqlite_error)?;
-        tx.commit().map_err(super::store::map_sqlite_error)
+        Ok(())
     }
 
     pub(crate) fn create_session(

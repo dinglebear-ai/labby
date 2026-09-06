@@ -175,6 +175,10 @@ impl AuthorityBinding {
     pub fn capability(&self) -> &Capability {
         &self.capability
     }
+
+    pub fn resource_id(&self) -> &ResourceId {
+        &self.resource_id
+    }
 }
 
 /// Point at which long-lived work must re-observe current authority.

@@ -111,7 +111,7 @@ impl LabMcpServer {
                 );
                 let principal = self
                     .access_runtime
-                    .resolve_file_stash_owner(
+                    .authorize_file_stash_owner(
                         identity,
                         ceiling,
                         owner,
@@ -119,6 +119,10 @@ impl LabMcpServer {
                         capability,
                         unix_millis(),
                     )
+                    .await
+                    .map_err(|_| forbidden())?;
+                principal
+                    .validate_before_commit()
                     .await
                     .map_err(|_| forbidden())?;
                 crate::dispatch::file_stash::dispatch_for_principal(
@@ -152,7 +156,7 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-    ) -> Result<PrincipalId, ToolError> {
+    ) -> Result<AuthorizedStashPrincipal, ToolError> {
         let caller = resolve_caller_authorization(
             auth_context_from_extensions(&context.extensions),
             self.absent_auth_trust(),
@@ -164,28 +168,38 @@ impl LabMcpServer {
         if let Some(parts) = context.extensions.get::<Parts>()
             && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
         {
-            if let Some(owner) = selected_stash_owner(meta, identity, &self.access_runtime).await? {
-                let ceiling = auth_context_from_extensions(&context.extensions).map_or_else(
-                    crate::access::AuthorityCeiling::trusted_local,
-                    crate::access::AuthorityCeiling::from_auth_context,
-                );
-                return self
+            let owner = if let Some(owner) =
+                selected_stash_owner(meta, identity, &self.access_runtime).await?
+            {
+                owner
+            } else {
+                use labby_primitives::access::OwnerScope;
+                let principal = self
                     .access_runtime
-                    .resolve_file_stash_owner(
-                        identity.clone(),
-                        ceiling,
-                        owner,
-                        "stash.resources.read",
-                        labby_primitives::access::Capability::ScopeRead,
-                        unix_millis(),
-                    )
+                    .resolve_file_stash_principal(identity.clone())
                     .await
-                    .map_err(|_| forbidden());
-            }
+                    .map_err(|_| forbidden())?;
+                OwnerScope::Personal(
+                    labby_primitives::access::PrincipalId::new(principal.as_str())
+                        .map_err(|_| forbidden())?,
+                )
+            };
+            let ceiling = auth_context_from_extensions(&context.extensions).map_or_else(
+                crate::access::AuthorityCeiling::trusted_local,
+                crate::access::AuthorityCeiling::from_auth_context,
+            );
             return self
                 .access_runtime
-                .resolve_file_stash_principal(identity.clone())
+                .authorize_file_stash_owner(
+                    identity.clone(),
+                    ceiling,
+                    owner,
+                    "stash.resources.read",
+                    labby_primitives::access::Capability::ScopeRead,
+                    unix_millis(),
+                )
                 .await
+                .map(AuthorizedStashPrincipal::sealed)
                 .map_err(|_| forbidden());
         }
         // Serialized principal IDs are trusted on only the private in-process
@@ -197,7 +211,7 @@ impl LabMcpServer {
                 .access_runtime
                 .lease_active_file_stash_principal(principal.clone())
                 .await
-                .map(|_| principal)
+                .map(|_| AuthorizedStashPrincipal::trusted(principal))
                 .map_err(|_| forbidden());
         }
         Err(forbidden())
@@ -219,6 +233,9 @@ impl LabMcpServer {
         else {
             return Vec::new();
         };
+        if principal.validate_before_commit().await.is_err() {
+            return Vec::new();
+        }
         collect_file_stash_resources(
             &self.file_stash_service(),
             &principal,
@@ -248,6 +265,10 @@ impl LabMcpServer {
                 "busy" => busy(uri),
                 _ => unavailable(uri),
             })?;
+        principal
+            .validate_before_commit()
+            .await
+            .map_err(|_| unknown(uri))?;
         let capacity = usize::try_from(blob.size).map_err(|_| quota_exceeded(uri))?;
         let mut bytes = Vec::with_capacity(capacity);
         (&mut blob.file)
@@ -264,6 +285,45 @@ impl LabMcpServer {
         )
         .with_mime_type("application/octet-stream");
         Ok(ReadResourceResult::new(vec![contents]).into())
+    }
+}
+
+pub(crate) struct AuthorizedStashPrincipal {
+    principal: PrincipalId,
+    authority: Option<crate::access::FileStashOwnerAuthorization>,
+}
+
+impl AuthorizedStashPrincipal {
+    fn sealed(authority: crate::access::FileStashOwnerAuthorization) -> Self {
+        Self {
+            principal: (*authority).clone(),
+            authority: Some(authority),
+        }
+    }
+
+    fn trusted(principal: PrincipalId) -> Self {
+        Self {
+            principal,
+            authority: None,
+        }
+    }
+
+    async fn validate_before_commit(&self) -> Result<(), ToolError> {
+        if let Some(authority) = &self.authority {
+            authority
+                .validate_before_commit()
+                .await
+                .map_err(|_| forbidden())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for AuthorizedStashPrincipal {
+    type Target = PrincipalId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.principal
     }
 }
 

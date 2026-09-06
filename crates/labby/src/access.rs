@@ -127,11 +127,11 @@ pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome}
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionAuthoritySnapshot};
 pub(crate) use runtime::CredentialLifecycleError;
 #[allow(unused_imports)]
-pub(crate) use runtime::FileStashPrincipalResolutionError;
-#[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
 };
+#[allow(unused_imports)]
+pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
 #[allow(unused_imports)]

@@ -105,15 +105,15 @@ pub(crate) async fn dispatch(
     match name {
         "tasks.create" => {
             let owner = owner(&params)?;
-            authorize(
+            let task_id = required(&params, "task_id")?;
+            let request = authority_request(
                 &context,
                 name,
                 &owner,
-                required(&params, "task_id")?,
+                task_id.clone(),
                 Capability::ScopeCreate,
                 now,
-            )
-            .await?;
+            )?;
             let agent = context
                 .store
                 .get_agent_definition(required(&params, "agent_id")?)
@@ -124,7 +124,7 @@ pub(crate) async fn dispatch(
                 return Err(denied());
             }
             let intent = TaskIntent {
-                id: required(&params, "task_id")?,
+                id: task_id,
                 idempotency_key: required(&params, "idempotency_key")?,
                 owner,
                 project: params
@@ -132,7 +132,7 @@ pub(crate) async fn dispatch(
                     .and_then(Value::as_str)
                     .map(|v| ProjectId::new(v.to_owned()).map_err(|_| invalid("project_id")))
                     .transpose()?,
-                creator: PrincipalId::new(context.identity.safe_fingerprint())
+                creator: PrincipalId::new("pending-authority-binding")
                     .map_err(|_| invalid("principal"))?,
                 agent_id: agent.id,
                 agent_version: agent.revision.version,
@@ -143,7 +143,11 @@ pub(crate) async fn dispatch(
             };
             let id = context
                 .store
-                .create_agent_task(intent, i64::try_from(now).map_err(|_| internal())?)
+                .authorize_and_create_agent_task(
+                    request,
+                    intent,
+                    i64::try_from(now).map_err(|_| internal())?,
+                )
                 .await
                 .map_err(map)?;
             Ok(json!({"task_id":id,"state":"created"}))
@@ -169,7 +173,7 @@ pub(crate) async fn dispatch(
         }
         "tasks.get" | "tasks.result" => {
             let record = load(&context, &params).await?;
-            authorize(
+            let authority_lease = authorize(
                 &context,
                 name,
                 &record.intent.owner,
@@ -183,7 +187,7 @@ pub(crate) async fn dispatch(
                 // not a secret-output grant; a future broader policy must be
                 // captured explicitly in the durable intent.
                 if !record.state.terminal()
-                    || record.intent.creator.as_str() != context.identity.safe_fingerprint()
+                    || record.intent.creator.as_str() != authority_lease.binding().principal_id()
                 {
                     return Err(denied());
                 }
@@ -192,23 +196,23 @@ pub(crate) async fn dispatch(
         }
         "tasks.queue" | "tasks.cancel" => {
             let record = load(&context, &params).await?;
-            let authority_lease = authorize(
+            let request = authority_request(
                 &context,
                 name,
                 &record.intent.owner,
                 record.intent.id.clone(),
                 Capability::ScopeOperate,
                 now,
-            )
-            .await?;
+            )?;
             let next = if name == "tasks.queue" {
                 TaskState::Queued
             } else {
                 TaskState::Cancelling
             };
-            context
+            let authority_lease = context
                 .store
-                .transition_agent_task(
+                .authorize_and_transition_agent_task(
+                    request,
                     record.intent.id.clone(),
                     record.state,
                     next,
@@ -261,34 +265,44 @@ async fn authorize(
     capability: Capability,
     now: u64,
 ) -> Result<labby_runtime::authority::AuthorityLease, ToolError> {
-    let action = ActionRef::new("tasks", name).map_err(|_| invalid("action"))?;
     authorize_action(
         &context.store,
-        AuthorityRequest::new(
-            context.identity.clone(),
-            ActionAuthoritySpec::SCHEMA_VERSION,
-            action.clone(),
-            ResourceRef::new(
-                owner.clone(),
-                ResourceFamily::Task,
-                ResourceId::new(id).map_err(|_| invalid("task_id"))?,
-            ),
-            context.ceiling.clone(),
-            None,
-            now,
-            vec![
-                AuthoritySafeBoundary::BeforeDispatch,
-                AuthoritySafeBoundary::BeforeCommit,
-            ],
-            vec![ActionAuthoritySpec::new(
-                action,
-                ResourceFamily::Task,
-                capability,
-            )],
-        ),
+        authority_request(context, name, owner, id, capability, now)?,
     )
     .await
     .map_err(map)
+}
+fn authority_request(
+    context: &TaskDispatchContext,
+    name: &str,
+    owner: &OwnerScope,
+    id: String,
+    capability: Capability,
+    now: u64,
+) -> Result<AuthorityRequest, ToolError> {
+    let action = ActionRef::new("tasks", name).map_err(|_| invalid("action"))?;
+    Ok(AuthorityRequest::new(
+        context.identity.clone(),
+        ActionAuthoritySpec::SCHEMA_VERSION,
+        action.clone(),
+        ResourceRef::new(
+            owner.clone(),
+            ResourceFamily::Task,
+            ResourceId::new(id).map_err(|_| invalid("task_id"))?,
+        ),
+        context.ceiling.clone(),
+        None,
+        now,
+        vec![
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeCommit,
+        ],
+        vec![ActionAuthoritySpec::new(
+            action,
+            ResourceFamily::Task,
+            capability,
+        )],
+    ))
 }
 
 async fn execute_queued(

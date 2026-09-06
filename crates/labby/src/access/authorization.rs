@@ -164,10 +164,8 @@ pub(super) fn depot_delegation_authority(
                 .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
             Some((team_id.to_owned(), Some(epochs.0), epochs.1))
         }
-    } else if platform_administrator {
-        None
     } else {
-        return Err(AccessStoreError::NotAuthorized);
+        None
     };
     let snapshot = DepotDelegationAuthoritySnapshot {
         principal_id: selected.principal_id,

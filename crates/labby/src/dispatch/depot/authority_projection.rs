@@ -125,8 +125,19 @@ impl AuthorityProjectionSender {
     pub(crate) async fn send_snapshot(
         &self,
         organization_id: &str,
+        records: Vec<AuthorityProjectionRecord>,
+        now: i64,
+    ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
+        self.send_snapshot_chunk(organization_id, records, now, true)
+            .await
+    }
+
+    async fn send_snapshot_chunk(
+        &self,
+        organization_id: &str,
         mut records: Vec<AuthorityProjectionRecord>,
         now: i64,
+        replace: bool,
     ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
         if records.is_empty() || records.len() > MAX_AUTHORITY_RECORDS_PER_BATCH {
             return Err(ProjectionSendError::Configuration);
@@ -144,8 +155,12 @@ impl AuthorityProjectionSender {
         let envelope = sign_envelope(
             self.installation_id.as_ref(),
             organization_id,
-            ProjectionKind::Snapshot,
-            Some(base),
+            if replace {
+                ProjectionKind::Snapshot
+            } else {
+                ProjectionKind::Delta
+            },
+            replace.then_some(base),
             now.to_string(),
             watermark.and_then(|value| value.last_envelope_digest.clone()),
             self.key_id.as_ref(),
@@ -209,8 +224,17 @@ impl AuthorityProjectionSender {
                 operation: "upsert".into(),
                 value: Some(record.value),
             })
-            .collect();
-        let ack = self.send_snapshot(organization_id, records, now).await?;
+            .collect::<Vec<_>>();
+        let mut chunks = records.chunks(MAX_AUTHORITY_RECORDS_PER_BATCH);
+        let first = chunks.next().ok_or(ProjectionSendError::Configuration)?;
+        let mut ack = self
+            .send_snapshot_chunk(organization_id, first.to_vec(), now, true)
+            .await?;
+        for chunk in chunks {
+            ack = self
+                .send_snapshot_chunk(organization_id, chunk.to_vec(), now, false)
+                .await?;
+        }
         Ok((ack, checkpoint.outbox_cutoff))
     }
 
@@ -235,17 +259,14 @@ impl AuthorityProjectionSender {
         let mut sent = 0;
         for (organization_id, rows) in organizations {
             let through = rows.last().map(|row| row.sequence).unwrap_or_default();
-            let result = self.send_delta(&organization_id, &rows, now).await;
+            let result = self.send_current_snapshot(&organization_id, now).await;
             match result {
-                Ok(ack)
-                    if ack.organization_id == organization_id
-                        && ack.highest_contiguous_sequence == through =>
-                {
+                Ok((ack, Some(cutoff))) if ack.organization_id == organization_id => {
                     self.store
-                        .acknowledge_authority_projection(
+                        .supersede_authority_projection_with_snapshot(
                             organization_id,
-                            through,
                             ack.last_envelope_digest,
+                            cutoff,
                             now,
                         )
                         .await
@@ -585,6 +606,24 @@ fn canonical_json(value: &Value) -> Result<Vec<u8>, ProjectionSendError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_snapshots_partition_above_the_delta_batch_limit() {
+        let records = (0..=MAX_AUTHORITY_RECORDS_PER_BATCH)
+            .map(|sequence| AuthorityProjectionRecord {
+                sequence: u64::try_from(sequence).unwrap(),
+                resource_type: "principal".into(),
+                resource_id: format!("principal-{sequence}"),
+                operation: "upsert".into(),
+                value: Some(serde_json::json!({"status":"active"})),
+            })
+            .collect::<Vec<_>>();
+        let chunks = records
+            .chunks(MAX_AUTHORITY_RECORDS_PER_BATCH)
+            .map(<[_]>::len)
+            .collect::<Vec<_>>();
+        assert_eq!(chunks, vec![MAX_AUTHORITY_RECORDS_PER_BATCH, 1]);
+    }
+
     #[test]
     fn canonical_signing_is_stable_and_omits_signature() {
         let key = SigningKey::from_bytes(&[7; 32]);

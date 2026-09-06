@@ -172,6 +172,10 @@ async fn action(
         &request.action,
     )
     .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let action = request.action;
     let response = crate::dispatch::file_stash::dispatch_for_principal(
         &service(&state),
@@ -192,7 +196,7 @@ async fn selected_principal(
     kind: Option<&str>,
     owner_id: Option<&str>,
     action: &str,
-) -> Result<crate::access::AccessPrincipalId, ApiError> {
+) -> Result<crate::access::FileStashOwnerAuthorization, ApiError> {
     use labby_primitives::access::{Capability, OwnerScope, PrincipalId, TeamId};
     let identity = identity.ok_or_else(|| stable("not_found"))?.0;
     let owner = match kind {
@@ -225,7 +229,7 @@ async fn selected_principal(
     });
     state
         .access_runtime
-        .resolve_file_stash_owner(identity, ceiling, owner, action, capability, unix_millis())
+        .authorize_file_stash_owner(identity, ceiling, owner, action, capability, unix_millis())
         .await
         .map_err(|_| stable("not_found"))
 }
@@ -313,6 +317,10 @@ async fn list(
     let (kind, id) = selected_owner_headers(&headers);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.list").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let page = if let Some(query) = q.query {
         let page = service(&state)
             .search(&principal, &query, q.cursor.as_deref(), q.limit)
@@ -353,6 +361,10 @@ async fn stats(
     let (kind, id) = selected_owner_headers(&headers);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.stats").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let stats = service(&state).stats(&principal).await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
@@ -408,6 +420,10 @@ async fn metadata(
     let (kind, id) = selected_owner_headers(&headers);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.metadata").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let file = service(&state).metadata(&principal, &file_id).await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
@@ -432,6 +448,10 @@ async fn rename(
     let (kind, id) = selected_owner_headers(&headers);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.rename").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let file = service(&state)
         .rename(&principal, &file_id, &body.display_name)
         .await?;
@@ -457,6 +477,10 @@ async fn remove(
     let (kind, id) = selected_owner_headers(&headers);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.delete").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     service(&state).delete(&principal, &file_id).await?;
     crate::dispatch::file_stash::observe_operation(
         "api",
@@ -488,6 +512,10 @@ async fn create_grant(
         "stash.grants.create",
     )
     .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let grant = service(&state)
         .create_grant_for_recipient_id(&principal, &file_id, body.grantee_principal_id)
         .await?;
@@ -520,6 +548,10 @@ async fn list_grants(
         "stash.grants.list",
     )
     .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let grants = service(&state)
         .grants(&principal, &file_id, q.cursor.as_deref(), q.limit)
         .await?;
@@ -552,6 +584,10 @@ async fn revoke_grant(
         "stash.grants.revoke",
     )
     .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     service(&state)
         .revoke_grant(&principal, &file_id, &grant_id)
         .await?;
@@ -576,10 +612,7 @@ async fn upload(
 ) -> Result<Response, ApiError> {
     validate_header_budget(&headers, state.config.file_stash.max_header_bytes)?;
     mutation_csrf(&headers, auth.as_ref(), "stash.upload")?;
-    let identity_for_commit = identity.clone();
     let (kind, id) = selected_owner_headers(&headers);
-    let kind_owned = kind.map(str::to_owned);
-    let id_owned = id.map(str::to_owned);
     let principal =
         selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.upload").await?;
     let display_name = headers
@@ -609,17 +642,7 @@ async fn upload(
             .await
     });
     let file_id = upload.await.map_err(|_| stable("service_unavailable"))??;
-    if selected_principal(
-        &state,
-        identity_for_commit,
-        auth.as_ref(),
-        kind_owned.as_deref(),
-        id_owned.as_deref(),
-        "stash.upload",
-    )
-    .await
-    .is_err()
-    {
+    if principal.validate_before_commit().await.is_err() {
         drop(service(&state).delete(&principal, &file_id).await);
         return Err(stable("not_found"));
     }
@@ -650,7 +673,6 @@ async fn download(
     Path(file_id): Path<String>,
     Query(owner): Query<OwnerQuery>,
 ) -> Result<Response, ApiError> {
-    let identity_for_boundary = identity.clone();
     let (header_kind, header_id) = selected_owner_headers(&headers);
     let kind = owner.owner_kind.as_deref().or(header_kind);
     let id = owner.owner_id.as_deref().or(header_id);
@@ -659,15 +681,10 @@ async fn download(
     let (file, opened) = service(&state)
         .open_download(&principal, &file_id, false)
         .await?;
-    selected_principal(
-        &state,
-        identity_for_boundary,
-        auth.as_ref(),
-        kind,
-        id,
-        "stash.download",
-    )
-    .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(|_| stable("not_found"))?;
     let size = opened.size;
     crate::dispatch::file_stash::observe_operation(
         "api",

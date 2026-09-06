@@ -132,6 +132,22 @@ pub(crate) async fn authorize_action(
     store: &AccessStore,
     request: AuthorityRequest,
 ) -> AccessStoreResult<AuthorityLease> {
+    store
+        .with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(map_sqlite_error)?;
+            let lease = authorize_action_in_transaction(&transaction, request)?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(lease)
+        })
+        .await
+}
+
+pub(crate) fn authorize_action_in_transaction(
+    transaction: &Transaction<'_>,
+    request: AuthorityRequest,
+) -> AccessStoreResult<AuthorityLease> {
     let AuthorityRequest {
         identity,
         action_schema_version,
@@ -160,16 +176,7 @@ pub(crate) async fn authorize_action(
     }
 
     let owner = resource.owner().clone();
-    let resolved = store
-        .with_connection(move |connection| {
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Deferred)
-                .map_err(map_sqlite_error)?;
-            let resolved = resolve_authority(&transaction, &identity, &owner, capability)?;
-            transaction.commit().map_err(map_sqlite_error)?;
-            Ok(resolved)
-        })
-        .await?;
+    let resolved = resolve_authority(transaction, &identity, &owner, capability)?;
 
     let binding = AuthorityBinding::new(
         PrincipalId::new(resolved.principal_id)
@@ -463,6 +470,9 @@ fn all_capabilities() -> [Capability; 11] {
 mod tests {
     use labby_auth::Authenticator;
     use labby_primitives::access::{ActionRef, ResourceFamily, TeamId};
+    use labby_primitives::agent::{
+        AgentDefinition, AgentRevision, AgentState, RunningRevocationPolicy,
+    };
 
     use super::*;
     use crate::access::BootstrapOwnerInput;
@@ -485,6 +495,52 @@ mod tests {
             OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap()),
             ResourceFamily::Task,
             ResourceId::new("task-1").unwrap(),
+        )
+    }
+
+    fn agent_definition() -> AgentDefinition {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        AgentDefinition {
+            id: "agent-1".into(),
+            owner: OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap()),
+            revision: AgentRevision {
+                version: 1,
+                content_digest: digest.clone(),
+                repository_digest: digest.clone(),
+                image_digest: digest.clone(),
+                harness_digest: digest.clone(),
+                loadout_digest: digest,
+                catalog_generation: "catalog-1".into(),
+                credential_references: vec![],
+            },
+            state: AgentState::Active,
+            required_capabilities: vec![],
+            authority_epoch: 1,
+            publication_epoch: 1,
+            revocation_policy: RunningRevocationPolicy::StopAtSafeBoundary,
+        }
+    }
+
+    fn agent_request(identity: VerifiedIdentity) -> AuthorityRequest {
+        let action = ActionRef::new("agents", "agents.create").unwrap();
+        AuthorityRequest::new(
+            identity,
+            ActionAuthoritySpec::SCHEMA_VERSION,
+            action.clone(),
+            ResourceRef::new(
+                OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap()),
+                ResourceFamily::Agent,
+                ResourceId::new("agent-1").unwrap(),
+            ),
+            AuthorityCeiling::trusted_local(),
+            None,
+            1_000,
+            vec![AuthoritySafeBoundary::BeforeCommit],
+            vec![ActionAuthoritySpec::new(
+                action,
+                ResourceFamily::Agent,
+                Capability::ScopeRead,
+            )],
         )
     }
 
@@ -667,5 +723,41 @@ mod tests {
         store.execute_test_statement("UPDATE platform_administrators SET status='revoked',revoked_at=11 WHERE principal_id='bootstrap-owner';").await.unwrap();
         let denial = authorize_action(&store, make_request(owner, personal_resource)).await;
         assert!(matches!(denial, Err(AccessStoreError::NotAuthorized)));
+    }
+
+    #[tokio::test]
+    async fn revoked_team_membership_cannot_be_raced_with_agent_mutation() {
+        let (_directory, store, _owner, member) = fixture().await;
+        assert!(
+            authorize_action(&store, agent_request(member.clone()))
+                .await
+                .is_ok()
+        );
+
+        store
+            .execute_test_statement(
+                "UPDATE team_memberships SET status='revoked',membership_epoch=membership_epoch+1,updated_at=11,revoked_at=11 WHERE membership_id='member-membership';",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .authorize_and_put_agent_definition(
+                    agent_request(member),
+                    agent_definition(),
+                    "member-1".into(),
+                    12,
+                )
+                .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        assert!(
+            store
+                .get_agent_definition("agent-1".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

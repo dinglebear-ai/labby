@@ -33,6 +33,35 @@ pub(super) fn snapshot(
     organization_id: &str,
 ) -> AccessStoreResult<Vec<AuthoritySnapshotRecord>> {
     let mut records = Vec::new();
+    let (organization_status, policy_epoch, authority_schema, global_revision) = connection
+        .query_row(
+            "SELECT o.status,o.policy_epoch,m.schema_version,m.global_revision FROM organizations o JOIN access_metadata m ON m.singleton=1 WHERE o.organization_id=?1",
+            [organization_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+        )
+        .map_err(map_sqlite_error)?;
+    records.push(AuthoritySnapshotRecord {
+        resource_type: "organization".into(),
+        resource_id: organization_id.to_owned(),
+        value: json!({"status":organization_status,"policy_epoch":policy_epoch,"authority_schema":authority_schema,"global_revision":global_revision}),
+    });
+    let mut principals = connection
+        .prepare("SELECT principal_id,status FROM principals WHERE organization_id=?1 ORDER BY principal_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in principals
+        .query_map([organization_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (principal_id, status) = row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "principal".into(),
+            resource_id: principal_id,
+            value: json!({"status":status}),
+        });
+    }
+    drop(principals);
     let mut administrators = connection
         .prepare("SELECT p.principal_id,p.status,a.status,a.authority_epoch FROM platform_administrators a JOIN principals p ON p.principal_id=a.principal_id WHERE p.organization_id=?1 AND a.status!='revoked' ORDER BY p.principal_id COLLATE BINARY")
         .map_err(map_sqlite_error)?;
@@ -50,12 +79,57 @@ pub(super) fn snapshot(
         let (principal_id, principal_status, status, authority_epoch) =
             row.map_err(map_sqlite_error)?;
         records.push(AuthoritySnapshotRecord {
-            resource_type: "principal".into(),
+            resource_type: "platform_administrator".into(),
             resource_id: principal_id,
             value: json!({"principal_status":principal_status,"status":status,"authority_epoch":authority_epoch}),
         });
     }
     drop(administrators);
+    let mut projects = connection
+        .prepare("SELECT project_id,status,project_policy_epoch FROM projects WHERE organization_id=?1 ORDER BY project_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in projects
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (project_id, status, policy_epoch) = row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "project".into(),
+            resource_id: project_id,
+            value: json!({"status":status,"policy_epoch":policy_epoch}),
+        });
+    }
+    drop(projects);
+    let mut project_memberships = connection
+        .prepare("SELECT project_id,principal_id,role,status,updated_at FROM project_memberships WHERE organization_id=?1 ORDER BY project_id COLLATE BINARY,principal_id COLLATE BINARY")
+        .map_err(map_sqlite_error)?;
+    for row in project_memberships
+        .query_map([organization_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+    {
+        let (project_id, principal_id, role, status, membership_epoch) =
+            row.map_err(map_sqlite_error)?;
+        records.push(AuthoritySnapshotRecord {
+            resource_type: "project_membership".into(),
+            resource_id: format!("{project_id}\u{0}{principal_id}"),
+            value: json!({"status":status,"project_id":project_id,"principal_id":principal_id,"role":role,"membership_epoch":membership_epoch}),
+        });
+    }
+    drop(project_memberships);
     let mut teams = connection
         .prepare("SELECT group_id,status,policy_epoch,membership_epoch FROM groups WHERE organization_id=?1 AND kind='team' AND status!='deleted' ORDER BY group_id COLLATE BINARY")
         .map_err(map_sqlite_error)?;
@@ -283,6 +357,33 @@ mod tests {
             .authority_snapshot("bootstrap-local".into())
             .await
             .unwrap();
+        assert!(records.iter().any(|record| {
+            record.resource_type == "organization"
+                && record.resource_id == "bootstrap-local"
+                && record.value["status"] == "active"
+                && record.value["authority_schema"].is_number()
+                && record.value["global_revision"].is_number()
+        }));
+        assert!(records.iter().any(|record| {
+            record.resource_type == "principal"
+                && record.resource_id == "bootstrap-owner"
+                && record.value["status"] == "active"
+        }));
+        assert!(records.iter().any(|record| {
+            record.resource_type == "platform_administrator"
+                && record.resource_id == "bootstrap-owner"
+                && record.value["status"] == "active"
+        }));
+        assert!(records.iter().any(|record| {
+            record.resource_type == "project"
+                && record.resource_id == "bootstrap-default"
+                && record.value["status"] == "active"
+        }));
+        assert!(records.iter().any(|record| {
+            record.resource_type == "project_membership"
+                && record.resource_id == "bootstrap-default\0bootstrap-owner"
+                && record.value["status"] == "active"
+        }));
         assert!(records.iter().any(|record| {
             record.resource_type == "team"
                 && record.resource_id == "bootstrap-initial-team"

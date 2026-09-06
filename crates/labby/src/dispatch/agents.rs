@@ -116,18 +116,18 @@ pub(crate) async fn dispatch(
     match name {
         "agents.create" => {
             let definition = definition(&params, None)?;
-            authorize(
+            let request = authority_request(
                 &context,
                 name,
                 &definition.owner,
                 &definition.id,
                 Capability::ScopeCreate,
                 now,
-            )
-            .await?;
+            )?;
             context
                 .store
-                .put_agent_definition(
+                .authorize_and_put_agent_definition(
+                    request,
                     definition.clone(),
                     context.identity.safe_fingerprint(),
                     i64::try_from(now).map_err(|_| internal())?,
@@ -170,19 +170,19 @@ pub(crate) async fn dispatch(
         }
         "agents.update" => {
             let prior = load(&context, &params).await?;
-            authorize(
+            let definition = definition(&params, Some(&prior))?;
+            let request = authority_request(
                 &context,
                 name,
                 &prior.owner,
                 &prior.id,
                 Capability::ScopeManage,
                 now,
-            )
-            .await?;
-            let definition = definition(&params, Some(&prior))?;
+            )?;
             context
                 .store
-                .put_agent_definition(
+                .authorize_and_put_agent_definition(
+                    request,
                     definition.clone(),
                     context.identity.safe_fingerprint(),
                     i64::try_from(now).map_err(|_| internal())?,
@@ -198,15 +198,14 @@ pub(crate) async fn dispatch(
             } else {
                 Capability::ScopeManage
             };
-            authorize(
+            let request = authority_request(
                 &context,
                 name,
                 &definition.owner,
                 &definition.id,
                 capability,
                 now,
-            )
-            .await?;
+            )?;
             let state = if name.ends_with("delete") {
                 AgentState::Deleted
             } else {
@@ -214,7 +213,8 @@ pub(crate) async fn dispatch(
             };
             context
                 .store
-                .set_agent_definition_state(
+                .authorize_and_set_agent_definition_state(
+                    request,
                     definition.id.clone(),
                     state,
                     context.identity.safe_fingerprint(),
@@ -402,34 +402,44 @@ async fn authorize(
     capability: Capability,
     now: u64,
 ) -> Result<labby_runtime::authority::AuthorityLease, ToolError> {
-    let action = ActionRef::new("agents", name).map_err(|_| invalid("action"))?;
     authorize_action(
         &context.store,
-        AuthorityRequest::new(
-            context.identity.clone(),
-            ActionAuthoritySpec::SCHEMA_VERSION,
-            action.clone(),
-            ResourceRef::new(
-                owner.clone(),
-                ResourceFamily::Agent,
-                ResourceId::new(id).map_err(|_| invalid("agent_id"))?,
-            ),
-            context.ceiling.clone(),
-            None,
-            now,
-            vec![
-                AuthoritySafeBoundary::BeforeDispatch,
-                AuthoritySafeBoundary::BeforeCommit,
-            ],
-            vec![ActionAuthoritySpec::new(
-                action,
-                ResourceFamily::Agent,
-                capability,
-            )],
-        ),
+        authority_request(context, name, owner, id, capability, now)?,
     )
     .await
     .map_err(map)
+}
+fn authority_request(
+    context: &AgentDispatchContext,
+    name: &str,
+    owner: &OwnerScope,
+    id: &str,
+    capability: Capability,
+    now: u64,
+) -> Result<AuthorityRequest, ToolError> {
+    let action = ActionRef::new("agents", name).map_err(|_| invalid("action"))?;
+    Ok(AuthorityRequest::new(
+        context.identity.clone(),
+        ActionAuthoritySpec::SCHEMA_VERSION,
+        action.clone(),
+        ResourceRef::new(
+            owner.clone(),
+            ResourceFamily::Agent,
+            ResourceId::new(id).map_err(|_| invalid("agent_id"))?,
+        ),
+        context.ceiling.clone(),
+        None,
+        now,
+        vec![
+            AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeCommit,
+        ],
+        vec![ActionAuthoritySpec::new(
+            action,
+            ResourceFamily::Agent,
+            capability,
+        )],
+    ))
 }
 fn definition(
     params: &Value,

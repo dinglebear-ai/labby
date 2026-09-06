@@ -12,6 +12,54 @@ use super::health::{AccessHealthStatus, inspect_health};
 use super::store::AccessStore;
 use super::{CredentialSnapshot, IssueCredentialInput, MutationOutcome};
 
+/// A Stash owner resolution that retains the exact domain authority needed to
+/// revalidate at the dispatch and commit/open-handle boundaries.
+pub(crate) struct FileStashOwnerAuthorization {
+    principal: super::AccessPrincipalId,
+    store: AccessStore,
+    identity: labby_auth::VerifiedIdentity,
+    owner: labby_primitives::access::OwnerScope,
+    capability: labby_primitives::access::Capability,
+    lease: labby_runtime::authority::AuthorityLease,
+}
+
+impl std::ops::Deref for FileStashOwnerAuthorization {
+    type Target = super::AccessPrincipalId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.principal
+    }
+}
+
+impl FileStashOwnerAuthorization {
+    pub(crate) async fn validate_before_commit(
+        &self,
+    ) -> Result<(), FileStashPrincipalResolutionError> {
+        let epochs = super::refresh_authority_epochs(
+            &self.store,
+            self.identity.clone(),
+            self.owner.clone(),
+            self.capability,
+        )
+        .await
+        .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+        let now = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| FileStashPrincipalResolutionError::StoreUnavailable)?
+                .as_millis(),
+        )
+        .map_err(|_| FileStashPrincipalResolutionError::StoreUnavailable)?;
+        self.lease
+            .validate_at(
+                labby_runtime::authority::AuthoritySafeBoundary::BeforeCommit,
+                now,
+                &epochs,
+            )
+            .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AccessSetupReason {
     Missing,
@@ -272,7 +320,7 @@ impl AccessRuntime {
     /// Resolve a typed Stash owner only after current domain authorization.
     /// Personal remains the default and retains the historical principal key;
     /// Team storage keys are explicitly namespaced and cannot collide.
-    pub(crate) async fn resolve_file_stash_owner(
+    pub(crate) async fn authorize_file_stash_owner(
         &self,
         identity: labby_auth::VerifiedIdentity,
         ceiling: super::AuthorityCeiling,
@@ -280,7 +328,7 @@ impl AccessRuntime {
         action: &str,
         capability: labby_primitives::access::Capability,
         now_millis: u64,
-    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
+    ) -> Result<FileStashOwnerAuthorization, FileStashPrincipalResolutionError> {
         use labby_primitives::access::{ActionRef, ResourceFamily, ResourceId, ResourceRef};
         let store = self.store().await?;
         let personal_principal =
@@ -298,10 +346,10 @@ impl AccessRuntime {
             };
         let action_ref = ActionRef::new("stash", action)
             .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
-        super::authorize_action(
+        let lease = super::authorize_action(
             &store,
             super::AuthorityRequest::new(
-                identity,
+                identity.clone(),
                 super::ActionAuthoritySpec::SCHEMA_VERSION,
                 action_ref.clone(),
                 ResourceRef::new(
@@ -326,18 +374,54 @@ impl AccessRuntime {
         )
         .await
         .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
-        if let Some(principal) = personal_principal {
-            return Ok(principal);
-        }
-        let key = match owner {
-            labby_primitives::access::OwnerScope::Team(id) => format!("team:{}", id.as_str()),
-            labby_primitives::access::OwnerScope::Project(id) => format!("project:{}", id.as_str()),
-            labby_primitives::access::OwnerScope::Installation(id) => {
-                format!("installation:{}", id.as_str())
-            }
-            labby_primitives::access::OwnerScope::Personal(_) => unreachable!(),
+        let principal = if let Some(principal) = personal_principal {
+            principal
+        } else {
+            let key = match &owner {
+                labby_primitives::access::OwnerScope::Team(id) => format!("team:{}", id.as_str()),
+                labby_primitives::access::OwnerScope::Project(id) => {
+                    format!("project:{}", id.as_str())
+                }
+                labby_primitives::access::OwnerScope::Installation(id) => {
+                    format!("installation:{}", id.as_str())
+                }
+                labby_primitives::access::OwnerScope::Personal(_) => unreachable!(),
+            };
+            super::AccessPrincipalId(key)
         };
-        Ok(super::AccessPrincipalId(key))
+        let epochs =
+            super::refresh_authority_epochs(&store, identity.clone(), owner.clone(), capability)
+                .await
+                .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+        lease
+            .validate_at(
+                labby_runtime::authority::AuthoritySafeBoundary::BeforeDispatch,
+                now_millis,
+                &epochs,
+            )
+            .map_err(|_| FileStashPrincipalResolutionError::IdentityUnavailable)?;
+        Ok(FileStashOwnerAuthorization {
+            principal,
+            store,
+            identity,
+            owner,
+            capability,
+            lease,
+        })
+    }
+
+    pub(crate) async fn resolve_file_stash_owner(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        ceiling: super::AuthorityCeiling,
+        owner: labby_primitives::access::OwnerScope,
+        action: &str,
+        capability: labby_primitives::access::Capability,
+        now_millis: u64,
+    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
+        self.authorize_file_stash_owner(identity, ceiling, owner, action, capability, now_millis)
+            .await
+            .map(|authorization| authorization.principal)
     }
 
     pub(crate) async fn lease_active_file_stash_principal(
@@ -1168,19 +1252,25 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            runtime
-                .resolve_file_stash_owner(
-                    member.clone(),
-                    ceiling.clone(),
-                    team.clone(),
-                    "stash.rename",
-                    Capability::ScopeManage,
-                    11
-                )
-                .await
-                .is_ok()
-        );
+        let issued_at = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        let admitted = runtime
+            .authorize_file_stash_owner(
+                member.clone(),
+                ceiling.clone(),
+                team.clone(),
+                "stash.rename",
+                Capability::ScopeManage,
+                issued_at,
+            )
+            .await
+            .unwrap();
+        admitted.validate_before_commit().await.unwrap();
 
         let blob_path = directory.path().join("already-open");
         tokio::fs::write(&blob_path, b"finish me").await.unwrap();
@@ -1191,6 +1281,10 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(
+            admitted.validate_before_commit().await.is_err(),
+            "a retained Team Stash binding must observe revocation before commit"
+        );
         assert!(
             runtime
                 .resolve_file_stash_owner(

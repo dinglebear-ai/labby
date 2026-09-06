@@ -7,7 +7,7 @@ use std::time::Duration;
 use rusqlite::TransactionBehavior;
 #[cfg(test)]
 use rusqlite::types::Value;
-use rusqlite::{Connection, ErrorCode, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 
 use super::authorization::{
     AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
@@ -99,6 +99,74 @@ impl AccessStore {
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn authorize_and_create_agent_task(
+        &self,
+        request: super::AuthorityRequest,
+        mut intent: labby_primitives::task::TaskIntent,
+        now: i64,
+    ) -> AccessStoreResult<String> {
+        self.with_connection(move |connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            if lease.binding().owner_scope() != &intent.owner
+                || lease.binding().resource_id().as_str() != intent.id
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            intent.creator = labby_primitives::access::PrincipalId::new(lease.binding().principal_id().to_owned()).map_err(|_| AccessStoreError::MalformedVocabulary)?;
+            let (owner_kind, owner_id) = match &intent.owner {
+                labby_primitives::access::OwnerScope::Installation(id) => ("installation", id.as_str()),
+                labby_primitives::access::OwnerScope::Team(id) => ("team", id.as_str()),
+                labby_primitives::access::OwnerScope::Project(id) => ("project", id.as_str()),
+                labby_primitives::access::OwnerScope::Personal(id) => ("personal", id.as_str()),
+            };
+            let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_definitions WHERE agent_id=?1 AND owner_kind=?2 AND owner_id=?3 AND version=?4 AND state='active' AND json_extract(definition_json,'$.contentDigest')=?5)", rusqlite::params![intent.agent_id, owner_kind, owner_id, i64::try_from(intent.agent_version).map_err(|_| AccessStoreError::MalformedVocabulary)?, intent.agent_revision_digest], |row| row.get(0)).map_err(map_sqlite_error)?;
+            if !active { return Err(AccessStoreError::NotAuthorized); }
+            let id = super::task::TaskStore::create_in_transaction(&tx, &intent, now)?;
+            tx.commit().map_err(map_sqlite_error)?;
+            Ok(id)
+        }).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn authorize_and_transition_agent_task(
+        &self,
+        request: super::AuthorityRequest,
+        id: String,
+        from: labby_primitives::task::TaskState,
+        to: labby_primitives::task::TaskState,
+        actor: String,
+        attempt: u32,
+        now: i64,
+    ) -> AccessStoreResult<labby_runtime::authority::AuthorityLease> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            let task_owner: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT owner_kind,owner_id FROM agent_tasks WHERE task_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            let (owner_kind, owner_id) = task_owner.ok_or(AccessStoreError::NotAuthorized)?;
+            if lease.binding().resource_id().as_str() != id
+                || !owner_matches(lease.binding().owner_scope(), &owner_kind, &owner_id)
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::task::TaskStore::transition_in_transaction(
+                &tx, &id, from, to, &actor, attempt, None, None, now,
+            )?;
+            tx.commit().map_err(map_sqlite_error)?;
+            Ok(lease)
+        })
+        .await
     }
 
     pub(crate) async fn get_agent_task(
@@ -202,6 +270,64 @@ impl AccessStore {
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn authorize_and_put_agent_definition(
+        &self,
+        request: super::AuthorityRequest,
+        definition: labby_primitives::agent::AgentDefinition,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            if lease.binding().owner_scope() != &definition.owner
+                || lease.binding().resource_id().as_str() != definition.id
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::agent::AgentDefinitionStore::put_in_transaction(&tx, &definition, &actor, now)?;
+            tx.commit().map_err(map_sqlite_error)
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_and_set_agent_definition_state(
+        &self,
+        request: super::AuthorityRequest,
+        id: String,
+        state: labby_primitives::agent::AgentState,
+        actor: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            let agent_owner: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT owner_kind,owner_id FROM agent_definitions WHERE agent_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            let (owner_kind, owner_id) = agent_owner.ok_or(AccessStoreError::NotAuthorized)?;
+            if lease.binding().resource_id().as_str() != id
+                || !owner_matches(lease.binding().owner_scope(), &owner_kind, &owner_id)
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            super::agent::AgentDefinitionStore::set_state_in_transaction(
+                &tx, &id, state, &actor, now,
+            )?;
+            tx.commit().map_err(map_sqlite_error)
+        })
+        .await
     }
 
     pub(crate) async fn create_agent_session(
@@ -1311,6 +1437,27 @@ pub(super) fn map_sqlite_error(error: rusqlite::Error) -> AccessStoreError {
         ErrorCode::DiskFull => AccessStoreError::DiskFull,
         ErrorCode::ReadOnly => AccessStoreError::ReadOnly,
         _ => AccessStoreError::Unavailable(error.to_string()),
+    }
+}
+
+fn owner_matches(
+    owner: &labby_primitives::access::OwnerScope,
+    owner_kind: &str,
+    owner_id: &str,
+) -> bool {
+    match owner {
+        labby_primitives::access::OwnerScope::Installation(id) => {
+            owner_kind == "installation" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Team(id) => {
+            owner_kind == "team" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Project(id) => {
+            owner_kind == "project" && id.as_str() == owner_id
+        }
+        labby_primitives::access::OwnerScope::Personal(id) => {
+            owner_kind == "personal" && id.as_str() == owner_id
+        }
     }
 }
 
