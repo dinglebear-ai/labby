@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react'
 
 export {
   __setBrowserSessionStateForTests,
+  AUTHORITY_WORKSPACE_CHANGED_EVENT,
   getBrowserSessionState,
   getSessionCsrfToken,
   getSessionAuthority,

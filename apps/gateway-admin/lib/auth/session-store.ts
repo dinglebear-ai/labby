@@ -59,6 +59,7 @@ type SessionErrorPayload = {
 }
 
 let currentState: BrowserSessionState = { status: 'loading' }
+export const AUTHORITY_WORKSPACE_CHANGED_EVENT = 'labby:authority-workspace-changed'
 let sessionGeneration = 0
 const listeners = new Set<() => void>()
 
@@ -148,6 +149,7 @@ export function selectSessionWorkspace(selection: { teamId?: string | null; proj
   if (currentState.status !== 'authenticated' || !currentState.authority) throw new Error('Authority is unavailable')
   const authority = selectAuthorityWorkspace(currentState.authority, selection)
   setState({ ...currentState, authority, projectId: authority.activeProjectId })
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(AUTHORITY_WORKSPACE_CHANGED_EVENT))
   return authority
 }
 
