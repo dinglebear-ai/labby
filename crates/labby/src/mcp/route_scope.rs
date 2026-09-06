@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
@@ -49,6 +49,8 @@ pub(crate) enum McpRouteScope {
         expose_skills: bool,
         expose_code_mode: bool,
         authority_partition: String,
+        team_id: Option<String>,
+        credential_bindings: BTreeMap<String, (String, u64)>,
     },
 }
 
@@ -101,6 +103,8 @@ impl McpRouteScope {
             expose_skills: capabilities.expose_skills,
             expose_code_mode: capabilities.expose_code_mode,
             authority_partition: "unbound".to_owned(),
+            team_id: None,
+            credential_bindings: BTreeMap::new(),
         }
     }
 
@@ -155,12 +159,19 @@ impl McpRouteScope {
     fn bind_loadout_authority(&mut self, loadout: &GatewayLoadoutConfig) {
         let Self::ProtectedSubset {
             authority_partition,
+            team_id,
+            credential_bindings,
             ..
         } = self
         else {
             return;
         };
         let mut digest = Sha256::new();
+        *team_id = loadout
+            .name
+            .strip_prefix("team:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(team, _)| team.to_owned());
         for binding in &loadout.credential_bindings {
             for value in [
                 binding.upstream_name.as_bytes(),
@@ -170,6 +181,10 @@ impl McpRouteScope {
                 digest.update((value.len() as u64).to_be_bytes());
                 digest.update(value);
             }
+            credential_bindings.insert(
+                binding.upstream_name.clone(),
+                (binding.binding_id.clone(), binding.generation),
+            );
         }
         *authority_partition = hex::encode(digest.finalize());
     }
@@ -246,6 +261,30 @@ impl McpRouteScope {
         match self {
             Self::Root => None,
             Self::ProtectedSubset { upstreams, .. } => Some(upstreams),
+        }
+    }
+
+    pub(crate) fn team_credential_subject(&self) -> Option<String> {
+        match self {
+            Self::ProtectedSubset { team_id, .. } => {
+                team_id.as_ref().map(|team| format!("team:{team}"))
+            }
+            Self::Root => None,
+        }
+    }
+
+    pub(crate) fn team_credential_binding(&self, upstream: &str) -> Option<(&str, &str, u64)> {
+        match self {
+            Self::ProtectedSubset {
+                team_id: Some(team_id),
+                credential_bindings,
+                ..
+            } => credential_bindings
+                .get(upstream)
+                .map(|(binding_id, generation)| {
+                    (team_id.as_str(), binding_id.as_str(), *generation)
+                }),
+            _ => None,
         }
     }
 
@@ -402,6 +441,15 @@ mod tests {
             .unwrap();
         assert_ne!(before.task_authorization(), after.task_authorization());
         assert_eq!(before.label(), after.label());
+        assert_eq!(
+            before.team_credential_subject().as_deref(),
+            Some("team:alpha")
+        );
+        assert_eq!(
+            before.team_credential_binding("shared"),
+            Some(("alpha", "alpha-binding", 1))
+        );
+        assert_eq!(before.team_credential_binding("other"), None);
     }
 
     #[test]

@@ -1201,11 +1201,14 @@ impl LabMcpServer {
                         );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                                auth_context_from_extensions(&context.extensions),
-                                self.request_subject(&context),
-                            )
-                            .map(|subject| subject.into_owned()),
+                            oauth_subject: self
+                                .route_oauth_subject(
+                                    crate::mcp::context::oauth_upstream_subject_for_request(
+                                        auth_context_from_extensions(&context.extensions),
+                                        self.request_subject(&context),
+                                    ),
+                                )
+                                .map(std::borrow::Cow::into_owned),
                         };
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -1262,11 +1265,14 @@ impl LabMcpServer {
                             .expect("availability requires a gateway manager");
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                                auth_context_from_extensions(&context.extensions),
-                                self.request_subject(&context),
-                            )
-                            .map(|subject| subject.into_owned()),
+                            oauth_subject: self
+                                .route_oauth_subject(
+                                    crate::mcp::context::oauth_upstream_subject_for_request(
+                                        auth_context_from_extensions(&context.extensions),
+                                        self.request_subject(&context),
+                                    ),
+                                )
+                                .map(std::borrow::Cow::into_owned),
                         };
                         if synthetic_action == "refresh" {
                             drop(
@@ -2130,10 +2136,11 @@ impl LabMcpServer {
                 return false;
             };
             let owner = self.request_runtime_owner(context);
-            let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
-                auth_context_from_extensions(&context.extensions),
-                self.request_subject(context),
-            );
+            let oauth_subject =
+                self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
+                    auth_context_from_extensions(&context.extensions),
+                    self.request_subject(context),
+                ));
             return manager
                 .resolve_raw_upstream_tool_scoped(
                     service,
@@ -2158,10 +2165,11 @@ impl LabMcpServer {
             return Ok(None);
         };
         let owner = self.request_runtime_owner(context);
-        let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
-            auth_context_from_extensions(&context.extensions),
-            self.request_subject(context),
-        );
+        let oauth_subject =
+            self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
+                auth_context_from_extensions(&context.extensions),
+                self.request_subject(context),
+            ));
         let allowed = self.route_scope.allowed_upstreams();
 
         if self.code_mode_widget_callbacks_enabled() {

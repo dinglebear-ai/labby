@@ -44,6 +44,18 @@ impl std::fmt::Debug for AccessStore {
 
 impl AccessStore {
     #[cfg(feature = "gateway")]
+    pub(crate) async fn get_team_gateway_credential_binding(
+        &self,
+        team_id: String,
+        upstream_name: String,
+    ) -> AccessStoreResult<Option<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::get(connection, &team_id, &upstream_name)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
     pub(crate) async fn put_team_gateway_credential_binding(
         &self,
         input: super::gateway_credential::PutTeamCredentialBinding,
