@@ -3,9 +3,10 @@ use super::{
     store::{FileStashStore, FileStashStoreError},
 };
 use crate::config::FileStashPreferences;
+#[cfg(unix)]
+use std::io::{Read, Write};
 use std::{
     fs::File,
-    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };

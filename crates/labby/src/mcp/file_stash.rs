@@ -184,6 +184,17 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
     ) -> Result<Vec<Resource>, ErrorData> {
+        let caller = resolve_caller_authorization(
+            auth_context_from_extensions(&context.extensions),
+            self.absent_auth_trust(),
+            propagated_caller_auth(Some(&context.meta)),
+        );
+        // Resource listing is additive across services. A caller without the
+        // Stash read scope should simply not see Stash resources; once the
+        // caller is authorized, identity/storage failures remain observable.
+        if !caller.can_read() {
+            return Ok(Vec::new());
+        }
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resources.list",
@@ -451,8 +462,10 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
             .expect("secure temporary directory");
-        let mut preferences = crate::config::FileStashPreferences::default();
-        preferences.page_size = 2;
+        let preferences = crate::config::FileStashPreferences {
+            page_size: 2,
+            ..crate::config::FileStashPreferences::default()
+        };
         let runtime = Arc::new(
             crate::file_stash::FileStashRuntime::initialize_with_preferences(
                 directory.path().join("stash"),

@@ -96,18 +96,6 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
         pending.push("no services registered in tool registry".to_string());
     }
 
-    if state.enabled_services.contains("stash") {
-        match state.file_stash_runtime.status().await {
-            crate::file_stash::FileStashStatus::Ready => {}
-            crate::file_stash::FileStashStatus::Blocked(reason) => {
-                pending.push(format!("File Stash unavailable: {reason:?}"));
-            }
-            crate::file_stash::FileStashStatus::Shutdown => {
-                pending.push("File Stash is shutting down".to_string());
-            }
-        }
-    }
-
     // Predicate 2: when a gateway manager is wired, the pool must be present.
     //
     // The pool is `None` until `gateway.reload` completes its first successful
