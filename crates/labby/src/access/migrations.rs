@@ -88,6 +88,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         rebuild_metadata_from_v1(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -104,6 +105,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         rebuild_metadata_from_v2(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -157,6 +159,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -176,6 +179,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -219,6 +223,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
+        install_authority_outbox_schema(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -1536,6 +1541,20 @@ mod credential_migration_tests {
 
         migrate(&mut connection).unwrap();
         super::super::integrity::validate(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema
+                     WHERE name IN ('authority_outbox_sequences',
+                                    'authority_projection_outbox',
+                                    'enqueue_authority_projection_after_audit')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            3,
+            "a v5 upgrade must install the complete v7 authority projection outbox",
+        );
         assert_eq!(
             connection
                 .query_row(
