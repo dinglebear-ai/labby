@@ -1507,7 +1507,7 @@ mod tests {
             .open_download(&principal, &file_id, false)
             .await
             .unwrap();
-        let body = blob_body(opened);
+        let body = blob_body(opened, file_id.clone(), std::time::Instant::now());
         assert!(
             service
                 .open_download(&principal, &file_id, false)

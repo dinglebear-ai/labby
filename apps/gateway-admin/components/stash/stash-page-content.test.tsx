@@ -25,6 +25,25 @@ test('Stash renders live data and appends the next cursor page', async () => {
   await view.unmount()
 })
 
+test('Stash can continue an empty page to a later result', async () => {
+  document.body.replaceChildren()
+  globalThis.fetch = async input => {
+    const url = new URL(String(input), 'http://labby.test')
+    if (url.pathname.endsWith('/stats')) return Response.json({ owned_file_count: 2, owned_shared_file_count: 0, owned_committed_bytes: 2, owned_reserved_bytes: 0 })
+    return Response.json(url.searchParams.has('cursor')
+      ? { files: [file('needle')], next_cursor: null }
+      : { files: [], next_cursor: 'next' })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  assert.match(view.container.textContent || '', /Your Stash is empty/)
+  const loadMore = [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Load more'))
+  assert.ok(loadMore)
+  await act(async () => { loadMore.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await new Promise(resolve => setTimeout(resolve, 10)) })
+  assert.match(view.container.textContent || '', /needle\.txt/)
+  await view.unmount()
+})
+
 test('Stash accessibility gate covers names, status, upload equivalence, and reduced motion', async () => {
   document.body.replaceChildren()
   globalThis.fetch = async input => String(input).includes('/stats')
