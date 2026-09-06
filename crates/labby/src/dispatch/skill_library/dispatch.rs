@@ -148,7 +148,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let projection = Arc::clone(&self.projection);
         let publication = Arc::clone(&self.publication);
         let faults = Arc::clone(&self.faults);
-        let response_target = target_id.clone();
         let outcome = self
             .blocking
             .run_after_admission("skill_artifact_import_commit", || async move {
@@ -166,6 +165,12 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let authorization = decision.authorization;
                 let ownership = decision.ownership;
                 let audit = decision.audit;
+                let mut materialized = materialized;
+                labby_runtime::artifacts::qualify_materialized_skill_owner(
+                    &mut materialized,
+                    &ownership,
+                )?;
+                let target_id = materialized.interchange.descriptor.id.clone();
                 let request_digest =
                     bind_idempotency_to_owner(&request_digest, &ownership, project_id)?;
                 let audited_revision_id = revision_id.clone();
@@ -233,6 +238,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             })
             .await
             .map_err(map_dispatch_blocking)?;
+        let response_target = outcome.receipt().artifact_id.clone();
         self.mutation_response(response_target, outcome, false)
             .await
     }
@@ -538,7 +544,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let publication = Arc::clone(&self.publication);
         let faults = Arc::clone(&self.faults);
         let expected_head = expected_revision_id;
-        let response_artifact_id = artifact_id.clone();
         let outcome = self
             .blocking
             .run_after_admission("skill_artifact_commit", || async move {
@@ -560,6 +565,14 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 } else {
                     (decision.authorization, decision.ownership, decision.audit)
                 };
+                let mut candidate_artifact = candidate_artifact;
+                if action == SkillLibraryAction::Create {
+                    labby_runtime::artifacts::qualify_materialized_skill_owner(
+                        &mut candidate_artifact,
+                        &ownership,
+                    )?;
+                }
+                let artifact_id = candidate_artifact.interchange.descriptor.id.clone();
                 let request_digest =
                     bind_idempotency_to_owner(&request_digest, &ownership, project_id)?;
                 let mutation = if action == SkillLibraryAction::Create {
@@ -646,6 +659,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             })
             .await
             .map_err(map_dispatch_blocking)?;
+        let response_artifact_id = outcome.receipt().artifact_id.clone();
         self.mutation_response(response_artifact_id, outcome, false)
             .await
     }
@@ -938,7 +952,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             }
             "artifacts.validate" => {
                 let params: ValidateParams = parse(params)?;
-                authorize_at_boundary(
+                let decision = authorize_at_boundary(
                     runtime,
                     caller,
                     project_id,
@@ -961,11 +975,16 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                                 )
                             })
                             .collect();
-                        labby_runtime::artifacts::materialize_logical_skill(
+                        let mut materialized = labby_runtime::artifacts::materialize_logical_skill(
                             &params.name,
                             files,
                             Default::default(),
-                        )
+                        )?;
+                        labby_runtime::artifacts::qualify_materialized_skill_owner(
+                            &mut materialized,
+                            &decision.ownership,
+                        )?;
+                        Ok(materialized)
                     })
                     .await;
                 let response = match candidate {
@@ -1401,6 +1420,10 @@ impl ListCursorBinding {
         for value in [tenant, principal, project] {
             context.update(value.len().to_be_bytes());
             context.update(value.as_bytes());
+        }
+        for team_id in decision.cursor_team_ids() {
+            context.update(team_id.len().to_be_bytes());
+            context.update(team_id.as_bytes());
         }
         context.update(authority_generation.to_be_bytes());
         Self {

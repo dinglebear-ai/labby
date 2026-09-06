@@ -328,6 +328,37 @@ impl LibraryOwnership {
     }
 }
 
+/// Bind a newly created local Skill's physical Artifact identity to its durable owner namespace.
+///
+/// The human name and canonical Skill URI remain stable, while the opaque Artifact id (and thus
+/// every ArtifactStore lock, head, revision, workspace and CAS path) becomes owner-qualified.
+/// Existing v1 personal records keep their original ids; this function is only for new creates.
+pub fn qualify_materialized_skill_owner(
+    materialized: &mut MaterializedSkill,
+    ownership: &LibraryOwnership,
+) -> Result<(), ArtifactError> {
+    ownership.validate()?;
+    let descriptor = &materialized.interchange.descriptor;
+    let source_identity = canonical_json::to_canonical_vec(&(
+        "labby.library.owner/v1",
+        ownership,
+        &descriptor.kind,
+        &descriptor.namespace,
+        &descriptor.name,
+    ))?;
+    let source_identity = String::from_utf8(source_identity)
+        .map_err(|_| ArtifactError::Conflict("owner_identity_encoding"))?;
+    materialized.interchange.descriptor.id = super::model::ArtifactDescriptor::for_source_identity(
+        &descriptor.kind,
+        &descriptor.namespace,
+        &descriptor.name,
+        &source_identity,
+    )?
+    .id;
+    materialized.interchange.validate()?;
+    Ok(())
+}
+
 /// Authorization decision already made by the canonical product access layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryGrant {
@@ -629,6 +660,10 @@ pub struct LibraryAuditIntent {
     pub action: String,
     pub tenant_id: LibraryTenantId,
     pub actor_id: LibraryActorId,
+    /// Exact owner namespace affected by this commit. Legacy v1 entries omit it and are
+    /// reconciled from the referenced record while loading the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<LibraryOwnership>,
     pub artifact_id: String,
     pub request_digest: String,
     pub committed_at: LibraryTimestamp,
@@ -645,6 +680,9 @@ pub struct LibraryReceipt {
     pub scope_digest: String,
     pub tenant_id: LibraryTenantId,
     pub actor_id: LibraryActorId,
+    /// Exact owner namespace bound into the idempotency scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<LibraryOwnership>,
     pub action: String,
     pub artifact_id: String,
     pub idempotency_key: String,
@@ -827,6 +865,10 @@ impl Default for LibrarySnapshot {
 }
 
 impl LibrarySnapshot {
+    fn active_name_key(ownership: &LibraryOwnership, name: &str) -> Result<String, ArtifactError> {
+        canonical_json::digest(&(ownership, name))
+    }
+
     fn compute_digest(&self) -> Result<String, ArtifactError> {
         #[derive(Serialize)]
         struct Generation<'a> {
@@ -876,13 +918,22 @@ impl LibrarySnapshot {
             .filter(|record| record.active_revision_id.is_some())
         {
             if expected
-                .insert(record.name.clone(), record.artifact_id.clone())
+                .insert(
+                    Self::active_name_key(&record.ownership, &record.name)?,
+                    record.artifact_id.clone(),
+                )
                 .is_some()
             {
                 return Err(ArtifactError::LibraryCorrupt("duplicate_active_name"));
             }
         }
-        if expected != self.active_names {
+        let legacy_active_names = self
+            .records
+            .values()
+            .filter(|record| record.active_revision_id.is_some())
+            .map(|record| (record.name.clone(), record.artifact_id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if expected != self.active_names && legacy_active_names != self.active_names {
             return Err(ArtifactError::LibraryCorrupt("active_index_mismatch"));
         }
         if self.receipts.len() > MAX_RECEIPTS {
@@ -917,11 +968,23 @@ impl LibrarySnapshot {
             validate_id(&receipt.artifact_id, "artifact_id")
                 .map_err(|_| ArtifactError::LibraryCorrupt("invalid_receipt_reference"))?;
             let is_refresh = receipt.action == "refresh" && receipt.artifact_id == "library";
-            if !is_refresh && !self.records.contains_key(&receipt.artifact_id) {
+            let receipt_record = (!is_refresh)
+                .then(|| {
+                    self.records.values().find(|record| {
+                        record.artifact_id == receipt.artifact_id
+                            && receipt
+                                .ownership
+                                .as_ref()
+                                .is_none_or(|owner| owner == &record.ownership)
+                    })
+                })
+                .flatten();
+            if !is_refresh && receipt_record.is_none() {
                 return Err(ArtifactError::LibraryCorrupt("invalid_receipt_reference"));
             }
             if !is_refresh
-                && self.records[&receipt.artifact_id].ownership.tenant_id != receipt.tenant_id
+                && receipt_record
+                    .is_none_or(|record| record.ownership.tenant_id != receipt.tenant_id)
             {
                 return Err(ArtifactError::LibraryCorrupt("receipt_tenant_mismatch"));
             }
@@ -931,6 +994,7 @@ impl LibrarySnapshot {
             let expected_scope = receipt_scope_digest(
                 &receipt.tenant_id,
                 &receipt.actor_id,
+                receipt.ownership.as_ref(),
                 &receipt.action,
                 &receipt.artifact_id,
                 &receipt.idempotency_key,
@@ -951,7 +1015,18 @@ impl LibrarySnapshot {
             validate_id(&audit.artifact_id, "artifact_id")
                 .map_err(|_| ArtifactError::LibraryCorrupt("invalid_audit_reference"))?;
             let is_refresh = audit.action == "refresh" && audit.artifact_id == "library";
-            if !is_refresh && !self.records.contains_key(&audit.artifact_id) {
+            let audit_record = (!is_refresh)
+                .then(|| {
+                    self.records.values().find(|record| {
+                        record.artifact_id == audit.artifact_id
+                            && audit
+                                .ownership
+                                .as_ref()
+                                .is_none_or(|owner| owner == &record.ownership)
+                    })
+                })
+                .flatten();
+            if !is_refresh && audit_record.is_none() {
                 return Err(ArtifactError::LibraryCorrupt("invalid_audit_reference"));
             }
             validate_digest(&audit.request_digest)
@@ -972,7 +1047,7 @@ impl LibrarySnapshot {
             validate_action(&audit.action)
                 .map_err(|_| ArtifactError::LibraryCorrupt("invalid_audit_action"))?;
             if !is_refresh
-                && self.records[&audit.artifact_id].ownership.tenant_id != audit.tenant_id
+                && audit_record.is_none_or(|record| record.ownership.tenant_id != audit.tenant_id)
             {
                 return Err(ArtifactError::LibraryCorrupt("audit_tenant_mismatch"));
             }
@@ -988,6 +1063,7 @@ impl LibrarySnapshot {
                 .is_some_and(|audit| {
                     audit.tenant_id == receipt.tenant_id
                         && audit.actor_id == receipt.actor_id
+                        && audit.ownership == receipt.ownership
                         && audit.action == receipt.action
                         && audit.artifact_id == receipt.artifact_id
                         && audit.request_digest == receipt.request_digest
@@ -1022,9 +1098,11 @@ impl LibrarySnapshot {
         tenant: &LibraryTenantId,
         artifact_id: &str,
     ) -> Option<&SkillLibraryRecord> {
-        self.records
-            .get(artifact_id)
-            .filter(|record| !record.archived && &record.ownership.tenant_id == tenant)
+        self.records.values().find(|record| {
+            record.artifact_id == artifact_id
+                && !record.archived
+                && &record.ownership.tenant_id == tenant
+        })
     }
 }
 
@@ -1115,6 +1193,21 @@ impl ArtifactStore {
             Err(error) => return Err(error),
         };
         let mut changed = false;
+        let scoped_active_names = snapshot
+            .records
+            .values()
+            .filter(|record| record.active_revision_id.is_some())
+            .map(|record| {
+                Ok((
+                    LibrarySnapshot::active_name_key(&record.ownership, &record.name)?,
+                    record.artifact_id.clone(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, ArtifactError>>()?;
+        if snapshot.active_names != scoped_active_names {
+            snapshot.active_names = scoped_active_names;
+            changed = true;
+        }
         for record in snapshot.records.values_mut() {
             if record.latest_revision_id.is_empty() || !record.materialized {
                 let artifact = self.get(&record.artifact_id)?;
@@ -1181,6 +1274,7 @@ impl ArtifactStore {
         let scope_digest = receipt_scope_digest(
             &authorization.tenant_id,
             &authorization.actor_id,
+            Some(target_ownership),
             mutation.action(),
             &artifact_id,
             &idempotency.key,
@@ -1289,6 +1383,7 @@ impl ArtifactStore {
             scope_digest: scope_digest.clone(),
             tenant_id: authorization.tenant_id.clone(),
             actor_id: authorization.actor_id.clone(),
+            ownership: Some(target_ownership.clone()),
             action: mutation.action().to_owned(),
             artifact_id: artifact_id.clone(),
             idempotency_key: idempotency.key,
@@ -1304,6 +1399,7 @@ impl ArtifactStore {
             action: mutation.action().to_owned(),
             tenant_id: authorization.tenant_id.clone(),
             actor_id: authorization.actor_id.clone(),
+            ownership: Some(target_ownership.clone()),
             artifact_id,
             request_digest: idempotency.request_digest,
             committed_at,
@@ -1372,6 +1468,7 @@ impl ArtifactStore {
         let scope_digest = receipt_scope_digest(
             &authorization.tenant_id,
             &authorization.actor_id,
+            Some(target_ownership),
             mutation.action(),
             mutation.artifact_id(),
             &idempotency.key,
@@ -1425,6 +1522,7 @@ impl ArtifactStore {
             scope_digest: scope_digest.clone(),
             tenant_id: authorization.tenant_id.clone(),
             actor_id: authorization.actor_id.clone(),
+            ownership: Some(target_ownership.clone()),
             action: action.clone(),
             artifact_id: target_artifact_id.clone(),
             idempotency_key: idempotency.key,
@@ -1440,6 +1538,7 @@ impl ArtifactStore {
             action,
             tenant_id: authorization.tenant_id.clone(),
             actor_id: authorization.actor_id.clone(),
+            ownership: Some(target_ownership.clone()),
             artifact_id: target_artifact_id,
             request_digest: idempotency.request_digest,
             committed_at,
@@ -1480,6 +1579,7 @@ impl ArtifactStore {
         let scope_digest = receipt_scope_digest(
             &authorization.tenant_id,
             &authorization.actor_id,
+            Some(target_ownership),
             mutation.action(),
             mutation.artifact_id(),
             &idempotency.key,
@@ -1805,7 +1905,13 @@ fn enforce_retention(state: &mut LibrarySnapshot) {
 }
 
 fn receipt_facts(state: &LibrarySnapshot, receipt: &LibraryReceipt) -> LibraryMutationReceiptFacts {
-    let record = state.records.get(&receipt.artifact_id);
+    let record = state.records.values().find(|record| {
+        record.artifact_id == receipt.artifact_id
+            && receipt
+                .ownership
+                .as_ref()
+                .is_none_or(|owner| owner == &record.ownership)
+    });
     let active_revision_id = record.and_then(|record| record.active_revision_id.clone());
     let canonical_uri = record
         .filter(|record| record.active_revision_id.is_some())
@@ -1864,9 +1970,10 @@ fn apply_mutation(
             if archived {
                 return Err(ArtifactError::Conflict("archived_skill"));
             }
+            let active_key = LibrarySnapshot::active_name_key(target_ownership, &name)?;
             if state
                 .active_names
-                .get(&name)
+                .get(&active_key)
                 .is_some_and(|owner| owner != &artifact_id)
             {
                 return Err(ArtifactError::Conflict("active_name_taken"));
@@ -1874,7 +1981,7 @@ fn apply_mutation(
             let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
             record.active_revision_id = Some(revision_id);
             record.updated_at = updated_at;
-            state.active_names.insert(name, artifact_id);
+            state.active_names.insert(active_key, artifact_id);
         }
         LibraryMutation::Save {
             artifact_id,
@@ -1897,9 +2004,10 @@ fn apply_mutation(
             if archived {
                 return Err(ArtifactError::Conflict("archived_skill"));
             }
+            let active_key = LibrarySnapshot::active_name_key(target_ownership, &name)?;
             if state
                 .active_names
-                .get(&name)
+                .get(&active_key)
                 .is_some_and(|owner| owner != &artifact_id)
             {
                 return Err(ArtifactError::Conflict("active_name_taken"));
@@ -1907,7 +2015,7 @@ fn apply_mutation(
             let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
             record.active_revision_id = Some(revision_id);
             record.updated_at = updated_at;
-            state.active_names.insert(name, artifact_id);
+            state.active_names.insert(active_key, artifact_id);
         }
         LibraryMutation::Deactivate {
             artifact_id,
@@ -1916,7 +2024,9 @@ fn apply_mutation(
             let name = authorized_record(state, authorization, target_ownership, &artifact_id)?
                 .name
                 .clone();
-            state.active_names.remove(&name);
+            state
+                .active_names
+                .remove(&LibrarySnapshot::active_name_key(target_ownership, &name)?);
             let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
             record.active_revision_id = None;
             record.updated_at = updated_at;
@@ -1928,7 +2038,9 @@ fn apply_mutation(
             let name = authorized_record(state, authorization, target_ownership, &artifact_id)?
                 .name
                 .clone();
-            state.active_names.remove(&name);
+            state
+                .active_names
+                .remove(&LibrarySnapshot::active_name_key(target_ownership, &name)?);
             let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
             record.active_revision_id = None;
             record.archived = true;
@@ -1975,11 +2087,9 @@ fn authorized_record<'a>(
 ) -> Result<&'a mut SkillLibraryRecord, ArtifactError> {
     let record = state
         .records
-        .get_mut(artifact_id)
+        .values_mut()
+        .find(|record| record.artifact_id == artifact_id && &record.ownership == target_ownership)
         .ok_or(ArtifactError::NotFound("library_record"))?;
-    if &record.ownership != target_ownership {
-        return Err(ArtifactError::NotFound("library_record"));
-    }
     authorization.validate_for(&record.ownership)?;
     Ok(record)
 }
@@ -2036,11 +2146,24 @@ fn validate_action(action: &str) -> Result<(), ArtifactError> {
 fn receipt_scope_digest(
     tenant_id: &LibraryTenantId,
     actor_id: &LibraryActorId,
+    ownership: Option<&LibraryOwnership>,
     action: &str,
     artifact_id: &str,
     idempotency_key: &str,
 ) -> Result<String, ArtifactError> {
-    canonical_json::digest(&(tenant_id, actor_id, action, artifact_id, idempotency_key))
+    match ownership {
+        Some(ownership) => canonical_json::digest(&(
+            tenant_id,
+            actor_id,
+            ownership,
+            action,
+            artifact_id,
+            idempotency_key,
+        )),
+        None => {
+            canonical_json::digest(&(tenant_id, actor_id, action, artifact_id, idempotency_key))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2063,11 +2186,20 @@ mod tests {
     }
 
     fn owner_auth(owner: &LibraryOwnership) -> LibraryAuthorization {
-        LibraryAuthorization::from_authorized_access_projection(
-            owner.tenant_id.clone(),
-            owner.owner_id.clone(),
-            LibraryGrant::Owner,
-        )
+        if owner.owner_kind() == LibraryOwnerKind::Personal {
+            LibraryAuthorization::from_authorized_access_projection(
+                owner.tenant_id.clone(),
+                owner.owner_id.clone(),
+                LibraryGrant::Owner,
+            )
+        } else {
+            LibraryAuthorization::from_authorized_scope_projection(
+                owner.tenant_id.clone(),
+                owner.owner_id.clone(),
+                owner.owner_kind(),
+                owner.owner_id.clone(),
+            )
+        }
     }
 
     fn ts(value: &str) -> LibraryTimestamp {
@@ -2100,6 +2232,65 @@ mod tests {
                 serde_json::from_value(serde_json::to_value(&scoped).unwrap()).unwrap();
             assert_eq!(reopened, scoped);
         }
+    }
+
+    #[test]
+    fn new_skill_artifact_identity_is_owner_qualified() {
+        let mut personal = materialized("same-name", "body");
+        let mut team = personal.clone();
+        let personal_owner = ownership("org-a", "alice");
+        let team_owner = LibraryOwnership::scoped(
+            personal_owner.tenant_id.clone(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("team-a").unwrap(),
+        );
+        qualify_materialized_skill_owner(&mut personal, &personal_owner).unwrap();
+        qualify_materialized_skill_owner(&mut team, &team_owner).unwrap();
+        assert_ne!(
+            personal.interchange.descriptor.id,
+            team.interchange.descriptor.id
+        );
+        assert_eq!(personal.interchange.descriptor.name, "same-name");
+        assert_eq!(team.interchange.descriptor.name, "same-name");
+        assert_eq!(
+            personal.interchange.revision.id, team.interchange.revision.id,
+            "content addressing remains independent of ownership"
+        );
+    }
+
+    #[test]
+    fn receipt_scope_is_owner_qualified() {
+        let tenant = LibraryTenantId::from_canonical_projection("org-a").unwrap();
+        let actor = LibraryActorId::from_canonical_projection("admin").unwrap();
+        let team_a = LibraryOwnership::scoped(
+            tenant.clone(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("team-a").unwrap(),
+        );
+        let team_b = LibraryOwnership::scoped(
+            tenant.clone(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("team-b").unwrap(),
+        );
+        let a = receipt_scope_digest(
+            &tenant,
+            &actor,
+            Some(&team_a),
+            "activate",
+            "artifact",
+            "same-key",
+        )
+        .unwrap();
+        let b = receipt_scope_digest(
+            &tenant,
+            &actor,
+            Some(&team_b),
+            "activate",
+            "artifact",
+            "same-key",
+        )
+        .unwrap();
+        assert_ne!(a, b);
     }
 
     fn idem(key: &str) -> LibraryIdempotency {
@@ -2174,6 +2365,7 @@ mod tests {
             scope_digest: canonical_json::digest(&"scope").unwrap(),
             tenant_id: owner.tenant_id.clone(),
             actor_id: owner.owner_id.clone(),
+            ownership: Some(owner.clone()),
             action: "create".to_owned(),
             artifact_id: artifact_id.to_owned(),
             idempotency_key: "legacy-import".to_owned(),
@@ -3332,7 +3524,8 @@ mod tests {
                 .unwrap();
             if fault == LibraryPersistFault::DirectorySync {
                 assert_eq!(reopened.version, 2);
-                assert_eq!(reopened.active_names.get("demo"), Some(&artifact));
+                let active_key = LibrarySnapshot::active_name_key(&owner, "demo").unwrap();
+                assert_eq!(reopened.active_names.get(&active_key), Some(&artifact));
                 assert_eq!(
                     reopened.records[&artifact].active_revision_id.as_deref(),
                     Some(revision.as_str())
@@ -3409,6 +3602,76 @@ mod tests {
             ArtifactStore::new(&root).unwrap().library_snapshot(),
             Err(ArtifactError::LibraryCorrupt("duplicate_active_name"))
         ));
+    }
+
+    #[test]
+    fn identical_active_names_are_isolated_by_owner_scope() {
+        let data = tempdir().unwrap();
+        let source_a = tempdir().unwrap();
+        let source_b = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let team_a = LibraryOwnership::scoped(
+            LibraryTenantId::from_canonical_projection("org-a").unwrap(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("team-a").unwrap(),
+        );
+        let team_b = LibraryOwnership::scoped(
+            LibraryTenantId::from_canonical_projection("org-a").unwrap(),
+            LibraryOwnerKind::Team,
+            LibraryActorId::from_canonical_projection("team-b").unwrap(),
+        );
+        let auth = |owner: &LibraryOwnership| {
+            LibraryAuthorization::from_authorized_scope_projection(
+                owner.tenant_id.clone(),
+                LibraryActorId::from_canonical_projection("admin").unwrap(),
+                owner.owner_kind(),
+                owner.owner_id.clone(),
+            )
+        };
+        let (a, rev_a) = add_skill(&store, &source_a, "team-a", "shared", &team_a, 0);
+        let (b, rev_b) = add_skill(&store, &source_b, "team-b", "shared", &team_b, 1);
+        store
+            .mutate_library(
+                &auth(&team_a),
+                &team_a,
+                2,
+                idem("activate-a"),
+                LibraryMutation::Activate {
+                    artifact_id: a.clone(),
+                    revision_id: rev_a,
+                    updated_at: ts("2026-08-26T05:00:00Z"),
+                },
+                ts("2026-08-26T05:00:00Z"),
+            )
+            .unwrap();
+        store
+            .mutate_library(
+                &auth(&team_b),
+                &team_b,
+                3,
+                idem("activate-b"),
+                LibraryMutation::Activate {
+                    artifact_id: b.clone(),
+                    revision_id: rev_b,
+                    updated_at: ts("2026-08-26T05:00:01Z"),
+                },
+                ts("2026-08-26T05:00:01Z"),
+            )
+            .unwrap();
+        let snapshot = store.library_snapshot().unwrap();
+        assert_eq!(snapshot.active_names.len(), 2);
+        assert_eq!(
+            snapshot
+                .active_names
+                .get(&LibrarySnapshot::active_name_key(&team_a, "shared").unwrap()),
+            Some(&a)
+        );
+        assert_eq!(
+            snapshot
+                .active_names
+                .get(&LibrarySnapshot::active_name_key(&team_b, "shared").unwrap()),
+            Some(&b)
+        );
     }
 
     #[test]
@@ -3558,6 +3821,7 @@ mod tests {
                 receipt_scope_digest(
                     &auth.tenant_id,
                     &auth.actor_id,
+                    Some(&owner),
                     "set_visibility",
                     &artifact,
                     key,
@@ -3570,6 +3834,7 @@ mod tests {
         let first_scope = receipt_scope_digest(
             &auth.tenant_id,
             &auth.actor_id,
+            Some(&owner),
             "set_visibility",
             &artifact,
             &first_key,
@@ -3588,6 +3853,7 @@ mod tests {
             let scope = receipt_scope_digest(
                 &auth.tenant_id,
                 &auth.actor_id,
+                Some(&owner),
                 "set_visibility",
                 &artifact,
                 &key,
@@ -3601,6 +3867,7 @@ mod tests {
                     scope_digest: scope,
                     tenant_id: auth.tenant_id.clone(),
                     actor_id: auth.actor_id.clone(),
+                    ownership: Some(owner.clone()),
                     action: "set_visibility".into(),
                     artifact_id: artifact.clone(),
                     idempotency_key: key,
@@ -3616,6 +3883,7 @@ mod tests {
                 action: "set_visibility".into(),
                 tenant_id: auth.tenant_id.clone(),
                 actor_id: auth.actor_id.clone(),
+                ownership: Some(owner.clone()),
                 artifact_id: artifact.clone(),
                 request_digest,
                 committed_at: ts("2026-08-26T02:00:00Z"),

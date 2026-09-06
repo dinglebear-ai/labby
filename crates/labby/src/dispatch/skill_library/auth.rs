@@ -294,6 +294,10 @@ impl SkillLibraryAuthorizationDecision {
         )
     }
 
+    pub(crate) fn cursor_team_ids(&self) -> impl Iterator<Item = &str> {
+        self.team_ids.iter().map(LibraryActorId::as_str)
+    }
+
     pub(crate) fn into_shared_create(
         self,
     ) -> (
