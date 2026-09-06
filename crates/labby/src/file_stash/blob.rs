@@ -177,6 +177,22 @@ impl BlobStore {
         if mcp && expected_size > self.limits.max_mcp_read_bytes {
             return Err(FileStashStoreError::QuotaExceeded);
         }
+        // Both admission permits are acquired before the filesystem is
+        // touched, so overload and MCP-specific saturation cannot be used to
+        // force descriptor churn.
+        let mcp_permit = if mcp {
+            Some(
+                tokio::time::timeout(
+                    Duration::from_millis(self.limits.database_deadline_ms),
+                    Arc::clone(&self.mcp_reads).acquire_owned(),
+                )
+                .await
+                .map_err(|_| FileStashStoreError::Busy)?
+                .map_err(|_| FileStashStoreError::Unavailable)?,
+            )
+        } else {
+            None
+        };
         let download_permit = tokio::time::timeout(
             Duration::from_millis(self.limits.database_deadline_ms),
             Arc::clone(&self.downloads).acquire_owned(),
@@ -192,19 +208,6 @@ impl BlobStore {
         if size != expected_size {
             return Err(FileStashStoreError::Integrity);
         }
-        let mcp_permit = if mcp {
-            Some(
-                tokio::time::timeout(
-                    Duration::from_millis(self.limits.database_deadline_ms),
-                    Arc::clone(&self.mcp_reads).acquire_owned(),
-                )
-                .await
-                .map_err(|_| FileStashStoreError::Busy)?
-                .map_err(|_| FileStashStoreError::Unavailable)?,
-            )
-        } else {
-            None
-        };
         Ok(OpenedBlob {
             file: tokio::fs::File::from_std(file),
             size,
@@ -825,6 +828,21 @@ mod tests {
             Err(FileStashStoreError::Busy)
         ));
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn oversized_mcp_read_is_rejected_before_blob_open_or_permit_use() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut limits = preferences();
+        limits.max_mcp_read_bytes = 1;
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), limits).await;
+        let blobs = runtime.blob_store().await.unwrap();
+        let missing = ulid::Ulid::new().to_string();
+        assert!(matches!(
+            blobs.open_blob(&missing, 2, true).await,
+            Err(FileStashStoreError::QuotaExceeded)
+        ));
     }
 
     #[tokio::test]

@@ -42,6 +42,8 @@ pub(crate) struct FileStashRuntime {
     janitor_admission: Arc<Semaphore>,
     janitor_cancel: tokio_util::sync::CancellationToken,
     janitor_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    page_limit: usize,
+    max_query_bytes: usize,
 }
 impl FileStashRuntime {
     pub(crate) fn blocked() -> Self {
@@ -55,6 +57,8 @@ impl FileStashRuntime {
             janitor_admission: Arc::new(Semaphore::new(1)),
             janitor_cancel: tokio_util::sync::CancellationToken::new(),
             janitor_task: Mutex::new(None),
+            page_limit: usize::from(FileStashPreferences::default().page_size),
+            max_query_bytes: FileStashPreferences::default().max_query_bytes,
         }
     }
     pub(crate) async fn initialize(root: PathBuf) -> Self {
@@ -75,6 +79,8 @@ impl FileStashRuntime {
         root: PathBuf,
         preferences: FileStashPreferences,
     ) -> Self {
+        let page_limit = usize::from(preferences.page_size);
+        let max_query_bytes = preferences.max_query_bytes;
         #[cfg(target_os = "macos")]
         {
             drop(preferences);
@@ -91,6 +97,8 @@ impl FileStashRuntime {
                 janitor_admission: Arc::new(Semaphore::new(1)),
                 janitor_cancel: tokio_util::sync::CancellationToken::new(),
                 janitor_task: Mutex::new(None),
+                page_limit,
+                max_query_bytes,
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -112,6 +120,8 @@ impl FileStashRuntime {
                             janitor_admission: Arc::new(Semaphore::new(1)),
                             janitor_cancel: tokio_util::sync::CancellationToken::new(),
                             janitor_task: Mutex::new(None),
+                            page_limit,
+                            max_query_bytes,
                         };
                     }
                     let task = spawn_janitor(
@@ -141,8 +151,16 @@ impl FileStashRuntime {
                 janitor_admission: admission,
                 janitor_cancel: cancel,
                 janitor_task: Mutex::new(janitor_task),
+                page_limit,
+                max_query_bytes,
             }
         }
+    }
+    pub(crate) fn page_limit(&self) -> usize {
+        self.page_limit
+    }
+    pub(crate) fn max_query_bytes(&self) -> usize {
+        self.max_query_bytes
     }
     pub(crate) async fn status(&self) -> FileStashStatus {
         match &*self.state.lock().await {

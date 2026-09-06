@@ -38,6 +38,12 @@ impl AccessPrincipalId {
         &self.0
     }
 
+    /// Rehydrate an ID that was minted by this process for its private
+    /// in-process MCP peer. Network callers must never reach this constructor.
+    pub(crate) fn from_propagated(value: String) -> Option<Self> {
+        (!value.is_empty() && value.len() <= 255).then_some(Self(value))
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(value: &str) -> Self {
         Self(value.to_owned())

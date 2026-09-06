@@ -241,6 +241,31 @@ impl AccessRuntime {
             })
     }
 
+    /// Resolve an opaque transport-supplied recipient ID only after the
+    /// AccessStore has proved that it names an active principal. Keeping the
+    /// constructor inside this authority boundary prevents adapters from
+    /// treating untrusted text as a durable identity.
+    pub(crate) async fn resolve_active_file_stash_recipient(
+        &self,
+        value: String,
+    ) -> Result<
+        (
+            super::AccessPrincipalId,
+            super::ActiveFileStashPrincipalLease,
+        ),
+        FileStashPrincipalResolutionError,
+    > {
+        let value = value.trim();
+        if value.is_empty() || value.len() > 255 || value.chars().any(char::is_control) {
+            return Err(FileStashPrincipalResolutionError::IdentityUnavailable);
+        }
+        let principal = super::AccessPrincipalId(value.to_owned());
+        let lease = self
+            .lease_active_file_stash_principal(principal.clone())
+            .await?;
+        Ok((principal, lease))
+    }
+
     pub(super) async fn credential_reads(&self) -> Result<CredentialReadPool, AccessRuntimeError> {
         match &*self.state.lock().await {
             RuntimeState::Ready {

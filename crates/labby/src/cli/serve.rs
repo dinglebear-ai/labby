@@ -455,6 +455,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::new(registry),
                 Arc::clone(&gateway_manager),
                 Arc::clone(&access_runtime),
+                Arc::clone(&file_stash_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -466,6 +467,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             return run_stdio(
                 Arc::new(registry),
                 Arc::clone(&access_runtime),
+                Arc::clone(&file_stash_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -1934,6 +1936,7 @@ fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
     access_runtime: Arc<AccessRuntime>,
+    file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -1985,6 +1988,7 @@ fn run_stdio(
         let server = LabMcpServer {
             registry,
             access_runtime,
+            file_stash_runtime,
             #[cfg(feature = "gateway")]
             gateway_manager: Some(Arc::clone(&gateway_manager)),
             peers: Arc::clone(&notifier.peers),
@@ -2084,6 +2088,7 @@ fn build_mcp_service_with_scope(
 ) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
     let registry = Arc::clone(&state.registry);
     let access_runtime = Arc::clone(&state.access_runtime);
+    let file_stash_runtime = Arc::clone(&state.file_stash_runtime);
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
@@ -2133,6 +2138,7 @@ fn build_mcp_service_with_scope(
         move || {
             let reg = Arc::clone(&registry);
             let access_runtime = Arc::clone(&access_runtime);
+            let file_stash_runtime = Arc::clone(&file_stash_runtime);
             #[cfg(feature = "gateway")]
             let manager = gateway_manager.clone();
             #[cfg(feature = "gateway")]
@@ -2159,6 +2165,7 @@ fn build_mcp_service_with_scope(
             Ok(LabMcpServer {
                 registry: reg,
                 access_runtime,
+                file_stash_runtime,
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
                 peers,

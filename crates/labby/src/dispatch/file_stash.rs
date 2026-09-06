@@ -2,6 +2,7 @@
 // Transport adapters are wired in dependent beads; keep this shared service
 // independently reviewable until those callers land.
 #![allow(dead_code)]
+use crate::dispatch::helpers::{action_schema, help_payload, require_str};
 use crate::{
     access::AccessRuntime,
     dispatch::error::ToolError,
@@ -12,6 +13,7 @@ use crate::{
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
@@ -441,6 +443,29 @@ impl FileStashService {
             .map(Into::into)
             .map_err(map_error)
     }
+    pub(crate) async fn create_grant_for_recipient_id(
+        &self,
+        owner: &PrincipalId,
+        file_id: &str,
+        recipient_id: String,
+    ) -> Result<GrantView, ToolError> {
+        validate_id(file_id, "file_id")?;
+        let (grantee, _recipient_lease) = self
+            .access_runtime
+            .resolve_active_file_stash_recipient(recipient_id)
+            .await
+            .map_err(|_| service_error("not_found", "File Stash operation failed"))?;
+        let (store, _) = self.stores().await?;
+        store
+            .create_grant(
+                owner.as_str().to_owned(),
+                file_id.to_owned(),
+                grantee.as_str().to_owned(),
+            )
+            .await
+            .map(Into::into)
+            .map_err(map_error)
+    }
     pub(crate) async fn revoke_grant(
         &self,
         owner: &PrincipalId,
@@ -546,6 +571,123 @@ impl FileStashService {
     }
 }
 
+pub(crate) async fn dispatch_for_principal(
+    service: &FileStashService,
+    principal: &PrincipalId,
+    action: &str,
+    params: Value,
+) -> Result<Value, ToolError> {
+    let object = params.as_object();
+    let string = |name: &str| {
+        object
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::MissingParam {
+                message: format!("missing required parameter `{name}`"),
+                param: name.to_owned(),
+            })
+    };
+    let optional_string = |name: &str| {
+        object
+            .and_then(|value| value.get(name))
+            .map(|value| value.as_str().ok_or_else(|| invalid(name)))
+            .transpose()
+    };
+    let optional_limit = || {
+        object
+            .and_then(|value| value.get("limit"))
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| invalid("limit"))
+            })
+            .transpose()
+    };
+    let value = match action {
+        "stash.list" => serde_json::to_value(
+            service
+                .list(principal, optional_string("cursor")?, optional_limit()?)
+                .await?,
+        ),
+        "stash.search" => serde_json::to_value(
+            service
+                .search(
+                    principal,
+                    string("query")?,
+                    optional_string("cursor")?,
+                    optional_limit()?,
+                )
+                .await?,
+        ),
+        "stash.stats" => serde_json::to_value(service.stats(principal).await?),
+        "stash.metadata" => {
+            serde_json::to_value(service.metadata(principal, string("file_id")?).await?)
+        }
+        "stash.rename" => serde_json::to_value(
+            service
+                .rename(principal, string("file_id")?, string("display_name")?)
+                .await?,
+        ),
+        "stash.delete" => {
+            service.delete(principal, string("file_id")?).await?;
+            Ok(serde_json::json!({"deleted": true}))
+        }
+        "stash.grants.create" => serde_json::to_value(
+            service
+                .create_grant(
+                    principal,
+                    string("file_id")?,
+                    &PrincipalId::from_propagated(string("grantee_principal_id")?.to_owned())
+                        .ok_or_else(|| invalid("grantee_principal_id"))?,
+                )
+                .await?,
+        ),
+        "stash.grants.list" => serde_json::to_value(
+            service
+                .grants(
+                    principal,
+                    string("file_id")?,
+                    optional_string("cursor")?,
+                    optional_limit()?,
+                )
+                .await?,
+        ),
+        "stash.grants.revoke" => {
+            service
+                .revoke_grant(principal, string("file_id")?, string("grant_id")?)
+                .await?;
+            Ok(serde_json::json!({"revoked": true}))
+        }
+        _ => {
+            return Err(ToolError::UnknownAction {
+                message: format!("unknown File Stash action `{action}`"),
+                valid: ACTIONS.iter().map(|item| item.name.to_owned()).collect(),
+                hint: None,
+            });
+        }
+    };
+    value.map_err(|_| service_error("internal_error", "File Stash response failed"))
+}
+
+/// Context-free entrypoint used by catalog machinery. Caller-bound actions are
+/// deliberately unavailable here and are routed by the MCP/HTTP adapters only
+/// after they resolve an AccessStore principal.
+pub(crate) async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+    match action {
+        "help" => Ok(help_payload("stash", ACTIONS)),
+        "schema" => action_schema(ACTIONS, require_str(&params, "action")?),
+        _ => Err(ToolError::Forbidden {
+            message: "File Stash requires a resolved caller identity".to_owned(),
+            required_scopes: vec![
+                "lab:read".to_owned(),
+                "lab".to_owned(),
+                "lab:admin".to_owned(),
+            ],
+        }),
+    }
+}
+
 fn validated_limit(limit: Option<usize>, max: usize) -> Result<usize, ToolError> {
     let n = limit.unwrap_or(max);
     if n == 0 || n > max {
@@ -622,9 +764,8 @@ fn map_error(error: FileStashStoreError) -> ToolError {
     let kind = match error {
         FileStashStoreError::NotFound => "not_found",
         FileStashStoreError::Conflict => "conflict",
-        FileStashStoreError::QuotaExceeded | FileStashStoreError::LengthMismatch => {
-            "quota_exceeded"
-        }
+        FileStashStoreError::QuotaExceeded => "quota_exceeded",
+        FileStashStoreError::LengthMismatch => "invalid_param",
         FileStashStoreError::Busy => "busy",
         FileStashStoreError::Integrity
         | FileStashStoreError::Corrupt
@@ -649,6 +790,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["stash.delete"]
         )
+    }
+
+    #[test]
+    fn transfer_length_mismatch_is_not_reported_as_quota_exhaustion() {
+        assert_eq!(
+            map_error(FileStashStoreError::LengthMismatch).kind(),
+            "invalid_param"
+        );
+        assert_eq!(
+            map_error(FileStashStoreError::QuotaExceeded).kind(),
+            "quota_exceeded"
+        );
     }
     #[test]
     fn canonical_uri_is_id_based() {
