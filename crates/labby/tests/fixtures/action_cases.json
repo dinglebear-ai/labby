@@ -1,5 +1,62 @@
 [
   {
+    "service": "depot_publish",
+    "action": "depot.publish_skill_archive",
+    "canonical_action": null,
+    "applicable_surfaces": ["mcp"],
+    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
+    "scenario_kind": "excluded_with_reason",
+    "scenario_id": "protected_route::depot_publish::publish_skill_archive",
+    "minimum_evidence": "live_state_transition",
+    "setup_ref": "catalog-only",
+    "fixture_params": {
+      "fixture": "catalog_metadata",
+      "parameters": {
+        "filename": "$fixture.filename",
+        "archive_base64": "$fixture.archive_base64"
+      }
+    },
+    "required": false,
+    "exclusion_reason": "requires_bound_access_grant_on_protected_team_depot_route_and_is_covered_by_the_exact_three_stage_delegation_pipeline",
+    "persistence_class": "ephemeral",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "depot_publish",
+    "action": "help",
+    "canonical_action": null,
+    "applicable_surfaces": ["mcp"],
+    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
+    "scenario_kind": "contract_probe",
+    "scenario_id": "contract_probe::depot_publish::help",
+    "minimum_evidence": "metadata_only",
+    "setup_ref": "catalog-only",
+    "fixture_params": {"fixture": "catalog_metadata", "parameters": {}},
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "reconstructed",
+    "scenario_owner": "catalog_governance"
+  },
+  {
+    "service": "depot_publish",
+    "action": "schema",
+    "canonical_action": null,
+    "applicable_surfaces": ["mcp"],
+    "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
+    "scenario_kind": "contract_probe",
+    "scenario_id": "contract_probe::depot_publish::schema",
+    "minimum_evidence": "metadata_only",
+    "setup_ref": "catalog-only",
+    "fixture_params": {
+      "fixture": "catalog_metadata",
+      "parameters": {"action": "$fixture.action"}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "reconstructed",
+    "scenario_owner": "catalog_governance"
+  },
+  {
     "service": "browser",
     "action": "browser.call",
     "canonical_action": null,
