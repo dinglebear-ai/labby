@@ -1,0 +1,46 @@
+[mcp]
+transport = "http"
+host = "0.0.0.0"
+port = 8765
+
+[[upstream]]
+name = "team-depot"
+transport = "http"
+url = "http://team-depot:4100/mcp"
+bearer_token_env = "TEAM_DEPOT_TOKEN"
+proxy_resources = true
+proxy_prompts = true
+proxy_skills = true
+
+[[upstream]]
+name = "catalog-depot"
+transport = "http"
+url = "http://catalog-depot:4100/mcp"
+bearer_token_env = "CATALOG_DEPOT_TOKEN"
+proxy_resources = true
+proxy_prompts = true
+proxy_skills = true
+
+[[upstream]]
+name = "linear"
+transport = "http"
+url = "https://notification-worker.unraid-workers.workers.dev/mcp/linear"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "dynamic"
+
+[[protected_mcp_routes]]
+name = "team-linear"
+enabled = true
+public_host = "replace-with-public-mcp-host.example"
+public_path = "/mcp/linear"
+scopes = ["lab:read", "lab"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["team-depot", "catalog-depot", "linear"]
+services = ["artifacts", "bundles", "gateway", "jobs", "setup", "snippets", "sources", "uploads"]
+expose_code_mode = true
