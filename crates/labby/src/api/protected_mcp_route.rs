@@ -112,7 +112,32 @@ async fn protected_mcp_route_entry(
                             .expect("project-bound route authentication validates transport"),
                         std::time::SystemTime::now(),
                     ) {
-                        Ok(binding) => Ok(binding),
+                        Ok(binding) => {
+                            if let Some(credential) = authenticated.oauth_delegation.as_ref() {
+                                if let Some(installation_id) = state.installation_id.as_deref()
+                                    && let Ok(policy) = manager
+                                        .acquire_published_bootstrap_policy_lease(
+                                            binding.core().catalog().access().loadout_name.as_str(),
+                                            &route.name,
+                                        )
+                                        .await
+                                    && let Ok(grant) = binding.oauth_depot_grant(
+                                        installation_id,
+                                        credential,
+                                        &policy,
+                                    )
+                                {
+                                    request.extensions_mut().insert(grant);
+                                } else {
+                                    tracing::warn!(
+                                        route = %route.name,
+                                        project_id,
+                                        "Depot publishing grant unavailable; read-only route access preserved"
+                                    );
+                                }
+                            }
+                            Ok(binding)
+                        }
                         Err(error) => {
                             tracing::warn!(
                                 surface = "api",

@@ -43,6 +43,10 @@ pub(crate) struct ProjectPermissionSnapshot {
     pub(crate) loadout_name: String,
     pub(crate) permission: Permission,
     pub(crate) global_revision: u64,
+    pub(crate) membership_epoch: u64,
+    pub(crate) organization_policy_epoch: u64,
+    pub(crate) project_policy_epoch: u64,
+    pub(crate) assignment_generation: u64,
 }
 
 /// One exact current membership snapshot for Labby-owned library policy.
@@ -76,6 +80,10 @@ pub(super) fn authorize(
         loadout_name: selected.loadout_name,
         permission: input.permission,
         global_revision: selected.global_revision,
+        membership_epoch: selected.membership_epoch,
+        organization_policy_epoch: selected.organization_policy_epoch,
+        project_policy_epoch: selected.project_policy_epoch,
+        assignment_generation: selected.assignment_generation,
     };
     transaction.commit().map_err(map_sqlite_error)?;
     Ok(snapshot)
@@ -257,6 +265,10 @@ mod tests {
                 loadout_name: "production".into(),
                 permission: Permission::AssetUse,
                 global_revision: 1,
+                membership_epoch: 2,
+                organization_policy_epoch: 0,
+                project_policy_epoch: 0,
+                assignment_generation: 2,
             }
         );
     }

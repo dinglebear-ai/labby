@@ -604,6 +604,63 @@ impl DepotClient {
         })?;
         decode_response(response).await
     }
+
+    pub async fn publish_skill_archive(
+        &self,
+        filename: &str,
+        archive: Vec<u8>,
+        namespace: Option<&str>,
+        grant: &BoundAccessGrant,
+    ) -> Result<Value, DepotError> {
+        let created = self
+            .call_with_grant(
+                "depot.uploads.create",
+                json!({"filename": filename}),
+                &grant.principal_id,
+                OperationPolicy {
+                    read_only: false,
+                    destructive: false,
+                },
+                None,
+                Some(grant),
+            )
+            .await?;
+        let upload_id = created
+            .pointer("/result/upload/id")
+            .or_else(|| created.pointer("/upload/id"))
+            .or_else(|| created.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| valid_upload_id(id))
+            .ok_or(DepotError::InvalidResponse)?
+            .to_owned();
+        let content_length =
+            u64::try_from(archive.len()).map_err(|_| DepotError::InvalidResponse)?;
+        self.upload_with_grant(
+            &upload_id,
+            reqwest::Body::from(archive),
+            Some(content_length),
+            "application/octet-stream",
+            Some(grant),
+        )
+        .await?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("uploadId".into(), Value::String(upload_id));
+        if let Some(namespace) = namespace {
+            arguments.insert("namespace".into(), Value::String(namespace.to_owned()));
+        }
+        self.call_with_grant(
+            "depot.ingest.start",
+            json!({"kind":"archive","arguments":arguments}),
+            &grant.principal_id,
+            OperationPolicy {
+                read_only: false,
+                destructive: false,
+            },
+            None,
+            Some(grant),
+        )
+        .await
+    }
 }
 
 fn compatibility_envelope(value: Value) -> Result<Value, DepotError> {
@@ -895,6 +952,68 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn skill_archive_publish_uses_three_independently_delegated_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.uploads.create"))
+            .and(FreshDelegationWithoutActorHeader)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": {"upload": {"id": "upload-123"}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/uploads/upload-123"))
+            .and(FreshDelegationWithoutActorHeader)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "upload": {"id": "upload-123", "status": "ready"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.ingest.start"))
+            .and(FreshDelegationWithoutActorHeader)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": {"job": {"id": "job-123"}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client = DepotClient::for_test(
+            Url::parse(&server.uri()).unwrap(),
+            "shared-write-bearer-must-not-be-forwarded",
+        );
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        let result = client
+            .publish_skill_archive(
+                "skill.zip",
+                b"archive bytes".to_vec(),
+                Some("team"),
+                &delegation_grant(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["result"]["job"]["id"], "job-123");
     }
 
     fn test_client(base_url: Url, permits: usize, queue_timeout: Duration) -> DepotClient {

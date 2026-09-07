@@ -1403,7 +1403,7 @@ mod tests {
     /// rejected by the shared authentication layer before its handler runs.
     fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
         let path = match service {
-            "lab_admin" => return None,
+            "lab_admin" | "depot_publish" => return None,
             "fs" => "/v1/fs/list".to_string(),
             "stash" => "/v1/stash/stats".to_string(),
             name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
@@ -1451,7 +1451,10 @@ mod tests {
 
         for service in registry.services() {
             let Some((method, path)) = registry_http_auth_probe(service.name) else {
-                assert_eq!(service.name, "lab_admin", "only lab_admin is MCP-only");
+                assert!(
+                    matches!(service.name, "lab_admin" | "depot_publish"),
+                    "only reviewed MCP-only services may omit an HTTP route"
+                );
                 continue;
             };
             let response = build_router_with_bearer(

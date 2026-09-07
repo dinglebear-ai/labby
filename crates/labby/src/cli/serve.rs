@@ -2142,6 +2142,7 @@ fn build_mcp_service_with_scope(
     let shared_peers = Arc::clone(&notifier.peers);
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
     let shared_route_runtime: Arc<crate::mcp::runtime::McpRouteRuntime> = Default::default();
+    shared_route_runtime.configure_depot(Arc::clone(&state.depot));
     #[cfg(feature = "gateway")]
     let shared_client_registry = notifier.client_registry.clone();
     let route_scope_label = route_scope.label();
