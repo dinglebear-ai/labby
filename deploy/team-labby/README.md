@@ -105,6 +105,32 @@ bound grant contains the configured organization, project, and current epochs,
 Depot can fetch Labby's live JWKS, and the delegated publish/replay/stale-policy
 qualification below passes.
 
+An admitted ordinary member needs the `lab` OAuth scope in addition to the
+route's baseline `lab:read` scope. On the protected `/mcp/linear` route,
+`tools/list` must then include the route-owned `depot_publish` tool. Publishing
+uses only the `depot.publish_skill_archive` action and accepts a bounded,
+base64-encoded skill archive:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "depot_publish",
+    "arguments": {
+      "action": "depot.publish_skill_archive",
+      "filename": "example-skill.tar.gz",
+      "archive_base64": "<base64-encoded-archive>",
+      "namespace": "team"
+    }
+  }
+}
+```
+
+`namespace` is optional. The tool must remain absent from the root MCP route,
+unprotected routes, and routes that do not contain the `team-depot` provider.
+
 ## Employee Linear authorization
 
 After an admitted non-admin employee signs in to Labby, that employee must
