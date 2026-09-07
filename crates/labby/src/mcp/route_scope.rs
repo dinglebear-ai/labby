@@ -155,7 +155,7 @@ impl McpRouteScope {
 
     pub(crate) fn allows_service(&self, service: &str) -> bool {
         match self {
-            Self::Root => service != "depot_publish",
+            Self::Root => service != crate::dispatch::depot_publish::SERVICE,
             Self::ProtectedSubset {
                 services,
                 upstreams,
@@ -163,9 +163,9 @@ impl McpRouteScope {
                 ..
             } => {
                 services.contains(service)
-                    || (service == "depot_publish"
+                    || (service == crate::dispatch::depot_publish::SERVICE
                         && *expose_tools
-                        && upstreams.contains("team-depot"))
+                        && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM))
             }
         }
     }

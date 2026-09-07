@@ -579,7 +579,8 @@ impl DepotClient {
             "contentType": content_type,
             "uploadId": upload_id,
         });
-        let token = self.delegation_token(grant, "depot.uploads.put", &binding)?;
+        let token =
+            self.delegation_token(grant, super::depot_publish::UPLOAD_PUT_OPERATION, &binding)?;
         let url = base
             .join(&format!("uploads/{upload_id}"))
             .map_err(|_| DepotError::Unconfigured)?;
@@ -614,7 +615,7 @@ impl DepotClient {
     ) -> Result<Value, DepotError> {
         let created = self
             .call_with_grant(
-                "depot.uploads.create",
+                super::depot_publish::UPLOAD_CREATE_OPERATION,
                 json!({"filename": filename}),
                 &grant.principal_id,
                 OperationPolicy {
@@ -649,7 +650,7 @@ impl DepotClient {
             arguments.insert("namespace".into(), Value::String(namespace.to_owned()));
         }
         self.call_with_grant(
-            "depot.ingest.start",
+            super::depot_publish::INGEST_START_OPERATION,
             json!({"kind":"archive","arguments":arguments}),
             &grant.principal_id,
             OperationPolicy {

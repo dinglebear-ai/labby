@@ -6,13 +6,11 @@ use axum::{
     Extension, Json,
     body::Body,
     extract::{ConnectInfo, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     routing::{post, put},
 };
 use http_body_util::{BodyExt as _, Limited};
 use labby_auth::VerifiedIdentity;
-use labby_auth::browser_authority::BrowserAuthority;
-use labby_primitives::product_credential::BoundAccessGrant;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -78,10 +76,8 @@ struct UploadQuery {
 
 async fn upload_bytes(
     State(state): State<AppState>,
-    authority: Option<Extension<BrowserAuthority>>,
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
-    bound: Option<Extension<BoundAccessGrant>>,
     Path(id): Path<String>,
     Query(query): Query<UploadQuery>,
     headers: HeaderMap,
@@ -90,6 +86,13 @@ async fn upload_bytes(
     let is_admin = auth
         .as_ref()
         .is_some_and(|Extension(auth)| auth.scopes.iter().any(|scope| scope == "lab:admin"));
+    if !is_admin {
+        return Err(crate::dispatch::error::ToolError::Forbidden {
+            message: "Artifact uploads require lab:admin scope".to_owned(),
+            required_scopes: vec!["lab:admin".to_owned()],
+        }
+        .into());
+    }
     require_session_csrf(
         "uploads.put",
         &headers,
@@ -110,53 +113,6 @@ async fn upload_bytes(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream");
-    if !is_admin {
-        let auth = auth.as_ref().map(|Extension(auth)| auth).ok_or_else(|| {
-            member_upload_forbidden("Artifact uploads require an authenticated team session")
-        })?;
-        if !auth.via_session || !auth.scopes.iter().any(|scope| scope == "lab") {
-            return Err(member_upload_forbidden(
-                "Artifact uploads require an authenticated team member with lab scope",
-            ));
-        }
-        if query.connection_id.is_some() {
-            return Err(member_upload_forbidden(
-                "Team members may upload only to the configured Team Depot",
-            ));
-        }
-        let authority = authority
-            .as_ref()
-            .map(|Extension(authority)| authority)
-            .ok_or_else(|| member_upload_forbidden("Artifact upload authority is unavailable"))?;
-        let current = authority
-            .revalidate()
-            .await
-            .map_err(|_| member_upload_forbidden("Artifact upload authority was revoked"))?;
-        if !current.has_scope("lab") {
-            return Err(member_upload_forbidden(
-                "Artifact upload authority was revoked",
-            ));
-        }
-        let grant = bound
-            .as_ref()
-            .map(|Extension(grant)| grant)
-            .ok_or_else(|| {
-                member_upload_forbidden("Artifact upload project grant is unavailable")
-            })?;
-        let stream = Limited::new(body, MAX_UPLOAD_BYTES).into_data_stream();
-        return state
-            .depot
-            .upload_with_grant(
-                &id,
-                reqwest::Body::wrap_stream(stream),
-                content_length,
-                content_type,
-                Some(grant),
-            )
-            .await
-            .map(Json)
-            .map_err(map_depot_upload_error);
-    }
     let project_id = headers
         .get("x-labby-project-id")
         .and_then(|value| value.to_str().ok())
@@ -215,45 +171,6 @@ async fn upload_bytes(
         }
     }
     result.map(Json).map_err(Into::into)
-}
-
-fn member_upload_forbidden(message: &str) -> ApiError {
-    crate::dispatch::error::ToolError::Forbidden {
-        message: message.to_owned(),
-        required_scopes: vec!["lab".to_owned()],
-    }
-    .into()
-}
-
-fn map_depot_upload_error(error: crate::dispatch::depot::DepotError) -> ApiError {
-    let (kind, message) = match error {
-        crate::dispatch::depot::DepotError::DelegationUnavailable
-        | crate::dispatch::depot::DepotError::Disabled
-        | crate::dispatch::depot::DepotError::Unconfigured => (
-            "source_unavailable",
-            "Team Depot delegated upload is unavailable",
-        ),
-        crate::dispatch::depot::DepotError::UnsupportedOperation => {
-            ("validation_failed", "Invalid Depot upload identifier")
-        }
-        crate::dispatch::depot::DepotError::Upstream(status, _)
-            if status == StatusCode::NOT_FOUND =>
-        {
-            (
-                "not_found",
-                "Depot upload slot was not found for this principal",
-            )
-        }
-        crate::dispatch::depot::DepotError::Upstream(_, _) => {
-            ("server_error", "Team Depot rejected the delegated upload")
-        }
-        _ => ("network_error", "Team Depot upload failed"),
-    };
-    crate::dispatch::error::ToolError::Sdk {
-        sdk_kind: kind.to_owned(),
-        message: message.to_owned(),
-    }
-    .into()
 }
 
 async fn handle_sources(
@@ -446,8 +363,6 @@ mod tests {
             State(AppState::default()),
             None,
             None,
-            None,
-            None,
             Path("upload-1".to_owned()),
             Query(UploadQuery {
                 connection_id: None,
@@ -457,16 +372,17 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(error.into_response().status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            error.into_response().status(),
+            axum::http::StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
     async fn raw_upload_rejects_non_admin_execution_scope() {
         let error = upload_bytes(
             State(AppState::default()),
-            None,
             auth(&["lab"]),
-            None,
             None,
             Path("upload-1".to_owned()),
             Query(UploadQuery {
@@ -477,7 +393,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(error.into_response().status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            error.into_response().status(),
+            axum::http::StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
@@ -486,9 +405,7 @@ mod tests {
         headers.insert(header::CONTENT_LENGTH, "50000001".parse().unwrap());
         let error = upload_bytes(
             State(AppState::default()),
-            None,
             auth(&["lab:admin"]),
-            None,
             None,
             Path("upload-1".to_owned()),
             Query(UploadQuery {
@@ -501,7 +418,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.into_response().status(),
-            StatusCode::UNPROCESSABLE_ENTITY
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
     }
 }

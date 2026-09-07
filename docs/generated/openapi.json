@@ -5774,41 +5774,6 @@
           }
         }
       },
-      "Depot_publishActionRequest": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "depot.publish_skill_archive"
-            ]
-          },
-          "params": {
-            "type": "object"
-          }
-        }
-      },
-      "Depot_publishDepotPublish_skill_archiveParams": {
-        "type": "object",
-        "required": [
-          "filename",
-          "archive_base64"
-        ],
-        "properties": {
-          "archive_base64": {
-            "type": "string"
-          },
-          "filename": {
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          }
-        }
-      },
       "DoctorActionRequest": {
         "type": "object",
         "required": [
@@ -7209,50 +7174,6 @@
             "type": "string"
           },
           "kind": {
-            "type": "string"
-          }
-        }
-      },
-      "Lab_adminActionRequest": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "help",
-              "schema",
-              "onboarding.audit"
-            ]
-          },
-          "params": {
-            "type": "object"
-          }
-        }
-      },
-      "Lab_adminOnboardingAuditParams": {
-        "type": "object",
-        "required": [
-          "services"
-        ],
-        "properties": {
-          "services": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "Lab_adminSchemaParams": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
             "type": "string"
           }
         }

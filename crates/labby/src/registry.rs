@@ -514,7 +514,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
 
     reg.register(RegisteredService::bootstrap_operator(
-        "depot_publish",
+        crate::dispatch::depot_publish::SERVICE,
         "Publish skill archives to a protected Team Depot",
         "artifacts",
         crate::dispatch::depot_publish::ACTIONS,
@@ -976,7 +976,9 @@ mod tests {
             .iter()
             // lab_admin is MCP-only: no HTTP route by design (runtime opt-in via LABBY_ADMIN_ENABLED=1).
             .filter(|n| {
-                !http_router_services.contains(**n) && !matches!(**n, "lab_admin" | "depot_publish")
+                !http_router_services.contains(**n)
+                    && **n != "lab_admin"
+                    && **n != crate::dispatch::depot_publish::SERVICE
             })
             .collect();
         let only_in_router: Vec<&&str> = http_router_services

@@ -1712,10 +1712,15 @@ impl LabMcpServer {
                 route = "builtin",
                 "dispatch route selected"
             );
-            #[cfg(feature = "gateway")]
-            if service == "depot_publish" && action == "depot.publish_skill_archive" {
-                let result = match (
-                    self.route_scope.allows_service("depot_publish"),
+            let result = if cfg!(feature = "gateway")
+                && service == crate::dispatch::depot_publish::SERVICE
+                && action == crate::dispatch::depot_publish::ACTION
+            {
+                #[cfg(feature = "gateway")]
+                {
+                    match (
+                    self.route_scope
+                        .allows_service(crate::dispatch::depot_publish::SERVICE),
                     project_depot_publish_authorized(self, &context).await,
                     depot_publish_grant(&context),
                     self.route_runtime.depot(),
@@ -1737,36 +1742,26 @@ impl LabMcpServer {
                     },
                     _ => Err(ToolError::Forbidden {
                         message: "Depot publishing requires a protected team route and a current project grant".into(),
-                        required_scopes: vec!["lab".into(), "lab:admin".into()],
+                        required_scopes: vec!["lab".into()],
                     }),
-                };
-                let result =
-                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
-                let elapsed_ms = start.elapsed().as_millis();
-                let input_tokens = estimate_tokens_args(&args);
-                let (result, outcome) = format_dispatch_result(
-                    result,
-                    &service,
-                    &action,
-                    elapsed_ms,
-                    &subject,
-                    actor_key,
-                    input_tokens,
-                );
-                self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
-                    .await;
-                return Ok(result.into());
-            }
-            #[cfg(feature = "gateway")]
-            if service == "snippets" && action == "snippets.promote" {
+                }
+                }
+                #[cfg(not(feature = "gateway"))]
+                unreachable!("Depot publishing is gateway-only")
+            } else if cfg!(feature = "gateway")
+                && service == "snippets"
+                && action == "snippets.promote"
+            {
+                #[cfg(feature = "gateway")]
                 return self
                     .call_snippets_promote_impl(
                         &action, params, &args, start, &subject, actor_key, &context,
                     )
                     .await
                     .map(Into::into);
-            }
-            let result = if self.registry.dispatch_capability(&service)
+                #[cfg(not(feature = "gateway"))]
+                unreachable!("snippet promotion is gateway-only")
+            } else if self.registry.dispatch_capability(&service)
                 == Some(crate::registry::DispatchCapability::CallerBound)
                 && !matches!(action.as_str(), "help" | "schema")
             {
@@ -2019,13 +2014,13 @@ impl LabMcpServer {
 }
 
 fn is_project_depot_publish_call(request: &CallToolRequestParams) -> bool {
-    request.name.as_ref() == "depot_publish"
+    request.name.as_ref() == crate::dispatch::depot_publish::SERVICE
         && request
             .arguments
             .as_ref()
             .and_then(|arguments| arguments.get("action"))
             .and_then(Value::as_str)
-            == Some("depot.publish_skill_archive")
+            == Some(crate::dispatch::depot_publish::ACTION)
 }
 
 #[cfg(not(feature = "gateway"))]

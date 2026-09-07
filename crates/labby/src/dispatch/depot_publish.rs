@@ -3,6 +3,13 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::Value;
 
+pub const SERVICE: &str = "depot_publish";
+pub const ACTION: &str = "depot.publish_skill_archive";
+pub const REQUIRED_UPSTREAM: &str = "team-depot";
+pub const UPLOAD_CREATE_OPERATION: &str = "depot.uploads.create";
+pub const UPLOAD_PUT_OPERATION: &str = "depot.uploads.put";
+pub const INGEST_START_OPERATION: &str = "depot.ingest.start";
+
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
         name: "filename",
@@ -25,7 +32,7 @@ const PARAMS: &[ParamSpec] = &[
 ];
 
 pub const ACTIONS: &[ActionSpec] = &[ActionSpec {
-    name: "depot.publish_skill_archive",
+    name: ACTION,
     description: "Publish a skill archive to the authenticated team's Depot",
     destructive: false,
     requires_admin: false,

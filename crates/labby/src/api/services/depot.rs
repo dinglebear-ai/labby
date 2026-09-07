@@ -6,7 +6,6 @@ use axum::{
 };
 use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::{AuthContext, Authenticator, PrincipalLink, VerifiedIdentity};
-use labby_primitives::product_credential::BoundAccessGrant;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -32,90 +31,6 @@ struct OperationRequest {
 struct DestructiveIntent {
     confirmed: bool,
     idempotency_key: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OperationPermission {
-    Read,
-    MemberPublish,
-    Admin,
-}
-
-/// Keep employee write authority deliberately smaller than Depot's write
-/// catalog. The only non-admin workflow admitted here is the principal-bound
-/// archive upload flow; every newly-added mutation therefore fails closed.
-fn operation_permission(
-    operation: &str,
-    params: &Value,
-    policy: crate::dispatch::depot::OperationPolicy,
-) -> OperationPermission {
-    if policy.read_only {
-        return OperationPermission::Read;
-    }
-    if policy.destructive {
-        return OperationPermission::Admin;
-    }
-    match operation {
-        "depot.uploads.create" if is_archive_upload_create(params) => {
-            OperationPermission::MemberPublish
-        }
-        "depot.ingest.start" if is_principal_archive_ingest(params) => {
-            OperationPermission::MemberPublish
-        }
-        _ => OperationPermission::Admin,
-    }
-}
-
-fn is_archive_upload_create(params: &Value) -> bool {
-    let Some(params) = params.as_object() else {
-        return false;
-    };
-    params.keys().all(|key| key == "filename")
-        && params
-            .get("filename")
-            .and_then(Value::as_str)
-            .is_some_and(|filename| {
-                if filename.is_empty()
-                    || filename.len() > 255
-                    || filename.contains(['/', '\\'])
-                    || filename.chars().any(char::is_control)
-                {
-                    return false;
-                }
-                let filename = filename.to_ascii_lowercase();
-                filename.ends_with(".zip")
-                    || filename.ends_with(".tar.gz")
-                    || filename.ends_with(".tgz")
-            })
-}
-
-fn is_principal_archive_ingest(params: &Value) -> bool {
-    let Some(params) = params.as_object() else {
-        return false;
-    };
-    if params.get("kind").and_then(Value::as_str) != Some("archive")
-        || !params
-            .keys()
-            .all(|key| matches!(key.as_str(), "kind" | "arguments" | "idempotencyKey"))
-    {
-        return false;
-    }
-    let Some(arguments) = params.get("arguments").and_then(Value::as_object) else {
-        return false;
-    };
-    arguments
-        .get("uploadId")
-        .and_then(Value::as_str)
-        .is_some_and(|id| {
-            !id.is_empty()
-                && id.len() <= 256
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-        })
-        && arguments
-            .keys()
-            .all(|key| matches!(key.as_str(), "uploadId" | "namespace"))
 }
 
 pub fn routes(_state: AppState) -> RouteGroup {
@@ -658,93 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn only_principal_archive_publish_operations_are_member_writable() {
-        let write = crate::dispatch::depot::OperationPolicy {
-            read_only: false,
-            destructive: false,
-        };
-        assert_eq!(
-            operation_permission(
-                "depot.uploads.create",
-                &json!({"filename":"skill.zip"}),
-                write
-            ),
-            OperationPermission::MemberPublish
-        );
-        for params in [
-            json!({"filename":"marketplace.json"}),
-            json!({"filename":"skill.zip","source":"https://example.test"}),
-            json!({}),
-        ] {
-            assert_eq!(
-                operation_permission("depot.uploads.create", &params, write),
-                OperationPermission::Admin
-            );
-        }
-        assert_eq!(
-            operation_permission(
-                "depot.ingest.start",
-                &json!({"kind":"archive","arguments":{"uploadId":"upload_123","namespace":"team"}}),
-                write,
-            ),
-            OperationPermission::MemberPublish
-        );
-    }
-
-    #[test]
-    fn arbitrary_ingest_sources_and_every_other_mutation_remain_admin_only() {
-        let write = crate::dispatch::depot::OperationPolicy {
-            read_only: false,
-            destructive: false,
-        };
-        for params in [
-            json!({"kind":"repo","arguments":{"source":"https://example.test/repo.git"}}),
-            json!({"kind":"archive","arguments":{"source":"https://example.test/skill.zip"}}),
-            json!({"kind":"archive","arguments":{"uploadId":"../other-principal"}}),
-            json!({"kind":"archive","arguments":{"uploadId":"upload-1","source":"https://example.test"}}),
-            json!({"kind":"archive","arguments":{}}),
-        ] {
-            assert_eq!(
-                operation_permission("depot.ingest.start", &params, write),
-                OperationPermission::Admin,
-                "unexpected member admission for {params}"
-            );
-        }
-        for operation in [
-            "depot.skills.ingest_repo",
-            "depot.skills.delete",
-            "depot.artifacts.set_publication",
-            "depot.sources.refresh",
-            "depot.tokens.create",
-            "depot.system.configure",
-            "depot.maintenance.gc",
-            "depot.bundles.publish",
-        ] {
-            assert_eq!(
-                operation_permission(operation, &json!({}), write),
-                OperationPermission::Admin,
-                "{operation}"
-            );
-        }
-    }
-
-    #[test]
-    fn destructive_catalog_metadata_overrides_member_operation_name() {
-        let destructive = crate::dispatch::depot::OperationPolicy {
-            read_only: false,
-            destructive: true,
-        };
-        assert_eq!(
-            operation_permission(
-                "depot.uploads.create",
-                &json!({"filename":"skill.zip"}),
-                destructive,
-            ),
-            OperationPermission::Admin
-        );
-    }
-
-    #[test]
     fn depot_rejects_web_ui_auth_disabled_identity() {
         let identity =
             VerifiedIdentity::local_credential(Authenticator::StaticBearer, "web-ui-dev:local")
@@ -1068,7 +896,6 @@ async fn call(
     Extension(authority): Extension<BrowserAuthority>,
     Extension(auth): Extension<AuthContext>,
     identity: Option<Extension<VerifiedIdentity>>,
-    bound: Option<Extension<BoundAccessGrant>>,
     headers: HeaderMap,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1079,14 +906,8 @@ async fn call(
         .operation_policy(&request.operation, &actor)
         .await
         .map_err(map_error)?;
-    match operation_permission(&request.operation, &request.params, policy) {
-        OperationPermission::Read => {}
-        OperationPermission::MemberPublish => {
-            require_member_publish(&authority, &auth, &headers, &request.operation).await?;
-        }
-        OperationPermission::Admin => {
-            require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
-        }
+    if !policy.read_only {
+        require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
     }
     let idempotency_key = if policy.destructive {
         let intent = request
@@ -1100,35 +921,16 @@ async fn call(
     };
     state
         .depot
-        .call_with_grant(
+        .call(
             &request.operation,
             request.params,
             &actor,
             policy,
             idempotency_key,
-            bound.as_ref().map(|Extension(grant)| grant),
         )
         .await
         .map(Json)
         .map_err(map_error)
-}
-
-async fn require_member_publish(
-    authority: &BrowserAuthority,
-    auth: &AuthContext,
-    headers: &HeaderMap,
-    action: &str,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
-    if !grant.has_scope("lab") && !grant.has_scope("lab:admin") {
-        return Err(forbidden());
-    }
-    crate::api::services::require_session_csrf(action, headers, Some(auth)).map_err(|error| {
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({"kind":error.kind(),"message":error.to_string()})),
-        )
-    })
 }
 
 async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, Json<Value>)> {

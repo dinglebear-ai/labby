@@ -6,7 +6,7 @@
     "applicable_surfaces": ["mcp"],
     "applicable_features": ["all", "api-docs", "base", "default", "fs", "gateway-host", "lab-admin", "no-default", "skills"],
     "scenario_kind": "excluded_with_reason",
-    "scenario_id": "protected_route::depot_publish::publish_skill_archive",
+    "scenario_id": "protected_route_denial::depot_publish::publish_skill_archive",
     "minimum_evidence": "live_state_transition",
     "setup_ref": "catalog-only",
     "fixture_params": {
@@ -17,7 +17,7 @@
       }
     },
     "required": false,
-    "exclusion_reason": "requires_bound_access_grant_on_protected_team_depot_route_and_is_covered_by_the_exact_three_stage_delegation_pipeline",
+    "exclusion_reason": "the_live_mcp_shard_proves_root_route_denial; successful_publishing_requires_a_bound_access_grant_on_the_protected_team_depot_route_and_is_covered_by_the_exact_three_stage_delegation_pipeline_contract_tests",
     "persistence_class": "ephemeral",
     "scenario_owner": "stateful_workflow_runner"
   },
