@@ -1,7 +1,12 @@
 //! Shared Dev Container dispatch orchestration.
 //!
-//! Transport adapters are intentionally absent. Runtime effects are delegated
-//! to the surface-neutral, pluggable engine contract.
+//! Every surface reaches this module through [`dispatch`] with a
+//! host-established identity: the authenticated HTTP adapter
+//! (`crate::api::services::dev_containers`) and the MCP tool binding
+//! (`crate::mcp::call_tool`). The registry's context-free entry,
+//! [`dispatch_unbound`], serves only `help`/`schema` and denies every other
+//! action. Runtime effects are delegated to the surface-neutral, pluggable
+//! engine contract in `labby_runtime::dev_container_runtime`.
 
 use labby_auth::VerifiedIdentity;
 use labby_primitives::{
@@ -12,6 +17,7 @@ use labby_primitives::{
     action::{ActionSpec, ParamSpec},
     dev_container::{DesiredState, DevContainerId, LifecycleNonce},
 };
+use labby_runtime::dev_container::DevContainerAdmissionError;
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
@@ -24,6 +30,11 @@ pub(crate) use labby_runtime::dev_container_runtime::{
     ContainerRuntime, DurableIntent, EngineCreateRequest, EngineHandle, EngineState,
     RecoveryAction, RuntimeError, create, reconcile,
 };
+
+use crate::dispatch::access_errors::{map_runtime_error, map_store_error};
+use crate::dispatch::error::ToolError;
+
+const SERVICE: &str = "dev_containers";
 
 const INSTANCE_ID: ParamSpec = ParamSpec {
     name: "instance_id",
@@ -136,33 +147,23 @@ pub(crate) fn required_capability(action: &str, _owner: OwnerKind) -> Option<Cap
     }
 }
 
-/// MCP cannot supply host-established identity/epochs. Refuse without revealing
-/// whether a requested instance exists; authenticated HTTP uses the bound path.
-pub(crate) async fn dispatch_unbound(
-    action: &str,
-    params: Value,
-) -> Result<Value, crate::dispatch::error::ToolError> {
+/// Context-free registry entry. It carries no host-established identity or
+/// authority epochs, so it can only answer `help`/`schema`; every other
+/// action is refused without revealing whether the named instance exists.
+/// The bound surfaces (HTTP and MCP) call [`dispatch`] instead.
+pub(crate) async fn dispatch_unbound(action: &str, params: Value) -> Result<Value, ToolError> {
     if action == "help" {
-        return Ok(crate::dispatch::helpers::help_payload(
-            "dev_containers",
-            ACTIONS,
-        ));
+        return Ok(crate::dispatch::helpers::help_payload(SERVICE, ACTIONS));
     }
     if action == "schema" {
         let requested = params
             .get("action")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| crate::dispatch::error::ToolError::MissingParam {
-                message: "missing required parameter `action`".into(),
-                param: "action".into(),
-            })?;
+            .ok_or_else(|| missing("action"))?;
         return crate::dispatch::helpers::action_schema(ACTIONS, requested);
     }
-    Err(crate::dispatch::error::ToolError::Forbidden {
-        message: "Dev Container operation is not authorized".into(),
-        required_scopes: Vec::new(),
-    })
+    Err(denied())
 }
 
 #[derive(Clone)]
@@ -176,12 +177,9 @@ pub(crate) async fn dispatch(
     context: DevContainerDispatchContext,
     action: &str,
     params: Value,
-) -> Result<Value, crate::dispatch::error::ToolError> {
+) -> Result<Value, ToolError> {
     if action == "help" {
-        return Ok(crate::dispatch::helpers::help_payload(
-            "dev_containers",
-            ACTIONS,
-        ));
+        return Ok(crate::dispatch::helpers::help_payload(SERVICE, ACTIONS));
     }
     if action == "schema" {
         return crate::dispatch::helpers::action_schema(
@@ -192,160 +190,191 @@ pub(crate) async fn dispatch(
                 .unwrap_or_default(),
         );
     }
+    if !ACTIONS.iter().any(|spec| spec.name == action) {
+        return Err(unknown_action(action));
+    }
     let store = context
         .access_runtime
         .store()
         .await
-        .map_err(|_| unavailable())?;
-    if action == "dev_containers.list" {
-        let limit = match params.get("limit") {
-            None | Some(Value::Null) => 100,
-            Some(Value::String(value)) => value
-                .parse::<usize>()
-                .ok()
-                .filter(|value| (1..=100).contains(value))
-                .ok_or_else(denied)?,
-            _ => return Err(denied()),
-        };
-        let cursor = params
-            .get("cursor")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let probe_owner = OwnerScope::Installation(
-            InstallationId::new("authorized-list-probe").map_err(|_| denied())?,
-        );
-        let now = now_millis()?;
-        let request =
-            authority_request(&context, action, probe_owner, "authorized-list-probe", now)
-                .map_err(|_| denied())?;
-        let inventory = store
-            .list_authorized_dev_containers(cursor.to_owned(), limit, request)
-            .await
-            .map_err(|_| denied())?;
-        let next_cursor = inventory.last().map(|record| record.instance_id.clone());
-        let visible = inventory.iter().map(record_json).collect::<Vec<_>>();
-        return Ok(serde_json::json!({"instances":visible,"next_cursor":next_cursor}));
+        .map_err(|error| map_runtime_error(SERVICE, error))?;
+    match action {
+        "dev_containers.list" => list(&context, &store, action, &params).await,
+        "dev_containers.create" => create_instance(&context, &store, action, &params).await,
+        _ => lifecycle(&context, &store, action, &params).await,
     }
-    if action == "dev_containers.create" {
-        let instance_id = params
-            .get("instance_id")
-            .and_then(Value::as_str)
-            .ok_or_else(denied)?
-            .to_owned();
-        let template_id = params
-            .get("template_id")
-            .and_then(Value::as_str)
-            .ok_or_else(denied)?
-            .to_owned();
-        let owner_id = params
-            .get("owner_id")
-            .and_then(Value::as_str)
-            .ok_or_else(denied)?;
-        let kind = match params.get("owner_kind").and_then(Value::as_str) {
-            Some("installation") => OwnerKind::Installation,
-            Some("team") => OwnerKind::Team,
-            Some("project") => OwnerKind::Project,
-            Some("personal") => OwnerKind::Personal,
-            _ => return Err(denied()),
-        };
-        let owner = owner_scope(kind, owner_id)?;
-        let (lease, _) = authorize(&context, &store, action, owner.clone(), &instance_id)
-            .await
-            .map_err(|_| denied())?;
-        let secrets = params
-            .get("secret_references")
-            .and_then(Value::as_array)
-            .map(|v| {
-                v.iter()
-                    .map(|x| x.as_str().map(str::to_owned).ok_or_else(denied))
-                    .collect()
+}
+
+async fn list(
+    context: &DevContainerDispatchContext,
+    store: &crate::access::AccessStore,
+    action: &str,
+    params: &Value,
+) -> Result<Value, ToolError> {
+    let limit = match params.get("limit") {
+        None | Some(Value::Null) => Some(100),
+        Some(Value::String(value)) => value.parse::<usize>().ok(),
+        Some(Value::Number(value)) => value.as_u64().and_then(|value| usize::try_from(value).ok()),
+        Some(_) => None,
+    }
+    .filter(|value| (1..=100).contains(value))
+    .ok_or_else(|| invalid("limit"))?;
+    let cursor = match params.get("cursor") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(invalid("cursor")),
+    };
+    // The probe owner is a placeholder resource; the store re-evaluates every
+    // returned record against the caller's real authority inside one
+    // transaction, so the placeholder never grants visibility by itself.
+    let probe_owner = OwnerScope::Installation(
+        InstallationId::new("authorized-list-probe").map_err(|_| unavailable())?,
+    );
+    let now = now_millis()?;
+    let request = authority_request(context, action, probe_owner, "authorized-list-probe", now)
+        .map_err(store_error)?;
+    let inventory = store
+        .list_authorized_dev_containers(cursor.to_owned(), limit, request)
+        .await
+        .map_err(store_error)?;
+    let next_cursor = inventory.last().map(|record| record.instance_id.clone());
+    let visible = inventory.iter().map(record_json).collect::<Vec<_>>();
+    Ok(serde_json::json!({"instances":visible,"next_cursor":next_cursor}))
+}
+
+async fn create_instance(
+    context: &DevContainerDispatchContext,
+    store: &crate::access::AccessStore,
+    action: &str,
+    params: &Value,
+) -> Result<Value, ToolError> {
+    let instance_id = required_str(params, "instance_id")?.to_owned();
+    let template_id = required_str(params, "template_id")?.to_owned();
+    let owner_id = required_str(params, "owner_id")?;
+    let kind = parse_owner_kind(params.get("owner_kind"))?;
+    let owner = owner_scope(kind, owner_id).ok_or_else(|| invalid("owner_id"))?;
+    let secrets = match params.get("secret_references") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("secret_references"))
             })
-            .transpose()?
-            .unwrap_or_default();
-        let now = now_millis()?;
-        let created = crate::access::create_approved_for_store(
-            &store,
-            owner,
-            instance_id.clone(),
-            template_id,
-            secrets,
-            context.identity.safe_fingerprint(),
-            format!("create-{now}"),
-            i64::try_from(now / 1000).map_err(|_| unavailable())?,
-        )
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(invalid("secret_references")),
+    };
+    let (lease, _) = authorize(context, store, action, owner.clone(), &instance_id)
         .await
-        .map_err(|_| unavailable())?;
-        // The durable admission write above is an asynchronous boundary. Fetch
-        // current epochs immediately before the engine call so a membership or
-        // policy revocation cannot reuse the earlier authorization snapshot.
-        let epochs = crate::access::refresh_authority_epochs(
-            &store,
-            context.identity.clone(),
-            created.instance.owner().clone(),
-            required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
-        )
-        .await
-        .map_err(|_| denied())?;
-        create(
-            context.access_runtime.dev_container_runtime().as_ref(),
-            &lease,
-            &epochs,
-            now,
-            &created.template,
-            EngineCreateRequest {
-                handle: EngineHandle {
-                    instance_id: created.instance.id().clone(),
-                    lifecycle_nonce: created.instance.lifecycle_nonce().clone(),
-                },
-                image_digest: created.instance.image().as_str().into(),
-                cpu_millis: created.resources.cpu_millis,
-                memory_bytes: created.resources.memory_bytes,
-                disk_bytes: created.resources.disk_bytes,
-                lifetime_seconds: created.resources.lifetime_seconds,
-                host_capabilities: BTreeSet::new(),
+        .map_err(store_error)?;
+    let now = now_millis()?;
+    let created = crate::access::create_approved_for_store(
+        store,
+        owner,
+        instance_id.clone(),
+        template_id,
+        secrets,
+        context.identity.safe_fingerprint(),
+        format!("create-{now}"),
+        seconds(now)?,
+    )
+    .await
+    .map_err(|error| ledger_error(&instance_id, &error))?;
+    // The durable admission write above is an asynchronous boundary. Fetch
+    // current epochs immediately before the engine call so a membership or
+    // policy revocation cannot reuse the earlier authorization snapshot.
+    let epochs = crate::access::refresh_authority_epochs(
+        store,
+        context.identity.clone(),
+        created.instance.owner().clone(),
+        required_capability(action, created.instance.owner().kind()).ok_or_else(denied)?,
+    )
+    .await
+    .map_err(store_error)?;
+    create(
+        context.access_runtime.dev_container_runtime().as_ref(),
+        &lease,
+        &epochs,
+        now,
+        &created.template,
+        EngineCreateRequest {
+            handle: EngineHandle {
+                instance_id: created.instance.id().clone(),
+                lifecycle_nonce: created.instance.lifecycle_nonce().clone(),
             },
-        )
-        .await
-        .map_err(|_| unavailable())?;
-        return Ok(
-            serde_json::json!({"instance_id":instance_id,"desired_state":"running","observed_state":"pending"}),
-        );
-    }
-    let instance_id = params
-        .get("instance_id")
-        .and_then(Value::as_str)
-        .ok_or_else(denied)?;
-    let inventory = crate::access::recovery_inventory_for_store(&store)
-        .await
-        .map_err(|_| unavailable())?;
-    let record = inventory
-        .into_iter()
-        .find(|item| item.instance_id == instance_id)
-        .ok_or_else(denied)?;
-    let owner = owner_scope(record.owner_kind, &record.owner_id)?;
-    let capability = required_capability(action, owner.kind()).ok_or_else(denied)?;
-    let (lease, _) = authorize(&context, &store, action, owner.clone(), instance_id)
-        .await
-        .map_err(|_| denied())?;
+            image_digest: created.instance.image().as_str().into(),
+            cpu_millis: created.resources.cpu_millis,
+            memory_bytes: created.resources.memory_bytes,
+            disk_bytes: created.resources.disk_bytes,
+            lifetime_seconds: created.resources.lifetime_seconds,
+            host_capabilities: BTreeSet::new(),
+        },
+    )
+    .await
+    .map_err(|error| runtime_error(&instance_id, error))?;
+    Ok(
+        serde_json::json!({"instance_id":instance_id,"desired_state":"running","observed_state":"pending"}),
+    )
+}
+
+async fn lifecycle(
+    context: &DevContainerDispatchContext,
+    store: &crate::access::AccessStore,
+    action: &str,
+    params: &Value,
+) -> Result<Value, ToolError> {
+    let instance_id = required_str(params, "instance_id")?;
     let desired = match action {
         "dev_containers.start" => Some(DesiredState::Running),
         "dev_containers.stop" => Some(DesiredState::Stopped),
         "dev_containers.destroy" => Some(DesiredState::Deleted),
         "dev_containers.reconcile" => None,
-        _ => return Err(denied()),
+        _ => return Err(unknown_action(action)),
     };
+    // Lookup failures and "not yours" collapse to the same denial.
+    let record = lookup_record(store, instance_id)
+        .await?
+        .ok_or_else(denied)?;
+    let owner = stored_owner_scope(&record)?;
+    let capability = required_capability(action, owner.kind()).ok_or_else(denied)?;
+    let (lease, _) = authorize(context, store, action, owner.clone(), instance_id)
+        .await
+        .map_err(store_error)?;
     let now = now_millis()?;
     if let Some(desired) = desired {
+        // AREA-A-PENDING: authorize_and_set_dev_container_desired_state(store,
+        // request: AuthorityRequest, instance_id, lifecycle_nonce, desired,
+        // actor, now) -> Result<AuthorityLease, AccessStoreError>. Until that
+        // single Immediate-transaction path lands, re-read the row right before
+        // the write and refuse if the owner or lifecycle nonce moved since the
+        // lease was issued.
+        let fresh = lookup_record(store, instance_id)
+            .await?
+            .ok_or_else(denied)?;
+        if fresh.owner_kind != record.owner_kind
+            || fresh.owner_id != record.owner_id
+            || fresh.lifecycle_nonce != record.lifecycle_nonce
+        {
+            tracing::warn!(
+                service = SERVICE,
+                instance_id,
+                kind = "forbidden",
+                "Dev Container owner or lifecycle changed between authorization and write"
+            );
+            return Err(denied());
+        }
         crate::access::set_desired_for_store(
-            &store,
+            store,
             record.instance_id.clone(),
             record.lifecycle_nonce.clone(),
             desired,
             format!("{}-{now}", action.replace('.', "-")),
-            i64::try_from(now / 1000).map_err(|_| unavailable())?,
+            seconds(now)?,
         )
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|error| ledger_error(instance_id, &error))?;
     }
     let intent = match desired.unwrap_or(record.desired_state) {
         DesiredState::Running => DurableIntent::Running,
@@ -353,19 +382,17 @@ pub(crate) async fn dispatch(
         DesiredState::Deleted => DurableIntent::Deleted,
     };
     let handle = EngineHandle {
-        instance_id: DevContainerId::new(record.instance_id.clone()).map_err(|_| unavailable())?,
-        lifecycle_nonce: LifecycleNonce::new(record.lifecycle_nonce).map_err(|_| unavailable())?,
+        instance_id: DevContainerId::new(record.instance_id.clone())
+            .map_err(|_| stored_vocabulary_error(instance_id, "instance_id"))?,
+        lifecycle_nonce: LifecycleNonce::new(record.lifecycle_nonce.clone())
+            .map_err(|_| stored_vocabulary_error(instance_id, "lifecycle_nonce"))?,
     };
     // Desired-state persistence is not authority for a later host effect.
     // Re-read epochs at the final boundary so revocation invalidates the lease.
-    let epochs = crate::access::refresh_authority_epochs(
-        &store,
-        context.identity.clone(),
-        owner,
-        capability,
-    )
-    .await
-    .map_err(|_| denied())?;
+    let epochs =
+        crate::access::refresh_authority_epochs(store, context.identity.clone(), owner, capability)
+            .await
+            .map_err(store_error)?;
     let result = reconcile(
         context.access_runtime.dev_container_runtime().as_ref(),
         &lease,
@@ -375,10 +402,44 @@ pub(crate) async fn dispatch(
         intent,
     )
     .await
-    .map_err(|_| unavailable())?;
+    .map_err(|error| runtime_error(instance_id, error))?;
+    if result == RecoveryAction::MarkFailed {
+        // AREA-A-PENDING: set_observed_for_store(store, instance_id,
+        // lifecycle_nonce, ObservedState::Failed, event_id, now)
+        // -> Result<(), DevContainerLedgerError>. The ledger's
+        // `record_observation` setter is connection-scoped and not reachable
+        // from dispatch, so the Failed observation is reported but not yet
+        // persisted.
+        tracing::warn!(
+            service = SERVICE,
+            instance_id,
+            recovery_action = "mark_failed",
+            "Dev Container is missing from the engine; durable Failed observation is pending"
+        );
+    }
     Ok(
         serde_json::json!({"instance_id":instance_id,"recovery_action":format!("{result:?}").to_ascii_lowercase()}),
     )
+}
+
+/// Resolve one durable record by identifier.
+///
+/// Storage failures are outages; an absent row is `Ok(None)` so the caller
+/// can collapse it into the non-enumerating denial.
+async fn lookup_record(
+    store: &crate::access::AccessStore,
+    instance_id: &str,
+) -> Result<Option<crate::access::RecoveryRecord>, ToolError> {
+    // AREA-A-PENDING: lookup_dev_container_for_store(store, instance_id)
+    // -> Result<Option<RecoveryRecord>, DevContainerLedgerError>. The access
+    // module only exposes the full recovery inventory today, so this is a
+    // table scan filtered in memory.
+    let inventory = crate::access::recovery_inventory_for_store(store)
+        .await
+        .map_err(|error| ledger_error(instance_id, &error))?;
+    Ok(inventory
+        .into_iter()
+        .find(|item| item.instance_id == instance_id))
 }
 
 async fn authorize(
@@ -417,7 +478,7 @@ fn authority_request(
 ) -> Result<crate::access::AuthorityRequest, crate::access::AccessStoreError> {
     let capability = required_capability(action, owner.kind())
         .ok_or(crate::access::AccessStoreError::NotAuthorized)?;
-    let action_ref = ActionRef::new("dev_containers", action)
+    let action_ref = ActionRef::new(SERVICE, action)
         .map_err(|_| crate::access::AccessStoreError::MalformedVocabulary)?;
     let resource = ResourceRef::new(
         owner.clone(),
@@ -440,20 +501,51 @@ fn authority_request(
         )],
     ))
 }
-fn owner_scope(kind: OwnerKind, id: &str) -> Result<OwnerScope, crate::dispatch::error::ToolError> {
-    Ok(match kind {
-        OwnerKind::Installation => {
-            OwnerScope::Installation(InstallationId::new(id).map_err(|_| denied())?)
-        }
-        OwnerKind::Team => OwnerScope::Team(TeamId::new(id).map_err(|_| denied())?),
-        OwnerKind::Project => OwnerScope::Project(ProjectId::new(id).map_err(|_| denied())?),
-        OwnerKind::Personal => OwnerScope::Personal(PrincipalId::new(id).map_err(|_| denied())?),
+
+/// Build an owner scope from caller- or store-supplied vocabulary. `None`
+/// carries no detail; callers decide whether a failure is caller-fixable
+/// (request parameters) or a stored-vocabulary integrity problem.
+fn owner_scope(kind: OwnerKind, id: &str) -> Option<OwnerScope> {
+    Some(match kind {
+        OwnerKind::Installation => OwnerScope::Installation(InstallationId::new(id).ok()?),
+        OwnerKind::Team => OwnerScope::Team(TeamId::new(id).ok()?),
+        OwnerKind::Project => OwnerScope::Project(ProjectId::new(id).ok()?),
+        OwnerKind::Personal => OwnerScope::Personal(PrincipalId::new(id).ok()?),
     })
 }
+
+fn stored_owner_scope(record: &crate::access::RecoveryRecord) -> Result<OwnerScope, ToolError> {
+    owner_scope(record.owner_kind, &record.owner_id)
+        .ok_or_else(|| stored_vocabulary_error(&record.instance_id, "owner_id"))
+}
+
 fn record_json(record: &crate::access::RecoveryRecord) -> Value {
     serde_json::json!({"instance_id":record.instance_id,"owner_kind":format!("{:?}",record.owner_kind).to_ascii_lowercase(),"owner_id":record.owner_id,"desired_state":format!("{:?}",record.desired_state).to_ascii_lowercase(),"observed_state":format!("{:?}",record.observed_state).to_ascii_lowercase()})
 }
-fn now_millis() -> Result<u64, crate::dispatch::error::ToolError> {
+
+fn required_str<'a>(params: &'a Value, name: &'static str) -> Result<&'a str, ToolError> {
+    match params.get(name) {
+        None | Some(Value::Null) => Err(missing(name)),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.as_str()),
+        Some(_) => Err(invalid(name)),
+    }
+}
+
+fn parse_owner_kind(value: Option<&Value>) -> Result<OwnerKind, ToolError> {
+    match value {
+        None | Some(Value::Null) => Err(missing("owner_kind")),
+        Some(Value::String(value)) => match value.as_str() {
+            "installation" => Ok(OwnerKind::Installation),
+            "team" => Ok(OwnerKind::Team),
+            "project" => Ok(OwnerKind::Project),
+            "personal" => Ok(OwnerKind::Personal),
+            _ => Err(invalid("owner_kind")),
+        },
+        Some(_) => Err(invalid("owner_kind")),
+    }
+}
+
+fn now_millis() -> Result<u64, ToolError> {
     u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -462,14 +554,140 @@ fn now_millis() -> Result<u64, crate::dispatch::error::ToolError> {
     )
     .map_err(|_| unavailable())
 }
-fn denied() -> crate::dispatch::error::ToolError {
-    crate::dispatch::error::ToolError::Forbidden {
+
+fn seconds(now_millis: u64) -> Result<i64, ToolError> {
+    i64::try_from(now_millis / 1000).map_err(|_| unavailable())
+}
+
+fn store_error(error: crate::access::AccessStoreError) -> ToolError {
+    map_store_error(SERVICE, error, denied)
+}
+
+/// Map a durable-ledger failure surfaced by the `*_for_store` helpers.
+///
+/// AREA-A-PENDING: crate::access::DevContainerLedgerError re-export plus
+/// typed passthrough in `create_approved_for_store` /
+/// `set_desired_for_store` / `recovery_inventory_for_store`. The ledger enum
+/// lives in the private `access::dev_container` module and the store
+/// wrappers collapse every cause to `Storage`, so dispatch cannot name its
+/// variants yet. Intended typed map once it lands:
+///   InvalidInput        -> ToolError::InvalidParam { param: "params" }
+///   TemplateUnavailable -> ToolError::InvalidParam { param: "template_id" }
+///                          (templates stay non-enumerable)
+///   QuotaExhausted      -> ToolError::Sdk { sdk_kind: "quota_exceeded" }
+///   Storage             -> WARN log with instance id + service_unavailable
+fn ledger_error<E: std::error::Error>(instance_id: &str, error: &E) -> ToolError {
+    tracing::warn!(
+        service = SERVICE,
+        instance_id,
+        cause = %error,
+        kind = "service_unavailable",
+        "Dev Container ledger operation failed"
+    );
+    unavailable()
+}
+
+/// Map a typed engine/authority failure to the shared envelope. Engine causes
+/// are logged with the instance id and never echoed to the caller.
+fn runtime_error<E: std::error::Error>(instance_id: &str, error: RuntimeError<E>) -> ToolError {
+    match error {
+        RuntimeError::Authority(cause) => {
+            tracing::warn!(
+                service = SERVICE,
+                instance_id,
+                cause = %cause,
+                kind = "forbidden",
+                "Dev Container authority lease rejected before external effect"
+            );
+            denied()
+        }
+        RuntimeError::Admission(cause) => match cause {
+            DevContainerAdmissionError::QuotaExceeded => ToolError::Sdk {
+                sdk_kind: "quota_exceeded".into(),
+                message: "Dev Container resource request exceeds the approved template quota"
+                    .into(),
+            },
+            DevContainerAdmissionError::HostCapabilityDenied => ToolError::Forbidden {
+                message: "Dev Container requested a host capability not approved by its template"
+                    .into(),
+                required_scopes: Vec::new(),
+            },
+            DevContainerAdmissionError::StaleLifecycleNonce => ToolError::Conflict {
+                message: "Dev Container lifecycle changed since the request was issued".into(),
+                existing_id: instance_id.to_owned(),
+            },
+            DevContainerAdmissionError::InvalidLifecycleTransition => ToolError::Conflict {
+                message: "Dev Container lifecycle transition is invalid".into(),
+                existing_id: instance_id.to_owned(),
+            },
+            // The durable record's image no longer matches the approved
+            // template; the template changed underneath the instance.
+            DevContainerAdmissionError::ImageDigestMismatch => ToolError::Conflict {
+                message: "Dev Container image digest is not the approved template image".into(),
+                existing_id: instance_id.to_owned(),
+            },
+        },
+        RuntimeError::Engine(cause) => {
+            tracing::warn!(
+                service = SERVICE,
+                instance_id,
+                cause = %cause,
+                kind = "service_unavailable",
+                "Dev Container engine operation failed"
+            );
+            unavailable()
+        }
+    }
+}
+
+fn stored_vocabulary_error(instance_id: &str, field: &'static str) -> ToolError {
+    tracing::error!(
+        service = SERVICE,
+        instance_id,
+        field,
+        kind = "service_unavailable",
+        "Dev Container record holds malformed vocabulary; operator action required"
+    );
+    unavailable()
+}
+
+fn unknown_action(action: &str) -> ToolError {
+    let mut valid = ACTIONS
+        .iter()
+        .map(|spec| spec.name.to_owned())
+        .collect::<Vec<_>>();
+    valid.push("help".into());
+    valid.push("schema".into());
+    ToolError::UnknownAction {
+        message: format!("unknown action: `{action}`"),
+        valid,
+        hint: None,
+    }
+}
+
+fn missing(param: &'static str) -> ToolError {
+    ToolError::MissingParam {
+        message: format!("missing required parameter `{param}`"),
+        param: param.into(),
+    }
+}
+
+fn invalid(param: &'static str) -> ToolError {
+    ToolError::InvalidParam {
+        message: format!("invalid parameter `{param}`"),
+        param: param.into(),
+    }
+}
+
+fn denied() -> ToolError {
+    ToolError::Forbidden {
         message: "Dev Container operation is not authorized".into(),
         required_scopes: Vec::new(),
     }
 }
-fn unavailable() -> crate::dispatch::error::ToolError {
-    crate::dispatch::error::ToolError::Sdk {
+
+fn unavailable() -> ToolError {
+    ToolError::Sdk {
         sdk_kind: "service_unavailable".into(),
         message: "Dev Container runtime is unavailable".into(),
     }
@@ -478,6 +696,73 @@ fn unavailable() -> crate::dispatch::error::ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{AccessRuntime, AccessStore, BootstrapOwnerInput};
+    use labby_auth::Authenticator;
+    use labby_runtime::authority::AuthorityLeaseError;
+    use labby_runtime::dev_container_runtime::DisabledRuntimeError;
+
+    fn secure_tempdir() -> tempfile::TempDir {
+        let directory = tempfile::Builder::new()
+            .prefix("labby-dev-containers-")
+            .tempdir_in(std::env::current_dir().expect("test working directory"))
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        directory
+    }
+
+    fn browser(subject: &str) -> VerifiedIdentity {
+        VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            subject,
+        )
+        .unwrap()
+    }
+
+    async fn fixture() -> (tempfile::TempDir, DevContainerDispatchContext) {
+        let directory = secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let owner = browser("owner");
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        (
+            directory,
+            DevContainerDispatchContext {
+                access_runtime: Arc::new(runtime),
+                identity: owner,
+                ceiling: crate::access::AuthorityCeiling::trusted_local(),
+            },
+        )
+    }
+
+    fn param_of(error: &ToolError) -> Option<&str> {
+        match error {
+            ToolError::MissingParam { param, .. } | ToolError::InvalidParam { param, .. } => {
+                Some(param.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    async fn failure(
+        context: &DevContainerDispatchContext,
+        action: &str,
+        params: Value,
+    ) -> ToolError {
+        dispatch(context.clone(), action, params)
+            .await
+            .expect_err("dispatch must fail")
+    }
 
     #[test]
     fn actions_have_exact_fail_closed_capabilities_and_no_raw_host_authority() {
@@ -521,5 +806,199 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(missing, existing);
+    }
+
+    #[tokio::test]
+    async fn create_parameter_problems_are_caller_fixable() {
+        let (_directory, context) = fixture().await;
+        let base = serde_json::json!({
+            "instance_id": "dc-1",
+            "template_id": "tpl",
+            "owner_kind": "personal",
+            "owner_id": "owner",
+        });
+        let cases: [(&str, Value, &str, &str); 7] = [
+            ("instance_id", Value::Null, "missing_param", "instance_id"),
+            (
+                "instance_id",
+                Value::String("   ".into()),
+                "invalid_param",
+                "instance_id",
+            ),
+            ("template_id", Value::Null, "missing_param", "template_id"),
+            (
+                "owner_id",
+                Value::Number(7.into()),
+                "invalid_param",
+                "owner_id",
+            ),
+            ("owner_kind", Value::Null, "missing_param", "owner_kind"),
+            (
+                "owner_kind",
+                Value::String("bogus".into()),
+                "invalid_param",
+                "owner_kind",
+            ),
+            (
+                "secret_references",
+                serde_json::json!([1]),
+                "invalid_param",
+                "secret_references",
+            ),
+        ];
+        for (field, value, kind, param) in cases {
+            let mut params = base.clone();
+            params[field] = value;
+            let error = failure(&context, "dev_containers.create", params).await;
+            assert_eq!(error.kind(), kind, "{field}");
+            assert_eq!(param_of(&error), Some(param), "{field}");
+        }
+        let mut params = base.clone();
+        params["owner_id"] = Value::String("a\u{0}b".into());
+        let error = failure(&context, "dev_containers.create", params).await;
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(param_of(&error), Some("owner_id"));
+    }
+
+    #[tokio::test]
+    async fn list_parameter_problems_are_caller_fixable() {
+        let (_directory, context) = fixture().await;
+        for (params, param) in [
+            (serde_json::json!({"limit":"0"}), "limit"),
+            (serde_json::json!({"limit":"101"}), "limit"),
+            (serde_json::json!({"limit":"abc"}), "limit"),
+            (serde_json::json!({"limit":true}), "limit"),
+            (serde_json::json!({"cursor":5}), "cursor"),
+        ] {
+            let error = failure(&context, "dev_containers.list", params).await;
+            assert_eq!(error.kind(), "invalid_param", "{param}");
+            assert_eq!(param_of(&error), Some(param));
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_parameter_problems_are_caller_fixable() {
+        let (_directory, context) = fixture().await;
+        for action in [
+            "dev_containers.start",
+            "dev_containers.stop",
+            "dev_containers.destroy",
+            "dev_containers.reconcile",
+        ] {
+            let error = failure(&context, action, serde_json::json!({})).await;
+            assert_eq!(error.kind(), "missing_param", "{action}");
+            assert_eq!(param_of(&error), Some("instance_id"));
+            let error = failure(&context, action, serde_json::json!({"instance_id":""})).await;
+            assert_eq!(error.kind(), "invalid_param", "{action}");
+            assert_eq!(param_of(&error), Some("instance_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_actions_are_rejected_before_store_access() {
+        let (_directory, context) = fixture().await;
+        let error = failure(
+            &context,
+            "dev_containers.bogus",
+            serde_json::json!({"instance_id":"dc-1"}),
+        )
+        .await;
+        assert_eq!(error.kind(), "unknown_action");
+    }
+
+    #[tokio::test]
+    async fn bound_lookup_and_authorization_failures_share_one_denial() {
+        let (_directory, owner) = fixture().await;
+        // A caller the store has never seen cannot be authorized for anything.
+        let context = DevContainerDispatchContext {
+            identity: browser("stranger"),
+            ..owner
+        };
+        let absent = failure(
+            &context,
+            "dev_containers.start",
+            serde_json::json!({"instance_id":"absent"}),
+        )
+        .await;
+        assert_eq!(absent.kind(), "forbidden");
+        let unauthorized_create = failure(
+            &context,
+            "dev_containers.create",
+            serde_json::json!({
+                "instance_id": "dc-1",
+                "template_id": "tpl",
+                "owner_kind": "team",
+                "owner_id": "not-a-member",
+            }),
+        )
+        .await;
+        assert_eq!(unauthorized_create.kind(), "forbidden");
+        assert_eq!(absent.to_string(), unauthorized_create.to_string());
+        assert_eq!(absent.to_string(), denied().to_string());
+    }
+
+    #[test]
+    fn runtime_errors_map_to_typed_kinds_without_leaking_causes() {
+        type E = RuntimeError<DisabledRuntimeError>;
+        let cases: [(E, &str); 7] = [
+            (E::Authority(AuthorityLeaseError::Expired), "forbidden"),
+            (
+                E::Authority(AuthorityLeaseError::AuthorityChanged),
+                "forbidden",
+            ),
+            (
+                E::Admission(DevContainerAdmissionError::QuotaExceeded),
+                "quota_exceeded",
+            ),
+            (
+                E::Admission(DevContainerAdmissionError::HostCapabilityDenied),
+                "forbidden",
+            ),
+            (
+                E::Admission(DevContainerAdmissionError::StaleLifecycleNonce),
+                "conflict",
+            ),
+            (
+                E::Admission(DevContainerAdmissionError::ImageDigestMismatch),
+                "conflict",
+            ),
+            (E::Engine(DisabledRuntimeError), "service_unavailable"),
+        ];
+        for (error, kind) in cases {
+            let mapped = runtime_error("dc-1", error);
+            assert_eq!(mapped.kind(), kind);
+            let text = mapped.to_string();
+            assert!(!text.contains("disabled"), "{text}");
+            assert!(!text.contains("expired"), "{text}");
+        }
+        assert_eq!(
+            runtime_error("dc-1", E::Authority(AuthorityLeaseError::Expired)).to_string(),
+            denied().to_string()
+        );
+        assert!(matches!(
+            runtime_error(
+                "dc-1",
+                E::Admission(DevContainerAdmissionError::InvalidLifecycleTransition)
+            ),
+            ToolError::Conflict { existing_id, .. } if existing_id == "dc-1"
+        ));
+    }
+
+    #[test]
+    fn ledger_and_store_failures_are_fixed_string_outages_or_denials() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("sqlite: /secret/path/access.db busy")]
+        struct Cause;
+        let mapped = ledger_error("dc-1", &Cause);
+        assert_eq!(mapped.kind(), "service_unavailable");
+        assert!(!mapped.to_string().contains("/secret"));
+        assert_eq!(
+            store_error(crate::access::AccessStoreError::NotAuthorized).to_string(),
+            denied().to_string()
+        );
+        assert_eq!(
+            store_error(crate::access::AccessStoreError::Locked).kind(),
+            "service_unavailable"
+        );
     }
 }

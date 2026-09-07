@@ -1,17 +1,18 @@
 ---
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
-updated: "2026-09-05"
+updated: "2026-09-07"
 status: "design"
 ---
 
 # Multi-user ownership migration and recovery
 
 This runbook freezes the rehearsal and activation contract for moving an
-existing Labby AccessStore v5 installation to multi-user ownership. It does not
-introduce schema v6. The v5 rehearsal proves that the input can be inventoried,
-backed up, reopened, restored, and deterministically classified before the
-ownership migration is allowed to exist.
+existing Labby AccessStore installation (schema v1 through v6; v5 is the last
+released schema) to the multi-user ownership schema v7. The rehearsal proves
+that the input can be inventoried, backed up, reopened, restored, and
+deterministically classified before the ownership migration is allowed to
+exist.
 
 ## Activation boundary
 
@@ -21,14 +22,25 @@ pre-migration checkpoint. After it, rollback means forward repair or restoring
 the complete checkpoint and losing all later writes; an old binary must never
 open the new store and reinterpret scoped rows as globally owned.
 
-Ordinary startup does not cross the v5/v6-to-v7 schema boundary implicitly.
-After completing the pre-activation evidence below, the operator must set
-`LABBY_ACCESS_MIGRATION_EVIDENCE` to the owner-controlled approval document
-described in [ENV.md](../runtime/ENV.md). Labby binds that document to an
-independent checkpoint, the exact source/target schema pair, a durable operation
-ID, and an explicit activation decision before opening an exclusive migration
-transaction. A prepared sidecar marker makes an interrupted attempt replay only
-with the same evidence; successful commit publishes a complete marker.
+Ordinary startup never crosses a schema boundary implicitly: every legacy
+version (v1 through v6) is refused with `MigrationApprovalRequired` until the
+operator sets `LABBY_ACCESS_MIGRATION_EVIDENCE` to the owner-controlled
+approval document described in [ENV.md](../runtime/ENV.md). Bootstrap of a
+never-initialized legacy store is gated the same way. Labby binds that
+document to an independent checkpoint, the exact source/target schema pair, a
+durable operation ID, and an explicit activation decision before opening an
+exclusive migration transaction.
+
+Checkpoint verification is logical, not byte-identical. The checkpoint file's
+digest is streamed and must match the document; the live store is then
+compared with the checkpoint by schema manifest plus every table's
+primary-key-ordered content digest. A WAL-mode source whose committed frames
+have not been checkpointed into its main file therefore still verifies
+against its consolidated `VACUUM INTO` / backup-API checkpoint. A prepared
+sidecar marker makes an interrupted attempt replay only with the same
+evidence; after the migration transaction commits, the complete marker is
+published, and a marker write failure is logged rather than failing the
+already-durable open.
 
 The migration is split into separately observable phases:
 
@@ -74,15 +86,24 @@ digest per table, `quick_check`, `foreign_key_check`, and source file/sidecar
 digests. File-byte equality is not expected after a valid SQLite migration;
 logical digests are canonical encodings ordered by primary key.
 
-The current checked rehearsal validates only the schema and internal
-consistency of a supplied evidence manifest. It does not execute a v4-to-v5 or
-v5-to-v7 migration, reopen SQLite, or restore a checkpoint. Executable
-migration and restore evidence remains an activation prerequisite.
+`scripts/ci/validate-multi-user-migration-rehearsal.py` is an
+**operator-run** tool: it generates and verifies a provenance-bound rehearsal
+manifest for stores the operator supplies, and CI runs only its unit tests
+against synthetic databases. It does not itself execute a migration. The
+executable migration evidence CI does run is the Rust
+`access::migrations` test module in full: production-shaped v4 and v5 fixtures
+are migrated, reopened twice, and restored from their checkpoints; every
+legacy version is proven to refuse without evidence; and the approval gate is
+exercised end to end on a WAL-diverged v5 file, including the checkpoint
+mismatch refusal.
 
 ## Ownership classification
 
 The only automatic owner seed is the canonical verified bootstrap Principal.
-Existing private user material becomes that Principal's Personal scope.
+Existing private user material becomes that Principal's Personal scope. A
+migrated store that was never bootstrapped receives no platform administrator,
+no Team, and no Team-Project assignment; pre-existing direct Project
+memberships survive unchanged and receive authority epoch 1.
 Installation configuration, host filesystem operations, raw logs, recovery,
 and provider credentials become Installation-owned. No Team is invented, and
 email, display name, namespace, directory name, creator string, or OAuth scope

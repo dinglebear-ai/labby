@@ -143,6 +143,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         href: '/depot',
         icon: SearchCode,
         tooltipDetail: 'search the Depot Bazaar',
+        capability: 'scope.read',
       },
       {
         id: 'Create',
@@ -166,6 +167,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         href: '/administration',
         icon: ShieldCheck,
         tooltipDetail: 'Depot authority and canonical operations',
+        capability: 'platform.manage',
       },
     ],
   },
@@ -230,15 +232,40 @@ export function capabilityAwareNavSections(capabilities: readonly string[]): Con
     }))
 }
 
+/**
+ * Routes that ship under `app/(admin)` without a sidebar entry, keyed by the
+ * path prefix that `usePathname` reports for them. Every shipped route must
+ * resolve here or through the sidebar model: `capabilityForPath` returning
+ * `undefined` fails closed, so a missing entry locks a real page out
+ * (`/projects` and `/stash` shipped that way once). `nav-model.test.ts`
+ * enumerates `app/(admin)/**\/page.tsx` to keep this manifest complete.
+ */
+const DIRECT_ROUTE_MANIFEST: ReadonlyArray<readonly [prefix: string, capability: string]> = [
+  ['/gateway', 'platform.manage'],
+  ['/skills', 'scope.read'],
+  ['/loadouts', 'scope.read'],
+  ['/snippets', 'scope.read'],
+  ['/projects', 'scope.read'],
+  ['/stash', 'scope.read'],
+  ['/docs', 'platform.manage'],
+  ['/design-system', 'platform.manage'],
+  ['/settings', 'platform.manage'],
+]
+
+/**
+ * Server-projected capability a route requires. `null` means the route is
+ * open to every authenticated principal; `undefined` means the route is not a
+ * known product route and the boundary must fail closed.
+ */
 export function capabilityForPath(pathname: string): string | null | undefined {
   // The selected Labby gateway uses a query parameter, which usePathname does
-  // not expose. Treat every gateway detail route as an installation-admin
-  // surface; the backend remains the final authorization boundary.
-  if (pathname === '/gateway' || pathname.startsWith('/gateway/')) return 'platform.manage'
+  // not expose, so `/gateway` is matched by prefix through the manifest as an
+  // installation-admin surface; the backend remains the final authorization
+  // boundary for every route.
+  const direct = DIRECT_ROUTE_MANIFEST.find(([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+  if (direct) return direct[1]
   const item = consoleNavItems.find((candidate) => isNavItemActive(candidate.href, pathname))
   if (item) return item.capability ?? null
-  if (pathname === '/skills' || pathname.startsWith('/skills/') || pathname === '/loadouts' || pathname === '/snippets') return 'scope.read'
-  if (pathname === '/docs' || pathname === '/design-system' || pathname.startsWith('/settings')) return 'platform.manage'
   return undefined
 }
 

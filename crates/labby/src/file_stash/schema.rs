@@ -57,8 +57,11 @@ fn validate(c: &Connection, snapshot_id: &str) -> Result<()> {
     if m.2 != snapshot_id {
         return Err(FileStashStoreError::BackupMismatch);
     }
+    // Full integrity_check at open: File Stash metadata is small and a
+    // missed index corruption would otherwise surface as inconsistent
+    // listings rather than a Blocked(Corrupt) verdict.
     let check: String = c
-        .query_row("PRAGMA quick_check", [], |r| r.get(0))
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .map_err(FileStashStoreError::sqlite)?;
     if check == "ok" {
         Ok(())

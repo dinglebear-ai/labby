@@ -407,7 +407,9 @@ async fn action_impl(
         "api",
         &action,
         request.params,
-        validated_grantee.as_ref().map(|(recipient, _lease)| recipient),
+        validated_grantee
+            .as_ref()
+            .map(|(recipient, _lease)| recipient),
     )
     .await
     .map_err(|error| ApiError::new(error).with_service_action("stash", &action))?;
@@ -796,8 +798,15 @@ async fn create_grant_impl(
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.create")?;
     let recipient_identity = identity.clone();
     let (kind, id) = selected_owner_headers(&headers);
-    let principal =
-        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.grants.create").await?;
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.create",
+    )
+    .await?;
     principal
         .validate_before_commit()
         .await
@@ -831,8 +840,15 @@ async fn list_grants_impl(
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
     let (kind, id) = selected_owner_headers(&headers);
-    let principal =
-        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.grants.list").await?;
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.list",
+    )
+    .await?;
     principal
         .validate_before_commit()
         .await
@@ -860,8 +876,15 @@ async fn revoke_grant_impl(
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.revoke")?;
     let (kind, id) = selected_owner_headers(&headers);
-    let principal =
-        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.grants.revoke").await?;
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.revoke",
+    )
+    .await?;
     principal
         .validate_before_commit()
         .await

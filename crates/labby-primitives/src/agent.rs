@@ -1,6 +1,7 @@
 //! Transport-neutral Agent definition, revision, and session contracts.
 
 use crate::access::{Capability, OwnerScope, PrincipalId};
+use crate::digest::Sha256Digest;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentState {
@@ -71,13 +72,7 @@ impl AgentRevision {
             &self.harness_digest,
             &self.loadout_digest,
         ] {
-            let valid = digest.strip_prefix("sha256:").is_some_and(|hex| {
-                hex.len() == 64
-                    && hex
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            });
-            if !valid {
+            if !Sha256Digest::is_canonical(digest) {
                 return Err(AgentContractError::InvalidDigest);
             }
         }

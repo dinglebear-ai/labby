@@ -20,9 +20,13 @@ pub(crate) struct TaskRecord {
 }
 
 impl TaskStore {
+    /// Open the ledger on an already-migrated access store. The tables are
+    /// part of the versioned schema (`migrations::AGENT_TASK_SCHEMA`).
     pub(crate) fn open(path: &Path) -> AccessStoreResult<Self> {
         let connection = Connection::open(path).map_err(super::store::map_sqlite_error)?;
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS agent_tasks(task_id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),owner_id TEXT NOT NULL,project_id TEXT,creator_principal_id TEXT NOT NULL,agent_id TEXT NOT NULL,agent_version INTEGER NOT NULL CHECK(agent_version>0),agent_revision_digest TEXT NOT NULL,input_digest TEXT NOT NULL,catalog_generation TEXT NOT NULL,authority_fingerprint TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('created','queued','running','cancelling','succeeded','failed','cancelled','expired')),attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0),fencing_token TEXT,lease_expires_at INTEGER,output_digest TEXT,error_code TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,UNIQUE(owner_kind,owner_id,idempotency_key)); CREATE INDEX IF NOT EXISTS agent_tasks_owner_state ON agent_tasks(owner_kind,owner_id,state,task_id); CREATE TABLE IF NOT EXISTS agent_task_audit(event_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,actor_principal_id TEXT NOT NULL,from_state TEXT,to_state TEXT NOT NULL,attempt INTEGER NOT NULL,occurred_at INTEGER NOT NULL,FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id) ON DELETE CASCADE);").map_err(super::store::map_sqlite_error)?;
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(super::store::map_sqlite_error)?;
         Ok(Self { connection })
     }
 
@@ -278,7 +282,12 @@ mod tests {
     #[test]
     fn duplicate_create_and_terminal_race_are_fenced_and_audited() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = TaskStore::open(&dir.path().join("tasks.db")).unwrap();
+        let path = dir.path().join("tasks.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        let mut s = TaskStore::open(&path).unwrap();
         assert_eq!(s.create(&intent(), 1).unwrap(), "task-1");
         assert_eq!(s.create(&intent(), 2).unwrap(), "task-1");
         assert_eq!(s.get("task-1").unwrap().unwrap().state, TaskState::Created);

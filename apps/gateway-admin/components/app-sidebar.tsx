@@ -32,7 +32,7 @@ import {
   sessionAvatarFallback,
   sessionPrimaryEmail,
 } from '@/lib/auth/session-presenter'
-import { logoutBrowserSession, useBrowserSession } from '@/lib/auth/session'
+import { LogoutRevocationError, logoutBrowserSession, useBrowserSession } from '@/lib/auth/session'
 
 export const primarySidebarNavigation = [
   {
@@ -79,8 +79,11 @@ export function BrowserSignOutButton() {
     setError(null)
     try {
       await logoutBrowserSession()
-    } catch {
-      setError('Sign out failed. Your session is still active.')
+    } catch (reason) {
+      // Local sign-out has already completed by the time this rejects; only the
+      // server-side revocation failed, so report that rather than claiming the
+      // session is still active.
+      setError(reason instanceof LogoutRevocationError ? reason.message : 'Sign-out could not be confirmed by the server. You have been signed out locally.')
     } finally {
       setIsSigningOut(false)
     }

@@ -387,9 +387,14 @@ async fn status(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_read(&authority).await?;
     let actor = actor(auth, identity)?;
-    Ok(Json(
-        json!({"depot": state.depot.status_for_actor(&actor).await}),
-    ))
+    // Structured managed-projection readiness lives here, behind
+    // authentication; the public `/health` and `/ready` probes only carry
+    // the boolean.
+    Ok(Json(json!({
+        "depot": state.depot.status_for_actor(&actor).await,
+        "authority_projection":
+            crate::dispatch::depot::authority_projection::projection_readiness(),
+    })))
 }
 
 fn actor(

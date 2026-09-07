@@ -536,14 +536,24 @@ fn stream_directory_names(
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     tokio::task::spawn_blocking(move || {
         let produce = || -> Result<()> {
-            let entries = rustix::fs::Dir::read_from(&directory)
-                .map_err(|_| FileStashStoreError::Unavailable)?;
+            // The typed error surface stays `Unavailable`; the OS error kind is
+            // retained in the debug log so an EIO/ENOTDIR is diagnosable.
+            let io_unavailable = |error: rustix::io::Errno| {
+                tracing::debug!(
+                    surface = "file_stash",
+                    operation = "stream_directory_names",
+                    errno = ?error,
+                    "directory streaming failed"
+                );
+                FileStashStoreError::Unavailable
+            };
+            let entries = rustix::fs::Dir::read_from(&directory).map_err(io_unavailable)?;
             let mut batch = Vec::with_capacity(batch_size);
             for entry in entries {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
-                let entry = entry.map_err(|_| FileStashStoreError::Unavailable)?;
+                let entry = entry.map_err(io_unavailable)?;
                 let name = entry.file_name().to_string_lossy();
                 if name == "." || name == ".." {
                     continue;
@@ -1462,7 +1472,7 @@ mod tests {
             super::super::FileStashRuntime::initialize_with_preferences(stash_root, preferences())
                 .await;
         assert_eq!(
-            restarted.status().await,
+            restarted.wait_for_recovery().await,
             super::super::FileStashStatus::Ready
         );
         let usage = restarted
@@ -1529,7 +1539,7 @@ mod tests {
         assert_eq!(
             super::super::FileStashRuntime::initialize_with_preferences(stash_root, preferences())
                 .await
-                .status()
+                .wait_for_recovery()
                 .await,
             super::super::FileStashStatus::Blocked(super::super::FileStashBlockedReason::Corrupt)
         );

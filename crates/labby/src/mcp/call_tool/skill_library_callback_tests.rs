@@ -840,10 +840,30 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     ))
     .await
     .expect("member mutation response");
-    assert!(!member_mutation.is_error.unwrap_or(false));
+    // A project Member may read and use the shared record but may not mutate
+    // it: management of a project-owned record requires a project Admin or
+    // Owner role (B-C3). The denial is the uniform non-enumerating envelope.
+    assert!(member_mutation.is_error.unwrap_or(false));
+    let text = member_mutation.content[0]
+        .as_text()
+        .expect("error text")
+        .text
+        .clone();
+    let envelope: serde_json::Value = serde_json::from_str(&text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "forbidden");
 
-    let member_mutation = value(&member_mutation);
-    assert_eq!(member_mutation["artifact_id"], artifact_id);
+    // The record is untouched: the owner still sees it active.
+    let still_active = Box::pin(running.service().call_tool_impl(
+        call(
+            "artifacts.get",
+            serde_json::json!({"artifact_id": artifact_id}),
+        ),
+        context(&eli),
+    ))
+    .await
+    .expect("owner get response");
+    assert!(!still_active.is_error.unwrap_or(false));
+    assert_eq!(value(&still_active)["artifact_id"], artifact_id);
 }
 
 #[cfg(feature = "gateway")]

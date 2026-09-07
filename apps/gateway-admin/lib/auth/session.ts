@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react'
 export {
   __setBrowserSessionStateForTests,
   AUTHORITY_WORKSPACE_CHANGED_EVENT,
+  LogoutRevocationError,
   getBrowserSessionState,
   getSessionCsrfToken,
   getSessionAuthority,
@@ -23,6 +24,7 @@ export {
   AUTHORITY_SCHEMA_VERSION,
   MalformedAuthorityResponseError,
   authorityCacheKey,
+  authorityIdentity,
   parseAuthoritySnapshot,
   selectAuthorityWorkspace,
   type AuthorityCacheKey,

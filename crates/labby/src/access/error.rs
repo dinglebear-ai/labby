@@ -42,6 +42,10 @@ pub(crate) enum AccessStoreError {
     InvalidTeamInput,
     #[error("team or membership is unavailable")]
     TeamUnavailable,
+    #[error("team credential binding is unavailable")]
+    TeamCredentialBindingUnavailable,
+    #[error("authority projection acknowledgement regressed below the persisted watermark")]
+    ProjectionWatermarkRegressed,
     #[error("an active team must retain at least one active owner")]
     LastActiveTeamOwner,
     #[error("project loadout assignment input is invalid")]

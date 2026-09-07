@@ -234,6 +234,14 @@ impl SkillLibraryCaller {
         self.selected_team_id = selected_team_id;
         self
     }
+
+    pub(crate) fn identity(&self) -> &VerifiedIdentity {
+        &self.identity
+    }
+
+    pub(crate) fn selected_team_id(&self) -> Option<&str> {
+        self.selected_team_id.as_deref()
+    }
 }
 
 pub(crate) fn product_grants_match(
@@ -316,6 +324,12 @@ impl SkillLibraryAuthorizationDecision {
                 .iter()
                 .all(|team| self.team_management_ids.contains(team))
         {
+            return Err(SkillLibraryAuthorizationError::Denied);
+        }
+        // Without a Team context the shared record becomes project-owned. Creating a
+        // project-owned record is project management, exactly like mutating one later, so it
+        // requires the same Owner/Admin role that `resolve_grant` demands for mutations.
+        if self.team_ids.len() != 1 && !self.is_admin {
             return Err(SkillLibraryAuthorizationError::Denied);
         }
         let (owner_kind, scope_id) = self
@@ -993,7 +1007,14 @@ fn resolve_grant(
         return Some((LibraryGrant::Owner, ownership));
     }
     match ownership.owner_kind() {
-        LibraryOwnerKind::Project if ownership.owner_id == *project_id => {
+        // Every current project member may read or use a project-owned record, but only a
+        // project Owner/Admin may mutate one. This mirrors the Team arm below, where use comes
+        // from membership and management comes from the management set.
+        LibraryOwnerKind::Project
+            if ownership.owner_id == *project_id
+                && (!action.is_mutation()
+                    || matches!(role, ProjectRole::Owner | ProjectRole::Admin)) =>
+        {
             Some((LibraryGrant::Owner, ownership))
         }
         LibraryOwnerKind::Team
@@ -1431,6 +1452,154 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn project_role_ladder_separates_use_from_management() {
+        let tenant = LibraryTenantId::from_canonical_projection("org-a").unwrap();
+        let actor = LibraryActorId::from_canonical_projection("member").unwrap();
+        let project = LibraryActorId::from_canonical_projection("project-a").unwrap();
+        let ownership =
+            LibraryOwnership::scoped(tenant.clone(), LibraryOwnerKind::Project, project.clone());
+        let no_teams = BTreeSet::new();
+        let grant =
+            |role: ProjectRole, action: SkillLibraryAction, target: SkillLibraryTarget<'_>| {
+                resolve_grant(
+                    &role, &tenant, &actor, &project, &no_teams, &no_teams, false, action, target,
+                )
+            };
+
+        // Use: every current project member, including a Viewer, may read the project record.
+        for role in [ProjectRole::Member, ProjectRole::Viewer] {
+            assert!(
+                grant(
+                    role,
+                    SkillLibraryAction::Read,
+                    SkillLibraryTarget::Personal(&ownership)
+                )
+                .is_some(),
+                "{role:?} read"
+            );
+        }
+
+        // Management: mutating a project-owned record requires project Owner/Admin.
+        for role in [ProjectRole::Member, ProjectRole::Viewer] {
+            for action in [
+                SkillLibraryAction::Archive,
+                SkillLibraryAction::Save,
+                SkillLibraryAction::Activate,
+            ] {
+                assert!(
+                    grant(role, action, SkillLibraryTarget::Mutation(&ownership)).is_none(),
+                    "{role:?} {action:?} must not manage a project-owned record"
+                );
+            }
+        }
+        for role in [ProjectRole::Admin, ProjectRole::Owner] {
+            let (library_grant, granted) = grant(
+                role,
+                SkillLibraryAction::Archive,
+                SkillLibraryTarget::Mutation(&ownership),
+            )
+            .expect("project administrators manage project-owned records");
+            assert_eq!(library_grant, LibraryGrant::Owner);
+            assert_eq!(granted.owner_kind(), LibraryOwnerKind::Project);
+            assert_eq!(granted.owner_id, project);
+        }
+
+        // A different project's record is invisible to every role, even for reads.
+        let other_project = LibraryOwnership::scoped(
+            tenant.clone(),
+            LibraryOwnerKind::Project,
+            LibraryActorId::from_canonical_projection("project-b").unwrap(),
+        );
+        assert!(
+            grant(
+                ProjectRole::Owner,
+                SkillLibraryAction::Read,
+                SkillLibraryTarget::Personal(&other_project),
+            )
+            .is_none()
+        );
+
+        // `CreateForCaller` always resolves to the caller's personal ownership, so the project
+        // role never gates it here: a Viewer's inability to create is enforced upstream by the
+        // `Permission::AssetUse` snapshot check (see the boundary test below), and a shared
+        // create only becomes project-owned through `into_shared_create`.
+        let (_, created) = grant(
+            ProjectRole::Viewer,
+            SkillLibraryAction::Create,
+            SkillLibraryTarget::CreateForCaller,
+        )
+        .unwrap();
+        assert_eq!(created.owner_kind(), LibraryOwnerKind::Personal);
+        assert_eq!(created.owner_id, actor);
+    }
+
+    #[tokio::test]
+    async fn project_shared_create_requires_project_management() {
+        let (_directory, runtime, _owner) = fixture().await;
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .seed_loadout_roles_for_test()
+            .await
+            .unwrap();
+        let create =
+            |credential: &'static str, project: &'static str, correlation: &'static str| {
+                decide(
+                    &runtime,
+                    SkillLibraryCaller::new(
+                        local(credential),
+                        ["lab".to_string()],
+                        SkillLibraryTransport::bearer(SkillLibrarySurface::ApiBearer, true),
+                    ),
+                    project,
+                    SkillLibraryAction::Create,
+                    "artifact-shared",
+                    SkillLibraryTarget::CreateForCaller,
+                    correlation,
+                )
+            };
+
+        // A Viewer lacks `Permission::AssetUse`, so it cannot create at all.
+        let viewer = create(
+            "static-bearer:viewer",
+            "viewer-project",
+            "shared-create-viewer",
+        )
+        .await;
+        assert!(matches!(
+            viewer,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+
+        // A Member may create a personal record but not a project-owned shared one.
+        let member = create(
+            "static-bearer:member",
+            "member-project",
+            "shared-create-member",
+        )
+        .await
+        .unwrap();
+        assert_eq!(member.ownership.owner_kind(), LibraryOwnerKind::Personal);
+        assert_eq!(
+            member.into_shared_create().err(),
+            Some(SkillLibraryAuthorizationError::Denied)
+        );
+
+        // A project Admin creates the project-owned shared record.
+        let admin = create(
+            "static-bearer:admin",
+            "admin-project",
+            "shared-create-admin",
+        )
+        .await
+        .unwrap();
+        let (_, ownership, _) = admin.into_shared_create().unwrap();
+        assert_eq!(ownership.owner_kind(), LibraryOwnerKind::Project);
+        assert_eq!(ownership.owner_id.as_str(), "admin-project");
     }
 
     #[tokio::test]

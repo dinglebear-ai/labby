@@ -69,6 +69,22 @@ identifier!(SecretReference);
 pub struct LifecycleNonce(String);
 
 impl LifecycleNonce {
+    /// Mint a fresh 32-byte random nonce as 64 lowercase hex characters.
+    ///
+    /// The nonce is generated inside the type so no caller can substitute a
+    /// predictable or reused lifecycle identity.
+    pub fn generate() -> Result<Self, DevContainerContractError> {
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| DevContainerContractError::InvalidLifecycleNonce)?;
+        let mut encoded = String::with_capacity(64);
+        for byte in bytes {
+            encoded.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+            encoded.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+        }
+        Self::new(encoded)
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, DevContainerContractError> {
         let value = value.into();
         if !(32..=128).contains(&value.len())
@@ -92,14 +108,7 @@ pub struct ImageDigest(String);
 impl ImageDigest {
     pub fn new(value: impl Into<String>) -> Result<Self, DevContainerContractError> {
         let value = value.into();
-        let Some(hex) = value.strip_prefix("sha256:") else {
-            return Err(DevContainerContractError::InvalidImageDigest);
-        };
-        if hex.len() != 64
-            || !hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !crate::digest::Sha256Digest::is_canonical(&value) {
             return Err(DevContainerContractError::InvalidImageDigest);
         }
         Ok(Self(value))

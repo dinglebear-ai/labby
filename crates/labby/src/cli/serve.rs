@@ -389,10 +389,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         }
     };
     // Hermetic live-test binaries need a durable principal behind the static bearer so the
-    // protected API/MCP/CLI adapters exercise their real authority paths. This hook is inert in
-    // release builds and remains explicit in debug builds; production owner bootstrap continues
-    // to require an authenticated browser session.
-    if cfg!(debug_assertions)
+    // protected API/MCP/CLI adapters exercise their real authority paths. This hook is compiled
+    // out of product builds and only active in test-support (`proxy-testkit`) builds, where it
+    // still requires the explicit `LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1` opt-in; production owner
+    // bootstrap continues to require an authenticated browser session.
+    if cfg!(feature = "proxy-testkit")
         && std::env::var_os("LABBY_E2E_BOOTSTRAP_STATIC_OWNER").as_deref()
             == Some(std::ffi::OsStr::new("1"))
     {

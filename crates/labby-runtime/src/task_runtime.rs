@@ -2,7 +2,7 @@
 
 use crate::agent_runtime::{
     AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor, AgentRuntimeError,
-    Cancellation, execute_agent,
+    Cancellation, LeaseResourceBinding, execute_agent_bound,
 };
 use crate::authority::AuthoritySafeBoundary;
 use labby_primitives::{access::OwnerScope, task::TaskState};
@@ -88,6 +88,9 @@ impl TaskScheduler {
     }
 }
 
+/// Run one fenced attempt. `now` is the caller's admission timestamp; the
+/// runtime clock ([`AgentAuthority::now_millis`]) is authoritative and can only
+/// move the effective time later.
 pub async fn execute_task<L, A, E>(
     scheduler: &TaskScheduler,
     ledger: &L,
@@ -103,16 +106,28 @@ where
     E: AgentExecutor,
 {
     let _permit = scheduler.admit(&task.owner).await?;
-    if task.fencing_token.len() < 32 || task.lease_expires_at <= now {
+    let now = now.max(authority.now_millis());
+    // A Task lease that outlives the runtime bound would let an attempt keep
+    // its fence after the runtime has already abandoned the executor; reject
+    // it at admission instead of discovering the gap after settlement.
+    let lease_remaining = task.lease_expires_at.saturating_sub(now);
+    if task.fencing_token.len() < 32
+        || task.lease_expires_at <= now
+        || lease_remaining > task.agent_request.bounds.max_runtime_millis
+    {
         return Err(TaskRuntimeError::InvalidLease);
     }
     ledger.acquire(&task).await?;
-    match execute_agent(
+    let binding = LeaseResourceBinding::Task {
+        task_id: task.task_id.clone(),
+    };
+    match execute_agent_bound(
         authority,
         executor,
         task.agent_request.clone(),
         cancellation,
         now,
+        &binding,
     )
     .await
     {
@@ -120,19 +135,31 @@ where
             // Settlement is Task's durable success commit, distinct from the
             // executor's output commit. Revalidate immediately at this owning
             // boundary so a revoked result is never recorded as successful.
-            let epochs = authority
-                .current_epochs()
-                .await
-                .map_err(TaskRuntimeError::Agent)?;
-            task.agent_request
-                .lease
-                .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
-                .map_err(AgentRuntimeError::Lease)
-                .map_err(TaskRuntimeError::Agent)?;
-            ledger
-                .settle(&task, TaskState::Succeeded, Some(&output), None)
-                .await?;
-            Ok(output)
+            // A failure here still settles the attempt: leaving it Running
+            // with no reason would hide the revocation until lease expiry.
+            let settlement_now = now.max(authority.now_millis());
+            let authority_outcome = match authority.current_epochs().await {
+                Ok(epochs) => task
+                    .agent_request
+                    .lease
+                    .validate_at(AuthoritySafeBoundary::BeforeCommit, settlement_now, &epochs)
+                    .map_err(AgentRuntimeError::Lease),
+                Err(error) => Err(error),
+            };
+            match authority_outcome {
+                Ok(()) => {
+                    ledger
+                        .settle(&task, TaskState::Succeeded, Some(&output), None)
+                        .await?;
+                    Ok(output)
+                }
+                Err(error) => {
+                    ledger
+                        .settle(&task, TaskState::Failed, None, Some(reason(&error)))
+                        .await?;
+                    Err(TaskRuntimeError::Agent(error))
+                }
+            }
         }
         Err(AgentRuntimeError::Cancelled) => {
             ledger
@@ -152,12 +179,21 @@ where
 pub async fn recover_tasks<L: TaskLedger>(ledger: &L, now: u64) -> Result<usize, TaskRuntimeError> {
     ledger.recover_expired(now).await
 }
-fn reason(error: &AgentRuntimeError) -> &'static str {
+/// Stable settlement reasons. Authority outcomes are distinct from executor
+/// failures so operators can tell a revoked attempt from a broken backend.
+pub fn reason(error: &AgentRuntimeError) -> &'static str {
     match error {
         AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_) => "authority_revoked",
+        AgentRuntimeError::AuthorityUnavailable => "authority_unavailable",
+        AgentRuntimeError::BindingMismatch | AgentRuntimeError::NotDispatchable => {
+            "authority_binding_rejected"
+        }
         AgentRuntimeError::ResourceLimit => "resource_limit",
         AgentRuntimeError::Cancelled => "cancelled",
-        _ => "execution_failed",
+        AgentRuntimeError::InvalidDefinition
+        | AgentRuntimeError::PinnedDefinitionMismatch
+        | AgentRuntimeError::InvalidBounds
+        | AgentRuntimeError::ExecutorFailed => "execution_failed",
     }
 }
 fn owner_key(owner: &OwnerScope) -> (u8, String) {
@@ -192,6 +228,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Ledger {
         settles: AtomicUsize,
+        last: Mutex<Option<(TaskState, Option<String>)>>,
+    }
+    impl Ledger {
+        fn new() -> Self {
+            Self {
+                settles: AtomicUsize::new(0),
+                last: Mutex::new(None),
+            }
+        }
     }
     impl TaskLedger for Ledger {
         async fn acquire(&self, _: &ScheduledTask) -> Result<(), TaskRuntimeError> {
@@ -200,11 +245,12 @@ mod tests {
         async fn settle(
             &self,
             _: &ScheduledTask,
-            _: TaskState,
+            state: TaskState,
             _: Option<&AgentExecutionOutput>,
-            _: Option<&str>,
+            reason: Option<&str>,
         ) -> Result<(), TaskRuntimeError> {
             self.settles.fetch_add(1, Ordering::SeqCst);
+            *self.last.lock().unwrap() = Some((state, reason.map(str::to_owned)));
             Ok(())
         }
         async fn recover_expired(&self, _: u64) -> Result<usize, TaskRuntimeError> {
@@ -215,6 +261,9 @@ mod tests {
     impl AgentAuthority for Auth {
         async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
             Ok(self.0.clone())
+        }
+        fn now_millis(&self) -> u64 {
+            1
         }
     }
     struct Exec;
@@ -268,6 +317,25 @@ mod tests {
             } else {
                 Ok(self.revoked.clone())
             }
+        }
+        fn now_millis(&self) -> u64 {
+            1
+        }
+    }
+    struct UnavailableBeforeSettlement {
+        reads: AtomicUsize,
+        initial: AuthorityEpochVector,
+    }
+    impl AgentAuthority for UnavailableBeforeSettlement {
+        async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) < 2 {
+                Ok(self.initial.clone())
+            } else {
+                Err(AgentRuntimeError::AuthorityUnavailable)
+            }
+        }
+        fn now_millis(&self) -> u64 {
+            1
         }
     }
     fn d() -> String {
@@ -361,9 +429,7 @@ mod tests {
     }
     #[tokio::test]
     async fn successful_attempt_settles_exactly_once_and_recovery_is_explicit() {
-        let ledger = Ledger {
-            settles: AtomicUsize::new(0),
-        };
+        let ledger = Ledger::new();
         let out = execute_task(
             &TaskScheduler::new(1).unwrap(),
             &ledger,
@@ -381,10 +447,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_is_not_settled_after_authority_changes() {
-        let ledger = Ledger {
-            settles: AtomicUsize::new(0),
+    async fn lease_longer_than_the_runtime_bound_is_rejected_at_admission() {
+        let ledger = Ledger::new();
+        let mut overlong = task();
+        overlong.lease_expires_at = 1 + overlong.agent_request.bounds.max_runtime_millis + 1;
+        assert!(matches!(
+            execute_task(
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &Auth(epochs()),
+                &Exec,
+                overlong,
+                Cancellation::new(),
+                1,
+            )
+            .await,
+            Err(TaskRuntimeError::InvalidLease)
+        ));
+        assert_eq!(ledger.settles.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn lease_must_name_this_task() {
+        let ledger = Ledger::new();
+        let mut other = task();
+        other.task_id = "task-9".into();
+        assert!(matches!(
+            execute_task(
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &Auth(epochs()),
+                &Exec,
+                other,
+                Cancellation::new(),
+                1,
+            )
+            .await,
+            Err(TaskRuntimeError::Agent(AgentRuntimeError::BindingMismatch))
+        ));
+        assert_eq!(
+            ledger.last.lock().unwrap().clone(),
+            Some((TaskState::Failed, Some("authority_binding_rejected".into())))
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_outage_at_settlement_settles_failed_with_its_own_reason() {
+        let ledger = Ledger::new();
+        let authority = UnavailableBeforeSettlement {
+            reads: AtomicUsize::new(0),
+            initial: epochs(),
         };
+        assert!(matches!(
+            execute_task(
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &authority,
+                &ExecWithoutCheck,
+                task(),
+                Cancellation::new(),
+                1,
+            )
+            .await,
+            Err(TaskRuntimeError::Agent(
+                AgentRuntimeError::AuthorityUnavailable
+            ))
+        ));
+        assert_eq!(
+            ledger.last.lock().unwrap().clone(),
+            Some((TaskState::Failed, Some("authority_unavailable".into())))
+        );
+    }
+
+    #[tokio::test]
+    async fn success_is_not_settled_after_authority_changes() {
+        let ledger = Ledger::new();
         let initial = epochs();
         let revoked = AuthorityEpochVector::new(AuthorityEpochVectorInput {
             version: 1,
@@ -423,6 +560,12 @@ mod tests {
                 AuthorityLeaseError::AuthorityChanged
             )))
         ));
-        assert_eq!(ledger.settles.load(Ordering::SeqCst), 0);
+        // The attempt is settled exactly once, as a Failed attempt with the
+        // revocation reason, never as a success.
+        assert_eq!(ledger.settles.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ledger.last.lock().unwrap().clone(),
+            Some((TaskState::Failed, Some("authority_revoked".into())))
+        );
     }
 }

@@ -36,15 +36,30 @@ fn validate_identifier(value: &str) -> Result<(), AccessVocabularyError> {
     Ok(())
 }
 
+/// Owner identifiers are embedded in `kind:{id}:` resource namespaces (for
+/// example Team-qualified Gateway loadout names), so they must not contain the
+/// namespace separator or any whitespace. `alpha` and `alpha:beta` would
+/// otherwise collide once prefixed.
+fn validate_namespace_identifier(value: &str) -> Result<(), AccessVocabularyError> {
+    validate_identifier(value)?;
+    if value.contains(':') || value.chars().any(char::is_whitespace) {
+        return Err(AccessVocabularyError::InvalidIdentifier);
+    }
+    Ok(())
+}
+
 macro_rules! opaque_id {
     ($name:ident) => {
+        opaque_id!($name, validate_identifier);
+    };
+    ($name:ident, $validator:ident) => {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self, AccessVocabularyError> {
                 let value = value.into();
-                validate_identifier(&value)?;
+                $validator(&value)?;
                 Ok(Self(value))
             }
 
@@ -62,9 +77,9 @@ macro_rules! opaque_id {
 }
 
 opaque_id!(InstallationId);
-opaque_id!(TeamId);
-opaque_id!(ProjectId);
-opaque_id!(PrincipalId);
+opaque_id!(TeamId, validate_namespace_identifier);
+opaque_id!(ProjectId, validate_namespace_identifier);
+opaque_id!(PrincipalId, validate_namespace_identifier);
 opaque_id!(ResourceId);
 
 /// Exactly one durable owner. Publication state is deliberately not an owner.
@@ -156,6 +171,9 @@ pub enum Capability {
     PlatformRead,
     PlatformManage,
     ScopeRead,
+    /// Consume a resource (for example execute or import an Artifact) without
+    /// reading its policy or changing it.
+    ScopeUse,
     ScopeOperate,
     ScopeCreate,
     ScopeManage,
@@ -169,11 +187,36 @@ pub enum Capability {
 impl Capability {
     pub const SCHEMA_VERSION: CapabilitySchemaVersion = CapabilitySchemaVersion::V1;
 
+    /// Every v1 capability, in wire order.
+    pub const ALL: &'static [Self] = &[
+        Self::PlatformRead,
+        Self::PlatformManage,
+        Self::ScopeRead,
+        Self::ScopeUse,
+        Self::ScopeOperate,
+        Self::ScopeCreate,
+        Self::ScopeManage,
+        Self::ScopeDelete,
+        Self::MembershipManage,
+        Self::OwnershipTransfer,
+        Self::PolicyExplain,
+        Self::AuditRead,
+    ];
+
+    /// Platform capabilities are installation authority. An action whose
+    /// required capability is platform-level must also be `requires_admin` on
+    /// every surface; the two axes must never disagree.
+    #[must_use]
+    pub const fn is_platform(self) -> bool {
+        matches!(self, Self::PlatformRead | Self::PlatformManage)
+    }
+
     pub const fn as_wire(self) -> &'static str {
         match self {
             Self::PlatformRead => "platform.read",
             Self::PlatformManage => "platform.manage",
             Self::ScopeRead => "scope.read",
+            Self::ScopeUse => "scope.use",
             Self::ScopeOperate => "scope.operate",
             Self::ScopeCreate => "scope.create",
             Self::ScopeManage => "scope.manage",
@@ -193,6 +236,7 @@ impl Capability {
             "platform.read" => Some(Self::PlatformRead),
             "platform.manage" => Some(Self::PlatformManage),
             "scope.read" => Some(Self::ScopeRead),
+            "scope.use" => Some(Self::ScopeUse),
             "scope.operate" => Some(Self::ScopeOperate),
             "scope.create" => Some(Self::ScopeCreate),
             "scope.manage" => Some(Self::ScopeManage),
@@ -223,6 +267,7 @@ const PLATFORM_ADMIN: &[Capability] = &[
     Capability::PlatformRead,
     Capability::PlatformManage,
     Capability::ScopeRead,
+    Capability::ScopeUse,
     Capability::ScopeOperate,
     Capability::ScopeCreate,
     Capability::ScopeManage,
@@ -232,19 +277,34 @@ const PLATFORM_ADMIN: &[Capability] = &[
     Capability::PolicyExplain,
     Capability::AuditRead,
 ];
-const OWNER: &[Capability] = &[
+const TEAM_OWNER: &[Capability] = &[
     Capability::ScopeRead,
+    Capability::ScopeUse,
     Capability::ScopeOperate,
     Capability::ScopeCreate,
     Capability::ScopeManage,
     Capability::ScopeDelete,
     Capability::MembershipManage,
     Capability::OwnershipTransfer,
+    Capability::PolicyExplain,
+    Capability::AuditRead,
+];
+/// Project owners are Project-local: they never transfer ownership, which is
+/// a Team-owner-only operation in the v1 matrix.
+const PROJECT_OWNER: &[Capability] = &[
+    Capability::ScopeRead,
+    Capability::ScopeUse,
+    Capability::ScopeOperate,
+    Capability::ScopeCreate,
+    Capability::ScopeManage,
+    Capability::ScopeDelete,
+    Capability::MembershipManage,
     Capability::PolicyExplain,
     Capability::AuditRead,
 ];
 const ADMIN: &[Capability] = &[
     Capability::ScopeRead,
+    Capability::ScopeUse,
     Capability::ScopeOperate,
     Capability::ScopeCreate,
     Capability::ScopeManage,
@@ -254,11 +314,13 @@ const ADMIN: &[Capability] = &[
 ];
 const MEMBER: &[Capability] = &[
     Capability::ScopeRead,
+    Capability::ScopeUse,
     Capability::ScopeOperate,
     Capability::ScopeCreate,
 ];
 const PERSONAL: &[Capability] = &[
     Capability::ScopeRead,
+    Capability::ScopeUse,
     Capability::ScopeOperate,
     Capability::ScopeCreate,
     Capability::ScopeManage,
@@ -267,6 +329,35 @@ const PERSONAL: &[Capability] = &[
 const VIEWER: &[Capability] = &[Capability::ScopeRead];
 
 impl RoleTemplate {
+    /// Every role template, in registry order.
+    pub const ALL: &'static [Self] = &[
+        Self::PlatformAdmin,
+        Self::TeamOwner,
+        Self::TeamAdmin,
+        Self::TeamMember,
+        Self::PersonalUser,
+        Self::ProjectOwner,
+        Self::ProjectAdmin,
+        Self::ProjectMember,
+        Self::ProjectViewer,
+    ];
+
+    /// Registry key used by `docs/access-control/authority-matrix-v1.json`.
+    #[must_use]
+    pub const fn registry_key(self) -> &'static str {
+        match self {
+            Self::PlatformAdmin => "platform_admin",
+            Self::TeamOwner => "team_owner",
+            Self::TeamAdmin => "team_admin",
+            Self::TeamMember => "team_member",
+            Self::PersonalUser => "personal_user",
+            Self::ProjectOwner => "project_owner",
+            Self::ProjectAdmin => "project_admin",
+            Self::ProjectMember => "project_member",
+            Self::ProjectViewer => "project_viewer",
+        }
+    }
+
     /// Returns `None` for an unsupported capability schema, which callers must
     /// treat as a denial rather than silently mapping to the newest schema.
     pub const fn capabilities(
@@ -278,7 +369,8 @@ impl RoleTemplate {
         }
         Some(match self {
             Self::PlatformAdmin => PLATFORM_ADMIN,
-            Self::TeamOwner | Self::ProjectOwner => OWNER,
+            Self::TeamOwner => TEAM_OWNER,
+            Self::ProjectOwner => PROJECT_OWNER,
             Self::TeamAdmin | Self::ProjectAdmin => ADMIN,
             Self::TeamMember | Self::ProjectMember => MEMBER,
             Self::PersonalUser => PERSONAL,
@@ -371,6 +463,85 @@ mod tests {
     }
 
     #[test]
+    fn namespaced_owner_identifiers_cannot_collide_after_prefixing() {
+        // `team:alpha:` + `beta` and `team:alpha` + `:beta` must be distinct,
+        // so the separator and whitespace are rejected at construction.
+        assert!(TeamId::new("alpha").is_ok());
+        assert!(TeamId::new("alpha:beta").is_err());
+        assert!(TeamId::new("alpha beta").is_err());
+        assert!(TeamId::new("alpha\tbeta").is_err());
+        assert!(ProjectId::new("proj:1").is_err());
+        assert!(PrincipalId::new("user one").is_err());
+        assert!(PrincipalId::new("bootstrap-owner").is_ok());
+        assert!(ResourceId::new("team:alpha:prod").is_ok());
+        let prefix = |team: &str| format!("team:{team}:");
+        assert_ne!(
+            format!("{}beta", prefix("alpha")),
+            format!("{}", prefix("alpha:beta")),
+        );
+    }
+
+    #[test]
+    fn platform_capabilities_are_the_admin_axis() {
+        assert!(Capability::PlatformManage.is_platform());
+        assert!(Capability::PlatformRead.is_platform());
+        for capability in Capability::ALL {
+            assert_eq!(
+                capability.is_platform(),
+                capability.as_wire().starts_with("platform."),
+                "{}",
+                capability.as_wire()
+            );
+            assert_eq!(
+                Capability::from_wire(CapabilitySchemaVersion::V1, capability.as_wire()),
+                Some(*capability)
+            );
+        }
+        assert_eq!(
+            Capability::from_wire(CapabilitySchemaVersion::V1, "scope.use"),
+            Some(Capability::ScopeUse)
+        );
+    }
+
+    #[test]
+    fn role_templates_match_the_published_authority_matrix() {
+        let matrix: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/access-control/authority-matrix-v1.json"
+        ))
+        .unwrap();
+        let families = matrix["capabilityFamilies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            families,
+            Capability::ALL
+                .iter()
+                .map(|capability| capability.as_wire())
+                .collect::<Vec<_>>()
+        );
+        let templates = matrix["roles"].as_object().unwrap();
+        assert_eq!(templates.len(), RoleTemplate::ALL.len());
+        for role in RoleTemplate::ALL {
+            let published = templates[role.registry_key()]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap())
+                .collect::<Vec<_>>();
+            let implemented = role
+                .capabilities(CapabilitySchemaVersion::V1)
+                .unwrap()
+                .iter()
+                .map(|capability| capability.as_wire())
+                .collect::<Vec<_>>();
+            assert_eq!(published, implemented, "{}", role.registry_key());
+        }
+    }
+
+    #[test]
     fn publication_visibility_is_not_an_owner_kind() {
         assert_eq!(
             PublicationVisibility::from_wire("public"),
@@ -414,6 +585,7 @@ mod tests {
             assert!(!capabilities(role).contains(&Capability::PlatformManage));
         }
         assert!(capabilities(RoleTemplate::TeamOwner).contains(&Capability::OwnershipTransfer));
+        assert!(!capabilities(RoleTemplate::ProjectOwner).contains(&Capability::OwnershipTransfer));
         assert!(!capabilities(RoleTemplate::TeamAdmin).contains(&Capability::OwnershipTransfer));
         assert!(!capabilities(RoleTemplate::TeamMember).contains(&Capability::MembershipManage));
         assert_eq!(

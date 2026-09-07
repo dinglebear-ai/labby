@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-07"
 ---
 
 # Testing
@@ -346,6 +346,25 @@ Native Windows process-tree containment is verified separately through required
 Windows Job Object tests; the Unix gates do not replace or make those tests
 advisory. Generic helper timeout, revocation, and failure-cleanup tests use the
 portable compiled process fixture rather than assuming a POSIX shell exists.
+
+## Test-only environment hooks
+
+These variables exist for the live end-to-end harness. They are compiled only
+with the `proxy-testkit` cargo feature, which is test support and never a
+product slice. None of them affect product builds; setting them there has no
+effect. They are intentionally absent from the generated environment reference
+because that catalog describes product configuration.
+
+- `LABBY_E2E_TEAM_ID` supplied the Team context for Team-scoped gateway actions
+  in older harness runs. The CLI `--team-id` flag replaces it; `proxy-testkit`
+  builds still honor the variable only as a fallback for that flag.
+- `LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1` makes `labby serve` bootstrap a durable
+  access-control owner behind the static bearer credential, so hermetic live
+  tests exercise the real authority paths of the API, MCP, and CLI adapters.
+  Production owner bootstrap still requires an authenticated browser session.
+- `LABBY_E2E_DETERMINISTIC_EXECUTORS` selects the deterministic Agent and Task
+  executor and the deterministic Dev Container runtime, so live matrices can
+  drive those lifecycles without a real execution backend or container engine.
 
 ## Ownership Summary
 

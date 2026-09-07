@@ -697,7 +697,11 @@ impl FileStashService {
 pub(crate) fn required_capability(action: &str) -> Option<labby_primitives::access::Capability> {
     use labby_primitives::access::Capability;
     Some(match action {
-        "stash.list" | "stash.search" | "stash.stats" | "stash.metadata" | "stash.download"
+        "stash.list"
+        | "stash.search"
+        | "stash.stats"
+        | "stash.metadata"
+        | "stash.download"
         | "stash.resources.read" => Capability::ScopeRead,
         "stash.upload" => Capability::ScopeCreate,
         "stash.delete" => Capability::ScopeDelete,

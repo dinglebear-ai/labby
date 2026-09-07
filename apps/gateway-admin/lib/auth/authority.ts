@@ -11,7 +11,8 @@ export type AuthorityOwner =
   | { kind: 'personal'; id: string }
 
 export type AuthorityTeam = { id: string; role: string; membershipEpoch: number; policyEpoch: number }
-export type AuthorityProject = { id: string; role: string }
+/** `name` is a server-projected display label; it is never used for authorization. */
+export type AuthorityProject = { id: string; role: string; name?: string }
 
 export type AuthoritySnapshot = {
   schemaVersion: typeof AUTHORITY_SCHEMA_VERSION
@@ -48,6 +49,29 @@ export function authorityCacheKey(snapshot: AuthoritySnapshot, connectionId = 'l
   return ['authority', snapshot.compatibilityGeneration, snapshot.generation, opaque(snapshot.principalId), snapshot.activeOwner.kind, opaque(snapshot.activeOwner.id), opaque(connectionId)]
 }
 
+/** Identity of an authority projection when it is missing from an authenticated session. */
+export const AUTHORITY_UNAVAILABLE_IDENTITY = 'authority-unavailable'
+
+/**
+ * The single stale-response identity for an authority projection. Every
+ * consumer that compares "authority before the request" with "authority after
+ * the response" must use this string so the comparisons cannot drift apart.
+ * It deliberately excludes transport fields (CSRF token, expiry): a session
+ * refresh that only rotates those must not abort in-flight work.
+ */
+export function authorityIdentity(snapshot: AuthoritySnapshot | undefined): string {
+  if (!snapshot) return AUTHORITY_UNAVAILABLE_IDENTITY
+  return [
+    snapshot.principalId,
+    snapshot.activeOwner.kind,
+    snapshot.activeOwner.id,
+    snapshot.activeTeamId ?? '',
+    snapshot.activeProjectId ?? '',
+    [...snapshot.capabilities].sort().join(','),
+    snapshot.generation,
+  ].join(':')
+}
+
 export function selectAuthorityWorkspace(
   snapshot: AuthoritySnapshot,
   selection: { teamId?: string | null; projectId?: string | null },
@@ -69,8 +93,8 @@ export function parseAuthoritySnapshot(payload: Record<string, unknown>): Author
   const teams = parseTeams(payload.teams)
   const projects = parseProjects(payload.projects)
   const capabilities = stringArray(payload.capabilities, 'capabilities')
-  const activeProjectId = optionalString(payload.active_project_id ?? payload.project_id ?? payload.project)
-  const activeTeamId = optionalString(payload.active_team_id)
+  const activeProjectId = optionalString(payload.active_project_id ?? payload.project_id ?? payload.project, 'active_project_id')
+  const activeTeamId = optionalString(payload.active_team_id, 'active_team_id')
   if (activeTeamId && !teams.some((team) => team.id === activeTeamId)) throw malformed('active_team_id is unavailable')
   if (activeProjectId && !projects.some((project) => project.id === activeProjectId)) throw malformed('active_project_id is unavailable')
 
@@ -110,16 +134,21 @@ function parseProjects(value: unknown): AuthorityProject[] {
   if (!Array.isArray(value)) throw malformed('projects must be an array')
   return value.map((item) => {
     if (!isObject(item)) throw malformed('project must be an object')
-    return { id: requiredString(item.id, 'project.id'), role: requiredString(item.role, 'project.role') }
+    const name = optionalString(item.name, 'project.name')
+    return { id: requiredString(item.id, 'project.id'), role: requiredString(item.role, 'project.role'), ...(name ? { name } : {}) }
   })
 }
 
-function stringArray(value: unknown, field: string) {
-  if (!Array.isArray(value) || value.some((item) => clean(item) === undefined)) throw malformed(`${field} must contain non-empty strings`)
-  return value as string[]
+function stringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw malformed(`${field} must contain non-empty strings`)
+  return value.map((item) => {
+    const result = clean(item)
+    if (result === undefined) throw malformed(`${field} must contain non-empty strings`)
+    return result
+  })
 }
 function requiredString(value: unknown, field: string) { const result = clean(value); if (!result) throw malformed(`${field} is required`); return result }
-function optionalString(value: unknown) { if (value == null) return undefined; const result = clean(value); if (!result) throw malformed('selector must be a non-empty string'); return result }
+function optionalString(value: unknown, field: string) { if (value == null) return undefined; const result = clean(value); if (!result) throw malformed(`${field} must be a non-empty string`); return result }
 function nonNegativeInteger(value: unknown, field: string) { if (!Number.isSafeInteger(value) || Number(value) < 0) throw malformed(`${field} must be a non-negative integer`); return Number(value) }
 function clean(value: unknown) { return typeof value === 'string' && value.trim() ? value.trim() : undefined }
 function isObject(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
@@ -131,4 +160,13 @@ function opaque(value: string) {
   opaqueValues.set(value, token)
   if (opaqueValues.size > MAX_OPAQUE_VALUES) opaqueValues.delete(opaqueValues.keys().next().value!)
   return token
+}
+
+/**
+ * Forget every subject → opaque-token mapping. Called on logout so a later
+ * sign-in (even as the same subject) cannot be correlated with cache keys
+ * minted for the previous session.
+ */
+export function resetAuthorityOpaqueValues() {
+  opaqueValues.clear()
 }

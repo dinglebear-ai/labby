@@ -15,6 +15,7 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
+use crate::dispatch::access_errors::map_runtime_error;
 use crate::dispatch::error::ToolError;
 
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
@@ -232,9 +233,11 @@ fn no_referrer<T: serde::Serialize>(body: Json<T>) -> impl IntoResponse {
 
 /// Returns true when the action requires `lab:admin` scope.
 ///
-/// Single source of truth: reads `ActionSpec.requires_admin` from the gateway
-/// catalog (A-H2/S5 fix). No bespoke match arm — adding a new action to the
-/// catalog automatically inherits the right scope gate.
+/// `ActionSpec.requires_admin` in the gateway catalog is the single source of
+/// truth: it is `true` exactly for installation-scoped platform
+/// administration and `false` for Team-scoped policy actions, which the
+/// domain evaluator authorizes by durable Team role instead. No second
+/// per-surface table exists.
 fn gateway_action_requires_admin(action: &str) -> bool {
     // Universal built-ins are never admin-gated, whether the caller passes them
     // bare (`help`) or service-prefixed (`gateway.help`). The catalog stores them
@@ -243,15 +246,31 @@ fn gateway_action_requires_admin(action: &str) -> bool {
     if bare == "help" || bare == "schema" {
         return false;
     }
-    if !crate::access::gateway_transport_requires_admin(action) {
-        return false;
-    }
     crate::dispatch::gateway::ACTIONS
         .iter()
         .find(|spec| spec.name == action)
         .map(|spec| spec.requires_admin)
         // Unknown actions default to admin-required (fail-safe).
         .unwrap_or(true)
+}
+
+/// Team authority selector. An absent header is a legitimate installation
+/// scope; a present but malformed value is caller-fixable, never silently
+/// treated as absent.
+fn selected_team_id(headers: &HeaderMap) -> Result<Option<&str>, ToolError> {
+    headers
+        .get("x-labby-team-id")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .filter(|team| !team.trim().is_empty() && team.is_ascii())
+                .ok_or_else(|| ToolError::InvalidParam {
+                    message: "team context header is invalid".to_owned(),
+                    param: "x-labby-team-id".to_owned(),
+                })
+        })
+        .transpose()
 }
 
 /// Returns true when the authenticated context carries `lab:admin`.
@@ -321,21 +340,34 @@ async fn handle(
             })
         })?
         .0;
-    let installation_id = state.installation_id.as_deref().unwrap_or("installation");
-    let team_id = headers
-        .get("x-labby-team-id")
-        .and_then(|value| value.to_str().ok());
+    // Installation-scoped platform actions authorize against the real
+    // installation id; a process without a bound id reads it from the durable
+    // store rather than guessing a literal.
+    // Until an installation binding exists the store has no id either; the
+    // evaluator authorizes installation scope on platform-administrator
+    // status, so the placeholder label only names the resource.
+    let installation_id = match state.installation_id.as_deref() {
+        Some(id) => id.to_owned(),
+        None => match state.access_runtime.store().await {
+            Ok(store) => store.installation_id().await.ok().flatten(),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| "installation".to_owned()),
+    };
+    let team_id = selected_team_id(&headers)
+        .map_err(|error| ApiError::new(error).with_service_action("gateway", &req.action))?;
     crate::access::authorize_gateway_action(
         &state.access_runtime,
         identity,
         &auth_context.0,
-        installation_id,
+        &installation_id,
         team_id,
         &req.action,
     )
     .await
     .map_err(ApiError::from)?;
     let team_id = team_id.map(str::to_owned);
+    let access_runtime = Arc::clone(&state.access_runtime);
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let auth_for_dispatch = auth.clone();
     let manager = state
@@ -361,6 +393,18 @@ async fn handle(
             let subject = subject.clone();
             let auth = auth_for_dispatch.clone();
             async move {
+                if let Some(team_id) = team_id.as_deref()
+                    && crate::dispatch::gateway::team_scoped_gateway_action(&action)
+                {
+                    let store = access_runtime
+                        .store()
+                        .await
+                        .map_err(|error| map_runtime_error("gateway", error))?;
+                    crate::dispatch::gateway::validate_team_scoped_upstream_references(
+                        &store, team_id, &action, &params,
+                    )
+                    .await?;
+                }
                 let params = crate::access::qualify_team_gateway_params(
                     &action,
                     team_id.as_deref(),
@@ -386,7 +430,16 @@ async fn handle(
                     },
                 )
                 .await?;
-                crate::access::filter_team_gateway_projection(team_id.as_deref(), &mut response);
+                // Only Team-scoped policy responses are projected through the
+                // Team namespace; platform responses (upstream lists, OAuth
+                // state) must stay complete for an administrator who happens
+                // to have a Team selected.
+                if crate::dispatch::gateway::team_scoped_gateway_action(&action) {
+                    crate::access::filter_team_gateway_projection(
+                        team_id.as_deref(),
+                        &mut response,
+                    );
+                }
                 Ok(response)
             }
         },
@@ -433,7 +486,7 @@ mod tests {
     use axum::{
         Extension, Router,
         body::Body,
-        http::{Request, StatusCode, header},
+        http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     };
     use serde_json::json;
     use tower::ServiceExt;
@@ -1330,5 +1383,59 @@ mod tests {
         assert!(gateway_action_requires_admin("gateway.add"));
         assert!(gateway_action_requires_admin("gateway.oauth.clear"));
         assert!(gateway_action_requires_admin("gateway.unknown"));
+        // The surface gate is exactly the catalog flag, which in turn is
+        // exactly the domain authority class.
+        for spec in crate::dispatch::gateway::ACTIONS {
+            if matches!(
+                spec.name,
+                "help" | "schema" | "gateway.help" | "gateway.schema"
+            ) {
+                continue;
+            }
+            assert_eq!(
+                gateway_action_requires_admin(spec.name),
+                crate::access::gateway_transport_requires_admin(spec.name),
+                "{}",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn team_header_is_validated_not_silently_dropped() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(super::selected_team_id(&headers).unwrap(), None);
+        headers.insert("x-labby-team-id", HeaderValue::from_static("alpha"));
+        assert_eq!(super::selected_team_id(&headers).unwrap(), Some("alpha"));
+        headers.insert("x-labby-team-id", HeaderValue::from_static("   "));
+        assert_eq!(
+            super::selected_team_id(&headers).unwrap_err().kind(),
+            "invalid_param"
+        );
+        headers.insert(
+            "x-labby-team-id",
+            HeaderValue::from_bytes(b"t\xc3\xa9am").unwrap(),
+        );
+        let error = super::selected_team_id(&headers).unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert!(error.to_string().contains("x-labby-team-id"));
+    }
+
+    /// B-C1: an administrator with a Team selected must still see the whole
+    /// platform-scoped response; only Team-scoped policy is namespaced.
+    #[test]
+    fn team_projection_filter_is_gated_on_team_scoped_actions() {
+        assert!(crate::dispatch::gateway::team_scoped_gateway_action(
+            "gateway.loadout.list"
+        ));
+        assert!(!crate::dispatch::gateway::team_scoped_gateway_action(
+            "gateway.list"
+        ));
+        let mut platform = json!({"upstreams": [{"name": "github"}, {"name": "team:alpha:x"}]});
+        let expected = platform.clone();
+        if crate::dispatch::gateway::team_scoped_gateway_action("gateway.list") {
+            crate::access::filter_team_gateway_projection(Some("alpha"), &mut platform);
+        }
+        assert_eq!(platform, expected);
     }
 }

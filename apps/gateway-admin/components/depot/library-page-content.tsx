@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { type DepotArtifact, type DepotStatus } from '@/lib/api/depot-client'
+import { depotStatus, type DepotArtifact, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, filterArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
@@ -74,13 +74,17 @@ export function LibraryPageContent() {
   const load = useCallback(async (search: string, cursor?: string, signal?: AbortSignal) => {
     setState((current) => ({ ...current, loading: true, error: undefined, artifacts: cursor ? current.artifacts : [] }))
     try {
-      const response = await controlPlaneAction<{ artifacts?: DepotArtifact[]; nextCursor?: string; total?: number }>(
-        'artifacts',
-        'artifacts.list_remote',
-        { limit: PAGE_SIZE, ...(search ? { query: search } : {}), ...(cursor ? { cursor } : {}) },
-        signal,
-      )
-      const status: DepotStatus = { configured: true, enabled: true, mutationAuthority: false, maxResponseBytes: 1_048_576 }
+      // The authority stat and the live/unavailable pulse come from the
+      // server's Depot status projection, never from a hardcoded value.
+      const [status, response] = await Promise.all([
+        depotStatus(signal),
+        controlPlaneAction<{ artifacts?: DepotArtifact[]; nextCursor?: string; total?: number }>(
+          'artifacts',
+          'artifacts.list_remote',
+          { limit: PAGE_SIZE, ...(search ? { query: search } : {}), ...(cursor ? { cursor } : {}) },
+          signal,
+        ),
+      ])
       setState((current) => ({
         artifacts: cursor ? [...current.artifacts, ...(response.artifacts ?? [])] : (response.artifacts ?? []),
         cursor: response.nextCursor,

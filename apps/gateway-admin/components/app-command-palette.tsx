@@ -97,7 +97,7 @@ import {
 import type { CreateGatewayInput, Gateway } from '@/lib/types/gateway'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 import { capabilityForPath } from '@/components/console/nav-model'
-import { AUTHORITY_WORKSPACE_CHANGED_EVENT, useBrowserSession } from '@/lib/auth/session'
+import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -282,19 +282,23 @@ export function AppCommandPalette() {
     return required === null || (required !== undefined && capabilities.includes(required))
   }), [capabilities])
 
+  // Any authority change — a local workspace switch or a server-side change
+  // observed on session refresh — discards the palette's query, drill-down,
+  // and pending mutation. Subscribing to the session identity (rather than
+  // only the local switch event) covers both.
+  const workspaceIdentity = authorityIdentity(session.status === 'authenticated' ? session.authority : undefined)
+  const lastWorkspaceIdentity = useRef(workspaceIdentity)
   useEffect(() => {
-    const clearSensitiveState = () => {
-      abortRef.current?.abort()
-      abortRef.current = null
-      setOpen(false)
-      setQuery('')
-      setPages([])
-      dispatch({ type: 'BROWSE' })
-      setPendingGatewayId(null)
-    }
-    window.addEventListener(AUTHORITY_WORKSPACE_CHANGED_EVENT, clearSensitiveState)
-    return () => window.removeEventListener(AUTHORITY_WORKSPACE_CHANGED_EVENT, clearSensitiveState)
-  }, [])
+    if (lastWorkspaceIdentity.current === workspaceIdentity) return
+    lastWorkspaceIdentity.current = workspaceIdentity
+    abortRef.current?.abort()
+    abortRef.current = null
+    setOpen(false)
+    setQuery('')
+    setPages([])
+    dispatch({ type: 'BROWSE' })
+    setPendingGatewayId(null)
+  }, [workspaceIdentity])
 
   // Issue 4: destructure error so we can surface catalog fetch failures
   const { data: catalogServices, isLoading: catalogLoading, error: catalogError } = useCommandCatalog()

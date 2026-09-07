@@ -1,21 +1,58 @@
-use rusqlite::{Connection, TransactionBehavior, params};
+//! Authority projection outbox.
+//!
+//! v1 projection is **snapshot-only**: an outbox row is a durable "the
+//! authority state of this Organization changed" marker written in the same
+//! transaction as its audit event. The producer coalesces every pending row
+//! for an Organization into one complete signed snapshot; it never replays
+//! per-event payloads. Depot acknowledges a contiguous watermark and the last
+//! accepted envelope digest, both persisted here so the chain survives
+//! retention and restarts.
+
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{BufWriter, Write as _};
+
+use labby_primitives::digest::Sha256Digest;
 
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::store::map_sqlite_error;
 
 pub(crate) const OUTBOX_BATCH_LIMIT: usize = 256;
+/// Delivery attempts before a row is parked as terminally `failed`. A failed
+/// row no longer starves other Organizations; it is surfaced through health
+/// and swept once a later snapshot acknowledgement covers its sequence.
+pub(crate) const OUTBOX_MAX_ATTEMPTS: i64 = 8;
 const SNAPSHOT_SPOOL_MAX_RECORDS: usize = 1_000_000;
 const SNAPSHOT_SPOOL_MAX_BYTES: usize = 256 * 1024 * 1024;
 
+/// One claimed outbox row. Payloads are deliberately absent: delivery is a
+/// snapshot of current state, never a replay of the event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PendingProjection {
     pub(crate) organization_id: String,
     pub(crate) sequence: u64,
-    pub(crate) payload_json: String,
-    pub(crate) previous_digest: Option<String>,
+}
+
+/// Persisted Depot acknowledgement for one Organization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthorityAcknowledgement {
+    /// Highest contiguous sequence Depot has durably accepted (0 = never).
+    pub(crate) sequence: u64,
+    /// Digest of the last accepted envelope; the next envelope chains to it.
+    pub(crate) digest: Option<String>,
+}
+
+/// Delivery posture of one Organization's outbox.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OrganizationDelivery {
+    pub(crate) organization_id: String,
+    /// Highest local sequence ever enqueued (0 = nothing yet).
+    pub(crate) head: u64,
+    pub(crate) acknowledged: u64,
+    pub(crate) pending: usize,
+    pub(crate) inflight: usize,
+    pub(crate) failed: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -63,19 +100,23 @@ fn snapshot_into(
         value: json!({"status":organization_status,"policy_epoch":policy_epoch,"authority_schema":authority_schema,"global_revision":global_revision}),
     })?;
     let mut principals = connection
-        .prepare("SELECT principal_id,status FROM principals WHERE organization_id=?1 ORDER BY principal_id COLLATE BINARY")
+        .prepare("SELECT p.principal_id,p.status,e.epoch FROM principals p JOIN principal_epochs e ON e.principal_id=p.principal_id WHERE p.organization_id=?1 ORDER BY p.principal_id COLLATE BINARY")
         .map_err(map_sqlite_error)?;
     for row in principals
         .query_map([organization_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })
         .map_err(map_sqlite_error)?
     {
-        let (principal_id, status) = row.map_err(map_sqlite_error)?;
+        let (principal_id, status, principal_epoch) = row.map_err(map_sqlite_error)?;
         emit(AuthoritySnapshotRecord {
             resource_type: "principal".into(),
             resource_id: principal_id,
-            value: json!({"status":status}),
+            value: json!({"status":status,"principal_epoch":principal_epoch}),
         })?;
     }
     drop(principals);
@@ -124,7 +165,7 @@ fn snapshot_into(
     }
     drop(projects);
     let mut project_memberships = connection
-        .prepare("SELECT project_id,principal_id,role,status,updated_at FROM project_memberships WHERE organization_id=?1 ORDER BY project_id COLLATE BINARY,principal_id COLLATE BINARY")
+        .prepare("SELECT m.project_id,m.principal_id,m.role,m.status,e.epoch FROM project_memberships m JOIN project_membership_epochs e ON e.membership_id=m.membership_id WHERE m.organization_id=?1 ORDER BY m.project_id COLLATE BINARY,m.principal_id COLLATE BINARY")
         .map_err(map_sqlite_error)?;
     for row in project_memberships
         .query_map([organization_id], |row| {
@@ -313,6 +354,8 @@ pub(super) fn organizations(connection: &mut Connection) -> AccessStoreResult<Ve
         .map_err(map_sqlite_error)
 }
 
+/// Claim deliverable rows (`pending`, or `inflight` whose claim lease lapsed)
+/// and lease them for thirty seconds. Terminal `failed` rows are never claimed.
 pub(super) fn claim(
     connection: &mut Connection,
     now: i64,
@@ -324,26 +367,18 @@ pub(super) fn claim(
         .map_err(map_sqlite_error)?;
     let mut rows = Vec::new();
     {
-        let mut statement = tx.prepare("SELECT o.organization_id,o.sequence,o.payload_json,(SELECT p.envelope_digest FROM authority_projection_outbox p WHERE p.organization_id=o.organization_id AND p.sequence<o.sequence AND p.status='sent' ORDER BY p.sequence DESC LIMIT 1) FROM authority_projection_outbox o WHERE o.status IN ('pending','inflight') AND o.next_attempt_at<=?1 ORDER BY o.organization_id COLLATE BINARY,o.sequence LIMIT ?2").map_err(map_sqlite_error)?;
+        let mut statement = tx.prepare("SELECT organization_id,sequence FROM authority_projection_outbox WHERE status IN ('pending','inflight') AND next_attempt_at<=?1 ORDER BY organization_id COLLATE BINARY,sequence LIMIT ?2").map_err(map_sqlite_error)?;
         let selected = statement
             .query_map(params![now, i64::try_from(limit).unwrap_or(256)], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(map_sqlite_error)?;
         for row in selected {
-            let (organization_id, sequence, payload_json, previous_digest) =
-                row.map_err(map_sqlite_error)?;
+            let (organization_id, sequence) = row.map_err(map_sqlite_error)?;
             rows.push(PendingProjection {
                 organization_id,
                 sequence: u64::try_from(sequence)
                     .map_err(|_| AccessStoreError::MalformedVocabulary)?,
-                payload_json,
-                previous_digest,
             });
         }
     }
@@ -354,6 +389,37 @@ pub(super) fn claim(
     Ok(rows)
 }
 
+/// The persisted Depot acknowledgement for one Organization.
+pub(super) fn acknowledged(
+    connection: &Connection,
+    organization_id: &str,
+) -> AccessStoreResult<AuthorityAcknowledgement> {
+    let row = connection
+        .query_row(
+            "SELECT acknowledged_sequence,acknowledged_digest FROM authority_outbox_sequences WHERE organization_id=?1",
+            [organization_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((sequence, digest)) = row else {
+        return Ok(AuthorityAcknowledgement {
+            sequence: 0,
+            digest: None,
+        });
+    };
+    Ok(AuthorityAcknowledgement {
+        sequence: u64::try_from(sequence).map_err(|_| AccessStoreError::MalformedVocabulary)?,
+        digest,
+    })
+}
+
+/// Record a Depot acknowledgement: persist the watermark and envelope digest,
+/// and mark every outbox row the acknowledged snapshot covers as `sent`.
+///
+/// An acknowledgement below the persisted watermark is a chain regression
+/// (a restored or rolled-back Depot) and is refused; the caller must resync
+/// with a fresh snapshot rather than silently rewinding.
 pub(super) fn acknowledge(
     connection: &mut Connection,
     organization_id: &str,
@@ -361,15 +427,39 @@ pub(super) fn acknowledge(
     digest: &str,
     now: i64,
 ) -> AccessStoreResult<usize> {
-    if organization_id.trim().is_empty()
-        || !(digest.len() == 64 || (digest.len() == 71 && digest.starts_with("sha256:")))
-    {
+    if organization_id.trim().is_empty() || !Sha256Digest::is_canonical(digest) {
         return Err(AccessStoreError::MalformedVocabulary);
     }
-    let highest = i64::try_from(highest).map_err(|_| AccessStoreError::MalformedVocabulary)?;
-    connection.execute("UPDATE authority_projection_outbox SET status='sent',sent_at=?3,envelope_digest=?4 WHERE organization_id=?1 AND sequence<=?2 AND status='inflight'",params![organization_id,highest,now,digest]).map_err(map_sqlite_error)
+    let highest_sql = i64::try_from(highest).map_err(|_| AccessStoreError::MalformedVocabulary)?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    let current = acknowledged(&tx, organization_id)?;
+    if highest < current.sequence {
+        return Err(AccessStoreError::ProjectionWatermarkRegressed);
+    }
+    tx.execute(
+        "INSERT INTO authority_outbox_sequences(organization_id,next_sequence,acknowledged_sequence,acknowledged_digest)
+         VALUES(?1,?2+1,?2,?3)
+         ON CONFLICT(organization_id) DO UPDATE SET
+           acknowledged_sequence=excluded.acknowledged_sequence,
+           acknowledged_digest=excluded.acknowledged_digest,
+           next_sequence=MAX(authority_outbox_sequences.next_sequence,excluded.acknowledged_sequence+1)",
+        params![organization_id, highest_sql, digest],
+    )
+    .map_err(map_sqlite_error)?;
+    let changed = tx
+        .execute(
+            "UPDATE authority_projection_outbox SET status='sent',sent_at=?3,envelope_digest=?4 WHERE organization_id=?1 AND sequence<=?2 AND status IN ('pending','inflight','failed')",
+            params![organization_id, highest_sql, now, digest],
+        )
+        .map_err(map_sqlite_error)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(changed)
 }
 
+/// Return a failed claim to the queue with exponential backoff, or park it as
+/// terminally `failed` once [`OUTBOX_MAX_ATTEMPTS`] is exhausted.
 pub(super) fn release_failed(
     connection: &mut Connection,
     organization_id: &str,
@@ -377,31 +467,69 @@ pub(super) fn release_failed(
     now: i64,
 ) -> AccessStoreResult<usize> {
     let through = i64::try_from(through).map_err(|_| AccessStoreError::MalformedVocabulary)?;
-    connection.execute("UPDATE authority_projection_outbox SET status='pending',next_attempt_at=?3+MIN(3600,30*(1<<MIN(attempt_count,7))) WHERE organization_id=?1 AND sequence<=?2 AND status='inflight'",params![organization_id,through,now]).map_err(map_sqlite_error)
+    connection.execute("UPDATE authority_projection_outbox SET status=CASE WHEN attempt_count>=?4 THEN 'failed' ELSE 'pending' END,next_attempt_at=?3+MIN(3600,30*(1<<MIN(attempt_count,7))) WHERE organization_id=?1 AND sequence<=?2 AND status='inflight'",params![organization_id,through,now,OUTBOX_MAX_ATTEMPTS]).map_err(map_sqlite_error)
 }
 
+/// Prune delivered rows that are both older than `older_than` and covered by
+/// the persisted acknowledgement. The chain digest lives in
+/// `authority_outbox_sequences`, so pruning never loses `previous_digest`.
 pub(super) fn retain(connection: &mut Connection, older_than: i64) -> AccessStoreResult<usize> {
     connection
         .execute(
-            "DELETE FROM authority_projection_outbox WHERE status='sent' AND sent_at<?1",
+            "DELETE FROM authority_projection_outbox WHERE status='sent' AND sent_at<?1 AND sequence<=(SELECT acknowledged_sequence FROM authority_outbox_sequences s WHERE s.organization_id=authority_projection_outbox.organization_id)",
             [older_than],
         )
         .map_err(map_sqlite_error)
 }
 
-pub(super) fn supersede_with_snapshot(
+/// Delivery posture per Organization for readiness and lag reporting.
+pub(super) fn delivery_status(
     connection: &mut Connection,
-    organization_id: &str,
-    digest: &str,
-    through: u64,
-    now: i64,
-) -> AccessStoreResult<usize> {
-    connection
-        .execute(
-            "UPDATE authority_projection_outbox SET status='sent',sent_at=?3,envelope_digest=?4 WHERE organization_id=?1 AND sequence<=?2 AND status IN ('pending','inflight')",
-            params![organization_id, i64::try_from(through).map_err(|_| AccessStoreError::MalformedVocabulary)?, now, digest],
+) -> AccessStoreResult<Vec<OrganizationDelivery>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT o.organization_id,
+                    COALESCE(s.next_sequence-1,0),
+                    COALESCE(s.acknowledged_sequence,0),
+                    (SELECT count(*) FROM authority_projection_outbox x WHERE x.organization_id=o.organization_id AND x.status='pending'),
+                    (SELECT count(*) FROM authority_projection_outbox x WHERE x.organization_id=o.organization_id AND x.status='inflight'),
+                    (SELECT count(*) FROM authority_projection_outbox x WHERE x.organization_id=o.organization_id AND x.status='failed')
+             FROM organizations o
+             LEFT JOIN authority_outbox_sequences s ON s.organization_id=o.organization_id
+             WHERE o.status='active'
+             ORDER BY o.organization_id COLLATE BINARY",
         )
-        .map_err(map_sqlite_error)
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?;
+    let mut result = Vec::new();
+    for row in rows {
+        let (organization_id, head, acknowledged, pending, inflight, failed) =
+            row.map_err(map_sqlite_error)?;
+        let to_u64 =
+            |value: i64| u64::try_from(value).map_err(|_| AccessStoreError::MalformedVocabulary);
+        let to_usize =
+            |value: i64| usize::try_from(value).map_err(|_| AccessStoreError::MalformedVocabulary);
+        result.push(OrganizationDelivery {
+            organization_id,
+            head: to_u64(head)?,
+            acknowledged: to_u64(acknowledged)?,
+            pending: to_usize(pending)?,
+            inflight: to_usize(inflight)?,
+            failed: to_usize(failed)?,
+        });
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -409,7 +537,7 @@ mod tests {
     use labby_auth::{Authenticator, VerifiedIdentity};
 
     use super::{AuthoritySnapshotRecord, write_spooled_record};
-    use crate::access::{AccessStore, BootstrapOwnerInput};
+    use crate::access::{AccessStore, AccessStoreError, BootstrapOwnerInput};
 
     #[test]
     fn snapshot_spool_limits_fail_closed_before_writing_past_the_ceiling() {
@@ -468,6 +596,7 @@ mod tests {
             record.resource_type == "principal"
                 && record.resource_id == "bootstrap-owner"
                 && record.value["status"] == "active"
+                && record.value["principal_epoch"] == 1
         }));
         assert!(records.iter().any(|record| {
             record.resource_type == "platform_administrator"
@@ -483,6 +612,7 @@ mod tests {
             record.resource_type == "project_membership"
                 && record.resource_id == "bootstrap-default\0bootstrap-owner"
                 && record.value["status"] == "active"
+                && record.value["membership_epoch"] == 1
         }));
         assert!(records.iter().any(|record| {
             record.resource_type == "team"
@@ -528,6 +658,8 @@ mod tests {
                 .iter()
                 .all(|row| row.organization_id == "bootstrap-local")
         );
+        // A claimed-but-unacknowledged batch (producer crashed mid-send) is
+        // not claimable until its lease lapses, then becomes claimable again.
         store
             .release_failed_authority_projection(
                 "bootstrap-local".into(),
@@ -548,18 +680,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(retried.len(), claimed.len());
-        store
-            .acknowledge_authority_projection(
-                "bootstrap-local".into(),
-                retried.last().unwrap().sequence,
-                "ab".repeat(32),
-                1001,
-            )
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        assert_eq!(
+            store
+                .acknowledge_authority_projection(
+                    "bootstrap-local".into(),
+                    retried.last().unwrap().sequence,
+                    digest.clone(),
+                    1001,
+                )
+                .await
+                .unwrap(),
+            retried.len()
+        );
+        let acknowledged = store
+            .acknowledged_authority_projection("bootstrap-local".into())
             .await
             .unwrap();
+        assert_eq!(acknowledged.sequence, retried.last().unwrap().sequence);
+        assert_eq!(acknowledged.digest.as_deref(), Some(digest.as_str()));
+        // An acknowledgement below the persisted watermark is a regression.
+        assert!(matches!(
+            store
+                .acknowledge_authority_projection(
+                    "bootstrap-local".into(),
+                    1,
+                    format!("sha256:{}", "cd".repeat(32)),
+                    1002,
+                )
+                .await,
+            Err(AccessStoreError::ProjectionWatermarkRegressed)
+        ));
+        // Retention is keyed on the acknowledged watermark, and the chain
+        // digest survives pruning because it is persisted separately.
         assert_eq!(
             store.retain_authority_projection(1002).await.unwrap(),
             retried.len()
         );
+        assert_eq!(
+            store
+                .acknowledged_authority_projection("bootstrap-local".into())
+                .await
+                .unwrap()
+                .digest
+                .as_deref(),
+            Some(digest.as_str())
+        );
+        let status = store.authority_delivery_status().await.unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].acknowledged, acknowledged.sequence);
+        assert_eq!(status[0].head, acknowledged.sequence);
+        assert_eq!(
+            (status[0].pending, status[0].inflight, status[0].failed),
+            (0, 0, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_attempts_park_rows_as_failed_without_blocking_claims() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let store = AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(identity, "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        let mut now = 0;
+        for _ in 0..super::OUTBOX_MAX_ATTEMPTS {
+            let claimed = store
+                .claim_authority_projection_batch(now, 256)
+                .await
+                .unwrap();
+            assert!(
+                !claimed.is_empty(),
+                "rows stay claimable until the attempt cap"
+            );
+            store
+                .release_failed_authority_projection(
+                    "bootstrap-local".into(),
+                    claimed.last().unwrap().sequence,
+                    now,
+                )
+                .await
+                .unwrap();
+            now += 10_000;
+        }
+        assert!(
+            store
+                .claim_authority_projection_batch(now, 256)
+                .await
+                .unwrap()
+                .is_empty(),
+            "failed rows are terminal"
+        );
+        let status = store.authority_delivery_status().await.unwrap();
+        assert_eq!(status[0].failed, 3);
+        assert_eq!(status[0].pending + status[0].inflight, 0);
+        // A later snapshot acknowledgement sweeps the failed rows.
+        store
+            .acknowledge_authority_projection(
+                "bootstrap-local".into(),
+                status[0].head,
+                format!("sha256:{}", "ef".repeat(32)),
+                now,
+            )
+            .await
+            .unwrap();
+        let status = store.authority_delivery_status().await.unwrap();
+        assert_eq!(status[0].failed, 0);
+        assert_eq!(status[0].acknowledged, status[0].head);
     }
 }

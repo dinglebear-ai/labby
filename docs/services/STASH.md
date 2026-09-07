@@ -1,7 +1,7 @@
 ---
 title: "File Stash"
 created: "2026-09-05"
-updated: "2026-09-06"
+updated: "2026-09-07"
 ---
 
 # File Stash
@@ -52,7 +52,9 @@ and opened downloads re-observe authority at their final boundary. Team members
 may read Team files; Team administrators may manage them according to the fixed
 role templates. Removing membership blocks new opens without affecting the
 caller's personal files. Durable Team keys are type-prefixed, so no principal
-or Team identifier can alias another owner's quota or objects.
+or Team identifier can alias another owner's quota or objects. The
+per-surface selector list, including the MCP `_meta` owner selection, is in
+[Selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context).
 
 Grant recipients are selected by a validated opaque AccessStore `PrincipalId`
 from an authoritative, non-enumerating identity-selection surface, never by

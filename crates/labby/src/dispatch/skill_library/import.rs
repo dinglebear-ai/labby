@@ -13,7 +13,7 @@ use crate::access::AccessRuntime;
 
 use super::audit::SkillLibraryCorrelationId;
 use super::auth::SkillLibraryCaller;
-use super::depot::DepotConnection;
+use super::depot::{DepotConnection, RequestHeaders};
 use super::dispatch::{SkillLibraryDispatchError, SkillLibraryService};
 use super::params::SourceSelector;
 
@@ -41,9 +41,44 @@ impl RepositoryConnection for DepotConnection {
             if self.connection_id() != repository {
                 return Err(ArtifactError::NotFound("import_connection"));
             }
-            DepotConnection::acquire_exact(self, artifact_id.to_owned(), object_id.to_owned()).await
+            DepotConnection::acquire_exact(self, artifact_id.to_owned(), object_id.to_owned(), None)
+                .await
         })
     }
+}
+
+/// Managed Depot exact-artifact routes require a signed delegated read
+/// assertion per request. Repository sources and standalone Depot use the
+/// connection credential alone. Authorization for the acquisition is the
+/// caller's exact `AssetUse` decision on the target Project; the same
+/// decision is re-evaluated by `import_acquired` before anything is written.
+async fn delegated_read_headers(
+    runtime: &AccessRuntime,
+    caller: &SkillLibraryCaller,
+    project_id: &str,
+    source: &ImportSource,
+) -> Result<RequestHeaders, ImportAdapterError> {
+    if !matches!(source, ImportSource::Depot { .. }) {
+        return Ok(None);
+    }
+    let Some(controls) = crate::dispatch::skill_library::process_controls() else {
+        return Ok(None);
+    };
+    if !controls.delegation_configured() {
+        return Ok(None);
+    }
+    let context = crate::dispatch::artifact_control::authorize_authority_context(
+        runtime,
+        caller.identity().clone(),
+        project_id,
+        caller.selected_team_id(),
+        crate::access::Permission::AssetUse,
+    )
+    .await
+    .map_err(|_| {
+        ImportAdapterError::Artifact(ArtifactError::Conflict("source_authorization_denied"))
+    })?;
+    Ok(controls.read_assertion_provider(context))
 }
 
 #[derive(Clone)]
@@ -166,6 +201,7 @@ impl ImportCoordinator {
     async fn acquire(
         &self,
         source: ImportSource,
+        headers: RequestHeaders,
     ) -> Result<ArtifactAcquisition, ImportAdapterError> {
         let acquisition = match source {
             ImportSource::Depot {
@@ -176,7 +212,7 @@ impl ImportCoordinator {
                 .depot
                 .get(&connection_id)
                 .ok_or(ImportAdapterError::SourceUnavailable)?
-                .acquire_exact(artifact_id, revision_id)
+                .acquire_exact(artifact_id, revision_id, headers)
                 .await
                 .map_err(ImportAdapterError::Artifact),
             ImportSource::Repository {
@@ -219,7 +255,8 @@ impl ImportCoordinator {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, ImportAdapterError> {
-        let acquisition = self.acquire(source).await?;
+        let headers = delegated_read_headers(runtime, &caller, project_id, &source).await?;
+        let acquisition = self.acquire(source, headers).await?;
         service
             .import_acquired(
                 runtime,
@@ -325,10 +362,21 @@ impl ImportCoordinator {
             // Acquire and commit one item at a time. An acquisition can approach the provider's
             // per-item byte limit, so retaining the whole batch would multiply peak memory by 100.
             let acquisition = match self.resolve_selector(source) {
-                Ok(source) => match self.acquire(source).await {
-                    Ok(acquisition) => acquisition,
-                    Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
-                },
+                Ok(source) => {
+                    let headers =
+                        match delegated_read_headers(runtime, &caller, project_id, &source).await {
+                            Ok(headers) => headers,
+                            Err(error) => {
+                                return Ok(batch_partial_receipt(items, version, index, &error));
+                            }
+                        };
+                    match self.acquire(source, headers).await {
+                        Ok(acquisition) => acquisition,
+                        Err(error) => {
+                            return Ok(batch_partial_receipt(items, version, index, &error));
+                        }
+                    }
+                }
                 Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
             };
             let value = match service
@@ -441,9 +489,9 @@ mod tests {
 
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_runtime::artifacts::provider::{
-        ArtifactAcquisitionTransport, ArtifactFetchPolicy, ArtifactTransferGate,
-        ArtifactTransportDeadlines, ArtifactTransportFuture, ExactArtifactProvider,
-        ExactArtifactRequest, ExactArtifactSource,
+        ArtifactAcquisitionTransport, ArtifactFetchPolicy, ArtifactRequestHeaderProvider,
+        ArtifactTransferGate, ArtifactTransportDeadlines, ArtifactTransportFuture,
+        ExactArtifactProvider, ExactArtifactRequest, ExactArtifactSource,
     };
     use labby_runtime::artifacts::{
         ArtifactPayloadFile, ArtifactProvenance, LogicalSkillFile, materialize_logical_skill,
@@ -511,7 +559,12 @@ mod tests {
     }
 
     impl DepotExactProvider for FakeDepot {
-        fn acquire(&self, _artifact_id: String, _revision_id: String) -> DepotFuture<'_> {
+        fn acquire(
+            &self,
+            _artifact_id: String,
+            _revision_id: String,
+            _headers: RequestHeaders,
+        ) -> DepotFuture<'_> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move { Ok(self.value.clone()) })
         }
@@ -533,6 +586,7 @@ mod tests {
             _request: &'a ExactArtifactRequest,
             _deadlines: ArtifactTransportDeadlines,
             gate: &'a mut ArtifactTransferGate,
+            _headers: Option<&'a dyn ArtifactRequestHeaderProvider>,
         ) -> ArtifactTransportFuture<'a> {
             Box::pin(async move {
                 gate.observe_peer(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))?;
@@ -956,11 +1010,14 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .acquire(ImportSource::Repository {
-                    repository: "repo-1".to_owned(),
-                    artifact_id: "source-artifact".to_owned(),
-                    object_id: "sha256:exact".to_owned(),
-                })
+                .acquire(
+                    ImportSource::Repository {
+                        repository: "repo-1".to_owned(),
+                        artifact_id: "source-artifact".to_owned(),
+                        object_id: "sha256:exact".to_owned(),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::Artifact(ArtifactError::Conflict(
                 "source_authorization_expired"
@@ -969,11 +1026,14 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(matches!(
             coordinator
-                .acquire(ImportSource::Repository {
-                    repository: "repo-1".to_owned(),
-                    artifact_id: "source-artifact".to_owned(),
-                    object_id: "main".to_owned(),
-                })
+                .acquire(
+                    ImportSource::Repository {
+                        repository: "repo-1".to_owned(),
+                        artifact_id: "source-artifact".to_owned(),
+                        object_id: "main".to_owned(),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::Artifact(
                 ArtifactError::InvalidField { .. }
@@ -990,11 +1050,14 @@ mod tests {
         );
         assert!(matches!(
             timeout
-                .acquire(ImportSource::Repository {
-                    repository: "repo-1".to_owned(),
-                    artifact_id: "source-artifact".to_owned(),
-                    object_id: "sha256:exact".to_owned(),
-                })
+                .acquire(
+                    ImportSource::Repository {
+                        repository: "repo-1".to_owned(),
+                        artifact_id: "source-artifact".to_owned(),
+                        object_id: "sha256:exact".to_owned(),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::Artifact(ArtifactError::Conflict(
                 "provider_timeout"
@@ -1018,11 +1081,14 @@ mod tests {
         );
         assert!(matches!(
             partial
-                .acquire(ImportSource::Repository {
-                    repository: "repo-1".to_owned(),
-                    artifact_id: "source-artifact".to_owned(),
-                    object_id: "sha256:exact".to_owned(),
-                })
+                .acquire(
+                    ImportSource::Repository {
+                        repository: "repo-1".to_owned(),
+                        artifact_id: "source-artifact".to_owned(),
+                        object_id: "sha256:exact".to_owned(),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::Artifact(
                 ArtifactError::InvalidField { .. }
@@ -1046,11 +1112,14 @@ mod tests {
         );
         assert!(matches!(
             tampered
-                .acquire(ImportSource::Repository {
-                    repository: "repo-1".to_owned(),
-                    artifact_id: "source-artifact".to_owned(),
-                    object_id: "sha256:exact".to_owned(),
-                })
+                .acquire(
+                    ImportSource::Repository {
+                        repository: "repo-1".to_owned(),
+                        artifact_id: "source-artifact".to_owned(),
+                        object_id: "sha256:exact".to_owned(),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::Artifact(ArtifactError::Conflict(
                 "provider_file_size_mismatch" | "provider_file_digest_mismatch"
@@ -1068,11 +1137,14 @@ mod tests {
         .unwrap();
         assert!(matches!(
             coordinator
-                .acquire(ImportSource::Depot {
-                    connection_id: "missing".to_owned(),
-                    artifact_id: "artifact".to_owned(),
-                    revision_id: format!("sha256:{}", "0".repeat(64)),
-                })
+                .acquire(
+                    ImportSource::Depot {
+                        connection_id: "missing".to_owned(),
+                        artifact_id: "artifact".to_owned(),
+                        revision_id: format!("sha256:{}", "0".repeat(64)),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::SourceUnavailable)
         ));
@@ -1158,11 +1230,14 @@ mod tests {
         let coordinator = ImportCoordinator::from_config(&config, root.path()).unwrap();
         assert!(matches!(
             coordinator
-                .acquire(ImportSource::Depot {
-                    connection_id: "credential-pending".to_owned(),
-                    artifact_id: "artifact".to_owned(),
-                    revision_id: format!("sha256:{}", "0".repeat(64)),
-                })
+                .acquire(
+                    ImportSource::Depot {
+                        connection_id: "credential-pending".to_owned(),
+                        artifact_id: "artifact".to_owned(),
+                        revision_id: format!("sha256:{}", "0".repeat(64)),
+                    },
+                    None
+                )
                 .await,
             Err(ImportAdapterError::SourceUnavailable)
         ));

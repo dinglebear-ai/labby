@@ -8,13 +8,15 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useBrowserSession } from '@/lib/auth/session'
+import { isAbortError } from '@/lib/api/service-action-client'
+import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
 import * as api from '@/lib/dev-containers/client'
 import type { DevContainer } from '@/lib/dev-containers/client'
 
 export function DevContainersPageContent() {
   const session = useBrowserSession()
   const authority = session.status === 'authenticated' ? session.authority : undefined
+  const workspaceIdentity = authorityIdentity(authority)
   const capabilities = new Set(authority?.capabilities ?? [])
   const [instances, setInstances] = useState<DevContainer[]>([])
   const [loading, setLoading] = useState(true)
@@ -27,22 +29,27 @@ export function DevContainersPageContent() {
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError(undefined)
     try { setInstances(await api.listDevContainers(signal)) }
-    catch (reason) { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Dev Containers are unavailable.') }
+    catch (reason) { if (!isAbortError(reason)) setError(reason instanceof Error ? reason.message : 'Dev Containers are unavailable.') }
     finally { if (!signal?.aborted) setLoading(false) }
   }, [])
-  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load, authority?.generation, authority?.activeOwner.kind, authority?.activeOwner.id])
+  // Reload whenever the shared authority identity changes (principal, active
+  // owner, team/project selection, capabilities, or generation), never on
+  // transport-only session refreshes.
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load, workspaceIdentity])
 
+  // A workspace switch aborts the in-flight mutation through the authority
+  // context; that is not an operator-facing failure, so it is not rendered.
   const operate = async (item: DevContainer, operation: 'start' | 'stop' | 'destroy' | 'reconcile') => {
     setBusy(item.instance_id); setError(undefined)
     try { await api.operateDevContainer(item.instance_id, operation); setDestroyTarget(undefined); await load() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'The operation failed.') }
+    catch (reason) { if (!isAbortError(reason)) setError(reason instanceof Error ? reason.message : 'The operation failed.') }
     finally { setBusy(undefined) }
   }
   const create = async () => {
     if (!instanceId.trim() || !templateId.trim()) return
     setBusy('create'); setError(undefined)
     try { await api.createDevContainer(instanceId.trim(), templateId.trim()); setInstanceId(''); setTemplateId(''); await load() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Container creation failed.') }
+    catch (reason) { if (!isAbortError(reason)) setError(reason instanceof Error ? reason.message : 'Container creation failed.') }
     finally { setBusy(undefined) }
   }
 

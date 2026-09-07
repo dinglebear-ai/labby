@@ -684,11 +684,13 @@ fn open_connection(path: &Path, snapshot_id: &str) -> Result<Connection> {
 }
 
 fn open_read_connection(path: &Path) -> Result<Connection> {
+    // Same anchored `/proc/self/fd/<root-fd>` pathname as the mutation
+    // connection: NOFOLLOW would reject the procfs descriptor link, and the
+    // runtime has already identity-checked the database entry with
+    // openat(..., NOFOLLOW) before any connection is exposed.
     let connection = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(FileStashStoreError::sqlite)?;
     connection

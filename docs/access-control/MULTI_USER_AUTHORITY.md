@@ -1,7 +1,7 @@
 ---
 title: "Multi-user authority contract"
 created: "2026-09-05"
-updated: "2026-09-05"
+updated: "2026-09-07"
 status: "design"
 ---
 
@@ -25,6 +25,15 @@ Platform administration is orthogonal to Organization, Team, and Project
 roles. OAuth scopes are transport ceilings only. Neither `lab:admin`, an
 allowlisted email, a loopback connection, nor a caller-supplied actor field
 creates a domain role.
+
+The ceiling has exactly two levels. `lab` admits every non-platform
+capability, so the durable Team or Project role decides what an owner, admin,
+or member may do; `lab:read` admits only reads and policy explanation;
+`lab:admin` additionally admits the platform capabilities. An action whose
+required capability is platform-level (`platform.read`, `platform.manage`) is
+therefore `requires_admin` on every surface, and an action whose required
+capability is scope-level is not: the two axes are one fact expressed twice
+and must never disagree.
 
 ## Entity relationship model
 
@@ -93,9 +102,12 @@ only the explicit active context; roles never float into another Team.
 
 Ownership is typed and immutable during ordinary update. Transfer is a
 separate compare-and-set operation with source and destination authorization,
-referential checks, epoch changes, and an audit event. Team deletion is a
-reconciled saga: `active -> deletion_pending -> deleted`. No Team becomes
-invisible while usable resources still reference it.
+referential checks, epoch changes, and an audit event. Team deletion is
+designed as a reconciled saga (`active -> deletion_pending -> deleted`) so no
+Team becomes invisible while usable resources still reference it. The
+`deletion_pending` state is reserved in the schema but **not implemented in
+v1**: no product action produces it and no surface reports it. Teams can be
+suspended and reactivated; deletion remains a later release.
 
 ## Capability families
 
@@ -145,6 +157,24 @@ Only components relevant to the decision need values, but none may be replaced
 with a caller-controlled timestamp. A mutation changes its affected epochs in
 the same database transaction as its audit event.
 
+Concretely, in AccessStore v7:
+
+- `principal_epoch` and `project_membership_epoch` are monotonic counters
+  maintained by schema triggers (`principal_epochs`,
+  `project_membership_epochs`). They advance on every status, kind, role, or
+  credential-link change, including raw statements, and never on display-label
+  or timestamp edits.
+- `team_membership_epoch[]` carries every Team membership that contributed to
+  the decision. For a Project, that is every active Team assignment whose role
+  participated in the effective-role maximum, together with the direct
+  membership epoch, so a downgrade on any path invalidates the lease.
+- `credential_generation` is the persisted `principal_links.link_generation`
+  of the link that resolved the identity; revoking the credential advances it
+  and the Principal epoch together.
+- `session_generation` carries the persisted verification generation of that
+  link. Browser-session revocation is enforced at the transport boundary by
+  `labby-auth`; it is not a per-session counter in the vector.
+
 An `AuthorityLease` is a short-lived, non-serializable runtime handle binding
 Principal, action, method, resource identity, `OwnerScope`, epoch vector, and
 expiry. It is not transferable between actions or resources. Catalogs,
@@ -176,17 +206,42 @@ ceremony establishes a new generation.
 
 ## Ordered authority projection
 
-Each Labby authority mutation writes an append-only outbox event in the same
-transaction. Events contain a schema version, installation/Organization IDs,
-monotonic sequence, entity version, operation ID, typed payload or tombstone,
-and safe audit correlation. Labby delivers them at least once.
+Each Labby authority mutation writes an append-only outbox row in the same
+transaction as its audit event. In v1 the outbox row is a durable "this
+Organization's authority changed" marker, never a replayable event payload:
+**projection is snapshot-only**. The producer coalesces every pending row for
+an Organization into one complete signed snapshot of current state (Principals
+with epochs, platform administrators, Projects, direct memberships with
+epochs, Teams, Team memberships, and Team-Project assignments), chunked at
+most 256 records per envelope and bound to Depot's durable watermark and last
+accepted envelope digest read from Depot's readiness endpoint. Per-event
+deltas are not emitted.
 
-Depot durably records inbox operation IDs and one contiguous watermark before
-acknowledging. Duplicate events are no-ops. A gap, invalid signature, unknown
-required schema, tenant mismatch, or backward entity version blocks Team
-operations and requests bounded resynchronization. Resync is a signed snapshot
-at a declared sequence followed by ordered tail events. Tombstones are retained
-long enough to prevent deleted memberships or Teams from reappearing.
+Depot durably records one contiguous watermark and the last accepted envelope
+digest before acknowledging. Labby persists that acknowledgement
+(`authority_outbox_sequences.acknowledged_sequence` / `acknowledged_digest`)
+in the same transaction that marks the covered outbox rows delivered, so the
+chain survives retention and restarts; delivered rows older than seven days
+and covered by the acknowledgement are pruned. A delivery attempt is bounded:
+a row that fails eight attempts is parked as terminally `failed`, surfaced
+through readiness, and swept by the next acknowledged snapshot. One failing
+Organization never stops delivery for the others.
+
+While an Organization is idle, Labby sends a signed `heartbeat` envelope at
+least every 60 seconds carrying no records, `sequence_start == sequence_end
+==` Depot's acknowledged watermark, and `previous_digest` equal to the last
+accepted envelope digest. Depot updates freshness only. Labby readiness
+advances only on real Depot acknowledgements (snapshot or heartbeat), never on
+a local timer; readiness is stale after two heartbeat intervals without one.
+A chain disagreement (Depot restored from an older state) is reported as a
+gap and triggers a full snapshot resynchronization.
+
+Signing uses one canonical JSON profile shared with Depot: object keys sorted
+bytewise, no insignificant whitespace, `serde_json` string escaping, integers
+only. A non-integer number never reaches the signer; encoding fails closed.
+The signature covers every envelope field except `signature`; the payload
+digest covers the canonical `records` array (the digest of `[]` for a
+heartbeat).
 
 Rolling compatibility follows expand/migrate/contract. Producers do not emit
 new required fields until all consumers advertise support. Readers tolerate
@@ -264,6 +319,67 @@ Admission limits are enforced per owner scope and Principal, with a platform
 ceiling. Task/job schedulers are fair across owner scopes. Tests and release
 evidence declare latency, query-count, memory/cardinality, queue fairness, and
 revocation-to-safe-boundary budgets rather than relying on compilation alone.
+
+## Selecting the authority context
+
+Every surface authenticates the caller before it reads any selector. The
+selectors below only choose which explicit Team, Project, or owner context the
+verified Principal wants to act in; they never grant authority. Membership,
+role templates, and resource policy in AccessStore decide, and only the
+caller's own Personal context may be implicit.
+
+HTTP API:
+
+- `x-labby-team-id` request header selects the Team for Team-scoped Gateway
+  actions (`gateway.loadout.*` and `gateway.protected_route.*` on
+  `POST /v1/gateway`), for Skill Library and provider-backed `artifacts`
+  actions on `POST /v1/artifacts`, and for the `bundles`, `jobs`, `sources`,
+  and `uploads` remote control-plane services, including the Artifact upload
+  route.
+- `x-labby-project-id` request header selects the Project for `artifacts`,
+  `bundles`, `jobs`, `sources`, and `uploads`. Skill Library operations and
+  Artifact uploads require it.
+- `x-labby-owner-kind` and `x-labby-owner-id` request headers select the File
+  Stash owner on `/v1/stash/*` routes. Action dispatch also accepts
+  `owner_kind` and `owner_id` in the JSON `params`, and browser download links
+  accept them as same-origin query parameters because links cannot attach
+  headers. A body or query value takes precedence over the header. `personal`
+  is the default and must not carry an `owner_id`; `team` requires one.
+- `owner_kind` and `owner_id` action params select the owner for the `agents`,
+  `tasks`, and `dev_containers` services. `tasks` and `dev_containers` accept
+  `installation`, `team`, `project`, and `personal`; `agents` accepts `team`,
+  `project`, and `personal`.
+
+MCP:
+
+- `params.team_id` selects the Team for Team-scoped `gateway` actions. It is an
+  authorization selector, not part of any Gateway action schema, and is consumed
+  before dispatch. When the request arrives through a protected route bound to
+  a Team Loadout (`team:<team_id>:<name>`), the route's bound Team is
+  authoritative and a `team_id` param that names a different Team is rejected.
+- `x-labby-team-id` and `x-labby-project-id` HTTP headers on the Streamable
+  HTTP MCP transport select the Team and Project for Skill Library reads and
+  MCP App callbacks.
+- `_meta["ai.dinglebear.labby/stashOwner"]`, an object of the form
+  `{"kind": "team", "id": "<team_id>"}`, selects the File Stash owner for MCP
+  resource reads. A malformed selection is rejected before any authority
+  lookup.
+- `owner_kind` and `owner_id` params select the owner for the `agents`,
+  `tasks`, and `dev_containers` tools exactly as over HTTP.
+
+CLI:
+
+- the global `--team-id <TEAM_ID>` flag selects the Team for Team-scoped
+  actions. The CLI sends it to the Labby daemon as the `x-labby-team-id`
+  header. The flag rejects empty, non-ASCII, and control-character values at
+  parse time.
+
+Validation is uniform: a non-ASCII or otherwise invalid `x-labby-team-id`
+header value is rejected with the `invalid_param` error kind on every surface,
+and a missing selector for a Team-scoped action is the same non-enumerating
+`forbidden` response as an unauthorized one. Team identifiers are opaque,
+trimmed, at most 256 bytes, and contain no control characters, whitespace, or
+`:`.
 
 ## Deferred from v1
 

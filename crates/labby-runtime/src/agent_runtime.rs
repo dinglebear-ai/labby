@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use labby_primitives::agent::{
     AgentDefinition, AgentSessionBinding, AgentState, RunningRevocationPolicy,
@@ -70,10 +71,39 @@ pub fn recovery_action(
     }
 }
 
+/// Which durable resource an execution lease must name.
+///
+/// An Agent session lease is bound to the Agent definition; an Agent Task
+/// lease is bound to the Task (as its resource or its creation intent).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LeaseResourceBinding {
+    Agent,
+    Task { task_id: String },
+}
+
+/// Milliseconds since the Unix epoch from the process clock.
+#[must_use]
+pub fn system_now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Live authority source. The runtime, not the dispatcher, owns the clock used
+/// at every safe boundary: a caller-supplied timestamp can only be earlier than
+/// this clock, never later, so a stale dispatch-time value cannot extend a lease.
 pub trait AgentAuthority: Send + Sync {
     fn current_epochs(
         &self,
     ) -> impl Future<Output = Result<AuthorityEpochVector, AgentRuntimeError>> + Send;
+
+    /// Current time in milliseconds since the Unix epoch. Defaults to the
+    /// process clock; deterministic tests override it.
+    fn now_millis(&self) -> u64 {
+        system_now_millis()
+    }
 }
 pub trait AgentExecutor: Send + Sync {
     fn execute(
@@ -118,6 +148,7 @@ trait AuthorityDyn: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn Future<Output = Result<AuthorityEpochVector, AgentRuntimeError>> + Send + '_>,
     >;
+    fn clock_millis(&self) -> u64;
 }
 impl<T: AgentAuthority> AuthorityDyn for T {
     fn epochs(
@@ -127,8 +158,14 @@ impl<T: AgentAuthority> AuthorityDyn for T {
     > {
         Box::pin(self.current_epochs())
     }
+    fn clock_millis(&self) -> u64 {
+        self.now_millis()
+    }
 }
 impl ExecutionGuard<'_> {
+    /// Revalidate the lease at a safe boundary. `now` is the executor's own
+    /// notion of time; the runtime clock is authoritative and an executor can
+    /// only move the effective time later, never earlier.
     pub async fn check(
         &self,
         boundary: AuthoritySafeBoundary,
@@ -137,6 +174,7 @@ impl ExecutionGuard<'_> {
         if self.cancellation.is_cancelled() {
             return Err(AgentRuntimeError::Cancelled);
         }
+        let now = now.max(self.authority.clock_millis());
         let epochs = self.authority.epochs().await?;
         match self.lease.validate_at(boundary, now, &epochs) {
             Ok(()) => Ok(()),
@@ -150,12 +188,62 @@ impl ExecutionGuard<'_> {
     }
 }
 
+/// Require that the lease names exactly the subject, owner, authority
+/// fingerprint, and resource this execution claims to act for.
+fn validate_lease_binding(
+    request: &AgentExecutionRequest,
+    resource: &LeaseResourceBinding,
+) -> Result<(), AgentRuntimeError> {
+    let binding = request.lease.binding();
+    let resource_matches = match resource {
+        LeaseResourceBinding::Agent => binding.resource_id().as_str() == request.definition.id,
+        LeaseResourceBinding::Task { task_id } => {
+            binding.resource_id().as_str() == task_id
+                || binding
+                    .intent_id()
+                    .is_some_and(|intent| intent.as_str() == task_id)
+        }
+    };
+    if !resource_matches
+        || binding.owner_scope() != &request.definition.owner
+        || binding.owner_scope() != &request.session.owner
+        || binding.principal_id() != request.session.principal.as_str()
+        || request.lease.epoch_fingerprint().as_str() != request.session.authority_fingerprint
+    {
+        return Err(AgentRuntimeError::BindingMismatch);
+    }
+    Ok(())
+}
+
 pub async fn execute_agent<A: AgentAuthority, E: AgentExecutor>(
     authority: &A,
     executor: &E,
     request: AgentExecutionRequest,
     cancellation: Cancellation,
     now: u64,
+) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+    execute_agent_bound(
+        authority,
+        executor,
+        request,
+        cancellation,
+        now,
+        &LeaseResourceBinding::Agent,
+    )
+    .await
+}
+
+/// Execute with an explicit statement of which resource the lease must name.
+///
+/// `now` is the caller's admission timestamp; the effective clock at every
+/// boundary is the later of that value and [`AgentAuthority::now_millis`].
+pub async fn execute_agent_bound<A: AgentAuthority, E: AgentExecutor>(
+    authority: &A,
+    executor: &E,
+    request: AgentExecutionRequest,
+    cancellation: Cancellation,
+    now: u64,
+    resource: &LeaseResourceBinding,
 ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
     request
         .definition
@@ -169,10 +257,22 @@ pub async fn execute_agent<A: AgentAuthority, E: AgentExecutor>(
     {
         return Err(AgentRuntimeError::PinnedDefinitionMismatch);
     }
+    validate_lease_binding(&request, resource)?;
+    if !request.definition.dispatchable(
+        request.definition.authority_epoch,
+        &[*request.lease.binding().capability()],
+    ) {
+        return Err(AgentRuntimeError::NotDispatchable);
+    }
+    let admission_now = now.max(authority.now_millis());
     let epochs = authority.current_epochs().await?;
     request
         .lease
-        .validate_at(AuthoritySafeBoundary::BeforeDispatch, now, &epochs)
+        .validate_at(
+            AuthoritySafeBoundary::BeforeDispatch,
+            admission_now,
+            &epochs,
+        )
         .map_err(AgentRuntimeError::Lease)?;
     let final_lease = request.lease.clone();
     let final_cancellation = cancellation.clone();
@@ -180,11 +280,24 @@ pub async fn execute_agent<A: AgentAuthority, E: AgentExecutor>(
     let guard = ExecutionGuard {
         authority,
         lease: request.lease.clone(),
-        cancellation,
+        cancellation: cancellation.clone(),
         revocation,
     };
     let bounds = request.bounds;
-    let output = executor.execute(request, guard).await?;
+    // `max_runtime_millis` is a hard ceiling owned by the runtime. An executor
+    // that overruns it is cancelled and its result is discarded.
+    let output = match tokio::time::timeout(
+        Duration::from_millis(bounds.max_runtime_millis),
+        executor.execute(request, guard),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            cancellation.cancel();
+            return Err(AgentRuntimeError::ResourceLimit);
+        }
+    };
     // Executors may check around their own external effects, but the runtime
     // owns the final commit boundary and never trusts an implementation to do
     // so. This closes the gap for executors that omit or misplace guard.check.
@@ -194,7 +307,7 @@ pub async fn execute_agent<A: AgentAuthority, E: AgentExecutor>(
         cancellation: final_cancellation,
         revocation,
     }
-    .check(AuthoritySafeBoundary::BeforeCommit, now)
+    .check(AuthoritySafeBoundary::BeforeCommit, admission_now)
     .await?;
     if output.bytes > bounds.max_output_bytes
         || output.external_effects > bounds.max_external_effects
@@ -210,6 +323,10 @@ pub enum AgentRuntimeError {
     InvalidDefinition,
     #[error("pinned definition mismatch")]
     PinnedDefinitionMismatch,
+    #[error("authority lease is not bound to this execution")]
+    BindingMismatch,
+    #[error("agent definition is not dispatchable under the granted capability")]
+    NotDispatchable,
     #[error("invalid resource bounds")]
     InvalidBounds,
     #[error("resource limit exceeded")]
@@ -235,6 +352,24 @@ mod tests {
     impl AgentAuthority for Auth {
         async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
             Ok(self.0.clone())
+        }
+        fn now_millis(&self) -> u64 {
+            1
+        }
+    }
+    struct SlowExec;
+    impl AgentExecutor for SlowExec {
+        async fn execute(
+            &self,
+            _: AgentExecutionRequest,
+            _: ExecutionGuard<'_>,
+        ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(AgentExecutionOutput {
+                digest: dig(),
+                bytes: 4,
+                external_effects: 0,
+            })
         }
     }
     struct Exec;
@@ -278,6 +413,9 @@ mod tests {
             } else {
                 Ok(self.changed.clone())
             }
+        }
+        fn now_millis(&self) -> u64 {
+            1
         }
     }
     fn dig() -> String {
@@ -386,6 +524,111 @@ mod tests {
             .await
             .unwrap_err(),
             AgentRuntimeError::Lease(AuthorityLeaseError::AuthorityChanged)
+        );
+    }
+
+    #[tokio::test]
+    async fn lease_must_name_this_agent_owner_principal_and_fingerprint() {
+        let initial = epochs(1);
+        let mut other_agent = request(&initial);
+        other_agent.definition.id = "agent-2".into();
+        other_agent.session.agent_id = "agent-2".into();
+        assert_eq!(
+            execute_agent(
+                &Auth(initial.clone()),
+                &Exec,
+                other_agent,
+                Cancellation::new(),
+                1
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::BindingMismatch
+        );
+        let mut other_principal = request(&initial);
+        other_principal.session.principal = PrincipalId::new("p-2").unwrap();
+        assert_eq!(
+            execute_agent(
+                &Auth(initial.clone()),
+                &Exec,
+                other_principal,
+                Cancellation::new(),
+                1
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::BindingMismatch
+        );
+        let mut stale_fingerprint = request(&initial);
+        stale_fingerprint.session.authority_fingerprint = epochs(7).fingerprint().as_str().into();
+        assert_eq!(
+            execute_agent(
+                &Auth(initial.clone()),
+                &Exec,
+                stale_fingerprint,
+                Cancellation::new(),
+                1
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::BindingMismatch
+        );
+        let mut needs_more = request(&initial);
+        needs_more.definition.required_capabilities = vec![Capability::ScopeManage];
+        assert_eq!(
+            execute_agent(
+                &Auth(initial.clone()),
+                &Exec,
+                needs_more,
+                Cancellation::new(),
+                1
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::NotDispatchable
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_bound_cancels_an_overrunning_executor() {
+        let initial = epochs(1);
+        let cancellation = Cancellation::new();
+        let authority = Auth(initial.clone());
+        let mut bounded = request(&initial);
+        bounded.bounds.max_runtime_millis = 20;
+        let execution = execute_agent(&authority, &SlowExec, bounded, cancellation.clone(), 1);
+        assert_eq!(
+            execution.await.unwrap_err(),
+            AgentRuntimeError::ResourceLimit
+        );
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn the_runtime_clock_cannot_be_rewound_by_the_dispatcher() {
+        struct LateClock(AuthorityEpochVector);
+        impl AgentAuthority for LateClock {
+            async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+                Ok(self.0.clone())
+            }
+            fn now_millis(&self) -> u64 {
+                1_000
+            }
+        }
+        let initial = epochs(1);
+        // The lease expires at 100; a dispatcher claiming `now == 1` cannot
+        // resurrect it once the runtime clock has passed expiry.
+        assert_eq!(
+            execute_agent(
+                &LateClock(initial.clone()),
+                &Exec,
+                request(&initial),
+                Cancellation::new(),
+                1
+            )
+            .await
+            .unwrap_err(),
+            AgentRuntimeError::Lease(AuthorityLeaseError::Expired)
         );
     }
 

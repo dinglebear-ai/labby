@@ -3,9 +3,17 @@ import test from 'node:test'
 import React, { act } from 'react'
 import { readFile } from 'node:fs/promises'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils.tsx'
+import { __setBrowserSessionStateForTests } from '@/lib/auth/session-store.ts'
+import type { AuthoritySnapshot } from '@/lib/auth/authority.ts'
 import { StashPageContent } from './stash-page-content.tsx'
 
 installTestDom()
+const originalFetch = globalThis.fetch
+test.afterEach(() => {
+  globalThis.fetch = originalFetch
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+})
+const teamAuthority: AuthoritySnapshot = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team', id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [{ id: 'project-1', role: 'manager' }], capabilities: ['scope.read'], generation: 1 }
 Object.defineProperty(globalThis, 'HTMLInputElement', { configurable: true, value: window.HTMLInputElement })
 Object.defineProperty(globalThis, 'InputEvent', { configurable: true, value: window.InputEvent })
 const file = (id: string) => ({ file_id: id, uri: `stash://me/files/${id}`, display_name: `${id}.txt`, size_bytes: 1, created_at: 1, updated_at: 1, owned: true })
@@ -304,4 +312,86 @@ test('upload refresh waits for the entire active queue to become idle', async ()
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 75)) })
   assert.equal(statsCalls, 2, 'an idle batch refreshes stats exactly once')
   await view.unmount()
+})
+
+test('download intercepts the link, fetches with owner headers, and never puts an owner id in a URL', async () => {
+  document.body.replaceChildren()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', authority: { ...teamAuthority } })
+  const requests: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(new URL(String(input), 'http://labby.test'), init)
+    requests.push(request)
+    if (request.url.endsWith('/stats')) return Response.json({ owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 5, owned_reserved_bytes: 0 })
+    if (request.url.endsWith('/content')) return new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } })
+    return Response.json({ files: [file('report')], next_cursor: null })
+  }
+  const objectUrls: Blob[] = []
+  const clicked: HTMLAnchorElement[] = []
+  const previousCreate = URL.createObjectURL
+  const previousRevoke = URL.revokeObjectURL
+  URL.createObjectURL = (blob: Blob) => { objectUrls.push(blob); return 'blob:labby/download' }
+  URL.revokeObjectURL = () => {}
+  const previousClick = window.HTMLAnchorElement.prototype.click
+  window.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { clicked.push(this) }
+  try {
+    const view = await renderClient(<StashPageContent />)
+    await waitFor(() => assert.match(view.container.textContent || '', /report\.txt/))
+    const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
+    assert.ok(link)
+    assert.equal(link.getAttribute('href'), '/v1/stash/files/report/content')
+    assert.equal(link.getAttribute('download'), 'report.txt')
+    await act(async () => { link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.equal(objectUrls.length, 1))
+    assert.equal(await objectUrls[0]!.text(), 'hello')
+    const download = requests.find(request => request.url.endsWith('/content'))
+    assert.ok(download)
+    assert.equal(download.headers.get('x-labby-owner-kind'), 'team')
+    assert.equal(download.headers.get('x-labby-owner-id'), 'team-1')
+    for (const request of requests) {
+      assert.equal(new URL(request.url).search, '')
+      assert.doesNotMatch(request.url, /team-1|principal-1/)
+    }
+    assert.equal(clicked.length, 1, 'the blob anchor is clicked exactly once')
+    assert.equal(clicked[0]!.getAttribute('download'), 'report.txt')
+    assert.equal(clicked[0]!.getAttribute('href'), 'blob:labby/download')
+    await waitFor(() => assert.match(view.container.querySelector('[role="status"]')?.textContent || '', /report\.txt download started/))
+    await view.unmount()
+  } finally {
+    URL.createObjectURL = previousCreate
+    URL.revokeObjectURL = previousRevoke
+    window.HTMLAnchorElement.prototype.click = previousClick
+  }
+})
+
+test('a failed download is surfaced through the structured error banner', async () => {
+  document.body.replaceChildren()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', authority: { ...teamAuthority } })
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.endsWith('/stats')) return Response.json({ owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 5, owned_reserved_bytes: 0 })
+    if (url.endsWith('/content')) return Response.json({ kind: 'busy', message: 'try later' }, { status: 429 })
+    return Response.json({ files: [file('report')], next_cursor: null })
+  }
+  const view = await renderClient(<StashPageContent />)
+  await waitFor(() => assert.match(view.container.textContent || '', /report\.txt/))
+  const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Download report.txt"]')
+  assert.ok(link)
+  await act(async () => { link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })) })
+  await waitFor(() => assert.match(view.container.querySelector('[role="alert"]')?.textContent || '', /Stash is busy/))
+  await view.unmount()
+})
+
+test('installation and unbound project workspaces render an explicit unsupported state instead of the personal stash', async () => {
+  for (const activeOwner of [{ kind: 'installation' as const, id: 'installation' }, { kind: 'project' as const, id: 'project-1' }]) {
+    document.body.replaceChildren()
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', authority: { ...teamAuthority, activeOwner, activeTeamId: undefined, activeProjectId: activeOwner.kind === 'project' ? activeOwner.id : undefined } })
+    let fetched = 0
+    globalThis.fetch = async () => { fetched += 1; return Response.json({ files: [file('leak')], next_cursor: null }) }
+    const view = await renderClient(<StashPageContent />)
+    await waitFor(() => assert.match(view.container.querySelector('[role="alert"]')?.textContent || '', /Stash is not available in this workspace/))
+    assert.match(view.container.textContent || '', /Switch to a Personal or Team workspace/)
+    assert.doesNotMatch(view.container.textContent || '', /leak\.txt/)
+    assert.equal(fetched, 0, `no stash request may be sent for the ${activeOwner.kind} workspace`)
+    await view.unmount()
+  }
 })

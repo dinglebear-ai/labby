@@ -40,7 +40,30 @@ CREATE TABLE access_metadata (
 ) STRICT;
 ";
 
+/// Where migration approval evidence comes from.
+///
+/// Every schema crossing (v1 through v6 to the current version) is gated:
+/// an old store never migrates implicitly on open.
+#[derive(Clone, Debug)]
+pub(crate) enum MigrationEvidenceSource {
+    /// `LABBY_ACCESS_MIGRATION_EVIDENCE` names the approval document.
+    Environment,
+    /// An explicit approval document path (operator tooling and tests).
+    Path(PathBuf),
+    /// Unit migration fixtures exercising the transform itself, never a
+    /// production-shaped store. Only constructible from tests.
+    #[cfg(test)]
+    UnitFixture,
+}
+
 pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
+    migrate_with_evidence(connection, &MigrationEvidenceSource::Environment)
+}
+
+pub(super) fn migrate_with_evidence(
+    connection: &mut Connection,
+    evidence: &MigrationEvidenceSource,
+) -> AccessStoreResult<()> {
     let found = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .map_err(super::store::map_sqlite_error)?;
@@ -50,11 +73,19 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             supported: SCHEMA_VERSION,
         });
     }
-    let migration_operation = if matches!(found, V5_SCHEMA_VERSION | V6_SCHEMA_VERSION) {
-        Some(require_migration_evidence(connection, found)?)
+    let migration_operation = if found > 0 && found < SCHEMA_VERSION {
+        Some(require_migration_evidence(connection, found, evidence)?)
     } else {
         None
     };
+    migrate_found(connection, found)?;
+    if let Some(operation) = &migration_operation {
+        complete_migration_operation(operation);
+    }
+    Ok(())
+}
+
+fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<()> {
     if found == 0 {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Exclusive)
@@ -76,7 +107,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(super::store::map_sqlite_error)?;
@@ -96,7 +127,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         rebuild_metadata_from_v1(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -113,7 +144,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
         rebuild_metadata_from_v2(&transaction)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -167,7 +198,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -187,7 +218,7 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -231,14 +262,13 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
         install_team_schema_and_seed(&transaction)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
         transaction
             .commit()
             .map_err(super::store::map_sqlite_error)?;
-        complete_migration_operation(migration_operation.as_ref().expect("v5 operation"))?;
     }
     if found == V6_SCHEMA_VERSION {
         let transaction = connection
@@ -280,14 +310,13 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .execute_batch(&bootstrap_trigger)
             .map_err(super::store::map_sqlite_error)?;
         install_dev_container_schema(&transaction)?;
-        install_authority_outbox_schema(&transaction)?;
+        install_v7_expansion(&transaction)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
         transaction
             .commit()
             .map_err(super::store::map_sqlite_error)?;
-        complete_migration_operation(migration_operation.as_ref().expect("v6 operation"))?;
     }
     Ok(())
 }
@@ -300,7 +329,12 @@ struct MigrationEvidence {
     source_version: i64,
     target_version: i64,
     target_fingerprint: String,
-    source_sha256: String,
+    /// Retained for documents written by the earlier byte-identical contract;
+    /// when present it must equal `checkpoint_sha256`. The live store is
+    /// verified logically, never by file bytes, because a WAL store's main
+    /// file legitimately differs from its consolidated checkpoint.
+    #[serde(default)]
+    source_sha256: Option<String>,
     checkpoint_path: PathBuf,
     checkpoint_sha256: String,
     activate: bool,
@@ -318,29 +352,28 @@ fn invalid_evidence(reason: impl Into<String>) -> AccessStoreError {
     }
 }
 
-#[cfg(test)]
-fn require_migration_evidence(
-    _connection: &Connection,
-    found: i64,
-) -> AccessStoreResult<MigrationOperation> {
-    // Unit migration fixtures exercise the transform itself. Production-shaped
-    // gate/replay coverage calls `verify_migration_evidence` directly.
-    Ok(MigrationOperation {
-        marker_path: None,
-        operation_id: format!("unit-v{found}"),
-        checkpoint_sha256: "unit-fixture".into(),
-    })
-}
-
-#[cfg(not(test))]
 fn require_migration_evidence(
     connection: &Connection,
     found: i64,
+    source: &MigrationEvidenceSource,
 ) -> AccessStoreResult<MigrationOperation> {
-    let evidence_path = std::env::var_os("LABBY_ACCESS_MIGRATION_EVIDENCE")
-        .map(PathBuf::from)
-        .ok_or(AccessStoreError::MigrationApprovalRequired { found })?;
-    verify_migration_evidence(connection, found, &evidence_path)
+    match source {
+        MigrationEvidenceSource::Environment => {
+            let evidence_path = std::env::var_os("LABBY_ACCESS_MIGRATION_EVIDENCE")
+                .map(PathBuf::from)
+                .ok_or(AccessStoreError::MigrationApprovalRequired { found })?;
+            verify_migration_evidence(connection, found, &evidence_path)
+        }
+        MigrationEvidenceSource::Path(evidence_path) => {
+            verify_migration_evidence(connection, found, evidence_path)
+        }
+        #[cfg(test)]
+        MigrationEvidenceSource::UnitFixture => Ok(MigrationOperation {
+            marker_path: None,
+            operation_id: format!("unit-v{found}"),
+            checkpoint_sha256: "unit-fixture".into(),
+        }),
+    }
 }
 
 fn verify_migration_evidence(
@@ -364,16 +397,14 @@ fn verify_migration_evidence(
             "approval does not bind the source, target, fingerprint, operation, and activation decision",
         ));
     }
-    if evidence.source_sha256.len() != 64
-        || evidence.checkpoint_sha256.len() != 64
-        || evidence.source_sha256 != evidence.checkpoint_sha256
-        || !evidence
-            .checkpoint_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    if !lowercase_sha256(&evidence.checkpoint_sha256)
+        || evidence
+            .source_sha256
+            .as_deref()
+            .is_some_and(|source| source != evidence.checkpoint_sha256)
     {
         return Err(invalid_evidence(
-            "source and checkpoint must have the same lowercase SHA-256",
+            "checkpoint digest must be a lowercase SHA-256 that any source digest repeats",
         ));
     }
     let database_path = main_database_path(connection)?;
@@ -393,9 +424,16 @@ fn verify_migration_evidence(
             "checkpoint digest does not match evidence",
         ));
     }
-    if sha256_file(&database_path)? != evidence.source_sha256 {
+    // The checkpoint is a consolidated SQLite backup of the quiesced source.
+    // Compare the two stores logically (schema manifest plus every table's
+    // primary-key-ordered content) so a WAL-mode source with committed frames
+    // still verifies against its `VACUUM INTO`/backup-API checkpoint.
+    let checkpoint_connection = open_immutable(&checkpoint)?;
+    let checkpoint_logical = logical_fingerprint(&checkpoint_connection)?;
+    drop(checkpoint_connection);
+    if logical_fingerprint(connection)? != checkpoint_logical {
         return Err(invalid_evidence(
-            "live source bytes do not match the approved checkpoint",
+            "live source does not logically match the approved checkpoint",
         ));
     }
     let marker_path = database_path.with_extension(format!("migration-v{SCHEMA_VERSION}.state"));
@@ -431,6 +469,13 @@ fn verify_migration_evidence(
     })
 }
 
+fn lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn main_database_path(connection: &Connection) -> AccessStoreResult<PathBuf> {
     connection
         .query_row(
@@ -441,10 +486,123 @@ fn main_database_path(connection: &Connection) -> AccessStoreResult<PathBuf> {
         .map_err(super::store::map_sqlite_error)
 }
 
+fn open_immutable(path: &Path) -> AccessStoreResult<Connection> {
+    let mut uri = url::Url::from_file_path(path)
+        .map_err(|()| invalid_evidence("checkpoint path is not absolute"))?;
+    uri.set_query(Some("immutable=1&mode=ro"));
+    Connection::open_with_flags(
+        uri.as_str(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|error| invalid_evidence(format!("cannot open checkpoint: {error}")))
+}
+
+/// SHA-256 over the schema manifest and every table's primary-key-ordered
+/// content, encoded with value-type tags. Two stores with the same logical
+/// state produce the same fingerprint regardless of page layout, WAL state,
+/// or free-list contents.
+pub(super) fn logical_fingerprint(connection: &Connection) -> AccessStoreResult<String> {
+    use rusqlite::types::ValueRef;
+    let mut digest = Sha256::new();
+    for entry in schema_manifest(connection)? {
+        let parts: [String; 4] = entry.into();
+        for part in parts {
+            digest.update(part.len().to_be_bytes());
+            digest.update(part.as_bytes());
+        }
+    }
+    let tables = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map_err(super::store::map_sqlite_error)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(super::store::map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(super::store::map_sqlite_error)?;
+    for table in tables {
+        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        let mut info = connection
+            .prepare(&format!("PRAGMA table_info({quoted})"))
+            .map_err(super::store::map_sqlite_error)?;
+        let mut keys = info
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+            })
+            .map_err(super::store::map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(super::store::map_sqlite_error)?
+            .into_iter()
+            .filter(|(position, _)| *position > 0)
+            .collect::<Vec<_>>();
+        keys.sort();
+        let order = if keys.is_empty() {
+            "rowid".to_owned()
+        } else {
+            keys.iter()
+                .map(|(_, column)| format!("\"{}\"", column.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {quoted} ORDER BY {order}"))
+            .map_err(super::store::map_sqlite_error)?;
+        let columns = statement.column_count();
+        let mut rows = statement
+            .query([])
+            .map_err(super::store::map_sqlite_error)?;
+        digest.update([0xfe]);
+        digest.update(table.len().to_be_bytes());
+        digest.update(table.as_bytes());
+        while let Some(row) = rows.next().map_err(super::store::map_sqlite_error)? {
+            digest.update([0xff]);
+            for index in 0..columns {
+                match row.get_ref(index).map_err(super::store::map_sqlite_error)? {
+                    ValueRef::Null => digest.update([0]),
+                    ValueRef::Integer(value) => {
+                        digest.update([1]);
+                        digest.update(value.to_be_bytes());
+                    }
+                    ValueRef::Real(value) => {
+                        digest.update([2]);
+                        digest.update(value.to_bits().to_be_bytes());
+                    }
+                    ValueRef::Text(value) => {
+                        digest.update([3]);
+                        digest.update(value.len().to_be_bytes());
+                        digest.update(value);
+                    }
+                    ValueRef::Blob(value) => {
+                        digest.update([4]);
+                        digest.update(value.len().to_be_bytes());
+                        digest.update(value);
+                    }
+                }
+            }
+        }
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+/// Streamed SHA-256 of a file; the checkpoint is never read into memory whole.
 fn sha256_file(path: &Path) -> AccessStoreResult<String> {
-    let bytes = std::fs::read(path)
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)
         .map_err(|error| invalid_evidence(format!("cannot read checkpoint: {error}")))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| invalid_evidence(format!("cannot read checkpoint: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn write_marker(path: &Path, contents: &str) -> AccessStoreResult<()> {
@@ -455,17 +613,28 @@ fn write_marker(path: &Path, contents: &str) -> AccessStoreResult<()> {
         .map_err(|error| invalid_evidence(format!("cannot publish migration marker: {error}")))
 }
 
-fn complete_migration_operation(operation: &MigrationOperation) -> AccessStoreResult<()> {
+/// Publish the completion marker after the migration transaction committed.
+/// A marker failure here must not fail the (already durable) migration open;
+/// it is logged so the operator can republish the marker by hand.
+fn complete_migration_operation(operation: &MigrationOperation) {
     let Some(marker_path) = &operation.marker_path else {
-        return Ok(());
+        return;
     };
-    write_marker(
+    if let Err(error) = write_marker(
         marker_path,
         &format!(
             "complete\noperation_id={}\ncheckpoint_sha256={}\ntarget_version={}\ntarget_fingerprint={}\n",
             operation.operation_id, operation.checkpoint_sha256, SCHEMA_VERSION, SCHEMA_FINGERPRINT
         ),
-    )
+    ) {
+        tracing::error!(
+            surface = "access_store",
+            operation_id = %operation.operation_id,
+            marker = %marker_path.display(),
+            error = %error,
+            "access schema migration committed but its completion marker could not be published"
+        );
+    }
 }
 
 pub(super) fn validate_migratable(connection: &Connection, version: i64) -> AccessStoreResult<()> {
@@ -1115,11 +1284,236 @@ fn install_dev_container_schema(connection: &Connection) -> AccessStoreResult<()
         .map_err(super::store::map_sqlite_error)
 }
 
-fn install_authority_outbox_schema(connection: &Connection) -> AccessStoreResult<()> {
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS authority_outbox_sequences(organization_id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL CHECK(next_sequence>0),FOREIGN KEY(organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT) STRICT;
-CREATE TABLE IF NOT EXISTS authority_projection_outbox(organization_id TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence>0),event_id TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','inflight','sent')),attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count>=0),next_attempt_at INTEGER NOT NULL DEFAULT 0,envelope_digest TEXT,created_at INTEGER NOT NULL,sent_at INTEGER,PRIMARY KEY(organization_id,sequence),FOREIGN KEY(organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,FOREIGN KEY(event_id) REFERENCES access_audit(event_id) ON DELETE RESTRICT) STRICT;
-CREATE INDEX IF NOT EXISTS authority_projection_outbox_delivery ON authority_projection_outbox(status,next_attempt_at,organization_id,sequence);
-CREATE TRIGGER IF NOT EXISTS enqueue_authority_projection_after_audit AFTER INSERT ON access_audit WHEN NEW.decision='allow' BEGIN INSERT OR IGNORE INTO authority_outbox_sequences(organization_id,next_sequence) VALUES(NEW.organization_id,1); INSERT INTO authority_projection_outbox(organization_id,sequence,event_id,payload_json,status,attempt_count,next_attempt_at,created_at) SELECT NEW.organization_id,next_sequence,NEW.event_id,json_object('resource_type',NEW.target_kind,'resource_id',NEW.target_fingerprint,'operation',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke' OR NEW.action LIKE '%.delete' THEN 'delete' ELSE 'upsert' END,'value',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke' OR NEW.action LIKE '%.delete' THEN NULL ELSE json_object('action',NEW.action,'policy_epoch',NEW.policy_epoch,'metadata',json(NEW.metadata_json)) END),'pending',0,0,NEW.occurred_at FROM authority_outbox_sequences WHERE organization_id=NEW.organization_id; UPDATE authority_outbox_sequences SET next_sequence=next_sequence+1 WHERE organization_id=NEW.organization_id; END;").map_err(super::store::map_sqlite_error)
+/// Versioned v7 expansion applied by every migration path and by fresh stores.
+///
+/// Everything a v7 store contains beyond the frozen v1-v5 domain schema, the
+/// v6 Team authority schema, and the Dev Container ledger lives here so the
+/// integrity manifest of a migrated store is byte-identical (after whitespace
+/// normalization) to a freshly created one. Tables must never be created
+/// lazily at runtime: the manifest check would classify the store as corrupt
+/// on the next open.
+pub(super) const AUTHORITY_OUTBOX_SCHEMA: &str = "
+CREATE TABLE authority_outbox_sequences (
+    organization_id TEXT PRIMARY KEY,
+    next_sequence INTEGER NOT NULL CHECK(next_sequence > 0),
+    acknowledged_sequence INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged_sequence >= 0),
+    acknowledged_digest TEXT,
+    CHECK ((acknowledged_sequence = 0) = (acknowledged_digest IS NULL)),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE authority_projection_outbox (
+    organization_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    event_id TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','inflight','sent','failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    envelope_digest TEXT,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    PRIMARY KEY (organization_id, sequence),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY (event_id) REFERENCES access_audit(event_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX authority_projection_outbox_delivery
+    ON authority_projection_outbox(status,next_attempt_at,organization_id,sequence);
+
+CREATE TRIGGER enqueue_authority_projection_after_audit
+AFTER INSERT ON access_audit
+WHEN NEW.decision='allow'
+BEGIN
+  INSERT OR IGNORE INTO authority_outbox_sequences(organization_id,next_sequence)
+  VALUES(NEW.organization_id,1);
+  INSERT INTO authority_projection_outbox(
+    organization_id,sequence,event_id,payload_json,status,attempt_count,next_attempt_at,created_at)
+  SELECT NEW.organization_id,next_sequence,NEW.event_id,
+    json_object('event_id',NEW.event_id,'action',NEW.action,'target_kind',NEW.target_kind),
+    'pending',0,0,NEW.occurred_at
+  FROM authority_outbox_sequences WHERE organization_id=NEW.organization_id;
+  UPDATE authority_outbox_sequences SET next_sequence=next_sequence+1
+  WHERE organization_id=NEW.organization_id;
+END;
+";
+
+/// Durable Agent definitions, sessions, and Task ledger.
+pub(super) const AGENT_TASK_SCHEMA: &str = "
+CREATE TABLE agent_definitions (
+    agent_id TEXT PRIMARY KEY,
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),
+    owner_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version > 0),
+    definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+    state TEXT NOT NULL CHECK(state IN ('active','suspended','deleted')),
+    authority_epoch INTEGER NOT NULL CHECK(authority_epoch >= 0),
+    publication_epoch INTEGER NOT NULL CHECK(publication_epoch >= 0),
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX agent_definitions_owner
+    ON agent_definitions(owner_kind,owner_id,state,agent_id);
+CREATE TABLE agent_definition_audit (
+    event_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    actor_principal_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('create','update','suspend','delete')),
+    authority_epoch INTEGER NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agent_definitions(agent_id)
+);
+CREATE TABLE agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    agent_version INTEGER NOT NULL,
+    principal_id TEXT NOT NULL,
+    authority_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('admitted','running','completed','failed','cancelled','revoked','interrupted')),
+    lease_expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agent_definitions(agent_id)
+);
+CREATE INDEX agent_sessions_agent ON agent_sessions(agent_id,created_at,session_id);
+CREATE TABLE agent_tasks (
+    task_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),
+    owner_id TEXT NOT NULL,
+    project_id TEXT,
+    creator_principal_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_version INTEGER NOT NULL CHECK(agent_version > 0),
+    agent_revision_digest TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    catalog_generation TEXT NOT NULL,
+    authority_fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('created','queued','running','cancelling','succeeded','failed','cancelled','expired')),
+    attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+    fencing_token TEXT,
+    lease_expires_at INTEGER,
+    output_digest TEXT,
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (owner_kind,owner_id,idempotency_key)
+);
+CREATE INDEX agent_tasks_owner_state ON agent_tasks(owner_kind,owner_id,state,task_id);
+CREATE TABLE agent_task_audit (
+    event_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    actor_principal_id TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES agent_tasks(task_id) ON DELETE CASCADE
+);
+";
+
+/// Secret-free Team credential bindings for Gateway loadouts.
+pub(super) const GATEWAY_CREDENTIAL_SCHEMA: &str = "
+CREATE TABLE gateway_team_credential_bindings (
+  binding_id TEXT PRIMARY KEY CHECK(length(trim(binding_id)) BETWEEN 1 AND 256),
+  team_id TEXT NOT NULL CHECK(length(trim(team_id)) BETWEEN 1 AND 256),
+  upstream_name TEXT NOT NULL CHECK(length(trim(upstream_name)) BETWEEN 1 AND 256),
+  custodian_principal_id TEXT NOT NULL
+    CHECK(length(trim(custodian_principal_id)) BETWEEN 1 AND 256),
+  generation INTEGER NOT NULL CHECK(generation > 0),
+  rotated_at_millis INTEGER NOT NULL CHECK(rotated_at_millis > 0),
+  status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+  revoked_at_millis INTEGER,
+  CHECK ((status = 'revoked') = (revoked_at_millis IS NOT NULL)),
+  UNIQUE(team_id, upstream_name)
+) STRICT;
+CREATE INDEX gateway_team_credential_bindings_team
+  ON gateway_team_credential_bindings(team_id,status,upstream_name);
+";
+
+/// Monotonic authority epochs for Principals and direct Project memberships.
+///
+/// They live beside the frozen domain tables and are maintained by triggers,
+/// so every mutation path (including raw statements) advances the epoch in
+/// the same transaction as the mutation. Display-label and timestamp edits do
+/// not change authority and therefore do not bump an epoch.
+pub(super) const AUTHORITY_EPOCH_SCHEMA: &str = "
+CREATE TABLE principal_epochs (
+    principal_id TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL CHECK(epoch > 0),
+    FOREIGN KEY (principal_id) REFERENCES principals(principal_id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE project_membership_epochs (
+    membership_id TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL CHECK(epoch > 0),
+    FOREIGN KEY (membership_id) REFERENCES project_memberships(membership_id) ON DELETE CASCADE
+) STRICT;
+CREATE TRIGGER principal_epochs_after_insert
+AFTER INSERT ON principals
+BEGIN
+  INSERT INTO principal_epochs(principal_id,epoch) VALUES(NEW.principal_id,1);
+END;
+CREATE TRIGGER principal_epochs_after_update
+AFTER UPDATE OF organization_id, kind, status ON principals
+BEGIN
+  UPDATE principal_epochs SET epoch=epoch+1 WHERE principal_id=NEW.principal_id;
+END;
+CREATE TRIGGER principal_epochs_after_link_update
+AFTER UPDATE OF status, link_generation, principal_id ON principal_links
+BEGIN
+  UPDATE principal_epochs SET epoch=epoch+1
+  WHERE principal_id IN (OLD.principal_id, NEW.principal_id);
+END;
+CREATE TRIGGER project_membership_epochs_after_insert
+AFTER INSERT ON project_memberships
+BEGIN
+  INSERT INTO project_membership_epochs(membership_id,epoch) VALUES(NEW.membership_id,1);
+END;
+CREATE TRIGGER project_membership_epochs_after_update
+AFTER UPDATE OF organization_id, project_id, principal_id, role, status ON project_memberships
+BEGIN
+  UPDATE project_membership_epochs SET epoch=epoch+1 WHERE membership_id=NEW.membership_id;
+END;
+";
+
+fn install_v7_expansion(connection: &Connection) -> AccessStoreResult<()> {
+    for schema in [
+        AUTHORITY_OUTBOX_SCHEMA,
+        AGENT_TASK_SCHEMA,
+        GATEWAY_CREDENTIAL_SCHEMA,
+        AUTHORITY_EPOCH_SCHEMA,
+    ] {
+        connection
+            .execute_batch(schema)
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    // Existing rows predate the epoch triggers; seed them at epoch 1 so the
+    // epoch tables are complete before any authority read joins against them.
+    connection
+        .execute_batch(
+            "INSERT INTO principal_epochs(principal_id,epoch)
+               SELECT principal_id,1 FROM principals
+               WHERE principal_id NOT IN (SELECT principal_id FROM principal_epochs);
+             INSERT INTO project_membership_epochs(membership_id,epoch)
+               SELECT membership_id,1 FROM project_memberships
+               WHERE membership_id NOT IN (SELECT membership_id FROM project_membership_epochs);",
+        )
+        .map_err(super::store::map_sqlite_error)
+}
+
+/// In-memory connection holding the exact current schema. Both integrity
+/// validation and migration tests compare manifests against this.
+pub(super) fn canonical_current_schema() -> AccessStoreResult<Connection> {
+    let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
+    for schema in [
+        SCHEMA_V2_METADATA,
+        DOMAIN_SCHEMA,
+        TEAM_AUTHORITY_SCHEMA,
+        super::dev_container::DEV_CONTAINER_SCHEMA,
+    ] {
+        connection
+            .execute_batch(schema)
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    install_v7_expansion(&connection)?;
+    Ok(connection)
 }
 
 pub(super) const DOMAIN_SCHEMA: &str = "
@@ -1236,51 +1630,6 @@ CREATE TABLE access_audit (
     FOREIGN KEY (organization_id, project_id)
       REFERENCES projects(organization_id, project_id) ON DELETE RESTRICT
 ) STRICT;
-
-CREATE TABLE authority_outbox_sequences (
-    organization_id TEXT PRIMARY KEY,
-    next_sequence INTEGER NOT NULL CHECK(next_sequence > 0),
-    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT
-) STRICT;
-
-CREATE TABLE authority_projection_outbox (
-    organization_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL CHECK(sequence > 0),
-    event_id TEXT NOT NULL UNIQUE,
-    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','inflight','sent')),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
-    next_attempt_at INTEGER NOT NULL DEFAULT 0,
-    envelope_digest TEXT,
-    created_at INTEGER NOT NULL,
-    sent_at INTEGER,
-    PRIMARY KEY (organization_id, sequence),
-    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE RESTRICT,
-    FOREIGN KEY (event_id) REFERENCES access_audit(event_id) ON DELETE RESTRICT
-) STRICT;
-CREATE INDEX authority_projection_outbox_delivery
-    ON authority_projection_outbox(status,next_attempt_at,organization_id,sequence);
-
-CREATE TRIGGER enqueue_authority_projection_after_audit
-AFTER INSERT ON access_audit
-WHEN NEW.decision='allow'
-BEGIN
-  INSERT OR IGNORE INTO authority_outbox_sequences(organization_id,next_sequence)
-  VALUES(NEW.organization_id,1);
-  INSERT INTO authority_projection_outbox(
-    organization_id,sequence,event_id,payload_json,status,attempt_count,next_attempt_at,created_at)
-  SELECT NEW.organization_id,next_sequence,NEW.event_id,
-    json_object('resource_type',NEW.target_kind,'resource_id',NEW.target_fingerprint,
-      'operation',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke'
-        OR NEW.action LIKE '%.delete' THEN 'delete' ELSE 'upsert' END,
-      'value',CASE WHEN NEW.action LIKE '%.remove' OR NEW.action LIKE '%.revoke'
-        OR NEW.action LIKE '%.delete' THEN NULL ELSE json_object('action',NEW.action,
-        'policy_epoch',NEW.policy_epoch,'metadata',json(NEW.metadata_json)) END),
-    'pending',0,0,NEW.occurred_at
-  FROM authority_outbox_sequences WHERE organization_id=NEW.organization_id;
-  UPDATE authority_outbox_sequences SET next_sequence=next_sequence+1
-  WHERE organization_id=NEW.organization_id;
-END;
 
 ";
 
@@ -1567,11 +1916,152 @@ mod credential_migration_tests {
         ));
     }
 
+    fn write_approval(
+        evidence_path: &Path,
+        checkpoint_path: &Path,
+        source_version: i64,
+        operation_id: &str,
+    ) {
+        let checkpoint_sha256 = sha256_file(checkpoint_path).unwrap();
+        std::fs::write(
+            evidence_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": "labby.access-migration-approval/v1",
+                "operation_id": operation_id,
+                "source_version": source_version,
+                "target_version": SCHEMA_VERSION,
+                "target_fingerprint": SCHEMA_FINGERPRINT,
+                "checkpoint_path": checkpoint_path,
+                "checkpoint_sha256": checkpoint_sha256,
+                "activate": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn every_legacy_version_is_gated_and_the_gate_runs_end_to_end() {
+        // Each supported legacy version is refused without evidence, before
+        // any transform runs; nothing crosses implicitly.
+        let fixtures: [(i64, fn() -> Connection); 4] = [
+            (V2_SCHEMA_VERSION, canonical_v2),
+            (V3_SCHEMA_VERSION, canonical_v3),
+            (V4_SCHEMA_VERSION, canonical_v4),
+            (V5_SCHEMA_VERSION, canonical_v5),
+        ];
+        for (version, fixture) in fixtures {
+            let mut connection = fixture();
+            assert!(matches!(
+                migrate_with_evidence(
+                    &mut connection,
+                    &MigrationEvidenceSource::Path(PathBuf::from("/nonexistent/approval.json"))
+                ),
+                Err(AccessStoreError::MigrationEvidenceInvalid { .. })
+            ));
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+        }
+
+        // End to end: a WAL-mode v5 store whose committed rows still live in
+        // its WAL (so its main file bytes differ from the consolidated
+        // checkpoint) migrates with a logically bound approval document, and
+        // the completion marker is published after commit.
+        let directory = super::super::test_support::secure_tempdir();
+        let database_path = directory.path().join("access.db");
+        let checkpoint_path = directory.path().join("access.checkpoint.db");
+        let evidence_path = directory.path().join("approval.json");
+        let source = production_shaped_v5();
+        snapshot_into(&source, &database_path);
+        drop(source);
+        let mut live = Connection::open(&database_path).unwrap();
+        live.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        live.execute(
+            "INSERT INTO projects VALUES('project-gamma','org-production','Gamma','active',1,300,300)",
+            [],
+        )
+        .unwrap();
+        // Consolidated checkpoint of the quiesced source (includes WAL frames).
+        snapshot_into(&live, &checkpoint_path);
+        assert_ne!(
+            sha256_file(&database_path).unwrap(),
+            sha256_file(&checkpoint_path).unwrap(),
+            "the WAL-diverged main file must not be required to match the checkpoint byte-for-byte"
+        );
+        assert!(matches!(
+            migrate_with_evidence(&mut live, &MigrationEvidenceSource::Environment),
+            Err(AccessStoreError::MigrationApprovalRequired { found: 5 })
+        ));
+        write_approval(
+            &evidence_path,
+            &checkpoint_path,
+            V5_SCHEMA_VERSION,
+            "gate-e2e",
+        );
+        live.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate_with_evidence(
+            &mut live,
+            &MigrationEvidenceSource::Path(evidence_path.clone()),
+        )
+        .unwrap();
+        super::super::integrity::validate(&live).unwrap();
+        let marker = std::fs::read_to_string(
+            database_path.with_extension(format!("migration-v{SCHEMA_VERSION}.state")),
+        )
+        .unwrap();
+        assert!(marker.starts_with("complete\noperation_id=gate-e2e\n"));
+        assert_eq!(
+            live.query_row("SELECT count(*) FROM projects", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+
+        // A checkpoint that does not logically match the live source is refused.
+        let other_directory = super::super::test_support::secure_tempdir();
+        let other_path = other_directory.path().join("access.db");
+        let stale_checkpoint = other_directory.path().join("stale.db");
+        let stale_evidence = other_directory.path().join("approval.json");
+        let source = production_shaped_v5();
+        snapshot_into(&source, &stale_checkpoint);
+        source
+            .execute(
+                "INSERT INTO projects VALUES('project-delta','org-production','Delta','active',1,301,301)",
+                [],
+            )
+            .unwrap();
+        snapshot_into(&source, &other_path);
+        drop(source);
+        let mut diverged = Connection::open(&other_path).unwrap();
+        write_approval(
+            &stale_evidence,
+            &stale_checkpoint,
+            V5_SCHEMA_VERSION,
+            "stale",
+        );
+        assert!(matches!(
+            migrate_with_evidence(&mut diverged, &MigrationEvidenceSource::Path(stale_evidence)),
+            Err(AccessStoreError::MigrationEvidenceInvalid { reason })
+                if reason.contains("logically")
+        ));
+        assert_eq!(
+            diverged
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            V5_SCHEMA_VERSION
+        );
+    }
+
     #[test]
     fn fresh_database_contains_bounded_credential_schema() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
         super::super::integrity::validate(&connection).unwrap();
 
         assert_eq!(
@@ -1602,7 +2092,7 @@ mod credential_migration_tests {
     #[test]
     fn canonical_v2_upgrades_atomically_and_preserves_metadata() {
         let mut connection = canonical_v2();
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
         super::super::integrity::validate(&connection).unwrap();
         let metadata = connection
             .query_row(
@@ -1630,14 +2120,8 @@ mod credential_migration_tests {
     #[test]
     fn canonical_v3_upgrades_atomically_with_empty_policy_epoch_registry() {
         let mut connection = canonical_v3();
-        migrate(&mut connection).unwrap();
-        let canonical = Connection::open_in_memory().unwrap();
-        canonical.execute_batch(SCHEMA_V2_METADATA).unwrap();
-        canonical.execute_batch(DOMAIN_SCHEMA).unwrap();
-        canonical.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
-        canonical
-            .execute_batch(super::super::dev_container::DEV_CONTAINER_SCHEMA)
-            .unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        let canonical = canonical_current_schema().unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&canonical).unwrap()
@@ -1665,14 +2149,8 @@ mod credential_migration_tests {
     #[test]
     fn canonical_v4_adds_bounded_security_tables_atomically() {
         let mut connection = canonical_v4();
-        migrate(&mut connection).unwrap();
-        let expected = Connection::open_in_memory().unwrap();
-        expected.execute_batch(SCHEMA_V2_METADATA).unwrap();
-        expected.execute_batch(DOMAIN_SCHEMA).unwrap();
-        expected.execute_batch(TEAM_AUTHORITY_SCHEMA).unwrap();
-        expected
-            .execute_batch(super::super::dev_container::DEV_CONTAINER_SCHEMA)
-            .unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        let expected = canonical_current_schema().unwrap();
         assert_eq!(
             schema_manifest(&connection).unwrap(),
             schema_manifest(&expected).unwrap()
@@ -1711,7 +2189,7 @@ mod credential_migration_tests {
             .pragma_update(None, "user_version", V6_SCHEMA_VERSION)
             .unwrap();
 
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
 
         super::super::integrity::validate(&connection).unwrap();
         assert_eq!(
@@ -1764,7 +2242,7 @@ mod credential_migration_tests {
         connection.execute("INSERT INTO access_audit VALUES('bootstrap-owner-audit',100,NULL,'bootstrap-owner','bootstrap-local','bootstrap-default','access.bootstrap_owner','project',?1,'allow','explicit_owner_bootstrap',0,'{}')", [&fingerprint]).unwrap();
         connection.execute("UPDATE access_metadata SET global_revision=1,bootstrap_generation=1,bootstrap_identity_fingerprint=?1,updated_at=100", [&fingerprint]).unwrap();
 
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
         super::super::integrity::validate(&connection).unwrap();
         assert_eq!(
             connection
@@ -1856,7 +2334,7 @@ mod credential_migration_tests {
 
         let mut migrated = Connection::open(&source_path).unwrap();
         migrated.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        migrate(&mut migrated).unwrap();
+        migrate_with_evidence(&mut migrated, &MigrationEvidenceSource::UnitFixture).unwrap();
         super::super::integrity::validate(&migrated).unwrap();
         assert_eq!(
             migrated
@@ -1921,7 +2399,7 @@ mod credential_migration_tests {
         std::fs::copy(&checkpoint_path, &migrated_path).unwrap();
         let mut migrated = Connection::open(&migrated_path).unwrap();
         migrated.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        migrate(&mut migrated).unwrap();
+        migrate_with_evidence(&mut migrated, &MigrationEvidenceSource::UnitFixture).unwrap();
         super::super::integrity::validate(&migrated).unwrap();
         drop(migrated);
 
@@ -1947,7 +2425,7 @@ mod credential_migration_tests {
             .unwrap();
         let malformed_before = logical_inventory(&malformed);
         assert!(matches!(
-            migrate(&mut malformed),
+            migrate_with_evidence(&mut malformed, &MigrationEvidenceSource::UnitFixture),
             Err(AccessStoreError::IntegrityViolation {
                 check: "schema_manifest"
             })
@@ -1964,7 +2442,7 @@ mod credential_migration_tests {
         let read_only_before = logical_inventory(&read_only);
         read_only.execute_batch("PRAGMA query_only=ON;").unwrap();
         assert!(matches!(
-            migrate(&mut read_only),
+            migrate_with_evidence(&mut read_only, &MigrationEvidenceSource::UnitFixture),
             Err(AccessStoreError::ReadOnly)
         ));
         assert_eq!(logical_inventory(&read_only), read_only_before);
@@ -1981,7 +2459,7 @@ mod credential_migration_tests {
         let mut connection = canonical_v3();
         connection.execute_batch("DROP INDEX project_credentials_authority; CREATE INDEX project_credentials_authority ON project_credentials(project_id);").unwrap();
         assert!(matches!(
-            migrate(&mut connection),
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture),
             Err(AccessStoreError::IntegrityViolation {
                 check: "schema_manifest"
             })
@@ -2000,7 +2478,7 @@ mod credential_migration_tests {
         let path = directory.path().join("access.db");
         let mut connection = Connection::open(&path).unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
         drop(connection);
 
         let reopened = Connection::open(path).unwrap();
@@ -2013,7 +2491,7 @@ mod credential_migration_tests {
         let mut connection = canonical_v2();
         connection.execute_batch("DROP INDEX principal_links_local_unique; CREATE INDEX principal_links_local_unique ON principal_links(credential_id);").unwrap();
         assert!(matches!(
-            migrate(&mut connection),
+            migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture),
             Err(AccessStoreError::IntegrityViolation {
                 check: "schema_manifest"
             })
@@ -2043,7 +2521,7 @@ mod credential_migration_tests {
     fn digest_status_and_attempt_constraints_fail_closed() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        migrate(&mut connection).unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
         let short_digest = vec![0_u8; 31];
         assert!(
             connection
@@ -2069,6 +2547,52 @@ mod credential_migration_tests {
                     [],
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn migration_classifies_existing_rows_as_installation_or_bootstrap_personal_never_team() {
+        let mut connection = production_shaped_v5();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+        super::super::integrity::validate(&connection).unwrap();
+        // The production-shaped v5 fixture has bootstrap generation 0: no
+        // bootstrap Principal exists, so no platform administrator or Team is
+        // seeded and no pre-existing Project is assigned to any Team.
+        let (administrators, teams, memberships, assignments): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM platform_administrators),
+                        (SELECT count(*) FROM groups),
+                        (SELECT count(*) FROM team_memberships),
+                        (SELECT count(*) FROM team_project_assignments)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (administrators, teams, memberships, assignments),
+            (0, 0, 0, 0)
+        );
+        // Direct Project memberships survive as-is and receive epoch 1.
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM project_memberships m JOIN project_membership_epochs e ON e.membership_id=m.membership_id WHERE e.epoch=1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM principals p JOIN principal_epochs e ON e.principal_id=p.principal_id WHERE e.epoch=1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
         );
     }
 }

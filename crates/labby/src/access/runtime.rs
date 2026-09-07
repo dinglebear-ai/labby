@@ -274,6 +274,18 @@ impl AccessRuntime {
         }
     }
 
+    /// Test-only runtime pinned to one blocked reason, for adapters that must
+    /// prove their typed store-failure mapping without a real store.
+    #[cfg(test)]
+    pub(crate) fn blocked_for_test(reason: AccessBlockedReason) -> Self {
+        let runtime = Self::blocked_unavailable();
+        *runtime
+            .state
+            .try_lock()
+            .expect("fresh runtime state is unlocked") = RuntimeState::Blocked(reason);
+        runtime
+    }
+
     pub(crate) async fn initialize(path: PathBuf) -> Self {
         let mut state = observe_state(&path).await;
         for _ in 0..20 {
@@ -851,6 +863,8 @@ fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
         | AccessStoreError::InvalidBootstrapInput
         | AccessStoreError::InvalidTeamInput
         | AccessStoreError::TeamUnavailable
+        | AccessStoreError::TeamCredentialBindingUnavailable
+        | AccessStoreError::ProjectionWatermarkRegressed
         | AccessStoreError::LastActiveTeamOwner
         | AccessStoreError::IdentityUnavailable
         | AccessStoreError::ProjectAccessUnavailable
@@ -1061,11 +1075,16 @@ mod tests {
         );
         drop(connection);
 
+        // A legacy schema is never crossed implicitly, not even by bootstrap:
+        // the operator must supply LABBY_ACCESS_MIGRATION_EVIDENCE first.
+        assert!(runtime.bootstrap_owner(input()).await.is_err());
+        let connection = rusqlite::Connection::open(&path).unwrap();
         assert_eq!(
-            runtime.bootstrap_owner(input()).await.unwrap(),
-            BootstrapOutcome::Created
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::super::migrations::V1_SCHEMA_VERSION
         );
-        assert_eq!(runtime.status().await, AccessRuntimeStatus::Ready);
     }
 
     #[tokio::test]

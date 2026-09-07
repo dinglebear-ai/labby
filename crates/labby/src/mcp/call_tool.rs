@@ -1523,7 +1523,6 @@ impl LabMcpServer {
         }
 
         if let Some(entry) = svc
-            && !gateway_team_policy_bypasses_admin_gate(&service, &action)
             && !tool_execute_builtin_action_allowed(
                 entry,
                 &action,
@@ -1608,56 +1607,76 @@ impl LabMcpServer {
                 let bound_installation_id =
                     crate::mcp::context::bound_access_grant_from_extensions(&context.extensions)
                         .map(|grant| grant.installation_id.clone());
-                match (identity, self.access_runtime.store().await) {
-                    (Some(identity), Ok(store)) => {
-                        let ceiling = auth.map_or_else(
-                            crate::access::AuthorityCeiling::trusted_local,
-                            crate::access::AuthorityCeiling::from_auth_context,
-                        );
-                        let installation_id = match bound_installation_id {
-                            Some(value) => value,
-                            None if identity.authenticator()
-                                == labby_auth::Authenticator::StaticBearer =>
-                            {
-                                store
-                                    .installation_id()
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                    .unwrap_or_default()
-                            }
-                            None => String::new(),
-                        };
-                        if installation_id.is_empty()
-                            && matches!(
-                                action.as_str(),
-                                "access.team.create"
-                                    | "access.platform_admin.grant"
-                                    | "access.platform_admin.revoke"
-                            )
-                        {
-                            Err(ToolError::Sdk {
-                                sdk_kind: "service_unavailable".to_owned(),
-                                message: "installation-bound access administration is unavailable"
-                                    .to_owned(),
-                            })
-                        } else {
-                            crate::dispatch::access::dispatch(
-                                crate::dispatch::access::AccessDispatchContext {
-                                    store,
-                                    identity,
-                                    ceiling,
-                                    installation_id,
-                                    #[cfg(feature = "gateway")]
-                                    gateway_manager: self.gateway_manager.clone(),
-                                },
-                                &action,
-                                params,
-                            )
-                            .await
+                match identity {
+                    Some(identity) => {
+                        // Store lifecycle failures are typed outages, never
+                        // authorization decisions.
+                        match self.access_runtime.store().await {
+                            Ok(store) => match self.caller_ceiling(auth) {
+                                Some(ceiling) => {
+                                    let installation_id = match bound_installation_id {
+                                        Some(value) => value,
+                                        None if identity.authenticator()
+                                            == labby_auth::Authenticator::StaticBearer =>
+                                        {
+                                            match store.installation_id().await {
+                                                Ok(value) => value.unwrap_or_default(),
+                                                Err(error) => {
+                                                    tracing::warn!(
+                                                        surface = "mcp",
+                                                        service = %service,
+                                                        action = %action,
+                                                        cause = %error,
+                                                        kind = "service_unavailable",
+                                                        "installation identity lookup failed"
+                                                    );
+                                                    String::new()
+                                                }
+                                            }
+                                        }
+                                        None => String::new(),
+                                    };
+                                    if installation_id.is_empty()
+                                        && crate::dispatch::access::required_capability(&action)
+                                            .is_some_and(
+                                                labby_primitives::access::Capability::is_platform,
+                                            )
+                                    {
+                                        Err(ToolError::Sdk {
+                                                sdk_kind: "service_unavailable".to_owned(),
+                                                message:
+                                                    "installation-bound access administration is unavailable"
+                                                        .to_owned(),
+                                            })
+                                    } else {
+                                        crate::dispatch::access::dispatch(
+                                            crate::dispatch::access::AccessDispatchContext {
+                                                store,
+                                                identity,
+                                                ceiling,
+                                                installation_id,
+                                                #[cfg(feature = "gateway")]
+                                                gateway_manager: self.gateway_manager.clone(),
+                                            },
+                                            &action,
+                                            params,
+                                        )
+                                        .await
+                                    }
+                                }
+                                None => Err(ToolError::Forbidden {
+                                    message:
+                                        "access administration requires host-established identity"
+                                            .to_owned(),
+                                    required_scopes: Vec::new(),
+                                }),
+                            },
+                            Err(error) => Err(crate::dispatch::access_errors::map_runtime_error(
+                                "access", error,
+                            )),
                         }
                     }
-                    _ => Err(ToolError::Forbidden {
+                    None => Err(ToolError::Forbidden {
                         message: "access administration requires host-established identity"
                             .to_owned(),
                         required_scopes: Vec::new(),
@@ -1668,12 +1687,8 @@ impl LabMcpServer {
                 let identity =
                     crate::mcp::context::verified_identity_from_extensions(&context.extensions)
                         .cloned();
-                match identity {
-                    Some(identity) => {
-                        let ceiling = auth.map_or_else(
-                            crate::access::AuthorityCeiling::trusted_local,
-                            crate::access::AuthorityCeiling::from_auth_context,
-                        );
+                match (identity, self.caller_ceiling(auth)) {
+                    (Some(identity), Some(ceiling)) => {
                         crate::dispatch::dev_containers::dispatch(
                             crate::dispatch::dev_containers::DevContainerDispatchContext {
                                 access_runtime: Arc::clone(&self.access_runtime),
@@ -1685,7 +1700,7 @@ impl LabMcpServer {
                         )
                         .await
                     }
-                    None => Err(ToolError::Forbidden {
+                    _ => Err(ToolError::Forbidden {
                         message: "Dev Container operation is not authorized".to_owned(),
                         required_scopes: Vec::new(),
                     }),
@@ -1732,15 +1747,6 @@ impl LabMcpServer {
                     let identity =
                         crate::mcp::context::verified_identity_from_extensions(&context.extensions)
                             .cloned();
-                    let team_id = params
-                        .get("team_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .or_else(|| {
-                            cfg!(debug_assertions)
-                                .then(|| std::env::var("LABBY_E2E_TEAM_ID").ok())
-                                .flatten()
-                        });
                     let Some(identity) = identity else {
                         return Ok(error_result_from_envelope(build_error(
                             &service,
@@ -1750,37 +1756,138 @@ impl LabMcpServer {
                         ))
                         .into());
                     };
-                    let trusted_auth;
-                    let auth = if let Some(auth) = auth {
-                        auth
-                    } else {
-                        trusted_auth = labby_auth::auth_context::AuthContext {
-                            sub: "trusted-local".into(),
-                            actor_key: None,
-                            scopes: vec!["lab:admin".into()],
-                            issuer: "local".into(),
-                            via_session: false,
-                            csrf_token: None,
-                            email: None,
-                        };
-                        &trusted_auth
+                    // A protected route bound to a Team Loadout is the
+                    // authoritative selector; `params.team_id` may only
+                    // agree with it. Root/unbound routes take the parameter.
+                    let requested_team_id = params
+                        .get("team_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let team_id = match (self.route_scope.bound_team_id(), requested_team_id) {
+                        (Some(bound), Some(requested)) if requested != bound => {
+                            tracing::warn!(
+                                surface = "mcp",
+                                service = %service,
+                                action = %action,
+                                kind = "invalid_param",
+                                "team_id parameter disagrees with the route's bound Team"
+                            );
+                            return Ok(error_result_from_envelope(build_error_extra(
+                                &service,
+                                &action,
+                                "invalid_param",
+                                "team_id must match the Team bound to this route",
+                                &serde_json::json!({ "param": "team_id" }),
+                            ))
+                            .into());
+                        }
+                        (Some(bound), _) => Some(bound.to_owned()),
+                        (None, requested) => requested,
                     };
-                    if crate::access::authorize_gateway_action(
+                    // Absent auth is trusted only on transports that imply
+                    // local stdio; everywhere else it is a denial.
+                    let trusted_auth;
+                    let auth = match (auth, self.absent_auth_trust()) {
+                        (Some(auth), _) => auth,
+                        (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
+                            // AREA-A-PENDING: authorize_gateway_action taking an
+                            // AuthorityCeiling instead of an AuthContext; until
+                            // then trusted local stdio is expressed as the
+                            // equivalent lab:admin transport context.
+                            trusted_auth = labby_auth::auth_context::AuthContext {
+                                sub: "trusted-local".into(),
+                                actor_key: None,
+                                scopes: vec!["lab:admin".into()],
+                                issuer: "local".into(),
+                                via_session: false,
+                                csrf_token: None,
+                                email: None,
+                            };
+                            &trusted_auth
+                        }
+                        (None, crate::mcp::context::AbsentAuth::Untrusted) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "forbidden",
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
+                    // Installation-scoped platform actions authorize against the
+                    // real installation id, as HTTP does; a store outage is a
+                    // typed unavailability, never a silent denial.
+                    let store = match self.access_runtime.store().await {
+                        Ok(store) => store,
+                        Err(error) => {
+                            let mapped =
+                                crate::dispatch::access_errors::map_runtime_error("gateway", error);
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                mapped.kind(),
+                                "Gateway authority store is unavailable",
+                            ))
+                            .into());
+                        }
+                    };
+                    let installation_id = match store.installation_id().await {
+                        Ok(Some(installation_id)) => installation_id,
+                        // No installation binding yet: the evaluator authorizes
+                        // installation scope on platform-administrator status,
+                        // so the placeholder only names the resource (as HTTP).
+                        Ok(None) => "installation".to_owned(),
+                        Err(error) => {
+                            tracing::warn!(
+                                surface = "mcp",
+                                service = %service,
+                                action = %action,
+                                cause = %error,
+                                kind = "service_unavailable",
+                                "installation identity lookup failed"
+                            );
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "service_unavailable",
+                                "Gateway authority store is unavailable",
+                            ))
+                            .into());
+                        }
+                    };
+                    if let Err(error) = crate::access::authorize_gateway_action(
                         &self.access_runtime,
                         identity,
                         auth,
-                        "installation",
+                        &installation_id,
                         team_id.as_deref(),
                         &action,
                     )
                     .await
-                    .is_err()
                     {
                         return Ok(error_result_from_envelope(build_error(
                             &service,
                             &action,
-                            "forbidden",
+                            error.kind(),
                             "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    }
+                    if let Some(team_id) = team_id.as_deref()
+                        && crate::dispatch::gateway::team_scoped_gateway_action(&action)
+                        && let Err(error) =
+                            crate::dispatch::gateway::validate_team_scoped_upstream_references(
+                                &store, team_id, &action, &params,
+                            )
+                            .await
+                    {
+                        return Ok(error_result_from_envelope(build_error_extra(
+                            &service,
+                            &action,
+                            error.kind(),
+                            "team-scoped gateway policy may only reference upstreams with an active Team credential binding",
+                            &serde_json::json!({ "param": "upstreams" }),
                         ))
                         .into());
                     }
@@ -1826,10 +1933,15 @@ impl LabMcpServer {
                         ))
                         .await;
                     response.map(|mut response| {
-                        crate::access::filter_team_gateway_projection(
-                            team_id.as_deref(),
-                            &mut response,
-                        );
+                        // Only Team-scoped policy responses are projected
+                        // through the Team namespace; platform responses stay
+                        // complete for an administrator with a Team selected.
+                        if crate::dispatch::gateway::team_scoped_gateway_action(&action) {
+                            crate::access::filter_team_gateway_projection(
+                                team_id.as_deref(),
+                                &mut response,
+                            );
+                        }
                         response
                     })
                 }
@@ -2023,16 +2135,6 @@ impl LabMcpServer {
             )),
         }
     }
-}
-
-#[cfg(feature = "gateway")]
-fn gateway_team_policy_bypasses_admin_gate(service: &str, action: &str) -> bool {
-    service == "gateway" && !crate::access::gateway_transport_requires_admin(action)
-}
-
-#[cfg(not(feature = "gateway"))]
-const fn gateway_team_policy_bypasses_admin_gate(_service: &str, _action: &str) -> bool {
-    false
 }
 
 #[cfg(not(feature = "gateway"))]

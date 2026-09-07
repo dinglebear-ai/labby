@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-06
+updated: 2026-09-07
 ---
 
 # Depot control-plane compatibility contract
@@ -24,22 +24,40 @@ scope fields.
 Depot advertises exactly one mode. In `standalone`, it owns local principals,
 Teams, policy, and recovery and rejects Labby delegated assertions. In
 `labby_managed`, local Team mutations are disabled and Depot accepts only its
-explicitly paired Labby issuer. Pair, unpair, and local recovery are physical
+explicitly paired Labby issuer. Labby configuration and documentation spell the
+managed mode `labby_managed`; Depot's `DEPOT_OPERATING_MODE` environment value
+uses a hyphen (`labby-managed`), and Depot accepts both spellings. Pair, unpair,
+and local recovery are physical
 or loopback operator ceremonies with generation changes and audit evidence;
 they do not create two simultaneous command authorities.
 
 Managed Depot consumes a signed ordered projection using a transactional Labby
-outbox and durable Depot inbox. It acknowledges only a contiguous sequence.
-Duplicates are idempotent; gaps, tombstone loss, schema incompatibility,
-signature failure, and tenant mismatch block Team operations until bounded
-snapshot-plus-tail resynchronization succeeds.
+outbox and durable Depot inbox. v1 projection is snapshot-only: every pending
+authority change is delivered as a complete signed snapshot of the
+Organization bound to Depot's watermark, and an idle Organization is kept live
+by a signed `heartbeat` envelope at least every 60 seconds (no records,
+sequence pinned to the acknowledged watermark, chained to the last accepted
+digest). Depot acknowledges only a contiguous sequence and updates freshness
+on heartbeats. Duplicates are idempotent; gaps, tombstone loss, schema
+incompatibility, signature failure, and tenant mismatch block Team operations
+until snapshot resynchronization succeeds. Envelopes are signed over the
+canonical JSON of every field except `signature` (sorted keys, compact,
+integers only); see the authority contract for the profile.
 
 The release denominator is the joint pair of checked manifests:
 [`compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
 defines the authenticated exact-import and Administration contract, while
 [`compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
 defines federated discovery. Both must pass `just docs-check`. A UI action is available only when its required
-operation and contract fingerprint are present. Administration renders Depot's
+operation and contract fingerprint are present. Every public operation carries
+`contractVersion` (integer `1`) and `schemaFingerprint`: 64 lowercase hex
+characters, the SHA-256 of the canonical JSON of that operation's
+`inputSchema` alone (sorted keys, no insignificant whitespace, UTF-8 without
+ASCII escaping). Labby checks three-way agreement before executing: the
+declared fingerprint, the fingerprint it recomputes from the served
+`inputSchema`, and the constant it was built against
+(`docs/contracts/fixtures/depot-control-plane/operations-v1.json` is the
+golden catalog). Administration renders Depot's
 published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
 cardinality limits, authority states, fingerprint binding, and fail-closed
 `incompatible` behavior are machine-readable in compatibility-v1. Missing, oversized, or unknown required contracts
@@ -86,6 +104,21 @@ consumption and the result, returns the same result for an identical retry, and
 rejects a changed replay. An ambiguous result remains `indeterminate` until
 reconciled by intent. Read retry is allowed only while the entire authority
 vector remains current.
+
+Body binding for `POST /api/operations/{op}`: `content_digest` is
+`sha256:` plus the lowercase hex SHA-256 of the exact request body bytes and
+`content_length` is their byte count; Labby sends exactly those bytes, and the
+two claims are always present together (uploads bind the same way).
+
+Exact-artifact reads (`/api/artifacts/exact`, `/api/artifacts/acquire`,
+`/api/artifacts/components/{...}`) carry a delegated read assertion per
+request: `method` is the HTTP method Labby actually sends for that route,
+`resource` is the request path without its query string, `operation` is the
+name Depot's route enforces (`depot.artifacts.exact`,
+`depot.artifacts.acquire`, `depot.artifacts.component`), and `intent_id` is a
+fresh `idempotency-key` header value. Read assertions carry no content
+claims. The runtime acquisition transport reports method and path to a
+host-supplied header provider and never signs anything itself.
 
 ## Operational surface
 

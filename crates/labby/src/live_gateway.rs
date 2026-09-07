@@ -15,7 +15,18 @@
 //! detection is opportunistic: it tries the local bind address first, then the
 //! gateway's configured public URLs (`LABBY_MCP_GATEWAY_URL`,
 //! `LABBY_PUBLIC_URL`). Only exhaustion of that bounded candidate walk permits
-//! standalone local behavior.
+//! standalone local behavior, and only for the few paths that still have one
+//! (stdio MCP serving, `gateway code exec`, `gateway list`). Gateway *actions*
+//! dispatched from the CLI fail closed with `daemon_unavailable` when no daemon
+//! is reachable: they may be scoped by the daemon's authenticated caller and
+//! selected Team, and a one-shot local manager has neither.
+//!
+//! Team-scoped actions (`gateway.loadout.*`, `gateway.protected_route.*`, ...)
+//! carry the Team selected with the global `--team-id` CLI flag as the
+//! `x-labby-team-id` request header; see [`LiveGateway::with_team_id`]. The
+//! header is attached to every [`LiveGateway::dispatch_action`] call when a
+//! Team is selected, and the daemon decides which actions honor it. No
+//! environment variable selects a Team.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -58,6 +69,9 @@ pub struct LiveGateway {
     explicit: bool,
     source: &'static str,
     token: Option<String>,
+    /// Team authority selected by the caller (`--team-id`), sent as the
+    /// `x-labby-team-id` header on every action dispatch.
+    team_id: Option<String>,
     client: reqwest::Client,
     dispatch_timeout: Duration,
     actions: Option<BTreeSet<String>>,
@@ -681,10 +695,29 @@ impl LiveGateway {
             explicit,
             source,
             token,
+            team_id: None,
             client,
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
             actions,
         }
+    }
+
+    /// Select the Team authority context for subsequent action dispatches.
+    ///
+    /// When `Some`, every [`Self::dispatch_action`] request carries the value
+    /// as the `x-labby-team-id` header. The daemon decides which actions honor
+    /// the header; it is harmless on actions that ignore it. `None` clears a
+    /// previously selected Team.
+    #[must_use]
+    pub fn with_team_id(mut self, team_id: Option<String>) -> Self {
+        self.team_id = team_id;
+        self
+    }
+
+    /// The Team authority selected with [`Self::with_team_id`], if any.
+    #[must_use]
+    pub fn team_id(&self) -> Option<&str> {
+        self.team_id.as_deref()
     }
 
     #[must_use]
@@ -867,6 +900,9 @@ impl LiveGateway {
     /// action route (`POST /v1/gateway`) -- the same `{action, params}`
     /// shape MCP and the CLI's own local dispatch already use, so this
     /// needs no per-action endpoint mapping.
+    ///
+    /// A Team selected with [`Self::with_team_id`] is sent as the
+    /// `x-labby-team-id` header regardless of the action.
     pub async fn dispatch_action(&self, action: &str, params: Value) -> Result<Value, ToolError> {
         let mut request = self
             .client
@@ -882,11 +918,7 @@ impl LiveGateway {
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
-        if cfg!(debug_assertions)
-            && (action.starts_with("gateway.loadout.")
-                || action.starts_with("gateway.protected_route."))
-            && let Ok(team_id) = std::env::var("LABBY_E2E_TEAM_ID")
-        {
+        if let Some(team_id) = &self.team_id {
             request = request.header("x-labby-team-id", team_id);
         }
 
@@ -1145,6 +1177,7 @@ mod tests {
             explicit: false,
             source: "test",
             token,
+            team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -1626,6 +1659,73 @@ mod tests {
             .dispatch_action("gateway.list", serde_json::json!({}))
             .await
             .expect("dispatch should succeed");
+        assert_eq!(result, serde_json::json!({ "ok": true }));
+    }
+
+    /// wiremock has no "header absent" matcher; this asserts the negative.
+    struct HeaderAbsent(&'static str);
+
+    impl wiremock::Match for HeaderAbsent {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            !request.headers.contains_key(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_sends_selected_team_header_for_any_action() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(header("x-labby-team-id", "team-alpha"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })),
+            )
+            .mount(&server)
+            .await;
+
+        let gateway = test_gateway(server.uri(), None).with_team_id(Some("team-alpha".to_string()));
+        assert_eq!(gateway.team_id(), Some("team-alpha"));
+        for action in [
+            "gateway.loadout.list",
+            "gateway.protected_route.list",
+            "gateway.list",
+        ] {
+            let result = gateway
+                .dispatch_action(action, serde_json::json!({}))
+                .await
+                .unwrap_or_else(|error| panic!("{action} should carry the team header: {error}"));
+            assert_eq!(result, serde_json::json!({ "ok": true }));
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_omits_team_header_when_no_team_is_selected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(HeaderAbsent("x-labby-team-id"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })),
+            )
+            .mount(&server)
+            .await;
+
+        let gateway = test_gateway(server.uri(), None);
+        assert_eq!(gateway.team_id(), None);
+        let result = gateway
+            .dispatch_action("gateway.loadout.list", serde_json::json!({}))
+            .await
+            .expect("dispatch without a selected team must not send the header");
+        assert_eq!(result, serde_json::json!({ "ok": true }));
+
+        let cleared = gateway
+            .with_team_id(Some("team-alpha".to_string()))
+            .with_team_id(None);
+        assert_eq!(cleared.team_id(), None);
+        let result = cleared
+            .dispatch_action("gateway.loadout.list", serde_json::json!({}))
+            .await
+            .expect("clearing the selected team must drop the header");
         assert_eq!(result, serde_json::json!({ "ok": true }));
     }
 

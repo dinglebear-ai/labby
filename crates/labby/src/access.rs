@@ -19,7 +19,8 @@ mod integrity;
 mod loadout;
 mod migrations;
 mod outbox;
-pub(crate) use outbox::PendingProjection;
+#[allow(unused_imports)]
+pub(crate) use outbox::{AuthorityAcknowledgement, OrganizationDelivery, PendingProjection};
 #[cfg(test)]
 pub(crate) mod migration_fixture {
     pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;
@@ -37,7 +38,7 @@ pub(crate) use task::TaskRecord;
 mod team;
 pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod workflow;
 
 /// Durable principal identity resolved from a live [`labby_auth::PrincipalLink`]
@@ -96,8 +97,12 @@ pub(crate) use credential_verifier::{
     AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
     LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
 };
+#[allow(unused_imports)]
 pub(crate) use dev_container::{
-    RecoveryRecord, create_approved_for_store, recovery_inventory_for_store, set_desired_for_store,
+    DevContainerLedgerError, DevContainerStorageFailure, RecoveryRecord,
+    authorize_and_set_dev_container_desired_state, create_approved_for_store,
+    lookup_dev_container_for_store, recovery_inventory_for_store, set_desired_for_store,
+    set_observed_for_store,
 };
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};

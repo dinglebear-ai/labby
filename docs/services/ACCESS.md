@@ -1,7 +1,7 @@
 ---
 title: "Access Owner Bootstrap"
 created: "2026-08-23"
-updated: "2026-08-23"
+updated: "2026-09-07"
 ---
 
 # Access Owner Bootstrap
@@ -47,6 +47,31 @@ Success is intentionally redacted:
 The response never returns Principal IDs, provider subjects, identity fingerprints, policy rows, or database details. All handler responses use `Cache-Control: private, no-store` and the canonical agent error envelope; authentication and CSRF rejections retain the shared auth-middleware envelope. A missing or invalid browser session returns `401`; a missing or invalid CSRF token, malformed JSON, or invalid name returns `422`; authorization failures return `403`; conflicts return `409`; unavailable, busy, or integrity-failing storage returns `503`. When OAuth browser mode is absent, the route is not mounted and the ordinary router fallback returns `404` before request-body validation.
 
 Setup and doctor inspect access-store health read-only. They do not call this endpoint or silently bootstrap/repair authorization state.
+
+## Projects
+
+The registered `projects` service owns Team-scoped Project lifecycle. It is a
+distinct multi-surface service, unlike the bootstrap route above. Its actions
+are `projects.list`, `projects.create`, `projects.get`, `projects.update`, and
+`projects.archive`, exposed over authenticated HTTP at `POST /v1/projects` with
+the shared `action` plus `params` envelope and as the `projects` MCP tool.
+
+Every action runs as the verified Principal; `team_id` and `project_id` params
+select the context and never establish authority:
+
+- `projects.list` returns the Projects assigned to Teams where the caller holds
+  an active membership. A platform administrator sees every active assignment.
+- `projects.get` requires active membership in the named Team.
+- `projects.create`, `projects.update`, and `projects.archive` require a Team
+  manager: an active `owner` or `admin` Team membership, or platform
+  administration. Creating a Project assigns it to the Team with the `admin`
+  assignment role.
+- Absent and unauthorized Team or Project identifiers return the same
+  non-enumerating `forbidden` denial.
+
+`projects.archive` sets the Project to `disabled` and advances its policy
+epoch. It is classified `destructive` because there is no un-archive action
+yet; an archived Project is not restorable through this service.
 
 ## Related docs
 

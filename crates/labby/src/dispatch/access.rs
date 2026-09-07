@@ -22,64 +22,91 @@ use crate::{
     dispatch::error::ToolError,
 };
 
-pub const ACTIONS: &[ActionSpec] = &[
-    action(
-        "access.team.create",
-        "Create a team",
-        &[string("team_id"), string("name")],
-    ),
-    action("access.team.list", "List the caller's teams", &[]),
-    action(
-        "access.team.member.add",
-        "Add a team member",
-        &[string("team_id"), string("principal_id"), string("role")],
-    ),
-    action(
-        "access.team.member.role.set",
-        "Change a team member role",
-        &[string("team_id"), string("principal_id"), string("role")],
-    ),
-    action(
-        "access.team.member.suspend",
-        "Suspend a team member",
-        &[string("team_id"), string("principal_id")],
-    ),
-    action(
-        "access.team.member.remove",
-        "Remove a team member",
-        &[string("team_id"), string("principal_id")],
-    ),
-    action(
-        "access.team.suspend",
-        "Suspend a team",
-        &[string("team_id")],
-    ),
-    action(
-        "access.team.activate",
-        "Activate a team",
-        &[string("team_id")],
-    ),
-    action(
-        "access.team_invitation.create",
-        "Create a team invitation",
+/// Shared action catalog. The Team Gateway credential actions exist only with
+/// the `gateway` feature, so their specs are compiled out together with their
+/// dispatch arms instead of advertising actions that can never execute.
+macro_rules! access_actions {
+    ($($gateway_only:expr),* $(,)?) => {
         &[
-            string("team_id"),
-            string("principal_id"),
-            string("role"),
-            string("token"),
-            integer("ttl_seconds"),
-        ],
-    ),
-    action(
-        "access.team_invitation.accept",
-        "Accept a team invitation",
-        &[string("token")],
-    ),
-    action(
-        "access.team_project.assign",
-        "Assign a team to a project",
-        &[string("team_id"), string("project_id"), string("role")],
-    ),
+            admin_action(
+                "access.team.create",
+                "Create a team",
+                &[string("team_id"), string("name")],
+            ),
+            action("access.team.list", "List the caller's teams", &[]),
+            action(
+                "access.team.member.add",
+                "Add a team member",
+                &[string("team_id"), string("principal_id"), string("role")],
+            ),
+            action(
+                "access.team.member.role.set",
+                "Change a team member role",
+                &[string("team_id"), string("principal_id"), string("role")],
+            ),
+            action(
+                "access.team.member.suspend",
+                "Suspend a team member",
+                &[string("team_id"), string("principal_id")],
+            ),
+            action(
+                "access.team.member.remove",
+                "Remove a team member",
+                &[string("team_id"), string("principal_id")],
+            ),
+            action(
+                "access.team.suspend",
+                "Suspend a team",
+                &[string("team_id")],
+            ),
+            action(
+                "access.team.activate",
+                "Activate a team",
+                &[string("team_id")],
+            ),
+            action(
+                "access.team_invitation.create",
+                "Create a team invitation",
+                &[
+                    string("team_id"),
+                    string("principal_id"),
+                    string("role"),
+                    string("token"),
+                    integer("ttl_seconds"),
+                ],
+            ),
+            action(
+                "access.team_invitation.accept",
+                "Accept a team invitation",
+                &[string("token")],
+            ),
+            action(
+                "access.team_project.assign",
+                "Assign a team to a project",
+                &[string("team_id"), string("project_id"), string("role")],
+            ),
+            action(
+                "access.project.effective.list",
+                "List effective project roles",
+                &[],
+            ),
+            admin_action(
+                "access.platform_admin.grant",
+                "Grant platform administrator authority",
+                &[string("principal_id")],
+            ),
+            admin_action(
+                "access.platform_admin.revoke",
+                "Revoke platform administrator authority",
+                &[string("principal_id")],
+            ),
+            $($gateway_only,)*
+        ]
+    };
+}
+
+#[cfg(feature = "gateway")]
+pub const ACTIONS: &[ActionSpec] = access_actions!(
     action(
         "access.gateway_credential.list",
         "List redacted Team Gateway credential bindings",
@@ -99,22 +126,38 @@ pub const ACTIONS: &[ActionSpec] = &[
         "Revoke a Team Gateway credential binding",
         &[string("team_id"), string("upstream_name")],
     ),
-    action(
-        "access.project.effective.list",
-        "List effective project roles",
-        &[],
-    ),
-    action(
-        "access.platform_admin.grant",
-        "Grant platform administrator authority",
-        &[string("principal_id")],
-    ),
-    action(
-        "access.platform_admin.revoke",
-        "Revoke platform administrator authority",
-        &[string("principal_id")],
-    ),
-];
+);
+
+#[cfg(not(feature = "gateway"))]
+pub const ACTIONS: &[ActionSpec] = access_actions!();
+
+/// Exact capability the shared evaluator demands for `action`, or `None` for
+/// the two caller-membership projections (`access.team.list`,
+/// `access.project.effective.list`) whose visibility is filtered inside the
+/// store. Surface policy (`requires_admin`) and the generated action catalog
+/// derive from this single table; `requires_admin` is true exactly when the
+/// capability is platform-scoped.
+pub(crate) fn required_capability(action: &str) -> Option<Capability> {
+    Some(match action {
+        "access.team.list" | "access.project.effective.list" => return None,
+        "access.team.create" | "access.platform_admin.grant" | "access.platform_admin.revoke" => {
+            Capability::PlatformManage
+        }
+        "access.team_invitation.accept" => Capability::ScopeOperate,
+        "access.gateway_credential.list" => Capability::ScopeRead,
+        "access.gateway_credential.bind"
+        | "access.gateway_credential.revoke"
+        | "access.team_project.assign" => Capability::ScopeManage,
+        "access.team.member.add"
+        | "access.team.member.role.set"
+        | "access.team.member.suspend"
+        | "access.team.member.remove"
+        | "access.team.suspend"
+        | "access.team.activate"
+        | "access.team_invitation.create" => Capability::MembershipManage,
+        _ => return None,
+    })
+}
 
 const fn string(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -142,6 +185,22 @@ const fn action(
         description,
         destructive: false,
         requires_admin: false,
+        params,
+        returns: "object",
+    }
+}
+/// Installation-scoped administration: the shared evaluator demands
+/// `platform.manage`, so the transport ceiling must carry `lab:admin`.
+const fn admin_action(
+    name: &'static str,
+    description: &'static str,
+    params: &'static [ParamSpec],
+) -> ActionSpec {
+    ActionSpec {
+        name,
+        description,
+        destructive: false,
+        requires_admin: true,
         params,
         returns: "object",
     }
@@ -353,16 +412,21 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map_access_error)?;
-            if let Some(binding) = &value {
-                invalidate_team_gateway_credential(
-                    &context,
-                    &binding.team_id,
-                    &binding.upstream_name,
-                    "team credential revoked",
-                )
-                .await;
-            }
-            json!({"binding": value})
+            // The caller already proved `scope.manage` over this Team, so a
+            // missing binding is a caller-fixable not-found, not an outage
+            // and not a silent no-op.
+            let binding = value.ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_owned(),
+                message: "no Team Gateway credential binding exists for that upstream".to_owned(),
+            })?;
+            invalidate_team_gateway_credential(
+                &context,
+                &binding.team_id,
+                &binding.upstream_name,
+                "team credential revoked",
+            )
+            .await;
+            json!({"binding": binding})
         }
         "access.platform_admin.grant" | "access.platform_admin.revoke" => {
             let input = PlatformAdministratorInput::new(
@@ -391,11 +455,27 @@ async fn invalidate_team_gateway_credential(
     reason: &'static str,
 ) {
     let Some(manager) = &context.gateway_manager else {
+        tracing::warn!(
+            service = "access",
+            team_id,
+            upstream,
+            reason,
+            "team gateway credential invalidation skipped: no gateway manager is wired"
+        );
         return;
     };
-    if let Some(pool) = manager.current_pool().await {
-        pool.invalidate_oauth_subject_sessions(upstream, &format!("team:{team_id}"), reason)
-            .await;
+    match manager.current_pool().await {
+        Some(pool) => {
+            pool.invalidate_oauth_subject_sessions(upstream, &format!("team:{team_id}"), reason)
+                .await;
+        }
+        None => tracing::warn!(
+            service = "access",
+            team_id,
+            upstream,
+            reason,
+            "team gateway credential invalidation skipped: upstream pool is not loaded"
+        ),
     }
 }
 
@@ -404,16 +484,18 @@ async fn authorize_administration(
     action: &str,
     params: &Value,
 ) -> Result<(), ToolError> {
-    let (owner, family, id, capability) = if action == "access.team_invitation.accept" {
+    // One capability table drives the evaluator, the surface admin gate, and
+    // the generated catalog; an action without a row cannot be authorized.
+    let capability = required_capability(action).ok_or_else(|| unknown_action(action))?;
+    let (owner, family, id) = if action == "access.team_invitation.accept" {
         (
             crate::access::resolve_personal_owner(&context.store, context.identity.clone())
                 .await
                 .map_err(map_access_error)?,
             ResourceFamily::Platform,
             "team-invitation".to_owned(),
-            Capability::ScopeOperate,
         )
-    } else if action == "access.team.create" || action.starts_with("access.platform_admin.") {
+    } else if capability.is_platform() {
         (
             OwnerScope::Installation(
                 InstallationId::new(context.installation_id.clone())
@@ -421,11 +503,6 @@ async fn authorize_administration(
             ),
             ResourceFamily::Platform,
             context.installation_id.clone(),
-            if action == "access.team.create" {
-                Capability::ScopeCreate
-            } else {
-                Capability::PlatformManage
-            },
         )
     } else {
         let team_id = required_string(params, "team_id")?;
@@ -433,17 +510,6 @@ async fn authorize_administration(
             OwnerScope::Team(TeamId::new(team_id.clone()).map_err(|_| invalid("team_id"))?),
             ResourceFamily::Platform,
             team_id,
-            if action == "access.team_project.assign"
-                || action.starts_with("access.gateway_credential.")
-            {
-                if action.ends_with(".list") {
-                    Capability::ScopeRead
-                } else {
-                    Capability::ScopeManage
-                }
-            } else {
-                Capability::MembershipManage
-            },
         )
     };
     let action_ref = ActionRef::new("access", action).map_err(|_| invalid("action"))?;
@@ -571,26 +637,18 @@ fn unknown_action(action: &str) -> ToolError {
             .map(|spec| spec.name.to_owned()),
     }
 }
-fn map_access_error(error: crate::access::AccessStoreError) -> ToolError {
-    use crate::access::AccessStoreError as E;
-    match error {
-        E::NotAuthorized
-        | E::IdentityUnavailable
-        | E::ProjectAccessUnavailable
-        | E::TeamUnavailable => ToolError::Forbidden {
-            message: "access denied".to_owned(),
-            required_scopes: Vec::new(),
-        },
-        E::InvalidTeamInput | E::MalformedVocabulary => invalid("params"),
-        E::LastActiveTeamOwner => ToolError::Conflict {
-            message: "team must retain an active owner".to_owned(),
-            existing_id: "team_owner".to_owned(),
-        },
-        other => ToolError::Sdk {
-            sdk_kind: "service_unavailable".to_owned(),
-            message: other.to_string(),
-        },
+fn denied() -> ToolError {
+    ToolError::Forbidden {
+        message: "access denied".to_owned(),
+        required_scopes: Vec::new(),
     }
+}
+/// Every store failure goes through the shared map: denial-class failures
+/// collapse to one non-enumerating `forbidden`, input problems become
+/// `invalid_param`, and lifecycle/integrity failures become a fixed-string
+/// `service_unavailable` whose typed cause is logged server-side only.
+fn map_access_error(error: crate::access::AccessStoreError) -> ToolError {
+    crate::dispatch::access_errors::map_store_error("access", error, denied)
 }
 
 /// Registry fallback. Real API/MCP adapters must supply server-owned state and identity.
@@ -616,9 +674,37 @@ mod tests {
 
     #[test]
     fn catalog_registers_only_canonical_access_actions() {
-        assert_eq!(ACTIONS.len(), 17);
+        assert_eq!(
+            ACTIONS.len(),
+            if cfg!(feature = "gateway") { 17 } else { 14 }
+        );
         assert!(ACTIONS.iter().all(|spec| spec.name.starts_with("access.")));
         assert!(ACTIONS.iter().all(|spec| !spec.destructive));
+        assert_eq!(
+            ACTIONS
+                .iter()
+                .any(|spec| spec.name.starts_with("access.gateway_credential.")),
+            cfg!(feature = "gateway")
+        );
+    }
+
+    #[test]
+    fn requires_admin_is_exactly_the_platform_capability_axis() {
+        for spec in ACTIONS {
+            let capability = required_capability(spec.name);
+            assert_eq!(
+                spec.requires_admin,
+                capability.is_some_and(Capability::is_platform),
+                "{}",
+                spec.name
+            );
+        }
+        assert_eq!(required_capability("access.team.list"), None);
+        assert_eq!(required_capability("access.bogus"), None);
+        assert_eq!(
+            required_capability("access.team.create"),
+            Some(Capability::PlatformManage)
+        );
     }
 
     #[test]
@@ -643,6 +729,20 @@ mod tests {
             assert_eq!(envelope["message"], "access denied");
             assert_eq!(envelope["required_scopes"], json!([]));
         }
+        // Lifecycle and integrity failures are outages with fixed messages.
+        for error in [
+            crate::access::AccessStoreError::MalformedVocabulary,
+            crate::access::AccessStoreError::Unavailable("sqlite: /secret/access.db".into()),
+            crate::access::AccessStoreError::Locked,
+        ] {
+            let mapped = map_access_error(error);
+            assert_eq!(mapped.kind(), "service_unavailable");
+            assert!(!mapped.to_string().contains("/secret"));
+        }
+        assert_eq!(
+            map_access_error(crate::access::AccessStoreError::InvalidTeamInput).kind(),
+            "invalid_param"
+        );
     }
 
     #[tokio::test]

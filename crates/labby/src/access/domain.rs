@@ -130,6 +130,15 @@ impl TeamRole {
             _ => None,
         }
     }
+
+    /// The capability template this Team role expands to.
+    pub(crate) const fn role_template(self) -> labby_primitives::access::RoleTemplate {
+        match self {
+            Self::Owner => labby_primitives::access::RoleTemplate::TeamOwner,
+            Self::Admin => labby_primitives::access::RoleTemplate::TeamAdmin,
+            Self::Member => labby_primitives::access::RoleTemplate::TeamMember,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -453,6 +462,25 @@ impl ProjectRole {
 
     pub(crate) const fn as_wire(self) -> &'static str {
         self.as_persisted()
+    }
+
+    /// The stronger of two roles (direct and Team-derived paths combine by maximum).
+    pub(super) const fn max_with(self, other: Self) -> Self {
+        if other.precedence() > self.precedence() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// The capability template this Project role expands to.
+    pub(crate) const fn role_template(self) -> labby_primitives::access::RoleTemplate {
+        match self {
+            Self::Owner => labby_primitives::access::RoleTemplate::ProjectOwner,
+            Self::Admin => labby_primitives::access::RoleTemplate::ProjectAdmin,
+            Self::Member => labby_primitives::access::RoleTemplate::ProjectMember,
+            Self::Viewer => labby_primitives::access::RoleTemplate::ProjectViewer,
+        }
     }
 
     pub(super) const fn precedence(self) -> u8 {

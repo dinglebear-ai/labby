@@ -1098,12 +1098,12 @@ jobs:
         # targets during nextest discovery; that overlap exceeds the runner's
         # memory ceiling even though either harness fits on its own.
         run: cargo test -p labby-gateway --all-features --lib --no-run --locked
-      - name: Qualify production-shaped access migration and rollback
+      - name: Qualify production-shaped access migration, rollback, and approval gate
+        # The whole migrations module: v4/v5 rehearsals, every legacy version
+        # refusing without evidence, and the end-to-end approval gate.
         run: |
-          cargo test -p labby --all-features --locked \
-            access::migrations::tests::production_shaped_v5_checkpoint_restores_exact_logical_inventory
-          cargo test -p labby --all-features --locked \
-            access::migrations::tests::migration_evidence_binds_checkpoint_and_replay_operation
+          cargo test -p labby --all-features --locked --lib \
+            access::migrations::
       - name: Run workspace tests
         # Default concurrency can link the labby and labby-gateway harnesses
         # together and exceed the runner's memory ceiling. One job is too

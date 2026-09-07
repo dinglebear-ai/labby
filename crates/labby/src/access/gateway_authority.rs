@@ -168,7 +168,16 @@ pub(crate) async fn authorize_gateway_action(
     if class == GatewayAuthorityClass::Public {
         return Ok(());
     }
-    let store = runtime.store().await.map_err(|_| denied())?;
+    let store = runtime.store().await.map_err(|error| {
+        tracing::warn!(
+            service = "gateway",
+            action,
+            error = %error,
+            kind = "service_unavailable",
+            "Gateway authority store is unavailable"
+        );
+        unavailable()
+    })?;
     let (owner, capability, resource_id) = match class {
         GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage => {
             let team_id = team_id.ok_or_else(denied)?;
@@ -220,13 +229,37 @@ pub(crate) async fn authorize_gateway_action(
     )
     .await
     .map(|_| ())
-    .map_err(|_| denied())
+    .map_err(|error| match error {
+        crate::access::AccessStoreError::NotAuthorized
+        | crate::access::AccessStoreError::IdentityUnavailable
+        | crate::access::AccessStoreError::ProjectAccessUnavailable
+        | crate::access::AccessStoreError::TeamUnavailable => denied(),
+        other => {
+            tracing::warn!(
+                service = "gateway",
+                action,
+                error = %other,
+                kind = "service_unavailable",
+                "Gateway authorization could not be evaluated"
+            );
+            unavailable()
+        }
+    })
 }
 
 fn denied() -> ToolError {
     ToolError::Forbidden {
         message: "Gateway operation is not authorized".into(),
         required_scopes: Vec::new(),
+    }
+}
+
+/// A store outage is not a denial: the caller retries, and the log carries
+/// the typed cause.
+fn unavailable() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "service_unavailable".into(),
+        message: "Gateway authority is temporarily unavailable".into(),
     }
 }
 

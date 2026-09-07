@@ -98,11 +98,29 @@ impl LabMcpServer {
             })
     }
 
-    fn authority_ceiling(context: &RequestContext<RoleServer>) -> crate::access::AuthorityCeiling {
-        auth_context_from_extensions(&context.extensions).map_or_else(
-            crate::access::AuthorityCeiling::trusted_local,
-            crate::access::AuthorityCeiling::from_auth_context,
-        )
+    /// Transport authority ceiling for the caller. Absent auth is trusted as
+    /// local operator authority only on transports that genuinely imply local
+    /// stdio (see [`LabMcpServer::absent_auth_trust`]); everywhere else an
+    /// absent context yields no ceiling and the caller is denied.
+    pub(crate) fn caller_ceiling(
+        &self,
+        auth: Option<&labby_auth::auth_context::AuthContext>,
+    ) -> Option<crate::access::AuthorityCeiling> {
+        match (auth, self.absent_auth_trust()) {
+            (Some(auth), _) => Some(crate::access::AuthorityCeiling::from_auth_context(auth)),
+            (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
+                Some(crate::access::AuthorityCeiling::trusted_local())
+            }
+            (None, crate::mcp::context::AbsentAuth::Untrusted) => None,
+        }
+    }
+
+    fn authority_ceiling(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<crate::access::AuthorityCeiling, ToolError> {
+        self.caller_ceiling(auth_context_from_extensions(&context.extensions))
+            .ok_or_else(forbidden)
     }
 
     pub(crate) async fn dispatch_caller_bound_service(
@@ -114,32 +132,57 @@ impl LabMcpServer {
         meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<serde_json::Value, ToolError> {
         match service {
-            "agents" | "tasks" => {
+            "agents" | "tasks" | "projects" => {
                 let identity = Self::verified_identity(context).ok_or_else(forbidden)?;
-                let store = self.access_runtime.store().await.map_err(|_| forbidden())?;
-                let ceiling = Self::authority_ceiling(context);
-                if service == "agents" {
-                    crate::dispatch::agents::dispatch(
-                        crate::dispatch::agents::AgentDispatchContext {
-                            store,
-                            identity,
-                            ceiling,
+                let ceiling = self.authority_ceiling(context)?;
+                // Store lifecycle failures are typed outages, never denials.
+                let store = self.access_runtime.store().await.map_err(|error| {
+                    crate::dispatch::access_errors::map_runtime_error(
+                        match service {
+                            "agents" => "agents",
+                            "tasks" => "tasks",
+                            _ => "projects",
                         },
-                        action,
-                        params,
+                        error,
                     )
-                    .await
-                } else {
-                    crate::dispatch::tasks::dispatch(
-                        crate::dispatch::tasks::TaskDispatchContext {
-                            store,
-                            identity,
-                            ceiling,
-                        },
-                        action,
-                        params,
-                    )
-                    .await
+                })?;
+                match service {
+                    "agents" => {
+                        crate::dispatch::agents::dispatch(
+                            crate::dispatch::agents::AgentDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
+                    "tasks" => {
+                        crate::dispatch::tasks::dispatch(
+                            crate::dispatch::tasks::TaskDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
+                    _ => {
+                        crate::dispatch::projects::dispatch(
+                            crate::dispatch::projects::ProjectDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
                 }
             }
             "stash" => {
@@ -162,7 +205,7 @@ impl LabMcpServer {
                         let authority = crate::dispatch::file_stash::authorize_owner(
                             &self.access_runtime,
                             identity.clone(),
-                            Self::authority_ceiling(context),
+                            self.authority_ceiling(context)?,
                             params.get("owner_kind").and_then(serde_json::Value::as_str),
                             params.get("owner_id").and_then(serde_json::Value::as_str),
                             action,
@@ -200,7 +243,9 @@ impl LabMcpServer {
                     "mcp",
                     action,
                     params,
-                    validated_grantee.as_ref().map(|(recipient, _lease)| recipient),
+                    validated_grantee
+                        .as_ref()
+                        .map(|(recipient, _lease)| recipient),
                 )
                 .await
             }
@@ -242,7 +287,7 @@ impl LabMcpServer {
             return crate::dispatch::file_stash::authorize_owner(
                 &self.access_runtime,
                 identity.clone(),
-                Self::authority_ceiling(context),
+                self.authority_ceiling(context)?,
                 kind.as_deref(),
                 id.as_deref(),
                 "stash.resources.read",
@@ -356,7 +401,7 @@ impl LabMcpServer {
                     match crate::dispatch::file_stash::authorize_owner(
                         &self.access_runtime,
                         identity,
-                        Self::authority_ceiling(context),
+                        self.authority_ceiling(context)?,
                         kind.as_deref(),
                         id.as_deref(),
                         "stash.resources.read",

@@ -900,7 +900,19 @@ pub(super) fn create_managed_project(
     let now = unix_now()?;
     tx.execute("INSERT INTO projects(project_id,organization_id,name,status,project_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,'active',1,?4,?4)",params![input.project_id,actor.organization_id,name,now]).map_err(map_sqlite_error)?;
     tx.execute("INSERT INTO team_project_assignments(assignment_id,organization_id,team_id,project_id,role,status,assignment_epoch,created_by,created_at,updated_at,revoked_at) VALUES(?1,?2,?3,?4,'admin','active',1,?5,?6,?6,NULL)",params![format!("team-project-{}-{}",input.team_id,input.project_id),actor.organization_id,input.team_id,input.project_id,actor.id,now]).map_err(map_sqlite_error)?;
-    advance_global_revision(&tx, now)?;
+    let revision = advance_global_revision(&tx, now)?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        "access.project.create",
+        "project",
+        &input.project_id,
+        1,
+        "team_manage",
+    )?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(ManagedProjectSnapshot {
         project_id: input.project_id.clone(),
@@ -922,8 +934,14 @@ pub(super) fn get_managed_project(
         .map_err(map_sqlite_error)?;
     let actor = resolve_principal(&tx, &input.actor)?;
     require_team_member(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    // Only an explicit denial reads as "cannot manage"; a store failure is
+    // an error, never a silent `false`.
     let can_manage =
-        require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id).is_ok();
+        match require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id) {
+            Ok(()) => true,
+            Err(AccessStoreError::NotAuthorized) => false,
+            Err(error) => return Err(error),
+        };
     let result=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3 AND a.status='active'",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?,can_manage})).optional().map_err(map_sqlite_error)?.ok_or(AccessStoreError::TeamUnavailable)?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(result)
@@ -1001,7 +1019,23 @@ pub(super) fn update_managed_project(
         return Err(AccessStoreError::TeamUnavailable);
     }
     let snapshot=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?,can_manage:true})).map_err(map_sqlite_error)?;
-    advance_global_revision(&tx, now)?;
+    let revision = advance_global_revision(&tx, now)?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        if archive {
+            "access.project.archive"
+        } else {
+            "access.project.update"
+        },
+        "project",
+        &input.project_id,
+        snapshot.policy_epoch,
+        "team_manage",
+    )?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(snapshot)
 }

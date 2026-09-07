@@ -9,6 +9,8 @@ use labby_runtime::authority::{
     AUTHORITY_EPOCH_VECTOR_VERSION, AuthorityBinding, AuthorityEpochVector,
     AuthorityEpochVectorInput, AuthorityLease, AuthoritySafeBoundary, TeamMembershipEpoch,
 };
+
+use super::domain::{ProjectRole, TeamRole};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::error::{AccessStoreError, AccessStoreResult};
@@ -43,6 +45,13 @@ impl ActionAuthoritySpec {
 }
 
 /// Transport authority is a ceiling on durable authority, never a grant.
+///
+/// The ceiling has exactly two levels. `lab` (and the read-only `lab:read`
+/// subset) admits every non-platform capability, so the durable role decides
+/// what a Team owner, admin, or member may do; `lab:admin` additionally admits
+/// the platform capabilities. An action whose required capability is
+/// platform-level must therefore be `requires_admin` on every surface; the
+/// two axes are one fact expressed twice.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthorityCeiling {
     capabilities: BTreeSet<Capability>,
@@ -50,33 +59,43 @@ pub(crate) struct AuthorityCeiling {
 
 impl AuthorityCeiling {
     pub(crate) fn from_auth_context(context: &AuthContext) -> Self {
-        let mut capabilities = BTreeSet::new();
-        if context.scopes.iter().any(|scope| scope == "lab:admin") {
-            capabilities.extend(all_capabilities());
+        let has = |name: &str| context.scopes.iter().any(|scope| scope == name);
+        let capabilities = if has("lab:admin") {
+            Capability::ALL.iter().copied().collect()
+        } else if has("lab") {
+            Self::scoped_capabilities().collect()
+        } else if has("lab:read") {
+            BTreeSet::from([Capability::ScopeRead, Capability::PolicyExplain])
         } else {
-            if context
-                .scopes
-                .iter()
-                .any(|scope| matches!(scope.as_str(), "lab" | "lab:read"))
-            {
-                capabilities.insert(Capability::ScopeRead);
-            }
-            if context.scopes.iter().any(|scope| scope == "lab") {
-                capabilities.extend([Capability::ScopeOperate, Capability::ScopeCreate]);
-            }
-        }
+            BTreeSet::new()
+        };
         Self { capabilities }
+    }
+
+    /// Every capability that is not installation authority.
+    fn scoped_capabilities() -> impl Iterator<Item = Capability> {
+        Capability::ALL
+            .iter()
+            .copied()
+            .filter(|capability| !capability.is_platform())
     }
 
     /// Explicit ceiling for trusted local stdio, where there is no request AuthContext.
     pub(crate) fn trusted_local() -> Self {
         Self {
-            capabilities: all_capabilities().into_iter().collect(),
+            capabilities: Capability::ALL.iter().copied().collect(),
         }
     }
 
     fn allows(&self, capability: Capability) -> bool {
         self.capabilities.contains(&capability)
+    }
+
+    /// Whether this ceiling admits any platform (installation) capability.
+    pub(crate) fn admits_platform(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.is_platform())
     }
 }
 
@@ -137,8 +156,10 @@ struct ResolvedAuthority {
     epochs: AuthorityEpochVector,
 }
 
-/// Resolve current durable facts under SQLite, then construct the runtime lease after releasing
-/// the database connection. Callers must still validate the lease at each declared safe boundary.
+/// Resolve current durable facts and construct the runtime lease inside one
+/// read transaction on the store's serialized connection; the connection is
+/// released when the closure returns. Callers must still validate the lease
+/// at each declared safe boundary.
 pub(crate) async fn authorize_action(
     store: &AccessStore,
     request: AuthorityRequest,
@@ -189,6 +210,11 @@ pub(crate) fn authorize_action_in_transaction(
     let owner = resource.owner().clone();
     let resolved = resolve_authority(transaction, &identity, &owner, capability)?;
 
+    // Contract violations here mean the durable vocabulary or the trusted
+    // registry produced something the runtime types refuse (an invalid
+    // method token, an unencodable epoch vector, an unbounded lease). That is
+    // malformed store/registry state, not an outage, so it is typed as such
+    // instead of being flattened into a string.
     let binding = AuthorityBinding::new(
         PrincipalId::new(resolved.principal_id)
             .map_err(|_| AccessStoreError::MalformedVocabulary)?,
@@ -198,7 +224,7 @@ pub(crate) fn authorize_action_in_transaction(
         resource.id().clone(),
         intent_id,
     )
-    .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?;
+    .map_err(|_| AccessStoreError::MalformedVocabulary)?;
     AuthorityLease::new(
         binding,
         &resolved.epochs,
@@ -208,7 +234,7 @@ pub(crate) fn authorize_action_in_transaction(
             .ok_or(AccessStoreError::MalformedVocabulary)?,
         safe_boundaries,
     )
-    .map_err(|error| AccessStoreError::Unavailable(error.to_string()))
+    .map_err(|_| AccessStoreError::MalformedVocabulary)
 }
 
 pub(crate) async fn refresh_authority_epochs(
@@ -269,10 +295,17 @@ fn resolve_authority(
     let (
         role,
         organization_id,
-        team_epoch,
+        team_epochs,
         team_policy_epoch,
         project_membership_epoch,
         project_policy_epoch,
+    ): (
+        RoleTemplate,
+        String,
+        Vec<TeamMembershipEpoch>,
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
     ) = match owner {
         OwnerScope::Installation(_) => {
             if !is_platform_admin {
@@ -281,7 +314,7 @@ fn resolve_authority(
             (
                 RoleTemplate::PlatformAdmin,
                 principal.organization_id.clone(),
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -297,7 +330,7 @@ fn resolve_authority(
             } else {
                 RoleTemplate::PersonalUser
             };
-            (role, organization_id, None, None, None, None)
+            (role, organization_id, Vec::new(), None, None, None)
         }
         OwnerScope::Team(team_id) => {
             let row = transaction.query_row(
@@ -320,49 +353,67 @@ fn resolve_authority(
             } else {
                 return Err(AccessStoreError::NotAuthorized);
             };
-            let team_epoch = membership_epoch
+            let team_epochs = membership_epoch
                 .map(|epoch| {
                     epoch_value(epoch).map(|epoch| TeamMembershipEpoch {
                         team_id: team_id.as_str().to_owned(),
                         epoch,
                     })
                 })
-                .transpose()?;
+                .transpose()?
+                .into_iter()
+                .collect();
             (
                 role,
                 row.0,
-                team_epoch,
+                team_epochs,
                 Some(epoch_value(row.2)?),
                 None,
                 None,
             )
         }
         OwnerScope::Project(project_id) => {
-            let row = transaction.query_row(
-                    "SELECT p.organization_id,p.status,p.project_policy_epoch,m.role,m.status,m.updated_at
-                     FROM projects p LEFT JOIN project_memberships m
-                       ON m.organization_id=p.organization_id AND m.project_id=p.project_id AND m.principal_id=?1
-                     WHERE p.project_id=?2",
-                    params![principal.id, project_id.as_str()],
-                    |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<i64>>(5)?)),
-                ).optional().map_err(map_sqlite_error)?.ok_or(AccessStoreError::NotAuthorized)?;
-            if row.1 != "active" {
+            let project = transaction
+                .query_row(
+                    "SELECT organization_id,status,project_policy_epoch FROM projects WHERE project_id=?1",
+                    [project_id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(map_sqlite_error)?
+                .ok_or(AccessStoreError::NotAuthorized)?;
+            if project.1 != "active" {
                 return Err(AccessStoreError::NotAuthorized);
             }
-            let (role, membership_epoch) = if is_platform_admin {
-                (RoleTemplate::PlatformAdmin, row.5)
-            } else if row.4.as_deref() == Some("active") {
-                (project_role(row.3.as_deref())?, row.5)
+            let (role, team_epochs, membership_epoch) = if is_platform_admin {
+                (RoleTemplate::PlatformAdmin, Vec::new(), None)
             } else {
-                return Err(AccessStoreError::NotAuthorized);
+                let effective = effective_project_role(
+                    transaction,
+                    &principal.id,
+                    &project.0,
+                    project_id.as_str(),
+                )?
+                .ok_or(AccessStoreError::NotAuthorized)?;
+                (
+                    effective.role.role_template(),
+                    effective.team_epochs,
+                    effective.membership_epoch,
+                )
             };
             (
                 role,
-                row.0,
+                project.0,
+                team_epochs,
                 None,
-                None,
-                membership_epoch.map(epoch_value).transpose()?,
-                Some(epoch_value(row.2)?),
+                membership_epoch,
+                Some(epoch_value(project.2)?),
             )
         }
     };
@@ -387,9 +438,13 @@ fn resolve_authority(
             |row| row.get(0),
         )
         .map_err(|error| collapse_denial(map_sqlite_error(error)))?;
+    // Monotonic Principal epoch maintained by the schema triggers; it moves on
+    // every status/kind/organization change and on every credential-link
+    // change, so a revoked credential or suspended Principal invalidates
+    // outstanding leases.
     let principal_epoch: i64 = transaction
         .query_row(
-            "SELECT updated_at FROM principals WHERE principal_id=?1 AND status='active'",
+            "SELECT e.epoch FROM principal_epochs e JOIN principals p ON p.principal_id=e.principal_id WHERE p.principal_id=?1 AND p.status='active'",
             [&principal.id],
             |row| row.get(0),
         )
@@ -400,15 +455,20 @@ fn resolve_authority(
         installation_epoch: epoch_value(installation_epoch)?,
         organization_epoch: epoch_value(organization_epoch)?,
         principal_epoch: epoch_value(principal_epoch)?,
-        team_membership_epochs: team_epoch.into_iter().collect(),
+        team_membership_epochs: team_epochs,
         team_policy_epoch,
         project_membership_epoch,
         project_policy_epoch,
         resource_policy_epoch: None,
         gateway_catalog_generation: None,
         depot_projection_watermark: None,
-        credential_generation: Some(VerifiedIdentity::LINK_SCHEMA_VERSION),
-        session_generation: VerifiedIdentity::VERIFICATION_SCHEMA_VERSION,
+        // The persisted link generation advances when the credential behind
+        // this identity is revoked or replaced.
+        credential_generation: Some(principal.link_generation),
+        // Browser sessions are revoked at the transport boundary by labby-auth;
+        // the vector carries the persisted verification generation of the
+        // identity link, not a per-session counter.
+        session_generation: principal.verification_generation,
     })
     .map_err(|_| AccessStoreError::MalformedVocabulary)?;
     Ok(ResolvedAuthority {
@@ -416,6 +476,80 @@ fn resolve_authority(
         capability,
         epochs,
     })
+}
+
+struct EffectiveProjectRole {
+    role: ProjectRole,
+    /// Every active Team assignment that contributed to the decision.
+    team_epochs: Vec<TeamMembershipEpoch>,
+    /// Direct membership epoch when a direct membership contributed.
+    membership_epoch: Option<u64>,
+}
+
+/// The effective Project role is the maximum of the active direct membership
+/// role and every active Team-derived assignment role, exactly as the read
+/// surfaces report it. Every contributing membership's epoch joins the vector
+/// so a downgrade on any path invalidates the lease.
+fn effective_project_role(
+    transaction: &Transaction<'_>,
+    principal_id: &str,
+    organization_id: &str,
+    project_id: &str,
+) -> AccessStoreResult<Option<EffectiveProjectRole>> {
+    let direct = transaction
+        .query_row(
+            "SELECT m.role,e.epoch FROM project_memberships m
+             JOIN project_membership_epochs e ON e.membership_id=m.membership_id
+             WHERE m.organization_id=?1 AND m.project_id=?2 AND m.principal_id=?3 AND m.status='active'",
+            params![organization_id, project_id, principal_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let (mut best, membership_epoch): (Option<ProjectRole>, Option<u64>) = match direct {
+        Some((role, epoch)) => (
+            Some(ProjectRole::from_persisted(&role).ok_or(AccessStoreError::MalformedVocabulary)?),
+            Some(epoch_value(epoch)?),
+        ),
+        None => (None, None),
+    };
+    let mut statement = transaction
+        .prepare(
+            "SELECT tm.team_id,tm.membership_epoch,a.role
+             FROM team_memberships tm
+             JOIN groups g ON g.organization_id=tm.organization_id AND g.group_id=tm.team_id
+             JOIN team_project_assignments a
+               ON a.organization_id=tm.organization_id AND a.team_id=tm.team_id
+             WHERE tm.organization_id=?1 AND tm.principal_id=?2 AND a.project_id=?3
+               AND tm.status='active' AND g.kind='team' AND g.status='active' AND a.status='active'
+             ORDER BY tm.team_id COLLATE BINARY",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(params![organization_id, principal_id, project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?;
+    let mut team_epochs = Vec::new();
+    for row in rows {
+        let (team_id, epoch, role) = row.map_err(map_sqlite_error)?;
+        let role =
+            ProjectRole::from_persisted(&role).ok_or(AccessStoreError::MalformedVocabulary)?;
+        best = Some(best.map_or(role, |current| current.max_with(role)));
+        team_epochs.push(TeamMembershipEpoch {
+            team_id,
+            epoch: epoch_value(epoch)?,
+        });
+    }
+    Ok(best.map(|role| EffectiveProjectRole {
+        role,
+        team_epochs,
+        membership_epoch,
+    }))
 }
 
 fn owner_organization(
@@ -432,29 +566,18 @@ fn owner_organization(
 }
 
 fn team_role(role: Option<&str>) -> AccessStoreResult<RoleTemplate> {
-    match role {
-        Some("owner") => Ok(RoleTemplate::TeamOwner),
-        Some("admin") => Ok(RoleTemplate::TeamAdmin),
-        Some("member") => Ok(RoleTemplate::TeamMember),
-        _ => Err(AccessStoreError::MalformedVocabulary),
-    }
-}
-
-fn project_role(role: Option<&str>) -> AccessStoreResult<RoleTemplate> {
-    match role {
-        Some("owner") => Ok(RoleTemplate::ProjectOwner),
-        Some("admin") => Ok(RoleTemplate::ProjectAdmin),
-        Some("member") => Ok(RoleTemplate::ProjectMember),
-        Some("viewer") => Ok(RoleTemplate::ProjectViewer),
-        _ => Err(AccessStoreError::MalformedVocabulary),
-    }
+    role.and_then(TeamRole::from_persisted)
+        .map(TeamRole::role_template)
+        .ok_or(AccessStoreError::MalformedVocabulary)
 }
 
 fn epoch_value(value: i64) -> AccessStoreResult<u64> {
     u64::try_from(value).map_err(|_| AccessStoreError::MalformedVocabulary)
 }
 
-fn collapse_denial(error: AccessStoreError) -> AccessStoreError {
+/// Identity/project resolution failures are denials; every other store
+/// failure (locked, corrupt, unavailable) keeps its typed cause.
+pub(super) fn collapse_denial(error: AccessStoreError) -> AccessStoreError {
     match error {
         AccessStoreError::IdentityUnavailable | AccessStoreError::ProjectAccessUnavailable => {
             AccessStoreError::NotAuthorized
@@ -463,29 +586,14 @@ fn collapse_denial(error: AccessStoreError) -> AccessStoreError {
     }
 }
 
-fn all_capabilities() -> [Capability; 11] {
-    [
-        Capability::PlatformRead,
-        Capability::PlatformManage,
-        Capability::ScopeRead,
-        Capability::ScopeOperate,
-        Capability::ScopeCreate,
-        Capability::ScopeManage,
-        Capability::ScopeDelete,
-        Capability::MembershipManage,
-        Capability::OwnershipTransfer,
-        Capability::PolicyExplain,
-        Capability::AuditRead,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use labby_auth::Authenticator;
-    use labby_primitives::access::{ActionRef, ResourceFamily, TeamId};
+    use labby_primitives::access::{ActionRef, ProjectId, ResourceFamily, TeamId};
     use labby_primitives::agent::{
         AgentDefinition, AgentRevision, AgentState, RunningRevocationPolicy,
     };
+    use labby_runtime::authority::{AuthorityLeaseError, AuthoritySafeBoundary};
 
     use super::*;
     use crate::access::BootstrapOwnerInput;
@@ -772,5 +880,225 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn project_request(identity: VerifiedIdentity, capability: Capability) -> AuthorityRequest {
+        let action = ActionRef::new("projects", "projects.update").unwrap();
+        AuthorityRequest::new(
+            identity,
+            ActionAuthoritySpec::SCHEMA_VERSION,
+            action.clone(),
+            ResourceRef::new(
+                OwnerScope::Project(ProjectId::new("bootstrap-default").unwrap()),
+                ResourceFamily::Project,
+                ResourceId::new("bootstrap-default").unwrap(),
+            ),
+            AuthorityCeiling::trusted_local(),
+            None,
+            1_000,
+            vec![AuthoritySafeBoundary::BeforeDispatch],
+            vec![ActionAuthoritySpec::new(
+                action,
+                ResourceFamily::Project,
+                capability,
+            )],
+        )
+    }
+
+    #[tokio::test]
+    async fn team_derived_project_roles_authorize_and_bind_their_epochs() {
+        let (_directory, store, _owner, member) = fixture().await;
+        // The member has no direct Project membership: denied.
+        assert!(matches!(
+            authorize_action(
+                &store,
+                project_request(member.clone(), Capability::ScopeRead)
+            )
+            .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        // Assign the Team to the Project as admin: the member now holds the
+        // Team-derived admin role and may manage.
+        store
+            .execute_test_statement(
+                "INSERT INTO team_project_assignments VALUES('assign-1','bootstrap-local','bootstrap-initial-team','bootstrap-default','admin','active',1,'bootstrap-owner',20,20,NULL);",
+            )
+            .await
+            .unwrap();
+        let lease = authorize_action(
+            &store,
+            project_request(member.clone(), Capability::ScopeManage),
+        )
+        .await
+        .unwrap();
+        assert_eq!(lease.binding().principal_id(), "member-1");
+        let epochs = refresh_authority_epochs(
+            &store,
+            member.clone(),
+            OwnerScope::Project(ProjectId::new("bootstrap-default").unwrap()),
+            Capability::ScopeManage,
+        )
+        .await
+        .unwrap();
+        assert!(
+            lease
+                .validate_at(AuthoritySafeBoundary::BeforeDispatch, 1_500, &epochs)
+                .is_ok()
+        );
+        // Downgrading the Team's assignment changes the contributing epochs
+        // and both re-authorization and the outstanding lease observe it.
+        store
+            .execute_test_statement(
+                "UPDATE team_project_assignments SET role='viewer',assignment_epoch=assignment_epoch+1 WHERE assignment_id='assign-1'; UPDATE team_memberships SET membership_epoch=membership_epoch+1 WHERE membership_id='member-membership';",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            authorize_action(
+                &store,
+                project_request(member.clone(), Capability::ScopeManage)
+            )
+            .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        let downgraded = refresh_authority_epochs(
+            &store,
+            member,
+            OwnerScope::Project(ProjectId::new("bootstrap-default").unwrap()),
+            Capability::ScopeRead,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            lease.validate_at(AuthoritySafeBoundary::BeforeDispatch, 1_500, &downgraded),
+            Err(AuthorityLeaseError::AuthorityChanged)
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_project_role_downgrade_and_credential_revocation_invalidate_leases() {
+        let (_directory, store, _owner, member) = fixture().await;
+        store
+            .execute_test_statement(
+                "INSERT INTO project_memberships VALUES('member-project','bootstrap-local','bootstrap-default','member-1','admin','active','bootstrap-owner',20,20);",
+            )
+            .await
+            .unwrap();
+        let project = OwnerScope::Project(ProjectId::new("bootstrap-default").unwrap());
+        let lease = authorize_action(
+            &store,
+            project_request(member.clone(), Capability::ScopeManage),
+        )
+        .await
+        .unwrap();
+        let current = refresh_authority_epochs(
+            &store,
+            member.clone(),
+            project.clone(),
+            Capability::ScopeRead,
+        )
+        .await
+        .unwrap();
+        assert_eq!(current.project_membership_epoch(), Some(1));
+        assert!(
+            lease
+                .validate_at(AuthoritySafeBoundary::BeforeDispatch, 1_500, &current)
+                .is_ok()
+        );
+        // A role downgrade through any statement bumps the membership epoch.
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='viewer' WHERE membership_id='member-project';",
+            )
+            .await
+            .unwrap();
+        let downgraded = refresh_authority_epochs(
+            &store,
+            member.clone(),
+            project.clone(),
+            Capability::ScopeRead,
+        )
+        .await
+        .unwrap();
+        assert_eq!(downgraded.project_membership_epoch(), Some(2));
+        assert_eq!(
+            lease.validate_at(AuthoritySafeBoundary::BeforeDispatch, 1_500, &downgraded),
+            Err(AuthorityLeaseError::AuthorityChanged)
+        );
+        // Revoking the credential link behind the identity moves both the
+        // principal epoch and the credential generation; the identity itself
+        // no longer resolves.
+        store
+            .execute_test_statement(
+                "UPDATE principal_links SET status='revoked',link_generation=link_generation+1 WHERE link_id='member-link';",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            refresh_authority_epochs(&store, member, project, Capability::ScopeRead).await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        let epoch: i64 = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT epoch FROM principal_epochs WHERE principal_id='member-1'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn lab_scope_admits_team_management_and_only_lab_admin_admits_platform() {
+        let (_directory, store, owner, _member) = fixture().await;
+        let context = |scopes: &[&str]| AuthContext {
+            sub: "owner-subject".into(),
+            actor_key: None,
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            issuer: "browser-session".into(),
+            via_session: true,
+            csrf_token: None,
+            email: None,
+        };
+        // A Team owner with the ordinary `lab` scope manages its Team: the
+        // durable role decides, the transport only caps platform authority.
+        let lab = AuthorityCeiling::from_auth_context(&context(&["lab"]));
+        assert!(lab.allows(Capability::ScopeManage));
+        assert!(lab.allows(Capability::MembershipManage));
+        assert!(lab.allows(Capability::OwnershipTransfer));
+        assert!(!lab.admits_platform());
+        assert!(
+            authorize_action(
+                &store,
+                request(
+                    owner.clone(),
+                    "read",
+                    ActionAuthoritySpec::SCHEMA_VERSION,
+                    Capability::MembershipManage,
+                    lab,
+                ),
+            )
+            .await
+            .is_ok()
+        );
+        let read_only = AuthorityCeiling::from_auth_context(&context(&["lab:read"]));
+        assert!(read_only.allows(Capability::ScopeRead));
+        assert!(!read_only.allows(Capability::ScopeOperate));
+        let admin = AuthorityCeiling::from_auth_context(&context(&["lab", "lab:admin"]));
+        assert!(admin.admits_platform());
+        assert!(admin.allows(Capability::PlatformManage));
+        for capability in Capability::ALL {
+            assert_eq!(
+                AuthorityCeiling::from_auth_context(&context(&["lab"])).allows(*capability),
+                !capability.is_platform(),
+                "{}",
+                capability.as_wire()
+            );
+        }
     }
 }

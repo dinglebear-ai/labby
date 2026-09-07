@@ -181,6 +181,11 @@ pub(crate) struct ProjectMembershipSnapshot {
 pub(super) struct ResolvedPrincipal {
     pub(super) id: String,
     pub(super) organization_id: String,
+    /// Persisted `principal_links.link_generation` of the link that resolved
+    /// this identity; advanced when the credential is revoked.
+    pub(super) link_generation: u64,
+    /// Persisted `principal_links.verification_generation` of that link.
+    pub(super) verification_generation: u64,
 }
 
 pub(super) fn resolve_principal_id(
@@ -418,16 +423,20 @@ pub(super) fn resolve_principal(
     let Some(row) = rows.next().map_err(map_sqlite_error)? else {
         return Err(AccessStoreError::IdentityUnavailable);
     };
-    let resolved = ResolvedPrincipal {
-        id: row.get(0).map_err(map_sqlite_error)?,
-        organization_id: row.get(1).map_err(map_sqlite_error)?,
-    };
     let link_status: String = row.get(2).map_err(map_sqlite_error)?;
     let principal_kind: String = row.get(3).map_err(map_sqlite_error)?;
     let principal_status: String = row.get(4).map_err(map_sqlite_error)?;
     let organization_status: String = row.get(5).map_err(map_sqlite_error)?;
     let verification_generation: i64 = row.get(6).map_err(map_sqlite_error)?;
     let link_generation: i64 = row.get(7).map_err(map_sqlite_error)?;
+    let resolved = ResolvedPrincipal {
+        id: row.get(0).map_err(map_sqlite_error)?,
+        organization_id: row.get(1).map_err(map_sqlite_error)?,
+        link_generation: u64::try_from(link_generation)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+        verification_generation: u64::try_from(verification_generation)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+    };
     if rows.next().map_err(map_sqlite_error)?.is_some() {
         return Err(AccessStoreError::MalformedVocabulary);
     }
@@ -438,8 +447,10 @@ pub(super) fn resolve_principal(
         || verification_generation
             != i64::try_from(VerifiedIdentity::VERIFICATION_SCHEMA_VERSION)
                 .map_err(|_| AccessStoreError::MalformedVocabulary)?
+        // `link_generation` is a monotonic credential generation that advances
+        // on revocation; it starts at the link schema version and only grows.
         || link_generation
-            != i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION)
+            < i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION)
                 .map_err(|_| AccessStoreError::MalformedVocabulary)?
     {
         return Err(AccessStoreError::MalformedVocabulary);

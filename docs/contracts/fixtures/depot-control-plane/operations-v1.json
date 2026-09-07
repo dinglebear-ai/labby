@@ -1,0 +1,4095 @@
+{
+  "contractVersion": 1,
+  "depotCommit": "d11a63b",
+  "fingerprint": {
+    "algorithm": "sha256",
+    "binds": [
+      "inputSchema"
+    ],
+    "encoding": "canonical JSON: object keys sorted, no insignificant whitespace, UTF-8 (no ASCII escaping)"
+  },
+  "operations": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List ACP agents conforming to the Agent Client Protocol registry specification.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.acp_registry.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "List ACP agents"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Resolve one exact source-bound Artifact revision and its authenticated component locators.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "description": "Stable Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "revisionId": {
+            "description": "Exact immutable revision ID or content digest.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "sourceId": {
+            "description": "Configured Depot source identity.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId",
+          "artifactId",
+          "revisionId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.exact",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "components": {
+            "description": "Authenticated relative component locators.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "interchange": {
+            "description": "Exact Artifact interchange.",
+            "type": "object"
+          },
+          "sourceId": {
+            "description": "Configured Depot source identity.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId",
+          "interchange",
+          "components"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "047caa8b74f4a55cf044be0907adb187fad8a10531490fdd32cddd0e37f7e77a",
+      "title": "Get exact Artifact manifest"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Follow or unfollow an upstream Artifact while preserving local revision identity.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "description": "Hosted Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Mutable Artifact state version required for optimistic concurrency.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "following": {
+            "description": "True to follow; false to unfollow.",
+            "type": "boolean"
+          },
+          "upstreamArtifactId": {
+            "description": "Upstream Artifact ID when following.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "upstreamRevisionId": {
+            "description": "Optional exact upstream revision ID or content digest.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId",
+          "expectedVersion"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.follow",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact": {
+            "additionalProperties": true,
+            "properties": {
+              "currentRevision": {
+                "description": "Selected current revision and component metadata.",
+                "type": "object"
+              },
+              "descriptor": {
+                "description": "Canonical Artifact descriptor.",
+                "type": "object"
+              },
+              "license": {
+                "description": "Authoritative license state.",
+                "type": "object"
+              },
+              "lineage": {
+                "description": "Artifact lineage and follow state.",
+                "type": "object"
+              },
+              "provenance": {
+                "description": "Artifact provenance.",
+                "type": "object"
+              },
+              "publication": {
+                "description": "Artifact publication state.",
+                "type": "object"
+              },
+              "revisionCount": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "stateVersion": {
+                "description": "Optimistic-concurrency version for lifecycle mutations.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "descriptor",
+              "currentRevision",
+              "revisionCount",
+              "stateVersion",
+              "license",
+              "lineage",
+              "provenance",
+              "publication"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "95eacd7404183d82b5cec2ba9580920412a3fe86a9335f2138bcfbe8f2620146",
+      "title": "Follow Artifact upstream"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Fork one exact source revision into a new hosted Artifact when Depot license authority permits it.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "following": {
+            "description": "Whether the new fork follows its source upstream.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Target Artifact name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Target namespace.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "revisionId": {
+            "description": "Optional exact source revision ID or content digest.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "sourceArtifactId": {
+            "description": "Source Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceArtifactId",
+          "namespace",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.fork",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact": {
+            "additionalProperties": true,
+            "properties": {
+              "currentRevision": {
+                "description": "Selected current revision and component metadata.",
+                "type": "object"
+              },
+              "descriptor": {
+                "description": "Canonical Artifact descriptor.",
+                "type": "object"
+              },
+              "license": {
+                "description": "Authoritative license state.",
+                "type": "object"
+              },
+              "lineage": {
+                "description": "Artifact lineage and follow state.",
+                "type": "object"
+              },
+              "provenance": {
+                "description": "Artifact provenance.",
+                "type": "object"
+              },
+              "publication": {
+                "description": "Artifact publication state.",
+                "type": "object"
+              },
+              "revisionCount": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "stateVersion": {
+                "description": "Optimistic-concurrency version for lifecycle mutations.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "descriptor",
+              "currentRevision",
+              "revisionCount",
+              "stateVersion",
+              "license",
+              "lineage",
+              "provenance",
+              "publication"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "43ca2e18ca6b00803a5ec78d4cfd75d0cdd04db7560f81199383141153fb6c36",
+      "title": "Fork Artifact revision"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Get one hosted Artifact or live Skill projection by stable Artifact ID.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "description": "Stable Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact": {
+            "additionalProperties": true,
+            "properties": {
+              "currentRevision": {
+                "description": "Selected current revision and component metadata.",
+                "type": "object"
+              },
+              "descriptor": {
+                "description": "Canonical Artifact descriptor.",
+                "type": "object"
+              },
+              "license": {
+                "description": "Authoritative license state.",
+                "type": "object"
+              },
+              "lineage": {
+                "description": "Artifact lineage and follow state.",
+                "type": "object"
+              },
+              "provenance": {
+                "description": "Artifact provenance.",
+                "type": "object"
+              },
+              "publication": {
+                "description": "Artifact publication state.",
+                "type": "object"
+              },
+              "revisionCount": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "stateVersion": {
+                "description": "Optimistic-concurrency version for lifecycle mutations.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "descriptor",
+              "currentRevision",
+              "revisionCount",
+              "stateVersion",
+              "license",
+              "lineage",
+              "provenance",
+              "publication"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "b42f3f0ce0afc95cb8fbcb7c96907f9b88643bafc51efc602c1b21dba82c148d",
+      "title": "Get Bazaar artifact"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Validate and persist bounded ArtifactCandidate evidence without promoting publication or license authority.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate": {
+            "description": "dinglebear.artifact-candidate/v1 payload.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.intake_candidate",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "candidate": {
+            "description": "Canonical candidate result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909",
+      "title": "Intake Artifact candidate"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List the combined Bazaar catalog of hosted Artifacts and live Skill projections.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Opaque Artifact continuation cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum Artifacts to return.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Case-insensitive Bazaar search across Artifact identity and descriptive fields.",
+            "maxLength": 200,
+            "minLength": 3,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.artifacts.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifacts": {
+            "description": "Canonical artifacts result field.",
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "Canonical nextCursor result field.",
+            "type": "string"
+          },
+          "total": {
+            "description": "Canonical total result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifacts",
+          "total"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "ae219779387114fe51269259a5a15c433fbc89135ee89a00a4e1340486f829c5",
+      "title": "List Bazaar artifacts"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List bounded discovery evidence accepted by Depot without granting publication authority.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Opaque candidate continuation cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum candidates to return.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.artifacts.list_candidates",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "candidates": {
+            "description": "Canonical candidates result field.",
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "Canonical nextCursor result field.",
+            "type": "string"
+          },
+          "total": {
+            "description": "Canonical total result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidates",
+          "total"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142",
+      "title": "List Artifact candidates"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Set authoritative license review and takedown state; incompatible publication is narrowed atomically.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "description": "Hosted Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "declared": {
+            "description": "Declared license expression or identifier; null clears the declaration.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detected": {
+            "description": "Detected license evidence.",
+            "items": {},
+            "type": "array"
+          },
+          "evidenceAt": {
+            "description": "RFC3339 evidence timestamp.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Mutable Artifact state version required for optimistic concurrency.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "description": "Bounded policy metadata.",
+            "type": "object"
+          },
+          "notices": {
+            "description": "License notice evidence.",
+            "items": {},
+            "type": "array"
+          },
+          "redistribution": {
+            "description": "Authoritative redistribution classification.",
+            "enum": [
+              "metadata_only",
+              "cache_for_index",
+              "redistributable",
+              "forkable",
+              "restricted",
+              "unknown"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "reviewState": {
+            "description": "License review state.",
+            "enum": [
+              "unreviewed",
+              "reviewed",
+              "disputed"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "takedownState": {
+            "description": "Takedown state.",
+            "enum": [
+              "none",
+              "requested",
+              "restricted",
+              "removed"
+            ],
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId",
+          "expectedVersion"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.set_license",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact": {
+            "additionalProperties": true,
+            "properties": {
+              "currentRevision": {
+                "description": "Selected current revision and component metadata.",
+                "type": "object"
+              },
+              "descriptor": {
+                "description": "Canonical Artifact descriptor.",
+                "type": "object"
+              },
+              "license": {
+                "description": "Authoritative license state.",
+                "type": "object"
+              },
+              "lineage": {
+                "description": "Artifact lineage and follow state.",
+                "type": "object"
+              },
+              "provenance": {
+                "description": "Artifact provenance.",
+                "type": "object"
+              },
+              "publication": {
+                "description": "Artifact publication state.",
+                "type": "object"
+              },
+              "revisionCount": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "stateVersion": {
+                "description": "Optimistic-concurrency version for lifecycle mutations.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "descriptor",
+              "currentRevision",
+              "revisionCount",
+              "stateVersion",
+              "license",
+              "lineage",
+              "provenance",
+              "publication"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0faaf5e02f9ffbc63815216e02737628c82de4b707e0647a67dbe5d76ce91018",
+      "title": "Set Artifact license policy"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Change hosted publication state while re-applying authoritative Depot redistribution policy.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "description": "Hosted Artifact ID.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "distribution": {
+            "description": "Distribution mode.",
+            "enum": [
+              "metadata",
+              "bytes"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Mutable Artifact state version required for optimistic concurrency.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "state": {
+            "description": "Publication state.",
+            "enum": [
+              "draft",
+              "listed",
+              "published",
+              "withdrawn"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "visibility": {
+            "description": "Publication visibility.",
+            "enum": [
+              "private",
+              "unlisted",
+              "public"
+            ],
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId",
+          "expectedVersion"
+        ],
+        "type": "object"
+      },
+      "name": "depot.artifacts.set_publication",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact": {
+            "additionalProperties": true,
+            "properties": {
+              "currentRevision": {
+                "description": "Selected current revision and component metadata.",
+                "type": "object"
+              },
+              "descriptor": {
+                "description": "Canonical Artifact descriptor.",
+                "type": "object"
+              },
+              "license": {
+                "description": "Authoritative license state.",
+                "type": "object"
+              },
+              "lineage": {
+                "description": "Artifact lineage and follow state.",
+                "type": "object"
+              },
+              "provenance": {
+                "description": "Artifact provenance.",
+                "type": "object"
+              },
+              "publication": {
+                "description": "Artifact publication state.",
+                "type": "object"
+              },
+              "revisionCount": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "stateVersion": {
+                "description": "Optimistic-concurrency version for lifecycle mutations.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "descriptor",
+              "currentRevision",
+              "revisionCount",
+              "stateVersion",
+              "license",
+              "lineage",
+              "provenance",
+              "publication"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "e9ea567f18a713da54460bffd66fbd001c974fcde4c9596bc67b708ef7fbad0a",
+      "title": "Set Artifact publication"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Add an ingested skill to a bundle draft.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Skill name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Skill namespace.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "namespace",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.add_skill",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "description": "Canonical description result field.",
+            "type": "string"
+          },
+          "draft": {
+            "description": "Canonical draft result field.",
+            "type": "array"
+          },
+          "drift": {
+            "description": "Canonical drift result field.",
+            "type": "object"
+          },
+          "members": {
+            "description": "Canonical members result field.",
+            "type": "integer"
+          },
+          "publishedVersions": {
+            "description": "Canonical publishedVersions result field.",
+            "type": "array"
+          },
+          "slug": {
+            "description": "Canonical slug result field.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Canonical versions result field.",
+            "type": "integer"
+          },
+          "visibility": {
+            "description": "Canonical visibility result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0d78c3e334861b262e00e14859b58f668705182efe6d58e4579e98bafe123667",
+      "title": "Add skill to bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Create an empty curated Depot bundle.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "description": "Human-readable description.",
+            "minLength": 0,
+            "type": "string"
+          },
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "visibility": {
+            "description": "Bundle visibility.",
+            "enum": [
+              "public",
+              "bearer",
+              "oauth"
+            ],
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.create",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "description": "Canonical description result field.",
+            "type": "string"
+          },
+          "draft": {
+            "description": "Canonical draft result field.",
+            "type": "array"
+          },
+          "drift": {
+            "description": "Canonical drift result field.",
+            "type": "object"
+          },
+          "members": {
+            "description": "Canonical members result field.",
+            "type": "integer"
+          },
+          "publishedVersions": {
+            "description": "Canonical publishedVersions result field.",
+            "type": "array"
+          },
+          "slug": {
+            "description": "Canonical slug result field.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Canonical versions result field.",
+            "type": "integer"
+          },
+          "visibility": {
+            "description": "Canonical visibility result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "1e17f3565ca13065470821a627efa315041c47824810102a63f7a1fce8b64872",
+      "title": "Create bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Delete a bundle and its published manifests; CAS collection is separate.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.delete",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "deleted": {
+            "description": "Canonical deleted result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
+      "title": "Delete bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Get one Depot bundle including draft members and published versions.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "description": "Canonical description result field.",
+            "type": "string"
+          },
+          "draft": {
+            "description": "Canonical draft result field.",
+            "type": "array"
+          },
+          "drift": {
+            "description": "Canonical drift result field.",
+            "type": "object"
+          },
+          "members": {
+            "description": "Canonical members result field.",
+            "type": "integer"
+          },
+          "publishedVersions": {
+            "description": "Canonical publishedVersions result field.",
+            "type": "array"
+          },
+          "slug": {
+            "description": "Canonical slug result field.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Canonical versions result field.",
+            "type": "integer"
+          },
+          "visibility": {
+            "description": "Canonical visibility result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
+      "title": "Get bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List Depot bundles with visibility, publication state, and drift.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.bundles.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "bundles": {
+            "description": "Canonical bundles result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bundles"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "List bundles"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Snapshot the draft into a new immutable content-addressed version.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.publish",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "bundle": {
+            "description": "Canonical bundle result field.",
+            "type": "object"
+          },
+          "mounts": {
+            "description": "Canonical mounts result field.",
+            "type": "array"
+          },
+          "version": {
+            "description": "Canonical version result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "bundle",
+          "version",
+          "mounts"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126",
+      "title": "Publish bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Remove a skill from a bundle draft without changing published versions.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Skill name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Skill namespace.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "namespace",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.remove_skill",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "description": "Canonical description result field.",
+            "type": "string"
+          },
+          "draft": {
+            "description": "Canonical draft result field.",
+            "type": "array"
+          },
+          "drift": {
+            "description": "Canonical drift result field.",
+            "type": "object"
+          },
+          "members": {
+            "description": "Canonical members result field.",
+            "type": "integer"
+          },
+          "publishedVersions": {
+            "description": "Canonical publishedVersions result field.",
+            "type": "array"
+          },
+          "slug": {
+            "description": "Canonical slug result field.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Canonical versions result field.",
+            "type": "integer"
+          },
+          "visibility": {
+            "description": "Canonical visibility result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0d78c3e334861b262e00e14859b58f668705182efe6d58e4579e98bafe123667",
+      "title": "Remove skill from bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Change who may access a bundle mount.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "Bundle slug.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "visibility": {
+            "description": "Bundle visibility.",
+            "enum": [
+              "public",
+              "bearer",
+              "oauth"
+            ],
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "visibility"
+        ],
+        "type": "object"
+      },
+      "name": "depot.bundles.set_visibility",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "description": "Canonical description result field.",
+            "type": "string"
+          },
+          "draft": {
+            "description": "Canonical draft result field.",
+            "type": "array"
+          },
+          "drift": {
+            "description": "Canonical drift result field.",
+            "type": "object"
+          },
+          "members": {
+            "description": "Canonical members result field.",
+            "type": "integer"
+          },
+          "publishedVersions": {
+            "description": "Canonical publishedVersions result field.",
+            "type": "array"
+          },
+          "slug": {
+            "description": "Canonical slug result field.",
+            "type": "string"
+          },
+          "versions": {
+            "description": "Canonical versions result field.",
+            "type": "integer"
+          },
+          "visibility": {
+            "description": "Canonical visibility result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "68fc8ba08ee71a0c59de90590e7fb404c6052c70d463f688c54aab6678ee863e",
+      "title": "Set bundle visibility"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Request cooperative cancellation of an active ingest job.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "description": "Ingest job id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.ingest.cancel",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "job": {
+            "description": "Canonical job result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
+      "title": "Cancel ingest job"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Get one durable ingest job with progress and terminal result/error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "description": "Ingest job id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.ingest.get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "job": {
+            "description": "Canonical job result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
+      "title": "Get ingest job"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List recent durable ingest jobs. Job metadata is write-scoped.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum jobs to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.ingest.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "jobs": {
+            "description": "Canonical jobs result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "58b36a607269af9547505db30cf7b936ea7b192c5eb8c241a36aa3d528089f92",
+      "title": "List ingest jobs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Retry a failed, cancelled, or interrupted job using persisted arguments.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "description": "Ingest job id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.ingest.retry",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "job": {
+            "description": "Canonical job result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227",
+      "title": "Retry ingest job"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Start a durable asynchronous ingest job with optional idempotency key.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "description": "Kind-specific arguments validated by Depot.",
+            "type": "object"
+          },
+          "idempotencyKey": {
+            "description": "Optional stable request key.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "description": "Ingest source kind.",
+            "enum": [
+              "repo",
+              "well_known",
+              "ard_catalog",
+              "marketplace",
+              "skills_sh",
+              "mcp",
+              "archive",
+              "mcp_registry",
+              "acp_registry"
+            ],
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "name": "depot.ingest.start",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "disposition": {
+            "description": "Canonical disposition result field.",
+            "type": "string"
+          },
+          "job": {
+            "description": "Canonical job result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job",
+          "disposition"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "bfb8b4a43a3942c3beb867e5daa21f8660ac872404c8de7332269c10d37ebdc7",
+      "title": "Start ingest job"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Run a fresh bounded two-pass inventory, or explicitly resume one run, without deleting remote objects.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "description": "Optional run identity returned by an interrupted audit.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_audit",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "34251fcc65d2bb27436b243c3dfc32a40b75cb1e690682a5c38f1ad745ba8eff",
+      "title": "Audit remote CAS inventory"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Freeze and verify the canonical source live set.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.audit",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Audit CAS migration source"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Copy and readback-verify the audited live set.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.copy",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Copy CAS migration objects"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Drain writers and atomically select the verified target.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.cutover",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Cut over CAS backend"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Stop synchronous rollback mirroring without deleting either backend.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledgeLoss": {
+            "description": "Explicitly acknowledge loss of immediate rollback.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "acknowledgeLoss"
+        ],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.end_retention",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "0843be1e7e8a6d27847d84bf27641b3310ed18c201fe23cd312d86069760fc91",
+      "title": "End CAS rollback retention"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Durably plan the configured filesystem-to-S3 migration.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.plan",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Plan CAS migration"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Drain writers, prove rollback readability, and restore the source.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.rollback",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Roll back CAS backend"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Show redacted durable migration state.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.status",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Show CAS migration status"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Reconcile the target with the frozen census.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.cas_migration.verify",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Verify CAS migration target"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Run bundle-aware content-addressed storage garbage collection.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.gc",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Collect unreferenced CAS blobs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Report installed skills carrying macOS sidecar files, and optionally remove them.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "clean": {
+            "description": "True to delete the reported files. Defaults to reporting only.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.sidecars",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "cleanable": {
+            "description": "Canonical cleanable result field.",
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Canonical failed result field.",
+            "type": "array"
+          },
+          "files": {
+            "description": "Canonical files result field.",
+            "type": "integer"
+          },
+          "notCleanable": {
+            "description": "Canonical notCleanable result field.",
+            "type": "integer"
+          },
+          "removed": {
+            "description": "Canonical removed result field.",
+            "type": "integer"
+          },
+          "skills": {
+            "description": "Canonical skills result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills",
+          "files",
+          "cleanable",
+          "notCleanable",
+          "removed",
+          "failed"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "06878b19f1c8d8bd0b9a350e18e31de2780cf862245ffb42ca876b2dd7df750c",
+      "title": "Find macOS sidecar files in the store"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Check pinned external protocol and registry surfaces for drift.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "only": {
+            "description": "Optional upstream surface ids.",
+            "items": {
+              "description": "Upstream surface id.",
+              "enum": [
+                "sep_text",
+                "protocol_versions",
+                "wg_repo",
+                "skills_sh",
+                "well_known"
+              ],
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.maintenance.upstream",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "checks": {
+            "description": "Canonical checks result field.",
+            "type": "array"
+          },
+          "complete": {
+            "description": "Canonical complete result field.",
+            "type": "boolean"
+          },
+          "drifted": {
+            "description": "Canonical drifted result field.",
+            "type": "boolean"
+          },
+          "unknown": {
+            "description": "Canonical unknown result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "checks",
+          "drifted",
+          "complete",
+          "unknown"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "502d7c2c05371c0777c72c8732f3f59ea7581eb19650f5baaf0077ae4af28546",
+      "title": "Check upstream contracts"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List MCP servers conforming to the MCP Registry v0.1 specification.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "description": "Category filter.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Pagination cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "includeDeleted": {
+            "description": "Include deleted registry entries.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Max results per page.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tag": {
+            "description": "Tag filter.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedSince": {
+            "description": "RFC 3339 update watermark.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "description": "Exact version or latest.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.mcp_registry.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "08d503577793cd5f35fd6c549b388ef3038d7357114c7d9cb7e6812406770d8b",
+      "title": "List MCP servers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Delete one live skill; published bundle versions remain pinned in CAS.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Skill name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Skill namespace.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.delete",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "deleted": {
+            "description": "Canonical deleted result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "35e1b4a3699b38c2ab3e989bef3a13c5876f7d9130b32c9b3f9f71e85fa0b469",
+      "title": "Delete ingested skill"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Inspect one live Depot skill by canonical skill URI.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "uri": {
+            "description": "Canonical SKILL.md URI.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "frontmatter": {
+            "description": "Canonical frontmatter result field.",
+            "type": "object"
+          },
+          "resources": {
+            "description": "Canonical resources result field.",
+            "type": "array"
+          },
+          "skill": {
+            "description": "Canonical skill result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "skill",
+          "frontmatter",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
+      "title": "Get Depot skill"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Ingest agents from an Agent Client Protocol registry.json or repository.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "sourceUrl": {
+            "description": "ACP registry.json URL or repository URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceUrl"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_acp_registry",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "agents_found": {
+            "description": "Canonical agents_found result field.",
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Canonical failed result field.",
+            "type": "array"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "integer"
+          },
+          "installed_artifacts": {
+            "description": "Canonical installed_artifacts result field.",
+            "type": "array"
+          },
+          "servers_found": {
+            "description": "Canonical servers_found result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0b43e39e67cf6182fd645cdbf38ccfd1328d251313328397de8faf8fa1fd9883",
+      "title": "Ingest ACP Registry"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Synchronously discover and ingest an Agentic Resource Discovery catalog.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "ARD catalog domain or base URL.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_ard_catalog",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "dc544c16566f7fb3458ca275f2447348b7e186c07540110eed2464a34cea23a9",
+      "title": "Ingest ARD catalog"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Synchronously resolve an Anthropic/OpenAI marketplace repository or direct GitHub manifest and ingest plugin skills.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "only": {
+            "description": "Optional plugin names to ingest.",
+            "items": {
+              "description": "Plugin name.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "ref": {
+            "description": "Optional Git ref.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "description": "Marketplace repository, direct GitHub marketplace.json URL, or linked plugin.json URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_marketplace",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "a34a0a4da48ed91b9b23b03dc6d5e951e04a8d698201ade4b44726d27084100b",
+      "title": "Ingest marketplace"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Synchronously federate a current Skills-over-MCP server into Depot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "description": "HTTPS MCP endpoint using the current lifecycle.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_mcp",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "b1b8df7638461826bfa223b953fc0f77e1611df4622ad306cab5c2d6db788be1",
+      "title": "Federate Skills over MCP"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Scrape and ingest servers from an upstream Model Context Protocol Registry.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "maxServers": {
+            "description": "Optional diagnostic ceiling. Omit for a complete end-of-cursor sync.",
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "Import full version history or latest versions only.",
+            "enum": [
+              "history",
+              "latest"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "prepareConcurrency": {
+            "description": "Bounded manifest preparation concurrency.",
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "registryUrl": {
+            "description": "MCP registry base URL (e.g. https://registry.modelcontextprotocol.io).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "resume": {
+            "description": "Resume an incomplete committed-page checkpoint.",
+            "type": "boolean"
+          },
+          "updatedSince": {
+            "description": "Optional RFC 3339 lower bound for incremental synchronization.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "registryUrl"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_mcp_registry",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "agents_found": {
+            "description": "Canonical agents_found result field.",
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Canonical failed result field.",
+            "type": "array"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "integer"
+          },
+          "installed_artifacts": {
+            "description": "Canonical installed_artifacts result field.",
+            "type": "array"
+          },
+          "servers_found": {
+            "description": "Canonical servers_found result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "215a1654430b3d23da33f44d0dd18d0470953f29207d42f0c927854ea96bf22e",
+      "title": "Ingest MCP Registry"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Clone and synchronously ingest Agent Skills from a Git repository.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "description": "Optional runtime Git credential reference; never a secret value.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "ref": {
+            "description": "Optional Git ref.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "subdir": {
+            "description": "Optional repository subdirectory.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "description": "HTTPS Git repository URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_repo",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "3cf028f93aba63db8368cbfc9ddd13110d321fd6dd1d057efcea7f6326c7ddfb",
+      "title": "Ingest skill repository"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Synchronously ingest the repository selected by a skills.sh result.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "ref": {
+            "description": "Optional Git ref.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repoUrl": {
+            "description": "GitHub repository URL from skills.sh.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "skillId": {
+            "description": "skills.sh skill identifier.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "subdir": {
+            "description": "Optional repository subdirectory.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repoUrl",
+          "skillId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_skills_sh",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "2755a5b72736ee6ff4248f49fa4e630ac2287af9d8e71c081faeadcaa04dcb0a",
+      "title": "Ingest skills.sh result"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Synchronously discover and ingest a domain's .well-known Agent Skills catalog.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "Domain to discover.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace override.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.ingest_well_known",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "freedBytes": {
+            "description": "Canonical freedBytes result field.",
+            "type": "integer"
+          },
+          "installed": {
+            "description": "Canonical installed result field.",
+            "type": "array"
+          },
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "object"
+          },
+          "skipped": {
+            "description": "Canonical skipped result field.",
+            "type": "array"
+          },
+          "source": {
+            "description": "Canonical source result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "0d23e30d9256e9dc83def4550ed1285e3c28502383bf82adfdb7405f720c2b3a",
+      "title": "Ingest .well-known skills"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List canonical skill summaries from the live Depot catalog with opaque pagination.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Opaque continuation cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum skills to return.",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.skills.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "nextCursor": {
+            "description": "Canonical nextCursor result field.",
+            "type": "string"
+          },
+          "skills": {
+            "description": "Canonical skills result field.",
+            "type": "array"
+          },
+          "total": {
+            "description": "Canonical total result field.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "skills",
+          "total"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
+      "title": "List Depot skills"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Load a skill's SKILL.md with bounded continuation from the mounted catalog.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {
+            "description": "Maximum bytes to return.",
+            "maximum": 262144,
+            "minimum": 4,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Optional continuation byte offset.",
+            "maximum": 16777216,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uri": {
+            "description": "Skill URI returned by search or skills/list.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.load",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "_meta": {
+            "description": "Canonical _meta result field.",
+            "type": "object"
+          },
+          "contents": {
+            "description": "Canonical contents result field.",
+            "type": "array"
+          },
+          "structuredContent": {
+            "description": "Canonical structuredContent result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
+      "title": "Load Depot skill"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Read a skill file or direct-child directory from the mounted catalog.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Opaque directory continuation cursor.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum direct children to return.",
+            "maximum": 250,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxBytes": {
+            "description": "Maximum file bytes to return.",
+            "maximum": 262144,
+            "minimum": 4,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Optional file continuation byte offset.",
+            "maximum": 16777216,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uri": {
+            "description": "Skill resource or directory URI.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.read",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "_meta": {
+            "description": "Canonical _meta result field.",
+            "type": "object"
+          },
+          "contents": {
+            "description": "Canonical contents result field.",
+            "type": "array"
+          },
+          "structuredContent": {
+            "description": "Canonical structuredContent result field.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "schemaFingerprint": "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
+      "title": "Read Depot skill resource"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Search this mounted Depot catalog by namespace, name, or description.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum results to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Case-insensitive search query.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.search",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "query": {
+            "description": "Canonical query result field.",
+            "type": "string"
+          },
+          "results": {
+            "description": "Canonical results result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "964f29b4c9d7e241eb40b1e008bf38f07c3959aae1f785f9d4b6210fc1bd0925",
+      "title": "Search Depot skills"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Search an Agentic Resource Discovery registry without ingesting anything.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "pageToken": {
+            "description": "Optional registry page token.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "registry": {
+            "description": "ARD registry base URL or domain.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "registry",
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.search_ard",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "pageToken": {
+            "description": "Optional next-page token.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referrals": {
+            "description": "Safe registry referrals.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "url": {
+                  "description": "Resolved HTTPS referral URL.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "referralsTruncated": {
+            "description": "Whether referrals exceeded the bound.",
+            "type": "boolean"
+          },
+          "registry": {
+            "description": "Normalized ARD registry base URL.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "rejected": {
+            "description": "Malformed or unsafe entries that were rejected.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "index": {
+                  "description": "Zero-based entry index.",
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "description": "Rejected entry kind.",
+                  "enum": [
+                    "result",
+                    "referral"
+                  ],
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reason": {
+                  "description": "Bounded rejection reason.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "index",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "results": {
+            "description": "Normalized skill results.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "capabilities": {
+                  "description": "Advertised capabilities.",
+                  "items": {
+                    "description": "Capability.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "data": {
+                  "description": "Optional embedded skill data.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "description": {
+                  "description": "Optional skill description.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "displayName": {
+                  "description": "Human-readable skill name.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "identifier": {
+                  "description": "Stable AIR resource identifier.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "tags": {
+                  "description": "Skill tags.",
+                  "items": {
+                    "description": "Tag.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "description": "ARD resource media type.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "description": "Resolved HTTPS skill URL.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "identifier",
+                "displayName",
+                "type",
+                "tags",
+                "capabilities"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "resultsTruncated": {
+            "description": "Whether skill results exceeded the bound.",
+            "type": "boolean"
+          },
+          "truncated": {
+            "description": "Whether either result collection was truncated.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "registry",
+          "results",
+          "referrals",
+          "rejected",
+          "resultsTruncated",
+          "referralsTruncated",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
+      "title": "Search an ARD registry"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Resolve an Anthropic or OpenAI marketplace repository/direct GitHub manifest into the git targets Depot would ingest.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "only": {
+            "description": "Optional plugin names to include.",
+            "items": {
+              "description": "Plugin name.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "ref": {
+            "description": "Optional Git ref.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "description": "Marketplace repository, direct GitHub marketplace.json URL, or linked plugin.json URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.search_marketplace",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "listed": {
+            "description": "Plugins present in the manifest.",
+            "maximum": 25000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "marketplace": {
+            "description": "Marketplace display name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "plugins": {
+            "description": "Resolved plugin ingestion targets.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "description": "Optional plugin description.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "description": "Marketplace plugin name.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Normalized Depot namespace.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ref": {
+                  "description": "Optional pinned Git ref.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "subdir": {
+                  "description": "Optional repository subdirectory.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "description": "Resolved Git repository URL.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "namespace",
+                "description",
+                "url",
+                "ref",
+                "subdir"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Whether the configured plugin bound was reached.",
+            "type": "boolean"
+          },
+          "unresolved": {
+            "description": "Plugin entries that could not be resolved.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "marketplace",
+          "listed",
+          "truncated",
+          "unresolved",
+          "plugins"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7",
+      "title": "Search plugin marketplace"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Search the public skills.sh registry without ingesting anything.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum results to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "depot.skills.search_skills_sh",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "query": {
+            "description": "Canonical query result field.",
+            "type": "string"
+          },
+          "results": {
+            "description": "Canonical results result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "cfb8b3b48d34ff9dbdd5f871c924a2d8de67aa4a352e5e43a3839b5cd39a554c",
+      "title": "Search skills.sh"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Enable/pause a persisted source and/or change its refresh interval.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "description": "Whether scheduled refresh is enabled.",
+            "type": "boolean"
+          },
+          "intervalSeconds": {
+            "description": "Refresh interval in seconds.",
+            "maximum": 31536000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sourceId": {
+            "description": "Persisted source id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.sources.configure",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "args": {
+            "additionalProperties": true,
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "consecutiveFailures": {
+            "description": "Consecutive refresh failure count.",
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "description": "Whether scheduled refresh is enabled.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable source id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "insertedAt": {
+            "description": "Source creation timestamp.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "intervalSeconds": {
+            "description": "Configured refresh interval in seconds.",
+            "maximum": 31536000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Source kind.",
+            "enum": [
+              "repo",
+              "well_known",
+              "ard_catalog",
+              "marketplace",
+              "mcp",
+              "mcp_registry",
+              "acp_registry"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "nextAttemptAt": {
+            "description": "Next scheduled refresh timestamp.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "Last configuration timestamp.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "description": "Persisted source record version.",
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "id",
+          "kind",
+          "args",
+          "enabled",
+          "intervalSeconds",
+          "insertedAt",
+          "updatedAt",
+          "nextAttemptAt",
+          "consecutiveFailures"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4",
+      "title": "Configure source"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Delete one persisted source; installed skills remain in the store.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "sourceId": {
+            "description": "Persisted source id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.sources.delete",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "deleted": {
+            "description": "Canonical deleted result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724",
+      "title": "Delete source"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List persisted Depot ingestion sources and refresh state.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.sources.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "sources": {
+            "description": "Canonical sources result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "List sources"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Schedule an immediate refresh of one persisted source.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "sourceId": {
+            "description": "Persisted source id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.sources.refresh",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "sourceId": {
+            "description": "Canonical sourceId result field.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Canonical status result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "sourceId"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724",
+      "title": "Refresh source"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Return health, protocol, auth mode, catalog size, source count, and bundle count.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.system.status",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "authMode": {
+            "description": "Canonical authMode result field.",
+            "type": "string"
+          },
+          "bundles": {
+            "description": "Canonical bundles result field.",
+            "type": "integer"
+          },
+          "catalog": {
+            "description": "Canonical catalog result field.",
+            "type": "object"
+          },
+          "protocolVersion": {
+            "description": "Canonical protocolVersion result field.",
+            "type": "string"
+          },
+          "sepRevision": {
+            "description": "Canonical sepRevision result field.",
+            "type": "string"
+          },
+          "skills": {
+            "description": "Canonical skills result field.",
+            "type": "integer"
+          },
+          "sources": {
+            "description": "Canonical sources result field.",
+            "type": "integer"
+          },
+          "status": {
+            "description": "Canonical status result field.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Canonical version result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "authMode",
+          "protocolVersion",
+          "skills",
+          "catalog",
+          "sources",
+          "bundles",
+          "version"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "Depot status"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Create a bearer token and return its secret exactly once.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Token name.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "scopes": {
+            "description": "Granted scopes such as skills:read, skills:write, or skills:read:<bundle>.",
+            "items": {
+              "description": "Scope.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "type": "object"
+      },
+      "name": "depot.tokens.create",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "secret": {
+            "description": "Canonical secret result field.",
+            "type": "string"
+          },
+          "token": {
+            "description": "Canonical token result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "token",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "30bcfd58191d38f9442105c1bca827e05038497aa48f7df29a56d4c43caded06",
+      "title": "Create access token"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "List token metadata; token secrets are never returned after creation.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.tokens.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "tokens": {
+            "description": "Canonical tokens result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "List access tokens"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Revoke one bearer token by id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "tokenId": {
+            "description": "Token id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "tokenId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.tokens.revoke",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "result": {
+            "description": "Canonical result result field.",
+            "type": "string"
+          },
+          "tokenId": {
+            "description": "Canonical tokenId result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tokenId",
+          "result"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "6f85fe7048bb3b20d0434eeb1ae50eea140e916c0b84f63223cba1fbc849d765",
+      "title": "Revoke access token"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Create a short-lived principal-bound slot for archive or JSON manifest bytes. Upload with authenticated HTTP PUT, then start an archive or marketplace ingest job using uploadId.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "description": "Original archive filename or JSON marketplace/plugin manifest filename.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "type": "object"
+      },
+      "name": "depot.uploads.create",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "upload": {
+            "description": "Canonical upload result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "upload"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "0494e00291f11c25b559db7e25a50761791f3d3d13bd411694cd304cbaf6d3e9",
+      "title": "Create ingest upload slot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contractVersion": 1,
+      "description": "Delete a principal-owned pending or ready ingest upload slot before it expires.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "uploadId": {
+            "description": "Opaque upload slot id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uploadId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.uploads.delete",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "deleted": {
+            "description": "Canonical deleted result field.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "81207c6d9931f2b06f5216d259e7657cf2235049ee95041e8e1a5ba827efe720",
+      "title": "Delete ingest upload slot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
+      "description": "Inspect a principal-owned ingest upload slot and whether its bytes are ready.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "uploadId": {
+            "description": "Opaque upload slot id.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uploadId"
+        ],
+        "type": "object"
+      },
+      "name": "depot.uploads.get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "upload": {
+            "description": "Canonical upload result field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "upload"
+        ],
+        "type": "object"
+      },
+      "schemaFingerprint": "81207c6d9931f2b06f5216d259e7657cf2235049ee95041e8e1a5ba827efe720",
+      "title": "Get ingest upload slot"
+    }
+  ],
+  "schemaVersion": "labby.depot-operations-golden/v1",
+  "source": "Depot lib/depot/operations/registry.ex public catalog (GET /api/operations), captured from the codex/multi-user-access worktree"
+}

@@ -5,15 +5,17 @@
       "description": "Manage teams, memberships, invitations, and project assignments",
       "category": "administration",
       "status": "available",
-      "caller_bound": false,
+      "caller_bound": true,
       "requires_http_subject": false,
       "actions": [
         {
           "name": "access.team.create",
           "description": "Create a team",
           "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "team_id",
@@ -256,6 +258,51 @@
           "returns": "object"
         },
         {
+          "name": "access.project.effective.list",
+          "description": "List effective project roles",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.grant",
+          "description": "Grant platform administrator authority",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.revoke",
+          "description": "Revoke platform administrator authority",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "access.gateway_credential.list",
           "description": "List redacted Team Gateway credential bindings",
           "destructive": false,
@@ -314,47 +361,6 @@
             },
             {
               "name": "upstream_name",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "access.project.effective.list",
-          "description": "List effective project roles",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [],
-          "returns": "object"
-        },
-        {
-          "name": "access.platform_admin.grant",
-          "description": "Grant platform administrator authority",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "principal_id",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            }
-          ],
-          "returns": "object"
-        },
-        {
-          "name": "access.platform_admin.revoke",
-          "description": "Revoke platform administrator authority",
-          "destructive": false,
-          "requires_admin": false,
-          "required_scopes": [],
-          "params": [
-            {
-              "name": "principal_id",
               "ty": "string",
               "required": true,
               "description": ""
@@ -709,7 +715,7 @@
       "description": "Create and manage isolated development containers",
       "category": "administration",
       "status": "available",
-      "caller_bound": false,
+      "caller_bound": true,
       "requires_http_subject": false,
       "actions": [
         {
@@ -834,6 +840,125 @@
               "ty": "string",
               "required": true,
               "description": "Opaque Dev Container identifier"
+            }
+          ],
+          "returns": "object"
+        }
+      ]
+    },
+    {
+      "name": "projects",
+      "description": "Create and manage Team-owned Projects",
+      "category": "administration",
+      "status": "available",
+      "caller_bound": true,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "projects.list",
+          "description": "List Projects visible to the caller through Team membership",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "object"
+        },
+        {
+          "name": "projects.create",
+          "description": "Create a Project owned by a Team the caller manages",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owning Team identifier"
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": "Project identifier"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Human-readable Project name"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "projects.get",
+          "description": "Get one Team-owned Project",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owning Team identifier"
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": "Project identifier"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "projects.update",
+          "description": "Rename a Team-owned Project",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owning Team identifier"
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": "Project identifier"
+            },
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Human-readable Project name"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "projects.archive",
+          "description": "Archive a Team-owned Project; there is no un-archive action yet",
+          "destructive": true,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owning Team identifier"
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": "Project identifier"
             }
           ],
           "returns": "object"
@@ -1479,10 +1604,8 @@
           "name": "gateway.loadout.list",
           "description": "List reusable gateway capability loadouts, including Skills-over-MCP exposure policy",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "GatewayLoadoutConfig[]"
         },
@@ -1490,10 +1613,8 @@
           "name": "gateway.loadout.list_state",
           "description": "List desired Loadouts with pending restart state compared with this process's mounted projections",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "GatewayLoadoutState[]"
         },
@@ -1501,10 +1622,8 @@
           "name": "gateway.loadout.get",
           "description": "Get one reusable gateway capability loadout",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1519,10 +1638,8 @@
           "name": "gateway.loadout.add",
           "description": "Add a reusable gateway loadout that narrows upstreams, services, Tools, Resources, Prompts, Skills, and Code Mode",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "loadout",
@@ -1537,10 +1654,8 @@
           "name": "gateway.loadout.update",
           "description": "Replace a reusable gateway loadout; active protected routes may require restart before changes can take effect",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1561,10 +1676,8 @@
           "name": "gateway.loadout.patch",
           "description": "Patch selected fields on a reusable gateway loadout without resetting unspecified capability gates or selections",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1585,10 +1698,8 @@
           "name": "gateway.loadout.stage_update",
           "description": "Persist a mounted Loadout replacement for the next Labby restart without changing the running route projection",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1609,10 +1720,8 @@
           "name": "gateway.loadout.stage_patch",
           "description": "Patch a mounted Loadout in durable config for the next Labby restart",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1633,10 +1742,8 @@
           "name": "gateway.loadout.stage_remove",
           "description": "Remove a Loadout from desired config after its protected-route references have also been staged away",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1651,10 +1758,8 @@
           "name": "gateway.loadout.remove",
           "description": "Remove an unreferenced reusable gateway loadout",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1669,10 +1774,8 @@
           "name": "gateway.protected_route.list",
           "description": "List Gateway-managed public MCP routes protected by Lab OAuth",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "ProtectedMcpRouteConfig[]"
         },
@@ -1680,10 +1783,8 @@
           "name": "gateway.protected_route.list_state",
           "description": "List desired protected-route config with pending restart state compared with the routes mounted by this process",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "ProtectedMcpRouteState[]"
         },
@@ -1691,10 +1792,8 @@
           "name": "gateway.protected_route.get",
           "description": "Get one Gateway-managed protected MCP route",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1709,10 +1808,8 @@
           "name": "gateway.protected_route.add",
           "description": "Add a Gateway-managed protected MCP route",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "route",
@@ -1727,10 +1824,8 @@
           "name": "gateway.protected_route.update",
           "description": "Replace a Gateway-managed protected MCP route",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1751,10 +1846,8 @@
           "name": "gateway.protected_route.remove",
           "description": "Remove a Gateway-managed protected MCP route",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1769,10 +1862,8 @@
           "name": "gateway.protected_route.stage_add",
           "description": "Persist a gateway_subset protected route for the next Labby restart without pretending it is hot-mounted",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "route",
@@ -1787,10 +1878,8 @@
           "name": "gateway.protected_route.stage_update",
           "description": "Persist a protected-route update involving a gateway_subset for the next Labby restart",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1811,10 +1900,8 @@
           "name": "gateway.protected_route.stage_remove",
           "description": "Persist removal of a gateway_subset protected route for the next Labby restart",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -1829,10 +1916,8 @@
           "name": "gateway.protected_route.test",
           "description": "Validate a proposed protected MCP route without saving it",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "route",

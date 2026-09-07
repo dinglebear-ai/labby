@@ -9,11 +9,11 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `access` | `access.gateway_credential.bind` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`upstream_name*: string`<br>`binding_id*: string` | `object` | mcp, api |
 | `access` | `access.gateway_credential.list` | false | false | false |  | `resource_capability` | `scope.read` | `platform` | `team_id*: string` | `object` | mcp, api |
 | `access` | `access.gateway_credential.revoke` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`upstream_name*: string` | `object` | mcp, api |
-| `access` | `access.platform_admin.grant` | false | false | false |  | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
-| `access` | `access.platform_admin.revoke` | false | false | false |  | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
+| `access` | `access.platform_admin.grant` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
+| `access` | `access.platform_admin.revoke` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
 | `access` | `access.project.effective.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
 | `access` | `access.team.activate` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string` | `object` | mcp, api |
-| `access` | `access.team.create` | false | false | false |  | `resource_capability` | `scope.create` | `platform` | `team_id*: string`<br>`name*: string` | `object` | mcp, api |
+| `access` | `access.team.create` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `team_id*: string`<br>`name*: string` | `object` | mcp, api |
 | `access` | `access.team.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
 | `access` | `access.team.member.add` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `access.team.member.remove` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
@@ -110,84 +110,84 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `fs` | `fs.preview` | false | false | false |  | `transport` | `-` | `-` | `path*: string`<br>`max_bytes: integer` | `binary (streamed); mime from safe-MIME whitelist or application/octet-stream` | api, web |
 | `fs` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `fs` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `gateway` | `gateway.add` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `spec*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `McpClientConfigView` | mcp, api |
-| `gateway` | `gateway.clients.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `GatewayClientView[]` | cli, mcp, api |
-| `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.discover` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `string[]` | mcp, api, web |
-| `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `string[]` | mcp, api, web |
-| `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayToolExposureRowView[]` | mcp, api, web |
-| `gateway` | `gateway.enrich.apply` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api |
-| `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api |
-| `gateway` | `gateway.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.import` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `PendingImportView` | cli, mcp, api |
-| `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `PendingImportView[]` | cli, mcp, api |
-| `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `PendingImportView` | cli, mcp, api |
-| `gateway` | `gateway.import_tombstones.clear` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | mcp, api, web |
-| `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ImportTombstoneView[]` | mcp, api |
-| `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | mcp, api, web |
-| `gateway` | `gateway.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.add` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `GatewayLoadoutConfig[]` | mcp, api |
-| `gateway` | `gateway.loadout.list_state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `GatewayLoadoutState[]` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.patch` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`patch*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.remove` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.stage_patch` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`patch*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.stage_remove` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.stage_update` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | mcp, api, web |
-| `gateway` | `gateway.loadout.update` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | mcp, api, web |
-| `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api |
-| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string` | `ok` | cli, mcp, api |
-| `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
-| `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `url*: string` | `ProbeResult` | mcp, api |
-| `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | mcp, api |
-| `gateway` | `gateway.oauth.resource_lease.release` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ResourceLeaseReleaseView` | mcp, api |
-| `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | mcp, api |
-| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string` | `BeginAuthorization` | cli, mcp, api |
-| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api |
-| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api |
-| `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ProtectedMcpRouteConfig[]` | mcp, api |
-| `gateway` | `gateway.protected_route.list_state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ProtectedMcpRouteState[]` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.remove` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.stage_add` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.stage_remove` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.stage_update` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.update` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api |
-| `gateway` | `gateway.reload` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `GatewayCatalogDiff` | cli, mcp, api, web |
-| `gateway` | `gateway.remove` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.add` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `spec*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `McpClientConfigView` | mcp, api |
+| `gateway` | `gateway.clients.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayClientView[]` | cli, mcp, api |
+| `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `CodeModeConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.discover` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `string[]` | mcp, api, web |
+| `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `string[]` | mcp, api, web |
+| `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayToolExposureRowView[]` | mcp, api, web |
+| `gateway` | `gateway.enrich.apply` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api |
+| `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api |
+| `gateway` | `gateway.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.import` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
+| `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `PendingImportView` | cli, mcp, api |
+| `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `PendingImportView[]` | cli, mcp, api |
+| `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `PendingImportView` | cli, mcp, api |
+| `gateway` | `gateway.import_tombstones.clear` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | mcp, api, web |
+| `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `ImportTombstoneView[]` | mcp, api |
+| `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | mcp, api, web |
+| `gateway` | `gateway.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `ServerView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.add` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.get` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` |  | `GatewayLoadoutConfig[]` | mcp, api |
+| `gateway` | `gateway.loadout.list_state` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` |  | `GatewayLoadoutState[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.patch` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`patch*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.remove` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_patch` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`patch*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_remove` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_update` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | mcp, api, web |
+| `gateway` | `gateway.loadout.update` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | mcp, api, web |
+| `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api |
+| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `ok` | cli, mcp, api |
+| `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
+| `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `url*: string` | `ProbeResult` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.release` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ResourceLeaseReleaseView` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | mcp, api |
+| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `BeginAuthorization` | cli, mcp, api |
+| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api |
+| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api |
+| `gateway` | `gateway.protected_route.add` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.get` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.list` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` |  | `ProtectedMcpRouteConfig[]` | mcp, api |
+| `gateway` | `gateway.protected_route.list_state` | false | false | false |  | `resource_capability` | `scope.read` | `gateway` |  | `ProtectedMcpRouteState[]` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.remove` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_add` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_remove` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_update` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.test` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.update` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api |
+| `gateway` | `gateway.reload` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayCatalogDiff` | cli, mcp, api, web |
+| `gateway` | `gateway.remove` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.schema` | false | false | false |  | `transport` | `-` | `-` | `name*: string` | `GatewayServerSchema` | mcp, api |
-| `gateway` | `gateway.server.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ServerView` | mcp, api, web |
-| `gateway` | `gateway.servers` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `GatewayServersDoc` | mcp, api |
-| `gateway` | `gateway.service_actions` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `ServiceActionView[]` | mcp, api, web |
-| `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `ServiceConfigView` | mcp, api, web |
-| `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
-| `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
-| `gateway` | `gateway.status` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
-| `gateway` | `gateway.supported_services` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SupportedServiceView[]` | mcp, api, web |
-| `gateway` | `gateway.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
-| `gateway` | `gateway.update` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ServerView` | mcp, api, web |
-| `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ServerView` | mcp, api, web |
-| `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `VirtualServerMcpPolicyView` | mcp, api, web |
-| `gateway` | `gateway.virtual_server.quarantine.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `ServerView[]` | cli, mcp, api |
-| `gateway` | `gateway.virtual_server.quarantine.restore` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ServerView` | cli, mcp, api |
-| `gateway` | `gateway.virtual_server.remove` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string` | `ServerView` | mcp, api, web |
-| `gateway` | `gateway.virtual_server.set_mcp_policy` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string`<br>`allowed_actions*: string[]` | `VirtualServerMcpPolicyView` | mcp, api, web |
-| `gateway` | `gateway.virtual_server.set_surface` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `id*: string`<br>`surface*: string`<br>`enabled*: boolean` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.server.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.servers` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayServersDoc` | mcp, api |
+| `gateway` | `gateway.service_actions` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string` | `ServiceActionView[]` | mcp, api, web |
+| `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string` | `ServiceConfigView` | mcp, api, web |
+| `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
+| `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
+| `gateway` | `gateway.status` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
+| `gateway` | `gateway.supported_services` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `SupportedServiceView[]` | mcp, api, web |
+| `gateway` | `gateway.test` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
+| `gateway` | `gateway.update` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
+| `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `VirtualServerMcpPolicyView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.quarantine.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `ServerView[]` | cli, mcp, api |
+| `gateway` | `gateway.virtual_server.quarantine.restore` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | cli, mcp, api |
+| `gateway` | `gateway.virtual_server.remove` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.set_mcp_policy` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string`<br>`allowed_actions*: string[]` | `VirtualServerMcpPolicyView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.set_surface` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string`<br>`surface*: string`<br>`enabled*: boolean` | `ServerView` | mcp, api, web |
 | `gateway` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `gateway` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `jobs` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
@@ -200,6 +200,13 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `lab_admin` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp |
 | `lab_admin` | `onboarding.audit` | false | false | false |  | `transport` | `-` | `-` | `services*: string[]` | `AuditReport` | mcp |
 | `lab_admin` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp |
+| `projects` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
+| `projects` | `projects.archive` | false | true | false |  | `resource_capability` | `scope.manage` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
+| `projects` | `projects.create` | false | false | false |  | `resource_capability` | `scope.create` | `project` | `team_id*: string`<br>`project_id*: string`<br>`name*: string` | `object` | mcp, api |
+| `projects` | `projects.get` | false | false | false |  | `resource_capability` | `scope.read` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
+| `projects` | `projects.list` | false | false | false |  | `team_project_membership` | `-` | `-` |  | `object` | mcp, api |
+| `projects` | `projects.update` | false | false | false |  | `resource_capability` | `scope.manage` | `project` | `team_id*: string`<br>`project_id*: string`<br>`name*: string` | `object` | mcp, api |
+| `projects` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `server_logs` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `server_logs` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `server_logs` | `server_logs.query` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
@@ -253,15 +260,15 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `sources` | `sources.refresh` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`id*: string` | `SourceRefreshReceipt` | mcp, api, web |
 | `stash` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `stash` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `stash` | `stash.delete` | false | true | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Deleted` | mcp, api, web |
-| `stash` | `stash.grants.create` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`grantee_principal_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashGrant` | mcp, api, web |
-| `stash` | `stash.grants.list` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `GrantPage` | mcp, api, web |
-| `stash` | `stash.grants.revoke` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`grant_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Revoked` | mcp, api, web |
-| `stash` | `stash.list` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
-| `stash` | `stash.metadata` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api |
-| `stash` | `stash.rename` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `file_id*: string`<br>`display_name*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api, web |
-| `stash` | `stash.search` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `query*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
-| `stash` | `stash.stats` | false | false | false |  | `principal_ownership_or_grant` | `-` | `-` | `owner_kind: personal\|team`<br>`owner_id: string` | `StashStats` | mcp, api, web |
+| `stash` | `stash.delete` | false | true | false |  | `resource_capability` | `scope.delete` | `stash` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Deleted` | mcp, api, web |
+| `stash` | `stash.grants.create` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`grantee_principal_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashGrant` | mcp, api, web |
+| `stash` | `stash.grants.list` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `GrantPage` | mcp, api, web |
+| `stash` | `stash.grants.revoke` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`grant_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Revoked` | mcp, api, web |
+| `stash` | `stash.list` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.metadata` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api |
+| `stash` | `stash.rename` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`display_name*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api, web |
+| `stash` | `stash.search` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `query*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.stats` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `owner_kind: personal\|team`<br>`owner_id: string` | `StashStats` | mcp, api, web |
 | `tasks` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `tasks` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `tasks` | `tasks.cancel` | false | false | false |  | `resource_capability` | `scope.operate` | `task` | `task_id*: string` | `object` | mcp, api |

@@ -214,7 +214,7 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         "stash" => (false, derived_destructive, false, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
-        "access" | "agents" | "tasks" | "dev_containers" => {
+        "access" | "agents" | "tasks" | "dev_containers" | "projects" => {
             (false, derived_destructive, false, false)
         }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
@@ -704,6 +704,7 @@ mod tests {
         ("agents", false, false, false, false),
         ("tasks", false, false, false, false),
         ("dev_containers", false, true, false, false),
+        ("projects", false, true, false, false),
         ("doctor", false, false, true, true),
         ("artifacts", false, true, false, true),
         ("browser", false, false, false, true),

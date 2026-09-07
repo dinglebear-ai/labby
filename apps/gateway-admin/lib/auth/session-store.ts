@@ -1,5 +1,5 @@
 import { invalidateAuthorityRequests } from './authority-context.ts'
-import { MalformedAuthorityResponseError, parseAuthoritySnapshot, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
+import { MalformedAuthorityResponseError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
 
 export type SessionAuthority = AuthoritySnapshot
 export type { AuthorityOwner, AuthoritySnapshot }
@@ -80,21 +80,15 @@ function setState(next: BrowserSessionState) {
   emit()
 }
 
+/**
+ * The identity that decides whether a state change is an authority change.
+ * Transport fields (CSRF token, expiry) are deliberately excluded: a session
+ * refresh that only rotates them must neither abort in-flight requests nor
+ * defeat the CSRF retry in `performServiceAction`.
+ */
 function sessionIdentity(state: BrowserSessionState) {
   if (state.status !== 'authenticated') return state.status
-  const authority = state.authority
-  const authorityIdentity = authority
-    ? [
-        authority.principalId,
-        authority.activeOwner.kind,
-        authority.activeOwner.id,
-        authority.activeTeamId ?? '',
-        authority.activeProjectId ?? '',
-        [...authority.capabilities].sort().join(','),
-        authority.generation,
-      ].join(':')
-    : 'authority-unavailable'
-  return `authenticated:${state.user.sub}:${authorityIdentity}:${state.csrfToken}:${state.expiresAt}`
+  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}`
 }
 
 function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: true }>): SessionAuthority | undefined {
@@ -202,25 +196,44 @@ export async function loadBrowserSession() {
   return next
 }
 
+export class LogoutRevocationError extends Error {
+  constructor(public readonly status?: number) {
+    super(status === undefined
+      ? 'The server could not be reached to revoke the session. Local sign-out completed; the server session may remain active until it expires.'
+      : `The server did not confirm sign-out (HTTP ${status}). Local sign-out completed; the server session may remain active until it expires.`)
+    this.name = 'LogoutRevocationError'
+  }
+}
+
+/**
+ * Sign the browser out. Local authority state is always cleared, even when the
+ * server-side revocation fails: a browser that keeps rendering a workspace it
+ * asked to leave is the worse failure. A failed revocation is still reported
+ * to the caller as `LogoutRevocationError` so it can be surfaced separately.
+ */
 export async function logoutBrowserSession() {
   const csrfToken = getSessionCsrfToken()
-  const response = await fetch('/auth/logout', {
-    method: 'POST',
-    cache: 'no-store',
-    credentials: 'include',
-    headers: csrfToken
-      ? {
-          'x-csrf-token': csrfToken,
-        }
-      : undefined,
-  })
-
-  if (!response.ok) {
-    throw new Error('Failed to logout browser session')
+  let failure: LogoutRevocationError | undefined
+  try {
+    const response = await fetch('/auth/logout', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+      headers: csrfToken
+        ? {
+            'x-csrf-token': csrfToken,
+          }
+        : undefined,
+    })
+    if (!response.ok) failure = new LogoutRevocationError(response.status)
+  } catch {
+    failure = new LogoutRevocationError()
+  } finally {
+    sessionGeneration += 1
+    resetAuthorityOpaqueValues()
+    setState({ status: 'unauthenticated' })
   }
-
-  sessionGeneration += 1
-  setState({ status: 'unauthenticated' })
+  if (failure) throw failure
 }
 
 export function __setBrowserSessionStateForTests(state: BrowserSessionState) {

@@ -1,7 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, statSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
 
 import { capabilityAwareNavSections, capabilityForPath, consoleNavItems, consoleNavSections } from './nav-model'
+
+const ADMIN_APP_ROOT = new URL('../../app/(admin)/', import.meta.url).pathname
+
+/** Every `page.tsx` under `app/(admin)`, converted to the pathname `usePathname` reports for it. */
+function shippedAdminRoutes(dir = ADMIN_APP_ROOT): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) return shippedAdminRoutes(path)
+    if (entry !== 'page.tsx') return []
+    const segments = relative(ADMIN_APP_ROOT, dir).split(sep).filter(Boolean)
+      // A dynamic segment stands in for any concrete value the router accepts.
+      .map((segment) => (segment.startsWith('[') && segment.endsWith(']') ? 'example' : segment))
+    return [`/${segments.join('/')}`]
+  }).sort()
+}
+
+/** Routes whose pages configure the installation itself; they must never be open to every principal. */
+const ADMIN_ROUTE_PREFIXES = ['/administration', '/browsers', '/design-system', '/docs', '/gateway', '/logs', '/settings']
 
 // bead lab-vl9q6
 test('every nav item kbd accelerator matches its position in the flattened list', () => {
@@ -69,10 +89,34 @@ test('one filtered model removes denied links and shortcut targets together', ()
   items.forEach((item, index) => assert.equal(item.kbd, `⌘${index + 1}`))
 })
 
-test('direct route manifest fails closed for unknown and settings routes', () => {
+test('direct route manifest fails closed for unknown routes and gates known ones', () => {
   assert.equal(capabilityForPath('/settings/core'), 'platform.manage')
   assert.equal(capabilityForPath('/dev-containers'), 'scope.operate')
-  assert.equal(capabilityForPath('/depot'), null)
+  assert.equal(capabilityForPath('/depot'), 'scope.read')
+  assert.equal(capabilityForPath('/administration'), 'platform.manage')
+  assert.equal(capabilityForPath('/projects'), 'scope.read')
+  assert.equal(capabilityForPath('/stash'), 'scope.read')
   assert.equal(capabilityForPath('/gateway'), 'platform.manage')
   assert.equal(capabilityForPath('/not-a-product-route'), undefined)
+})
+
+test('every shipped app/(admin) route resolves to a capability instead of locking itself out', () => {
+  const routes = shippedAdminRoutes()
+  assert.ok(routes.includes('/projects') && routes.includes('/stash') && routes.includes('/settings/services/example'), `route enumeration must read the real app tree, saw: ${routes.join(', ')}`)
+  const unresolved = routes.filter((route) => capabilityForPath(route) === undefined)
+  assert.deepEqual(unresolved, [], 'a shipped route with no manifest entry is unreachable for every principal')
+  const open = routes.filter((route) => capabilityForPath(route) === null)
+  assert.deepEqual(open, [], 'every shipped route requires a server-projected capability')
+  for (const route of routes) {
+    if (ADMIN_ROUTE_PREFIXES.some((prefix) => route === prefix || route.startsWith(`${prefix}/`))) {
+      assert.equal(capabilityForPath(route), 'platform.manage', `${route} configures the installation and must require platform.manage`)
+    }
+  }
+})
+
+test('workspace routes stay reachable for a plain member and admin routes do not', () => {
+  const member = ['scope.read', 'scope.operate']
+  const reachable = shippedAdminRoutes().filter((route) => { const required = capabilityForPath(route); return required !== null && required !== undefined && member.includes(required) })
+  for (const route of ['/', '/projects', '/stash', '/depot', '/library', '/agents', '/tasks', '/dev-containers']) assert.ok(reachable.includes(route), `${route} must be reachable for a member`)
+  for (const route of ['/administration', '/settings', '/logs', '/browsers']) assert.ok(!reachable.includes(route), `${route} must not be reachable for a member`)
 })

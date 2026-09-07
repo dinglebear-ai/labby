@@ -5,8 +5,10 @@ use labby_primitives::dev_container::{
     ApprovedTemplate, DesiredState, HostCapability, ObservedState, OwnedDevContainer,
     SecretReference,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
+
+use super::error::AccessStoreError;
 
 pub(super) const DEV_CONTAINER_SCHEMA: &str = "
 CREATE TABLE dev_container_templates (
@@ -88,6 +90,43 @@ pub(super) struct CreateInstance<'a> {
     pub occurred_at: i64,
 }
 
+/// Typed cause of a ledger storage failure. Carries the access store's
+/// classification so adapters can distinguish an outage (`Locked`,
+/// `Unavailable`) from a store that must be repaired (`Corrupt`, integrity)
+/// or an authorization refusal, instead of collapsing every cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DevContainerStorageFailure {
+    Locked,
+    Corrupt,
+    DiskFull,
+    ReadOnly,
+    ForeignKeyViolation,
+    IntegrityViolation,
+    NotAuthorized,
+    Unavailable,
+}
+
+impl DevContainerStorageFailure {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Locked => "locked",
+            Self::Corrupt => "corrupt",
+            Self::DiskFull => "disk_full",
+            Self::ReadOnly => "read_only",
+            Self::ForeignKeyViolation => "foreign_key_violation",
+            Self::IntegrityViolation => "integrity_violation",
+            Self::NotAuthorized => "not_authorized",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for DevContainerStorageFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub(crate) enum DevContainerLedgerError {
     #[error("Dev Container ledger input is invalid")]
@@ -96,14 +135,41 @@ pub(crate) enum DevContainerLedgerError {
     TemplateUnavailable,
     #[error("Dev Container owner quota is exhausted")]
     QuotaExhausted,
-    #[error("Dev Container ledger storage failed")]
-    Storage,
+    #[error("Dev Container ledger storage failed: {0}")]
+    Storage(DevContainerStorageFailure),
+}
+
+impl From<AccessStoreError> for DevContainerLedgerError {
+    fn from(error: AccessStoreError) -> Self {
+        let failure = match error {
+            AccessStoreError::Locked => DevContainerStorageFailure::Locked,
+            AccessStoreError::Corrupt => DevContainerStorageFailure::Corrupt,
+            AccessStoreError::DiskFull => DevContainerStorageFailure::DiskFull,
+            AccessStoreError::ReadOnly => DevContainerStorageFailure::ReadOnly,
+            AccessStoreError::ForeignKeyViolation => {
+                DevContainerStorageFailure::ForeignKeyViolation
+            }
+            AccessStoreError::IntegrityViolation { .. } | AccessStoreError::MalformedVocabulary => {
+                DevContainerStorageFailure::IntegrityViolation
+            }
+            AccessStoreError::NotAuthorized | AccessStoreError::IdentityUnavailable => {
+                DevContainerStorageFailure::NotAuthorized
+            }
+            _ => DevContainerStorageFailure::Unavailable,
+        };
+        Self::Storage(failure)
+    }
+}
+
+/// Classify a SQLite failure through the shared access-store mapping.
+fn storage(error: rusqlite::Error) -> DevContainerLedgerError {
+    super::store::map_sqlite_error(error).into()
 }
 
 pub(super) fn install_schema(connection: &Connection) -> Result<(), DevContainerLedgerError> {
     connection
         .execute_batch(DEV_CONTAINER_SCHEMA)
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)
 }
 
 pub(super) fn approve_template(
@@ -150,7 +216,7 @@ pub(super) fn approve_template(
                 now,
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -178,7 +244,7 @@ pub(super) fn set_owner_quota(
                 now
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -187,9 +253,11 @@ pub(super) fn create_instance(
     input: &CreateInstance<'_>,
 ) -> Result<(), DevContainerLedgerError> {
     validate_create(input)?;
+    // Immediate: the quota count and the insert must observe one write
+    // snapshot, otherwise two concurrent creates can both pass the ceiling.
     let transaction = connection
-        .transaction()
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
     let owner = input.instance.owner();
     let owner_kind = owner_kind_name(owner.kind());
     let template = transaction
@@ -211,7 +279,7 @@ pub(super) fn create_instance(
             },
         )
         .optional()
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .filter(|template| template.6 == "approved")
         .ok_or(DevContainerLedgerError::TemplateUnavailable)?;
     if template.0 != input.instance.image().as_str()
@@ -230,7 +298,7 @@ pub(super) fn create_instance(
             |row| row.get::<_, u32>(0),
         )
         .optional()
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .ok_or(DevContainerLedgerError::QuotaExhausted)?;
     let active = transaction
         .query_row(
@@ -240,7 +308,7 @@ pub(super) fn create_instance(
             params![owner_kind, owner.id()],
             |row| row.get::<_, u32>(0),
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     if active >= template.1.min(owner_max_active) {
         return Err(DevContainerLedgerError::QuotaExhausted);
     }
@@ -278,7 +346,7 @@ pub(super) fn create_instance(
                 input.occurred_at,
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     transaction
         .execute(
             "INSERT INTO dev_container_ledger(
@@ -291,10 +359,8 @@ pub(super) fn create_instance(
                 input.occurred_at,
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
-    transaction
-        .commit()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)?;
+    transaction.commit().map_err(storage)
 }
 
 fn validate_create(input: &CreateInstance<'_>) -> Result<(), DevContainerLedgerError> {
@@ -376,15 +442,245 @@ pub(crate) async fn create_approved_for_store(
     event_id: String,
     now: i64,
 ) -> Result<CreatedRuntimeSpec, DevContainerLedgerError> {
-    store.with_connection(move |connection| {
-        let row=connection.query_row("SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status FROM dev_container_templates WHERE template_id=?1",[&template_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,u32>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(super::store::map_sqlite_error)?.filter(|r|r.7=="approved").ok_or(super::AccessStoreError::NotAuthorized)?;
-        let caps=serde_json::from_str::<Vec<String>>(&row.6).map_err(|_|super::AccessStoreError::MalformedVocabulary)?.into_iter().map(|v|parse_host_capability(&v).ok_or(super::AccessStoreError::MalformedVocabulary)).collect::<Result<Vec<_>,_>>()?;
-        let template=ApprovedTemplate::new(labby_primitives::dev_container::DevContainerTemplateId::new(template_id).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,labby_primitives::dev_container::ImageDigest::new(row.0).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,labby_primitives::dev_container::DevContainerQuota{max_active_instances:row.1,cpu_millis:row.2,memory_bytes:u64::try_from(row.3).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,disk_bytes:u64::try_from(row.4).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,max_lifetime_seconds:u64::try_from(row.5).map_err(|_|super::AccessStoreError::MalformedVocabulary)?},labby_primitives::dev_container::HostCapabilityPolicy::approved(caps)).map_err(|_|super::AccessStoreError::MalformedVocabulary)?;
-        let instance=OwnedDevContainer::new(labby_primitives::dev_container::DevContainerId::new(instance_id).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,owner,&template,labby_primitives::dev_container::LifecycleNonce::new(uuid::Uuid::new_v4().simple().to_string()).map_err(|_|super::AccessStoreError::MalformedVocabulary)?,secret_references.into_iter().map(SecretReference::new).collect::<Result<Vec<_>,_>>().map_err(|_|super::AccessStoreError::MalformedVocabulary)?).map_err(|_|super::AccessStoreError::MalformedVocabulary)?;
-        let q=template.quota_ceiling(); let resources=ReservedResources{cpu_millis:q.cpu_millis,memory_bytes:q.memory_bytes,disk_bytes:q.disk_bytes,lifetime_seconds:q.max_lifetime_seconds};
-        create_instance(connection,&CreateInstance{instance:&instance,resources,authority_fingerprint:&authority_fingerprint,event_id:&event_id,occurred_at:now}).map_err(|_|super::AccessStoreError::Unavailable("Dev Container creation failed".into()))?;
-        Ok(CreatedRuntimeSpec{template,instance,resources})
-    }).await.map_err(|_|DevContainerLedgerError::Storage)
+    store
+        .with_connection(move |connection| {
+            Ok(create_approved(
+                connection,
+                owner,
+                &instance_id,
+                &template_id,
+                secret_references,
+                &authority_fingerprint,
+                &event_id,
+                now,
+            ))
+        })
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_approved(
+    connection: &mut Connection,
+    owner: OwnerScope,
+    instance_id: &str,
+    template_id: &str,
+    secret_references: Vec<String>,
+    authority_fingerprint: &str,
+    event_id: &str,
+    now: i64,
+) -> Result<CreatedRuntimeSpec, DevContainerLedgerError> {
+    use labby_primitives::dev_container::{
+        DevContainerId, DevContainerQuota, DevContainerTemplateId, HostCapabilityPolicy,
+        ImageDigest, LifecycleNonce,
+    };
+    let row = connection
+        .query_row(
+            "SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status FROM dev_container_templates WHERE template_id=?1",
+            [template_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, u32>(1)?,
+                    r.get::<_, u32>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage)?
+        .filter(|r| r.7 == "approved")
+        .ok_or(DevContainerLedgerError::TemplateUnavailable)?;
+    fn integrity<E>(_: E) -> DevContainerLedgerError {
+        DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+    }
+    let caps = serde_json::from_str::<Vec<String>>(&row.6)
+        .map_err(integrity)?
+        .into_iter()
+        .map(|v| {
+            parse_host_capability(&v).ok_or(DevContainerLedgerError::Storage(
+                DevContainerStorageFailure::IntegrityViolation,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let template = ApprovedTemplate::new(
+        DevContainerTemplateId::new(template_id)
+            .map_err(|_| DevContainerLedgerError::InvalidInput)?,
+        ImageDigest::new(row.0).map_err(integrity)?,
+        DevContainerQuota {
+            max_active_instances: row.1,
+            cpu_millis: row.2,
+            memory_bytes: u64::try_from(row.3).map_err(integrity)?,
+            disk_bytes: u64::try_from(row.4).map_err(integrity)?,
+            max_lifetime_seconds: u64::try_from(row.5).map_err(integrity)?,
+        },
+        HostCapabilityPolicy::approved(caps),
+    )
+    .map_err(integrity)?;
+    let instance = OwnedDevContainer::new(
+        DevContainerId::new(instance_id).map_err(|_| DevContainerLedgerError::InvalidInput)?,
+        owner,
+        &template,
+        LifecycleNonce::generate().map_err(|_| {
+            DevContainerLedgerError::Storage(DevContainerStorageFailure::Unavailable)
+        })?,
+        secret_references
+            .into_iter()
+            .map(SecretReference::new)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DevContainerLedgerError::InvalidInput)?,
+    )
+    .map_err(|_| DevContainerLedgerError::InvalidInput)?;
+    let q = template.quota_ceiling();
+    let resources = ReservedResources {
+        cpu_millis: q.cpu_millis,
+        memory_bytes: q.memory_bytes,
+        disk_bytes: q.disk_bytes,
+        lifetime_seconds: q.max_lifetime_seconds,
+    };
+    create_instance(
+        connection,
+        &CreateInstance {
+            instance: &instance,
+            resources,
+            authority_fingerprint,
+            event_id,
+            occurred_at: now,
+        },
+    )?;
+    Ok(CreatedRuntimeSpec {
+        template,
+        instance,
+        resources,
+    })
+}
+
+fn decode_recovery_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecoveryRecord> {
+    Ok(RecoveryRecord {
+        instance_id: row.get(0)?,
+        owner_kind: owner_kind(&row.get::<_, String>(1)?)?,
+        owner_id: row.get(2)?,
+        lifecycle_nonce: row.get(3)?,
+        desired_state: desired_state(&row.get::<_, String>(4)?)?,
+        observed_state: observed_state(&row.get::<_, String>(5)?)?,
+    })
+}
+
+/// Single-row lookup by instance id (never a table scan). Deleted instances
+/// are reported as absent.
+pub(super) fn lookup_instance(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Option<RecoveryRecord>, DevContainerLedgerError> {
+    connection
+        .query_row(
+            "SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state
+             FROM dev_container_instances WHERE instance_id=?1 AND observed_state != 'deleted'",
+            [instance_id],
+            decode_recovery_record,
+        )
+        .optional()
+        .map_err(storage)
+}
+
+pub(crate) async fn lookup_dev_container_for_store(
+    store: &super::AccessStore,
+    instance_id: String,
+) -> Result<Option<RecoveryRecord>, DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| Ok(lookup_instance(connection, &instance_id)))
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+/// Authorize a lifecycle mutation and persist the new desired state in one
+/// immediate transaction. The persisted owner and lifecycle nonce are
+/// re-read under the write lock and compared with the lease binding, so a
+/// row that changed owner or lifecycle between the caller's read and this
+/// write is refused instead of being mutated under a stale authorization.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn authorize_and_set_dev_container_desired_state(
+    store: &super::AccessStore,
+    request: super::AuthorityRequest,
+    instance_id: String,
+    lifecycle_nonce: String,
+    desired: DesiredState,
+    actor: String,
+    now: i64,
+) -> Result<labby_runtime::authority::AuthorityLease, AccessStoreError> {
+    store
+        .with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(super::store::map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+            let persisted = tx
+                .query_row(
+                    "SELECT owner_kind,owner_id,lifecycle_nonce FROM dev_container_instances
+                     WHERE instance_id=?1 AND observed_state != 'deleted'",
+                    [&instance_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(super::store::map_sqlite_error)?
+                .ok_or(AccessStoreError::NotAuthorized)?;
+            let binding = lease.binding();
+            if binding.resource_id().as_str() != instance_id
+                || persisted.2 != lifecycle_nonce
+                || owner_kind_name(binding.owner_scope().kind()) != persisted.0
+                || binding.owner_scope().id() != persisted.1
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            let event_id = format!("desired-{instance_id}-{}", actor_token(&actor));
+            set_desired_state_in(&tx, &instance_id, &lifecycle_nonce, desired, &event_id, now)
+                .map_err(ledger_to_store)?;
+            tx.commit().map_err(super::store::map_sqlite_error)?;
+            Ok(lease)
+        })
+        .await
+}
+
+fn actor_token(actor: &str) -> String {
+    use sha2::Digest as _;
+    hex::encode(&sha2::Sha256::digest(actor.as_bytes())[..8])
+}
+
+fn ledger_to_store(error: DevContainerLedgerError) -> AccessStoreError {
+    match error {
+        DevContainerLedgerError::InvalidInput => AccessStoreError::NotAuthorized,
+        DevContainerLedgerError::TemplateUnavailable | DevContainerLedgerError::QuotaExhausted => {
+            AccessStoreError::Unavailable(error.to_string())
+        }
+        DevContainerLedgerError::Storage(failure) => match failure {
+            DevContainerStorageFailure::Locked => AccessStoreError::Locked,
+            DevContainerStorageFailure::Corrupt => AccessStoreError::Corrupt,
+            DevContainerStorageFailure::DiskFull => AccessStoreError::DiskFull,
+            DevContainerStorageFailure::ReadOnly => AccessStoreError::ReadOnly,
+            DevContainerStorageFailure::ForeignKeyViolation => {
+                AccessStoreError::ForeignKeyViolation
+            }
+            DevContainerStorageFailure::IntegrityViolation => {
+                AccessStoreError::IntegrityViolation {
+                    check: "dev_container_ledger",
+                }
+            }
+            DevContainerStorageFailure::NotAuthorized => AccessStoreError::NotAuthorized,
+            DevContainerStorageFailure::Unavailable => {
+                AccessStoreError::Unavailable("Dev Container persistence unavailable".into())
+            }
+        },
+    }
 }
 
 pub(crate) fn recovery_inventory(
@@ -396,7 +692,7 @@ pub(crate) fn recovery_inventory(
              FROM dev_container_instances
              WHERE observed_state != 'deleted' ORDER BY instance_id",
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     statement
         .query_map([], |row| {
             let owner_kind = owner_kind(&row.get::<_, String>(1)?)?;
@@ -411,9 +707,9 @@ pub(crate) fn recovery_inventory(
                 observed_state: observed,
             })
         })
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)
 }
 
 pub(crate) fn recovery_inventory_page(
@@ -430,7 +726,7 @@ pub(crate) fn recovery_inventory_page(
          FROM dev_container_instances WHERE observed_state != 'deleted' AND instance_id>?1
          ORDER BY instance_id LIMIT ?2",
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     statement
         .query_map(
             params![
@@ -448,9 +744,9 @@ pub(crate) fn recovery_inventory_page(
                 })
             },
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)
 }
 
 pub(super) fn authorized_recovery_inventory_page(
@@ -463,7 +759,7 @@ pub(super) fn authorized_recovery_inventory_page(
     if limit == 0 || limit > 100 {
         return Err(DevContainerLedgerError::InvalidInput);
     }
-    let mut statement = connection.prepare("WITH authorized_owners(owner_kind,owner_id) AS (SELECT 'personal',?3 UNION SELECT 'team',g.group_id FROM groups g JOIN team_memberships tm ON tm.organization_id=g.organization_id AND tm.team_id=g.group_id WHERE tm.principal_id=?3 AND tm.status='active' AND g.kind='team' AND g.status='active' UNION SELECT 'project',p.project_id FROM projects p JOIN project_memberships pm ON pm.organization_id=p.organization_id AND pm.project_id=p.project_id WHERE pm.principal_id=?3 AND pm.status='active' AND p.status='active' UNION SELECT 'personal',p.principal_id FROM principals p WHERE ?4 AND p.status='active' UNION SELECT 'team',g.group_id FROM groups g WHERE ?4 AND g.kind='team' AND g.status='active' UNION SELECT 'project',p.project_id FROM projects p WHERE ?4 AND p.status='active'), visible AS (SELECT d.* FROM dev_container_instances d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.observed_state!='deleted' UNION ALL SELECT d.* FROM dev_container_instances d WHERE ?4 AND d.owner_kind='installation' AND d.observed_state!='deleted') SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state FROM visible WHERE instance_id>?1 ORDER BY instance_id LIMIT ?2").map_err(|_| DevContainerLedgerError::Storage)?;
+    let mut statement = connection.prepare("WITH authorized_owners(owner_kind,owner_id) AS (SELECT 'personal',?3 UNION SELECT 'team',g.group_id FROM groups g JOIN team_memberships tm ON tm.organization_id=g.organization_id AND tm.team_id=g.group_id WHERE tm.principal_id=?3 AND tm.status='active' AND g.kind='team' AND g.status='active' UNION SELECT 'project',p.project_id FROM projects p JOIN project_memberships pm ON pm.organization_id=p.organization_id AND pm.project_id=p.project_id WHERE pm.principal_id=?3 AND pm.status='active' AND p.status='active' UNION SELECT 'personal',p.principal_id FROM principals p WHERE ?4 AND p.status='active' UNION SELECT 'team',g.group_id FROM groups g WHERE ?4 AND g.kind='team' AND g.status='active' UNION SELECT 'project',p.project_id FROM projects p WHERE ?4 AND p.status='active'), visible AS (SELECT d.* FROM dev_container_instances d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.observed_state!='deleted' UNION ALL SELECT d.* FROM dev_container_instances d WHERE ?4 AND d.owner_kind='installation' AND d.observed_state!='deleted') SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state FROM visible WHERE instance_id>?1 ORDER BY instance_id LIMIT ?2").map_err(storage)?;
     statement
         .query_map(
             params![
@@ -483,22 +779,18 @@ pub(super) fn authorized_recovery_inventory_page(
                 })
             },
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)
 }
 
 pub(crate) async fn recovery_inventory_for_store(
     store: &super::AccessStore,
 ) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
     store
-        .with_connection(|connection| {
-            recovery_inventory(connection).map_err(|_| {
-                super::AccessStoreError::Unavailable("Dev Container persistence unavailable".into())
-            })
-        })
+        .with_connection(|connection| Ok(recovery_inventory(connection)))
         .await
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(DevContainerLedgerError::from)?
 }
 
 pub(crate) async fn recovery_inventory_page_for_store(
@@ -507,13 +799,9 @@ pub(crate) async fn recovery_inventory_page_for_store(
     limit: usize,
 ) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
     store
-        .with_connection(move |connection| {
-            recovery_inventory_page(connection, &after, limit).map_err(|_| {
-                super::AccessStoreError::Unavailable("Dev Container persistence unavailable".into())
-            })
-        })
+        .with_connection(move |connection| Ok(recovery_inventory_page(connection, &after, limit)))
         .await
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(DevContainerLedgerError::from)?
 }
 
 pub(crate) async fn set_desired_for_store(
@@ -526,16 +814,39 @@ pub(crate) async fn set_desired_for_store(
 ) -> Result<(), DevContainerLedgerError> {
     store
         .with_connection(move |connection| {
-            set_desired_state(connection, &instance_id, &nonce, desired, &event_id, now).map_err(
-                |_| {
-                    super::AccessStoreError::Unavailable(
-                        "Dev Container persistence unavailable".into(),
-                    )
-                },
-            )
+            Ok(set_desired_state(
+                connection,
+                &instance_id,
+                &nonce,
+                desired,
+                &event_id,
+                now,
+            ))
         })
         .await
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(DevContainerLedgerError::from)?
+}
+
+/// Persist an engine observation (for example `Failed` after a reconcile
+/// found the container missing) under the instance's lifecycle nonce.
+pub(crate) async fn set_observed_for_store(
+    store: &super::AccessStore,
+    instance_id: String,
+    lifecycle_nonce: String,
+    next: ObservedState,
+    event_id: String,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| {
+            let nonce = labby_primitives::dev_container::LifecycleNonce::new(lifecycle_nonce)
+                .map_err(|_| DevContainerLedgerError::InvalidInput);
+            Ok(nonce.and_then(|nonce| {
+                record_observation(connection, &instance_id, &nonce, next, &event_id, now)
+            }))
+        })
+        .await
+        .map_err(DevContainerLedgerError::from)?
 }
 
 pub(crate) fn set_desired_state(
@@ -546,12 +857,31 @@ pub(crate) fn set_desired_state(
     event_id: &str,
     now: i64,
 ) -> Result<(), DevContainerLedgerError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    set_desired_state_in(
+        &transaction,
+        instance_id,
+        lifecycle_nonce,
+        desired,
+        event_id,
+        now,
+    )?;
+    transaction.commit().map_err(storage)
+}
+
+fn set_desired_state_in(
+    transaction: &Transaction<'_>,
+    instance_id: &str,
+    lifecycle_nonce: &str,
+    desired: DesiredState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
     if event_id.trim().is_empty() || now < 0 {
         return Err(DevContainerLedgerError::InvalidInput);
     }
-    let transaction = connection
-        .transaction()
-        .map_err(|_| DevContainerLedgerError::Storage)?;
     let revision = transaction
         .query_row(
             "SELECT revision FROM dev_container_instances WHERE instance_id=?1 AND lifecycle_nonce=?2",
@@ -559,7 +889,7 @@ pub(crate) fn set_desired_state(
             |row| row.get::<_, i64>(0),
         )
         .optional()
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .ok_or(DevContainerLedgerError::InvalidInput)?
         .checked_add(1)
         .ok_or(DevContainerLedgerError::InvalidInput)?;
@@ -571,7 +901,7 @@ pub(crate) fn set_desired_state(
              WHERE instance_id=?4 AND lifecycle_nonce=?5",
             params![desired, revision, now, instance_id, lifecycle_nonce],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(storage)?;
     transaction
         .execute(
             "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'desired_changed',?5,?6)",
@@ -584,10 +914,8 @@ pub(crate) fn set_desired_state(
                 format!("{{\"desired_state\":\"{desired}\"}}")
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
-    transaction
-        .commit()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)?;
+    Ok(())
 }
 
 pub(crate) fn record_observation(
@@ -599,8 +927,8 @@ pub(crate) fn record_observation(
     now: i64,
 ) -> Result<(), DevContainerLedgerError> {
     let transaction = connection
-        .transaction()
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
     let (desired, prior, revision, durable_nonce) = transaction
         .query_row(
             "SELECT desired_state,observed_state,revision,lifecycle_nonce FROM dev_container_instances WHERE instance_id=?1",
@@ -608,15 +936,17 @@ pub(crate) fn record_observation(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
         )
         .optional()
-        .map_err(|_| DevContainerLedgerError::Storage)?
+        .map_err(storage)?
         .ok_or(DevContainerLedgerError::InvalidInput)?;
     let durable_nonce = labby_primitives::dev_container::LifecycleNonce::new(durable_nonce)
-        .map_err(|_| DevContainerLedgerError::Storage)?;
+        .map_err(|_| {
+            DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+        })?;
     labby_runtime::dev_container::validate_observation(
         &durable_nonce,
         nonce,
-        desired_state(&desired).map_err(|_| DevContainerLedgerError::Storage)?,
-        observed_state(&prior).map_err(|_| DevContainerLedgerError::Storage)?,
+        desired_state(&desired).map_err(storage)?,
+        observed_state(&prior).map_err(storage)?,
         next,
     )
     .map_err(|_| DevContainerLedgerError::InvalidInput)?;
@@ -624,7 +954,7 @@ pub(crate) fn record_observation(
         .checked_add(1)
         .ok_or(DevContainerLedgerError::InvalidInput)?;
     let next = observed_state_name(next);
-    transaction.execute("UPDATE dev_container_instances SET observed_state=?1,revision=?2,updated_at=?3 WHERE instance_id=?4", params![next,revision,now,instance_id]).map_err(|_| DevContainerLedgerError::Storage)?;
+    transaction.execute("UPDATE dev_container_instances SET observed_state=?1,revision=?2,updated_at=?3 WHERE instance_id=?4", params![next,revision,now,instance_id]).map_err(storage)?;
     transaction
         .execute(
             "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'observed_changed',?5,?6)",
@@ -637,10 +967,8 @@ pub(crate) fn record_observation(
                 format!("{{\"observed_state\":\"{next}\"}}")
             ],
         )
-        .map_err(|_| DevContainerLedgerError::Storage)?;
-    transaction
-        .commit()
-        .map_err(|_| DevContainerLedgerError::Storage)
+        .map_err(storage)?;
+    transaction.commit().map_err(storage)
 }
 
 fn desired_state(value: &str) -> rusqlite::Result<DesiredState> {

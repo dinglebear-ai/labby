@@ -109,8 +109,20 @@ impl LabMcpServer {
         let mut configs = self.oauth_upstream_configs().await;
         configs.retain(|config| self.route_scope.allows_upstream(&config.name));
         if self.route_scope.team_credential_subject().is_some() {
-            let Ok(store) = self.access_runtime.store().await else {
-                return Vec::new();
+            let store = match self.access_runtime.store().await {
+                Ok(store) => store,
+                Err(error) => {
+                    // Fail closed, but never silently: an outage that hides
+                    // every Team upstream must be diagnosable from the logs.
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "gateway",
+                        cause = %error,
+                        kind = "service_unavailable",
+                        "team credential store unavailable; hiding route upstreams"
+                    );
+                    return Vec::new();
+                }
             };
             let mut admitted = Vec::with_capacity(configs.len());
             for config in configs {
@@ -119,11 +131,22 @@ impl LabMcpServer {
                 else {
                     continue;
                 };
-                let Ok(Some(binding)) = store
+                let binding = match store
                     .get_team_gateway_credential_binding(team_id.to_owned(), config.name.clone())
                     .await
-                else {
-                    continue;
+                {
+                    Ok(Some(binding)) => binding,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = "gateway",
+                            cause = %error,
+                            kind = "service_unavailable",
+                            "team credential binding lookup failed; hiding upstream"
+                        );
+                        continue;
+                    }
                 };
                 if team_credential_binding_matches(Some(&binding), binding_id, generation) {
                     admitted.push(config);
@@ -152,14 +175,34 @@ impl LabMcpServer {
         else {
             return self.route_scope.team_credential_subject().is_none();
         };
-        let Ok(store) = self.access_runtime.store().await else {
-            return false;
+        let store = match self.access_runtime.store().await {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "gateway",
+                    cause = %error,
+                    kind = "service_unavailable",
+                    "team credential store unavailable; route credential treated as invalid"
+                );
+                return false;
+            }
         };
-        let Ok(binding) = store
+        let binding = match store
             .get_team_gateway_credential_binding(team_id.to_owned(), upstream.to_owned())
             .await
-        else {
-            return false;
+        {
+            Ok(binding) => binding,
+            Err(error) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "gateway",
+                    cause = %error,
+                    kind = "service_unavailable",
+                    "team credential binding lookup failed; route credential treated as invalid"
+                );
+                return false;
+            }
         };
         team_credential_binding_matches(binding.as_ref(), binding_id, generation)
     }
@@ -248,11 +291,17 @@ pub(crate) fn auth_context_from_extensions(
     parts.extensions.get::<AuthContext>()
 }
 
+/// Host-established identity for the request. The HTTP transport carries it
+/// inside the request `Parts`; server-owned transports (in-process peer,
+/// tests) may attach it directly to the rmcp extensions. Both are server-side
+/// insertions a client cannot forge.
 pub(crate) fn verified_identity_from_extensions(
     extensions: &rmcp::model::Extensions,
 ) -> Option<&labby_auth::VerifiedIdentity> {
-    let parts = extensions.get::<Parts>()?;
-    parts.extensions.get::<labby_auth::VerifiedIdentity>()
+    extensions
+        .get::<Parts>()
+        .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
+        .or_else(|| extensions.get::<labby_auth::VerifiedIdentity>())
 }
 
 pub(crate) fn bound_access_grant_from_extensions(

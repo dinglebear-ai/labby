@@ -34,6 +34,8 @@ pub enum DevContainerAdmissionError {
     StaleLifecycleNonce,
     #[error("Dev Container lifecycle transition is invalid")]
     InvalidLifecycleTransition,
+    #[error("Dev Container image digest is not the approved template image")]
+    ImageDigestMismatch,
 }
 
 pub fn validate_launch(

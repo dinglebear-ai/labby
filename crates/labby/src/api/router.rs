@@ -397,6 +397,18 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 
 /// Build the `/v1` sub-router with all feature-gated service routes.
 #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
+/// Mounted `POST` dispatch path for a registry service. The router mounts
+/// three services under paths that differ from `/v1/{service}`; every
+/// consumer that needs the mounted path (OpenAPI, tests) reads it here.
+#[must_use]
+pub(crate) fn service_dispatch_path(service: &str) -> String {
+    match service {
+        "access" => "/v1/access/admin".to_owned(),
+        "dev_containers" => "/v1/dev-containers".to_owned(),
+        other => format!("/v1/{other}"),
+    }
+}
+
 fn build_v1_router(
     state: &AppState,
     api_auth_configured: bool,
@@ -1414,17 +1426,11 @@ mod tests {
     fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
         let path = match service {
             "lab_admin" => return None,
-            "access" => "/v1/access/admin".to_string(),
-            "agents" => "/v1/agents".to_string(),
-            "dev_containers" => "/v1/dev-containers".to_string(),
             "fs" => "/v1/fs/list".to_string(),
-            "projects" => "/v1/projects".to_string(),
             "stash" => "/v1/stash/stats".to_string(),
-            "tasks" => "/v1/tasks".to_string(),
-            name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
-            | "server_logs" | "setup" | "snippets" | "sources" | "uploads") => {
-                format!("/v1/{name}")
-            }
+            name @ ("access" | "agents" | "dev_containers" | "projects" | "tasks" | "artifacts"
+            | "browser" | "bundles" | "doctor" | "gateway" | "jobs" | "server_logs"
+            | "setup" | "snippets" | "sources" | "uploads") => service_dispatch_path(name),
             unknown => panic!(
                 "registered service `{unknown}` has no reviewed HTTP auth probe; add its mounted dispatch route or explicitly classify it as MCP-only"
             ),

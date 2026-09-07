@@ -1,9 +1,14 @@
-import type { AuthorityCacheKey, AuthoritySnapshot } from './authority.ts'
+import type { AuthoritySnapshot } from './authority.ts'
 import { authorityCacheKey } from './authority.ts'
 
+/**
+ * In-flight request controllers keyed by the browser-session generation they
+ * were started under. `invalidateAuthorityRequests` aborts and drops every
+ * bucket except the current generation, so this map never holds more than
+ * one live generation plus whatever a caller started before its invalidation
+ * ran.
+ */
 const controllers = new Map<number, Set<AbortController>>()
-const retainedGenerations: number[] = []
-const MAX_RETAINED_GENERATIONS = 3
 
 export function beginAuthorityRequest(snapshot: AuthoritySnapshot, contextGeneration: number, connectionId = 'local', callerSignal?: AbortSignal) {
   const controller = new AbortController()
@@ -15,7 +20,11 @@ export function beginAuthorityRequest(snapshot: AuthoritySnapshot, contextGenera
     if (callerSignal.aborted) controller.abort(callerSignal.reason)
     else callerSignal.addEventListener('abort', () => controller.abort(callerSignal.reason), { once: true })
   }
-  return { generation, cacheKey: authorityCacheKey(snapshot, connectionId), signal: controller.signal, finish: () => bucket?.delete(controller) }
+  const finish = () => {
+    bucket?.delete(controller)
+    if (bucket?.size === 0 && controllers.get(generation) === bucket) controllers.delete(generation)
+  }
+  return { generation, cacheKey: authorityCacheKey(snapshot, connectionId), signal: controller.signal, finish }
 }
 
 export function invalidateAuthorityRequests(currentGeneration: number) {
@@ -25,27 +34,15 @@ export function invalidateAuthorityRequests(currentGeneration: number) {
       controllers.delete(generation)
     }
   }
-  if (!retainedGenerations.includes(currentGeneration)) retainedGenerations.push(currentGeneration)
-  while (retainedGenerations.length > MAX_RETAINED_GENERATIONS) {
-    const expired = retainedGenerations.shift()
-    if (expired !== undefined) controllers.delete(expired)
-  }
-}
-
-export function authorityResultIsCurrent(capturedGeneration: number, snapshot?: AuthoritySnapshot) {
-  return snapshot?.generation === capturedGeneration
-}
-
-export function qualifyAuthorityCacheKey(key: string, authority: AuthorityCacheKey) {
-  return [key, ...authority] as const
 }
 
 export function __resetAuthorityContextForTests() {
   for (const bucket of controllers.values()) for (const controller of bucket) controller.abort()
   controllers.clear()
-  retainedGenerations.splice(0)
 }
 
 export function __authorityContextStatsForTests() {
-  return { activeGenerations: controllers.size, retainedGenerations: retainedGenerations.length }
+  let inFlight = 0
+  for (const bucket of controllers.values()) inFlight += bucket.size
+  return { activeGenerations: controllers.size, inFlight }
 }

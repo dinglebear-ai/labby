@@ -6,6 +6,11 @@ import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 
 const authority = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team' as const, id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 1 } as const
 function authenticate() { __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'principal-1' }, expiresAt: Date.now() + 10_000, csrfToken: 'csrf', authority }) }
+const originalFetch = globalThis.fetch
+test.afterEach(() => {
+  globalThis.fetch = originalFetch
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+})
 
 test('agent and task lists use authenticated authoritative action endpoints', async () => {
   authenticate()

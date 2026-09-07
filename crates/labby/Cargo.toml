@@ -95,6 +95,7 @@ tokio-util = { version = "0.7", features = ["rt", "compat", "codec"] }
 strip-ansi-escapes = "0.2"
 
 hex = "0.4"
+zeroize = "1"
 getrandom = "0.4"
 ulid = "1"
 

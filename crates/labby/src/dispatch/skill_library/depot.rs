@@ -7,8 +7,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use labby_runtime::artifacts::provider::{
-    ArtifactFetchPolicy, ArtifactSourceCredential, ExactArtifactRequest, ExactArtifactSource,
-    GuardedExactArtifactProvider,
+    ArtifactFetchPolicy, ArtifactRequestHeaderProvider, ArtifactSourceCredential,
+    ExactArtifactRequest, ExactArtifactSource, GuardedExactArtifactProvider,
 };
 use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactError};
 use url::Url;
@@ -16,8 +16,18 @@ use url::Url;
 pub(super) type DepotFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ArtifactAcquisition, ArtifactError>> + Send + 'a>>;
 
+/// Per-request delegated headers for one acquisition. `None` means the
+/// connection's static credential alone authenticates the request
+/// (standalone Depot or repository sources).
+pub(crate) type RequestHeaders = Option<Arc<dyn ArtifactRequestHeaderProvider>>;
+
 pub(super) trait DepotExactProvider: Send + Sync {
-    fn acquire(&self, artifact_id: String, revision_id: String) -> DepotFuture<'_>;
+    fn acquire(
+        &self,
+        artifact_id: String,
+        revision_id: String,
+        headers: RequestHeaders,
+    ) -> DepotFuture<'_>;
 }
 
 struct RuntimeDepot {
@@ -30,18 +40,26 @@ struct RuntimeDepot {
 }
 
 impl DepotExactProvider for RuntimeDepot {
-    fn acquire(&self, artifact_id: String, revision_id: String) -> DepotFuture<'_> {
+    fn acquire(
+        &self,
+        artifact_id: String,
+        revision_id: String,
+        headers: RequestHeaders,
+    ) -> DepotFuture<'_> {
         Box::pin(async move {
             self.provider
-                .acquire_exact(&ExactArtifactRequest {
-                    source: self.source,
-                    source_id: self.source_id.clone(),
-                    artifact_id,
-                    revision_id,
-                    endpoint: self.endpoint.clone(),
-                    credential_origin: self.credential_origin.clone(),
-                    pinned_addresses: self.pinned_addresses.clone(),
-                })
+                .acquire_exact_with_headers(
+                    &ExactArtifactRequest {
+                        source: self.source,
+                        source_id: self.source_id.clone(),
+                        artifact_id,
+                        revision_id,
+                        endpoint: self.endpoint.clone(),
+                        credential_origin: self.credential_origin.clone(),
+                        pinned_addresses: self.pinned_addresses.clone(),
+                    },
+                    headers.as_deref(),
+                )
                 .await
         })
     }
@@ -107,10 +125,11 @@ impl DepotConnection {
         &self,
         artifact_id: String,
         revision_id: String,
+        headers: RequestHeaders,
     ) -> Result<ArtifactAcquisition, ArtifactError> {
         let acquisition = self
             .provider
-            .acquire(artifact_id.clone(), revision_id.clone())
+            .acquire(artifact_id.clone(), revision_id.clone(), headers)
             .await?;
         acquisition.validate()?;
         let provenance_matches = match self.source {
@@ -158,7 +177,12 @@ mod tests {
     }
 
     impl DepotExactProvider for FakeDepot {
-        fn acquire(&self, _artifact_id: String, _revision_id: String) -> DepotFuture<'_> {
+        fn acquire(
+            &self,
+            _artifact_id: String,
+            _revision_id: String,
+            _headers: RequestHeaders,
+        ) -> DepotFuture<'_> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 if self.denied {
@@ -206,7 +230,7 @@ mod tests {
         let connection = DepotConnection::fake(provider.clone(), "account-1");
         assert_eq!(
             connection
-                .acquire_exact(artifact_id.clone(), revision_id.clone())
+                .acquire_exact(artifact_id.clone(), revision_id.clone(), None)
                 .await
                 .unwrap(),
             expected
@@ -225,7 +249,7 @@ mod tests {
         );
         assert!(matches!(
             connection
-                .acquire_exact(artifact_id.clone(), revision_id.clone())
+                .acquire_exact(artifact_id.clone(), revision_id.clone(), None)
                 .await,
             Err(ArtifactError::Conflict("depot_exact_object_mismatch"))
         ));
@@ -239,7 +263,9 @@ mod tests {
             "account-1",
         );
         assert!(matches!(
-            connection.acquire_exact(artifact_id, revision_id).await,
+            connection
+                .acquire_exact(artifact_id, revision_id, None)
+                .await,
             Err(ArtifactError::Conflict("source_authorization_denied"))
         ));
     }

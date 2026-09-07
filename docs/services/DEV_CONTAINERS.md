@@ -7,8 +7,13 @@ updated: "2026-09-07"
 # Dev Containers
 
 Dev Containers are owner-scoped, quota-bounded development environments. This
-document freezes the contract and persistence boundary; Labby does not yet
-register a Dev Container service or execute a container runtime.
+document freezes the contract and persistence boundary. Labby registers the
+`dev_containers` service with the actions `dev_containers.list`, `create`,
+`start`, `stop`, `destroy`, and `reconcile`, exposed over HTTP at
+`POST /v1/dev-containers` and as the `dev_containers` MCP tool. The container
+engine is the pluggable `labby_runtime::dev_container_runtime::ContainerRuntime`
+contract; the product default is the disabled runtime, so no real container
+engine ships yet and launches fail closed until one is wired.
 
 Every instance has exactly one installation, Team, Project, or Personal owner.
 Its durable record pins an administrator-approved template and an immutable
@@ -66,6 +71,8 @@ An indeterminate runtime outcome remains reconciliable state; it is not reported
 as success and its quota reservation is not silently released. Cleanup acts
 only on resources proven to carry the ledger's instance ID and lifecycle nonce.
 
-This contract does not authorize direct access to a container engine and does
-not define HTTP, MCP, CLI, or web surfaces. Those adapters may be added only
-after the durable ledger and runtime reconciliation implementation exist.
+This contract does not authorize direct access to a container engine. The HTTP
+and MCP adapters are thin: they pass the `action` plus `params` envelope to the
+shared `dev_containers` dispatch, which owns admission, ledger, and
+reconciliation semantics. Exact parameters, scopes, and destructive
+classification are in the generated [action catalog](../generated/action-catalog.md).

@@ -25,14 +25,19 @@ use crate::live_gateway as remote;
 /// Gateway actions may be scoped by the daemon's authenticated caller and
 /// selected Team/Project. A one-shot local manager has neither, so falling back
 /// to one would turn a failed authority lookup into installation-wide access.
+/// The Team selected with `--team-id` rides along as the `x-labby-team-id`
+/// header on every dispatch; the daemon decides which actions honor it.
 pub(super) async fn dispatch_gateway_action(
-    _manager: &LazyGatewayManager<'_>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     action: String,
     params: Value,
 ) -> Result<Value, ToolError> {
     if let Some(live) = remote::detect(config, "cli").await? {
-        return live.dispatch_action(&action, params).await;
+        return live
+            .with_team_id(manager.team_id().map(str::to_owned))
+            .dispatch_action(&action, params)
+            .await;
     }
     Err(gateway_daemon_unavailable())
 }
@@ -761,7 +766,7 @@ mod tests {
         config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
         config.mcp.port = url.port();
 
-        let manager = LazyGatewayManager::new(&config, false);
+        let manager = LazyGatewayManager::new(&config, false, None);
         let result =
             dispatch_gateway_action(&manager, &config, "gateway.list".to_string(), json!({}))
                 .await

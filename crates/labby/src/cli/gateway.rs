@@ -130,30 +130,54 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
     )
 }
 
-/// Defers building the CLI's own local `GatewayManager` until something
-/// actually needs it.
+/// Per-invocation gateway CLI context: the selected Team authority plus a
+/// local `GatewayManager` that is only built when a local-only path needs it.
 ///
-/// Every gateway subcommand now tries the live daemon's HTTP API first (see
-/// `remote.rs`) and only falls back to local dispatch on failure. Building
-/// `GatewayManager` unconditionally up front -- as this crate did before --
-/// has real side effects regardless of whether it's ever used: it opens (and
-/// creates, if absent) `~/.labby/auth.db` for the upstream OAuth credential
-/// store. `LazyGatewayManager` makes that cost pay-for-what-you-use: the
-/// local manager, and its `auth.db`, only come into existence if the remote
-/// path was actually unreachable.
+/// Gateway *actions* (`gateway.list`, `gateway.add`, `gateway.loadout.*`,
+/// `gateway.protected_route.*`, and so on) are dispatched exclusively through
+/// the authoritative `labby serve` daemon by `dispatch_gateway_action` (see
+/// `gateway/dispatch.rs`); when no daemon is reachable they fail
+/// closed with `daemon_unavailable` and never fall back to a local manager,
+/// because a one-shot local manager has no authenticated caller or selected
+/// Team and would turn a failed authority lookup into installation-wide
+/// access. `team_id` carries the `--team-id` selection so those dispatches can
+/// attach the `x-labby-team-id` header.
+///
+/// The lazy local manager remains for the two paths that still run locally:
+/// `gateway code exec` (falls back to the CLI's own `CodeModeBroker` only when
+/// opportunistic daemon detection finds nothing or the remote Code Mode call
+/// fails without an explicitly configured server), and `gateway list` (answers
+/// from the daemon when one is reachable and otherwise reads local config,
+/// including when a non-explicit daemon's response does not decode). No other
+/// gateway subcommand builds the local manager. Building `GatewayManager`
+/// unconditionally up front has real side effects regardless of whether it is
+/// ever used: it opens (and creates, if absent) `~/.labby/auth.db` for the
+/// upstream OAuth credential store. Deferring it keeps that cost
+/// pay-for-what-you-use.
 pub(crate) struct LazyGatewayManager<'a> {
     config: &'a LabConfig,
     discover_upstreams: bool,
+    team_id: Option<String>,
     cell: tokio::sync::OnceCell<Arc<GatewayManager>>,
 }
 
 impl<'a> LazyGatewayManager<'a> {
-    pub(crate) fn new(config: &'a LabConfig, discover_upstreams: bool) -> Self {
+    pub(crate) fn new(
+        config: &'a LabConfig,
+        discover_upstreams: bool,
+        team_id: Option<&str>,
+    ) -> Self {
         Self {
             config,
             discover_upstreams,
+            team_id: team_id.map(str::to_owned),
             cell: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// The Team authority selected with `--team-id`, if any.
+    pub(crate) fn team_id(&self) -> Option<&str> {
+        self.team_id.as_deref()
     }
 
     /// Build (on first call) or return the already-built local manager.
@@ -172,7 +196,12 @@ impl<'a> LazyGatewayManager<'a> {
     }
 }
 
-pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
+pub async fn run(
+    args: GatewayArgs,
+    format: OutputFormat,
+    config: &LabConfig,
+    team_id: Option<&str>,
+) -> Result<ExitCode> {
     let discover_upstreams = !(matches!(
         &args.command,
         GatewayCommand::Mcp(GatewayMcpArgs {
@@ -186,7 +215,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
                 }),
         })
     ) || matches!(&args.command, GatewayCommand::ProtectedRoute(_)));
-    let lazy_manager = LazyGatewayManager::new(config, discover_upstreams);
+    let lazy_manager = LazyGatewayManager::new(config, discover_upstreams, team_id);
     // Race the command against SIGINT/SIGTERM so the drain below also runs
     // when the invocation is killed externally (e.g. `timeout 100s labby
     // gateway code exec ...` SIGTERMs at the deadline). Without this the

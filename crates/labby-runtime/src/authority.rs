@@ -52,8 +52,11 @@ pub struct AuthorityEpochVectorInput {
     pub session_generation: u64,
 }
 
+/// Normalized epoch vector. Deserialization re-runs [`AuthorityEpochVector::new`]
+/// so a wire payload can never smuggle an unsupported version, an unsorted or
+/// duplicated Team epoch, or an unencodable vector into a lease comparison.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "AuthorityEpochVectorInput")]
 pub struct AuthorityEpochVector {
     version: u16,
     authority_schema_generation: u64,
@@ -69,6 +72,18 @@ pub struct AuthorityEpochVector {
     depot_projection_watermark: Option<u64>,
     credential_generation: Option<u64>,
     session_generation: u64,
+    /// Computed once at construction so every later fingerprint read is
+    /// infallible; never part of the wire encoding.
+    #[serde(skip)]
+    fingerprint: AuthorityEpochFingerprint,
+}
+
+impl TryFrom<AuthorityEpochVectorInput> for AuthorityEpochVector {
+    type Error = AuthorityContractError;
+
+    fn try_from(value: AuthorityEpochVectorInput) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
 }
 
 impl AuthorityEpochVector {
@@ -91,6 +106,16 @@ impl AuthorityEpochVector {
                 ));
             }
         }
+        let encoded = serde_json::to_vec(&value)
+            .map_err(|_| AuthorityContractError::InvalidField("epoch vector"))?;
+        let digest = Sha256::digest(encoded);
+        let fingerprint = AuthorityEpochFingerprint(format!(
+            "sha256:{}",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
         Ok(Self {
             version: value.version,
             authority_schema_generation: value.authority_schema_generation,
@@ -106,20 +131,36 @@ impl AuthorityEpochVector {
             depot_projection_watermark: value.depot_projection_watermark,
             credential_generation: value.credential_generation,
             session_generation: value.session_generation,
+            fingerprint,
         })
     }
 
     /// Stable SHA-256 fingerprint of the normalized versioned representation.
+    ///
+    /// The encoding is the `camelCase` JSON of [`AuthorityEpochVectorInput`]
+    /// after normalization; it is fixed at construction, so this read cannot
+    /// fail.
+    #[must_use]
     pub fn fingerprint(&self) -> AuthorityEpochFingerprint {
-        let encoded = serde_json::to_vec(self).expect("authority epoch vector is serializable");
-        let digest = Sha256::digest(encoded);
-        AuthorityEpochFingerprint(format!(
-            "sha256:{}",
-            digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ))
+        self.fingerprint.clone()
+    }
+
+    /// Principal epoch participating in this vector.
+    #[must_use]
+    pub const fn principal_epoch(&self) -> u64 {
+        self.principal_epoch
+    }
+
+    /// Project membership epoch participating in this vector, when relevant.
+    #[must_use]
+    pub const fn project_membership_epoch(&self) -> Option<u64> {
+        self.project_membership_epoch
+    }
+
+    /// Depot projection watermark observed when this vector was resolved.
+    #[must_use]
+    pub const fn depot_projection_watermark(&self) -> Option<u64> {
+        self.depot_projection_watermark
     }
 }
 
@@ -132,13 +173,62 @@ impl AuthorityEpochFingerprint {
     }
 }
 
+/// Method a lease is bound to: either a registered product action
+/// (`service.action`) or an uppercase transport verb such as `GET`, `POST`,
+/// or `EXECUTE`. Free-form strings are rejected at construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityMethod {
+    Action { service: String, action: String },
+    Verb(String),
+}
+
+impl AuthorityMethod {
+    pub fn parse(value: &str) -> Result<Self, AuthorityContractError> {
+        validate_token("method", value)?;
+        let action_char = |character: char| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        };
+        if value
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
+        {
+            return Ok(Self::Verb(value.to_owned()));
+        }
+        match value.split_once('.') {
+            Some((service, action))
+                if !service.is_empty()
+                    && !action.is_empty()
+                    && service
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && action.chars().all(action_char) =>
+            {
+                Ok(Self::Action {
+                    service: service.to_owned(),
+                    action: action.to_owned(),
+                })
+            }
+            _ => Err(AuthorityContractError::InvalidField("method")),
+        }
+    }
+}
+
+impl std::fmt::Display for AuthorityMethod {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Action { service, action } => write!(formatter, "{service}.{action}"),
+            Self::Verb(verb) => formatter.write_str(verb),
+        }
+    }
+}
+
 /// The exact subject, action, and resource to which a lease is bound.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityBinding {
     principal_id: PrincipalId,
     owner_scope: OwnerScope,
     capability: Capability,
-    method: String,
+    method: AuthorityMethod,
     resource_id: ResourceId,
     intent_id: Option<ResourceId>,
 }
@@ -152,16 +242,15 @@ impl AuthorityBinding {
         resource_id: ResourceId,
         intent_id: Option<ResourceId>,
     ) -> Result<Self, AuthorityContractError> {
-        let value = Self {
+        let method = AuthorityMethod::parse(&method.into())?;
+        Ok(Self {
             principal_id,
             owner_scope,
             capability,
-            method: method.into(),
+            method,
             resource_id,
             intent_id,
-        };
-        validate_token("method", &value.method)?;
-        Ok(value)
+        })
     }
 
     pub fn principal_id(&self) -> &str {
@@ -176,8 +265,16 @@ impl AuthorityBinding {
         &self.capability
     }
 
+    pub fn method(&self) -> &AuthorityMethod {
+        &self.method
+    }
+
     pub fn resource_id(&self) -> &ResourceId {
         &self.resource_id
+    }
+
+    pub fn intent_id(&self) -> Option<&ResourceId> {
+        self.intent_id.as_ref()
     }
 }
 
@@ -240,6 +337,12 @@ impl AuthorityLease {
 
     pub fn expires_at_millis(&self) -> u64 {
         self.expires_at_millis
+    }
+
+    /// Fingerprint of the epoch vector this lease was issued against.
+    #[must_use]
+    pub fn epoch_fingerprint(&self) -> &AuthorityEpochFingerprint {
+        &self.epoch_fingerprint
     }
 
     /// Revalidate at a safe boundary using explicitly supplied current time
@@ -411,8 +514,9 @@ mod tests {
             lease.validate_at(AuthoritySafeBoundary::BeforeDispatch, 2_000, &epochs),
             Err(AuthorityLeaseError::Expired)
         );
-        let mut changed = epochs.clone();
-        changed.principal_epoch += 1;
+        let mut changed_input = epoch_input(Vec::new());
+        changed_input.principal_epoch += 1;
+        let changed = AuthorityEpochVector::new(changed_input).unwrap();
         assert_eq!(
             lease.validate_at(AuthoritySafeBoundary::BeforeDispatch, 1_500, &changed),
             Err(AuthorityLeaseError::AuthorityChanged)
@@ -423,6 +527,46 @@ mod tests {
                 AuthoritySafeBoundary::BeforeCommit
             ))
         );
+    }
+
+    #[test]
+    fn wire_epoch_vectors_are_revalidated_and_fingerprints_survive_round_trips() {
+        let vector = epochs(vec![TeamMembershipEpoch {
+            team_id: "team-a".into(),
+            epoch: 1,
+        }]);
+        let encoded = serde_json::to_string(&vector).unwrap();
+        assert!(!encoded.contains("fingerprint"));
+        let decoded: AuthorityEpochVector = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, vector);
+        assert_eq!(decoded.fingerprint(), vector.fingerprint());
+
+        let unsupported = encoded.replace("\"version\":1", "\"version\":2");
+        assert!(serde_json::from_str::<AuthorityEpochVector>(&unsupported).is_err());
+        let duplicated = encoded.replace(
+            "\"teamMembershipEpochs\":[",
+            "\"teamMembershipEpochs\":[{\"teamId\":\"team-a\",\"epoch\":9},",
+        );
+        assert!(serde_json::from_str::<AuthorityEpochVector>(&duplicated).is_err());
+    }
+
+    #[test]
+    fn binding_methods_are_typed() {
+        assert_eq!(
+            AuthorityMethod::parse("tasks.tasks.queue").unwrap(),
+            AuthorityMethod::Action {
+                service: "tasks".into(),
+                action: "tasks.queue".into()
+            }
+        );
+        assert_eq!(
+            AuthorityMethod::parse("EXECUTE").unwrap(),
+            AuthorityMethod::Verb("EXECUTE".into())
+        );
+        assert!(AuthorityMethod::parse("post").is_err());
+        assert!(AuthorityMethod::parse("tasks.").is_err());
+        assert!(AuthorityMethod::parse("tasks queue").is_err());
+        assert_eq!(binding().method().to_string(), "POST");
     }
 
     #[test]

@@ -120,11 +120,12 @@ pub(super) fn depot_delegation_authority(
     };
     let (authority_schema, global_revision, organization_policy, project_policy, project_membership) = transaction
         .query_row(
-            "SELECT m.schema_version,m.global_revision,o.policy_epoch,p.project_policy_epoch,pm.updated_at
+            "SELECT m.schema_version,m.global_revision,o.policy_epoch,p.project_policy_epoch,pe.epoch
              FROM access_metadata m JOIN organizations o ON o.organization_id=?1
              JOIN projects p ON p.organization_id=o.organization_id AND p.project_id=?2
              LEFT JOIN project_memberships pm ON pm.organization_id=o.organization_id
                AND pm.project_id=p.project_id AND pm.principal_id=?3 AND pm.status='active'
+             LEFT JOIN project_membership_epochs pe ON pe.membership_id=pm.membership_id
              WHERE m.singleton=1 AND o.status='active' AND p.status='active'",
             params![selected.organization_id, selected.project_id, selected.principal_id],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<i64>>(4)?)),

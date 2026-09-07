@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, future::Future, pin::Pin};
 
 use labby_primitives::dev_container::{
-    ApprovedTemplate, DevContainerId, HostCapability, LifecycleNonce,
+    ApprovedTemplate, DevContainerId, HostCapability, ImageDigest, LifecycleNonce,
 };
 use thiserror::Error;
 
@@ -40,6 +40,10 @@ pub struct EngineHandle {
     pub lifecycle_nonce: LifecycleNonce,
 }
 
+/// Engine launch request. `image_digest` must be the canonical `sha256:` image
+/// of the approved template; [`create`] re-parses and pins it before any engine
+/// call, and [`EngineCreateRequest::for_template`] fills it from the template
+/// so callers never copy the digest by hand.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineCreateRequest {
     pub handle: EngineHandle,
@@ -49,6 +53,33 @@ pub struct EngineCreateRequest {
     pub disk_bytes: u64,
     pub lifetime_seconds: u64,
     pub host_capabilities: BTreeSet<HostCapability>,
+}
+
+impl EngineCreateRequest {
+    /// Build a request whose image is pinned to the approved template.
+    #[must_use]
+    pub fn for_template(
+        handle: EngineHandle,
+        template: &ApprovedTemplate,
+        resources: crate::dev_container::LaunchResources,
+        host_capabilities: BTreeSet<HostCapability>,
+    ) -> Self {
+        Self {
+            handle,
+            image_digest: template.image().as_str().to_owned(),
+            cpu_millis: resources.cpu_millis,
+            memory_bytes: resources.memory_bytes,
+            disk_bytes: resources.disk_bytes,
+            lifetime_seconds: resources.lifetime_seconds,
+            host_capabilities,
+        }
+    }
+
+    /// The typed image digest, when canonical.
+    pub fn image(&self) -> Result<ImageDigest, crate::dev_container::DevContainerAdmissionError> {
+        ImageDigest::new(self.image_digest.clone())
+            .map_err(|_| crate::dev_container::DevContainerAdmissionError::ImageDigestMismatch)
+    }
 }
 
 pub trait ContainerRuntime: Send + Sync {
@@ -154,6 +185,13 @@ pub async fn create<E: ContainerRuntime + ?Sized>(
             epochs,
         )
         .map_err(RuntimeError::Authority)?;
+    // The engine only ever sees the template's approved image.
+    let image = request.image().map_err(RuntimeError::Admission)?;
+    if &image != template.image() {
+        return Err(RuntimeError::Admission(
+            crate::dev_container::DevContainerAdmissionError::ImageDigestMismatch,
+        ));
+    }
     crate::dev_container::validate_launch(
         template,
         &crate::dev_container::LaunchRequest {
@@ -420,6 +458,49 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(RuntimeError::Admission(_))));
+        assert!(engine.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_pins_the_image_to_the_approved_template() {
+        let engine = FakeEngine {
+            state: Mutex::new(EngineState::Missing),
+            calls: Mutex::new(vec![]),
+        };
+        let template = ApprovedTemplate::new(
+            DevContainerTemplateId::new("safe").unwrap(),
+            ImageDigest::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
+            DevContainerQuota {
+                max_active_instances: 1,
+                cpu_millis: 1_000,
+                memory_bytes: 2_000,
+                disk_bytes: 3_000,
+                max_lifetime_seconds: 60,
+            },
+            HostCapabilityPolicy::deny_all(),
+        )
+        .unwrap();
+        let (lease, epochs) = authority();
+        let mut request = EngineCreateRequest::for_template(
+            handle(),
+            &template,
+            crate::dev_container::LaunchResources {
+                cpu_millis: 500,
+                memory_bytes: 1_000,
+                disk_bytes: 2_000,
+                lifetime_seconds: 30,
+            },
+            BTreeSet::new(),
+        );
+        assert_eq!(request.image().unwrap(), *template.image());
+        request.image_digest = format!("sha256:{}", "b".repeat(64));
+        let result = create(&engine, &lease, &epochs, 200, &template, request).await;
+        assert!(matches!(
+            result,
+            Err(RuntimeError::Admission(
+                crate::dev_container::DevContainerAdmissionError::ImageDigestMismatch
+            ))
+        ));
         assert!(engine.calls.lock().unwrap().is_empty());
     }
 }

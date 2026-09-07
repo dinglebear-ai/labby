@@ -1,4 +1,4 @@
-pub(super) fn secure_tempdir() -> tempfile::TempDir {
+pub(crate) fn secure_tempdir() -> tempfile::TempDir {
     let base = std::env::current_dir().expect("resolve the test working directory");
     let directory = tempfile::Builder::new()
         .prefix("labby-access-test-")

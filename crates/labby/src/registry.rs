@@ -513,7 +513,10 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     let _ = apply_runtime_conditions;
     let mut reg = ToolRegistry::new();
 
-    reg.register(RegisteredService::bootstrap_operator(
+    // Caller-bound services need a host-established identity and authority
+    // ceiling; the registry entry only serves `help`/`schema` and denies the
+    // rest. Both the HTTP adapter and the MCP caller-bound path bind them.
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
         "access",
         "Manage teams, memberships, invitations, and project assignments",
         "administration",
@@ -537,12 +540,20 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         dispatch_fn!(crate::dispatch::tasks::dispatch_unbound),
     ));
 
-    reg.register(RegisteredService::bootstrap_operator(
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
         "dev_containers",
         "Create and manage isolated development containers",
         "administration",
         crate::dispatch::dev_containers::ACTIONS,
         dispatch_fn!(crate::dispatch::dev_containers::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "projects",
+        "Create and manage Team-owned Projects",
+        "administration",
+        crate::dispatch::projects::ACTIONS,
+        dispatch_fn!(crate::dispatch::projects::dispatch_unbound),
     ));
 
     reg.register(RegisteredService::bootstrap_operator(
@@ -998,7 +1009,7 @@ mod tests {
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
             s.insert("access");
-            s.extend(["agents", "tasks", "dev_containers"]);
+            s.extend(["agents", "tasks", "dev_containers", "projects"]);
             s.insert("browser");
             #[cfg(feature = "gateway")]
             s.insert("gateway");

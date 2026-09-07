@@ -1,4 +1,5 @@
 import { getSessionAuthority, getSessionCsrfToken } from '@/lib/auth/session-store'
+import { resolveStashOwner, stashOwnerUnsupportedMessage } from './owner'
 import type { GrantPage, StashFile, StashGrant, StashPage, StashStats } from './types'
 
 export class StashError extends Error {
@@ -8,11 +9,17 @@ export class StashError extends Error {
   }
 }
 
+/** Raised before any request is sent when the active workspace has no File Stash. */
+export const STASH_WORKSPACE_UNSUPPORTED = 'workspace_unsupported'
+
+async function throwForStatus(response: Response): Promise<void> {
+  if (response.ok) return
+  const body = await response.json().catch(() => ({})) as { message?: string; kind?: string; code?: string }
+  throw new StashError(body.message || `File Stash request failed (${response.status})`, response.status, body.kind || body.code)
+}
+
 async function parse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { message?: string; kind?: string; code?: string }
-    throw new StashError(body.message || `File Stash request failed (${response.status})`, response.status, body.kind || body.code)
-  }
+  await throwForStatus(response)
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
@@ -24,11 +31,16 @@ function csrfHeaders(json = false): Headers {
   return headers
 }
 
+/**
+ * Every File Stash request selects its owner through the
+ * `x-labby-owner-kind` / `x-labby-owner-id` headers. Owner identifiers never
+ * appear in a URL, so they cannot leak through history, referrers, or logs.
+ */
 function request(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
-  const authority = getSessionAuthority()
-  const owner = authority?.activeOwner.kind === 'team' ? authority.activeOwner : authority?.activeOwner.kind === 'project' && authority.activeTeamId ? { kind: 'team' as const, id: authority.activeTeamId } : authority ? { kind: 'personal' as const, id: authority.principalId } : undefined
-  if (owner) { headers.set('x-labby-owner-kind', owner.kind); headers.set('x-labby-owner-id', owner.id) }
+  const resolution = resolveStashOwner(getSessionAuthority())
+  if (!resolution.ok) return Promise.reject(new StashError(stashOwnerUnsupportedMessage(resolution.reason), 0, STASH_WORKSPACE_UNSUPPORTED))
+  if (resolution.owner) { headers.set('x-labby-owner-kind', resolution.owner.kind); headers.set('x-labby-owner-id', resolution.owner.id) }
   return fetch(`/v1/stash${path}`, { credentials: 'include', cache: 'no-store', ...init, headers })
 }
 
@@ -56,13 +68,20 @@ export async function uploadFile(file: File, signal?: AbortSignal): Promise<{ fi
   }))
 }
 
+/**
+ * Same-origin content path for a file. It carries no owner selection: the
+ * page intercepts the anchor and downloads through `downloadFile`, which sends
+ * the owner headers, so the href only exists as an accessible link target.
+ */
 export function downloadUrl(fileId: string): string {
-  const authority = getSessionAuthority()
-  const owner = authority?.activeOwner.kind === 'team' ? authority.activeOwner : authority?.activeOwner.kind === 'project' && authority.activeTeamId ? { kind: 'team' as const, id: authority.activeTeamId } : authority ? { kind: 'personal' as const, id: authority.principalId } : undefined
-  const query = new URLSearchParams()
-  if (owner) { query.set('owner_kind', owner.kind); query.set('owner_id', owner.id) }
-  const suffix = query.size ? `?${query}` : ''
-  return `/v1/stash/files/${encodeURIComponent(fileId)}/content${suffix}`
+  return `/v1/stash/files/${encodeURIComponent(fileId)}/content`
+}
+
+/** Fetch a file's bytes under the active workspace's owner selection. */
+export async function downloadFile(fileId: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await request(`/files/${encodeURIComponent(fileId)}/content`, { signal })
+  await throwForStatus(response)
+  return response.blob()
 }
 
 export async function renameFile(fileId: string, displayName: string): Promise<StashFile> {

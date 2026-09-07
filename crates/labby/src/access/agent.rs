@@ -1,4 +1,7 @@
-//! Durable Agent definition records. Runtime sessions intentionally live elsewhere.
+//! Durable Agent definition records and their admitted-session ledger.
+//!
+//! The tables are part of the versioned access schema
+//! (`migrations::AGENT_TASK_SCHEMA`); this module never creates them.
 
 use labby_primitives::access::OwnerScope;
 use labby_primitives::agent::{AgentDefinition, AgentState};
@@ -14,7 +17,9 @@ pub(crate) struct AgentDefinitionStore {
 impl AgentDefinitionStore {
     pub(crate) fn open(path: &Path) -> AccessStoreResult<Self> {
         let connection = Connection::open(path).map_err(super::store::map_sqlite_error)?;
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS agent_definitions(agent_id TEXT PRIMARY KEY,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),owner_id TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),state TEXT NOT NULL CHECK(state IN ('active','suspended','deleted')),authority_epoch INTEGER NOT NULL CHECK(authority_epoch>=0),publication_epoch INTEGER NOT NULL CHECK(publication_epoch>=0),updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS agent_definitions_owner ON agent_definitions(owner_kind,owner_id,state,agent_id); CREATE TABLE IF NOT EXISTS agent_definition_audit(event_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,actor_principal_id TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('create','update','suspend','delete')),authority_epoch INTEGER NOT NULL,occurred_at INTEGER NOT NULL,FOREIGN KEY(agent_id) REFERENCES agent_definitions(agent_id)); CREATE TABLE IF NOT EXISTS agent_sessions(session_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,agent_version INTEGER NOT NULL,principal_id TEXT NOT NULL,authority_fingerprint TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('admitted','running','completed','failed','cancelled','revoked','interrupted')),lease_expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,FOREIGN KEY(agent_id) REFERENCES agent_definitions(agent_id)); CREATE INDEX IF NOT EXISTS agent_sessions_agent ON agent_sessions(agent_id,created_at,session_id);").map_err(super::store::map_sqlite_error)?;
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(super::store::map_sqlite_error)?;
         Ok(Self { connection })
     }
 
@@ -385,7 +390,12 @@ mod tests {
     #[test]
     fn definitions_and_audit_commit_together_and_versions_are_monotonic() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = AgentDefinitionStore::open(&dir.path().join("agents.db")).unwrap();
+        let path = dir.path().join("agents.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        let mut store = AgentDefinitionStore::open(&path).unwrap();
         store.put(&definition(1), "p-1", 1).unwrap();
         store.put(&definition(2), "p-1", 2).unwrap();
         assert!(store.put(&definition(4), "p-1", 3).is_err());
@@ -407,7 +417,12 @@ mod tests {
     #[test]
     fn legacy_or_malformed_security_definition_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = AgentDefinitionStore::open(&dir.path().join("agents.db")).unwrap();
+        let path = dir.path().join("agents.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        let mut store = AgentDefinitionStore::open(&path).unwrap();
         store.put(&definition(1), "p-1", 1).unwrap();
         store.connection.execute(
             "UPDATE agent_definitions SET definition_json=json_remove(definition_json,'$.requiredCapabilities') WHERE agent_id='agent-1'",

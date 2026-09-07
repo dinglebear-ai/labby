@@ -1,8 +1,12 @@
 //! Asynchronous, bounded Labby authority projection into Depot.
-#![allow(
-    dead_code,
-    reason = "constructed by optional Depot projection startup wiring"
-)]
+//!
+//! v1 delivery is **snapshot-only**: every pending outbox row for an
+//! Organization is coalesced into one complete signed snapshot of current
+//! authority state. Per-event deltas are never replayed. While an Organization
+//! is idle the producer sends a signed heartbeat at least every
+//! [`AUTHORITY_HEARTBEAT_INTERVAL_SECONDS`] so Depot can tell a quiet authority
+//! from a dead one. Readiness advances only on real Depot acknowledgements
+//! (snapshot or heartbeat), never on a local timer.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader};
@@ -13,27 +17,39 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use labby_primitives::authority_projection::{
-    AUTHORITY_PROJECTION_SCHEMA_VERSION, AuthorityProjectionAck, AuthorityProjectionEnvelope,
-    AuthorityProjectionRecord, MAX_AUTHORITY_ENVELOPE_BYTES, MAX_AUTHORITY_RECORDS_PER_BATCH,
-    ProjectionKind,
+    AUTHORITY_HEARTBEAT_INTERVAL_SECONDS, AUTHORITY_PROJECTION_SCHEMA_VERSION,
+    AuthorityProjectionAck, AuthorityProjectionEnvelope, AuthorityProjectionRecord,
+    MAX_AUTHORITY_ENVELOPE_BYTES, MAX_AUTHORITY_RECORDS_PER_BATCH, ProjectionKind, RecordOperation,
 };
+use labby_primitives::canonical_json;
+use labby_primitives::digest::Sha256Digest;
 use reqwest::{Client, StatusCode, Url};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+use zeroize::Zeroizing;
 
 use crate::access::AccessStore;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const LOOP_INTERVAL: Duration = Duration::from_secs(5);
+/// Readiness is stale when no Depot acknowledgement (snapshot or heartbeat)
+/// arrived within two heartbeat intervals.
+const STALE_AFTER: Duration = Duration::from_secs(2 * AUTHORITY_HEARTBEAT_INTERVAL_SECONDS);
+/// Delivered rows covered by the acknowledged watermark are pruned after this.
+const OUTBOX_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
+const RETENTION_INTERVAL: Duration = Duration::from_mins(5);
 
 #[derive(Clone, Debug, Default)]
 struct ProjectionHealth {
     managed: bool,
     ready: bool,
     pending: Option<String>,
+    /// Instant of the last real Depot acknowledgement.
     last_success: Option<Instant>,
     lag: usize,
     gap: bool,
+    failed: usize,
     key_generation: Option<String>,
     watermark: Option<u64>,
 }
@@ -44,8 +60,13 @@ pub struct ManagedProjectionReadiness {
     pub managed: bool,
     pub ready: bool,
     pub stale: bool,
+    /// Outbox rows not yet covered by an acknowledged snapshot.
     pub lag: usize,
+    /// Depot's chain disagreed with the persisted watermark; a full snapshot
+    /// resynchronization is pending.
     pub gap: bool,
+    /// Outbox rows parked after exhausting delivery attempts.
+    pub failed: usize,
     pub watermark: Option<u64>,
     pub key_generation: Option<String>,
     pub pending: Option<String>,
@@ -58,31 +79,44 @@ fn projection_health() -> &'static Mutex<ProjectionHealth> {
 
 fn set_projection_health(managed: bool, ready: bool, pending: Option<&str>) {
     if let Ok(mut health) = projection_health().lock() {
+        let last_success = health.last_success;
         *health = ProjectionHealth {
             managed,
             ready,
             pending: pending.map(str::to_owned),
-            last_success: ready.then(Instant::now),
+            // A health transition never fabricates freshness: only a Depot
+            // acknowledgement moves `last_success`.
+            last_success: if managed { last_success } else { None },
             lag: usize::from(!ready),
             gap: false,
+            failed: 0,
             key_generation: None,
             watermark: None,
         };
     }
 }
 
+fn is_stale(health: &ProjectionHealth) -> bool {
+    health
+        .last_success
+        .is_none_or(|success| success.elapsed() > STALE_AFTER)
+}
+
 pub(crate) fn projection_readiness() -> Option<ManagedProjectionReadiness> {
     projection_health().lock().ok().and_then(|health| {
         health.managed.then(|| {
-            let stale = health
-                .last_success
-                .is_some_and(|success| success.elapsed() > Duration::from_secs(15));
+            let stale = is_stale(&health);
             ManagedProjectionReadiness {
                 managed: true,
-                ready: health.ready && !stale && health.lag == 0 && !health.gap,
+                ready: health.ready
+                    && !stale
+                    && health.lag == 0
+                    && !health.gap
+                    && health.failed == 0,
                 stale,
                 lag: health.lag,
                 gap: health.gap,
+                failed: health.failed,
                 watermark: health.watermark,
                 key_generation: health.key_generation.clone(),
                 pending: health.pending.clone(),
@@ -91,8 +125,44 @@ pub(crate) fn projection_readiness() -> Option<ManagedProjectionReadiness> {
     })
 }
 
+/// `true` when Depot-delegated mutations may proceed: managed mode with the
+/// kill switch off, protocol v1, and a projection that is synchronized, fresh,
+/// gap-free, and has no parked deliveries. Adapters call this at the mutation
+/// boundary; it never falls back to standalone semantics.
+pub(crate) fn managed_mutations_ready(
+    preferences: &crate::config::depot::DepotPreferences,
+) -> bool {
+    let ready = projection_readiness().is_some_and(|readiness| readiness.ready);
+    preferences.managed_mutations_ready(ready, 1)
+}
+
+/// Returns a non-sensitive readiness reason while managed authority is stale.
+pub(crate) fn managed_projection_readiness_pending() -> Option<String> {
+    projection_health().lock().ok().and_then(|health| {
+        let stale = is_stale(&health);
+        (health.managed
+            && (!health.ready || stale || health.lag > 0 || health.gap || health.failed > 0))
+            .then(|| {
+                health.pending.clone().unwrap_or_else(|| {
+                    if health.failed > 0 {
+                        "Depot authority projection has parked deliveries".to_owned()
+                    } else if health.gap {
+                        "Depot authority projection chain requires resynchronization".to_owned()
+                    } else if stale {
+                        "Depot authority projection acknowledgement is stale".to_owned()
+                    } else {
+                        "Depot authority projection is not ready".to_owned()
+                    }
+                })
+            })
+    })
+}
+
+/// Record a real Depot acknowledgement. This is the only path that refreshes
+/// `last_success`.
 fn record_projection_ack(ack: &AuthorityProjectionAck) {
     if let Ok(mut health) = projection_health().lock() {
+        health.last_success = Some(Instant::now());
         health.watermark = Some(
             health
                 .watermark
@@ -103,33 +173,28 @@ fn record_projection_ack(ack: &AuthorityProjectionAck) {
     }
 }
 
-/// Returns a non-sensitive readiness reason while managed authority is stale.
-pub(crate) fn managed_projection_readiness_pending() -> Option<String> {
-    projection_health().lock().ok().and_then(|health| {
-        let stale = health
-            .last_success
-            .is_some_and(|success| success.elapsed() > Duration::from_secs(15));
-        (health.managed && (!health.ready || stale || health.lag > 0 || health.gap)).then(|| {
-            health
-                .pending
-                .clone()
-                .unwrap_or_else(|| "Depot authority projection is not ready".to_owned())
-        })
-    })
-}
-
+/// Mark the producer synchronized. Freshness is untouched: it comes from
+/// [`record_projection_ack`].
 fn mark_projection_ready(key_id: &str) {
     if let Ok(mut health) = projection_health().lock() {
         health.managed = true;
         health.ready = true;
         health.pending = None;
-        health.last_success = Some(Instant::now());
-        health.lag = 0;
-        health.gap = false;
         health.key_generation = Some(format!(
             "sha256:{}",
             hex::encode(Sha256::digest(key_id.as_bytes()))
         ));
+    }
+}
+
+fn record_delivery_posture(status: &[crate::access::OrganizationDelivery], gap: bool) {
+    if let Ok(mut health) = projection_health().lock() {
+        health.lag = status
+            .iter()
+            .map(|organization| organization.pending + organization.inflight)
+            .sum();
+        health.failed = status.iter().map(|organization| organization.failed).sum();
+        health.gap = gap;
     }
 }
 
@@ -145,6 +210,35 @@ pub(crate) enum ProjectionSendError {
     Rejected,
     #[error("authority projection response is invalid")]
     InvalidResponse,
+    #[error("authority projection chain diverged from Depot; snapshot resynchronization required")]
+    ChainDiverged,
+}
+
+/// Endpoint policy for the Depot authority inbox: HTTPS to a public host (the
+/// repository's SSRF vocabulary) or plain HTTP to a loopback address for a
+/// co-located pair. Userinfo, query, and fragment are never accepted.
+pub(crate) fn validate_projection_base_url(raw: &str) -> Result<Url, ProjectionSendError> {
+    if let Ok(url) = labby_primitives::ssrf::parse_validated_https_url(raw) {
+        return Ok(url);
+    }
+    let url = Url::parse(raw).map_err(|_| ProjectionSendError::Configuration)?;
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if matches!(url.scheme(), "http" | "https")
+        && loopback
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        Ok(url)
+    } else {
+        Err(ProjectionSendError::Configuration)
+    }
 }
 
 #[derive(Clone)]
@@ -157,6 +251,8 @@ pub(crate) struct AuthorityProjectionSender {
     key_id: Arc<str>,
     signing_key: Arc<SigningKey>,
     store: AccessStore,
+    /// Instant of the last acknowledgement per Organization; drives heartbeats.
+    last_ack: Arc<Mutex<BTreeMap<String, Instant>>>,
 }
 
 impl std::fmt::Debug for AuthorityProjectionSender {
@@ -171,6 +267,16 @@ impl std::fmt::Debug for AuthorityProjectionSender {
     }
 }
 
+struct EnvelopeInput<'a> {
+    organization_id: &'a str,
+    kind: ProjectionKind,
+    sequence_start: u64,
+    sequence_end: u64,
+    generated_at: String,
+    previous_digest: Option<String>,
+    records: Vec<AuthorityProjectionRecord>,
+}
+
 impl AuthorityProjectionSender {
     pub(crate) fn new(
         base_url: Url,
@@ -180,6 +286,8 @@ impl AuthorityProjectionSender {
         secret_key: [u8; 32],
         store: AccessStore,
     ) -> Result<Self, ProjectionSendError> {
+        let secret_key = Zeroizing::new(secret_key);
+        let base_url = validate_projection_base_url(base_url.as_str())?;
         let endpoint = base_url
             .join("/api/authority/projection")
             .map_err(|_| ProjectionSendError::Configuration)?;
@@ -195,6 +303,7 @@ impl AuthorityProjectionSender {
         Ok(Self {
             http: Client::builder()
                 .timeout(SEND_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|_| ProjectionSendError::Configuration)?,
             endpoint,
@@ -204,6 +313,7 @@ impl AuthorityProjectionSender {
             key_id,
             signing_key: Arc::new(SigningKey::from_bytes(&secret_key)),
             store,
+            last_ack: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -228,18 +338,41 @@ impl AuthorityProjectionSender {
         Ok(readiness)
     }
 
-    /// Sends a caller-generated complete organization snapshot after binding it
-    /// to Depot's durable watermark. A restored/older producer cannot roll the
-    /// consumer backward because sequence and previous digest come from readiness.
-    pub(crate) async fn send_snapshot(
+    async fn post_envelope(
         &self,
-        organization_id: &str,
-        records: Vec<AuthorityProjectionRecord>,
-        now: i64,
+        envelope: &AuthorityProjectionEnvelope,
     ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
-        let snapshot_id = snapshot_id(organization_id, now);
-        self.send_snapshot_chunk(organization_id, records, now, true, &snapshot_id, true)
+        if !envelope.within_bounds() {
+            return Err(ProjectionSendError::Configuration);
+        }
+        let body = serde_json::to_vec(envelope).map_err(|_| ProjectionSendError::Configuration)?;
+        if body.len() > MAX_AUTHORITY_ENVELOPE_BYTES {
+            return Err(ProjectionSendError::Configuration);
+        }
+        let response = self
+            .http
+            .post(self.endpoint.clone())
+            .bearer_auth(self.bearer.as_ref())
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
             .await
+            .map_err(|_| ProjectionSendError::Transport)?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::CONFLICT => return Err(ProjectionSendError::ChainDiverged),
+            _ => return Err(ProjectionSendError::Rejected),
+        }
+        let response: ProjectionResponse = response
+            .json()
+            .await
+            .map_err(|_| ProjectionSendError::InvalidResponse)?;
+        if response.ack.organization_id != envelope.organization_id
+            || !Sha256Digest::is_canonical(&response.ack.last_envelope_digest)
+        {
+            return Err(ProjectionSendError::InvalidResponse);
+        }
+        Ok(response.ack)
     }
 
     async fn send_snapshot_chunk(
@@ -264,49 +397,23 @@ impl AuthorityProjectionSender {
                 )
                 .ok_or(ProjectionSendError::Configuration)?;
         }
-        let envelope = sign_envelope(
-            self.installation_id.as_ref(),
+        let record_count =
+            u64::try_from(records.len()).map_err(|_| ProjectionSendError::Configuration)?;
+        let envelope = self.sign_envelope(EnvelopeInput {
             organization_id,
-            ProjectionKind::Snapshot,
-            replace.then_some(base),
-            Some(snapshot_id),
-            Some(snapshot_complete),
-            rfc3339_timestamp(now)?,
-            watermark.and_then(|value| value.last_envelope_digest.clone()),
-            self.key_id.as_ref(),
+            kind: ProjectionKind::Snapshot {
+                snapshot_id: snapshot_id.to_owned(),
+                snapshot_base_sequence: replace.then_some(base),
+                snapshot_complete,
+            },
+            sequence_start: base + 1,
+            sequence_end: base + record_count,
+            generated_at: rfc3339_timestamp(now)?,
+            previous_digest: watermark.and_then(|value| value.last_envelope_digest.clone()),
             records,
-            self.signing_key.as_ref(),
-        )?;
-        let body = serde_json::to_vec(&envelope).map_err(|_| ProjectionSendError::Configuration)?;
-        if body.len() > MAX_AUTHORITY_ENVELOPE_BYTES {
-            return Err(ProjectionSendError::Configuration);
-        }
-        let response = self
-            .http
-            .post(self.endpoint.clone())
-            .bearer_auth(self.bearer.as_ref())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| ProjectionSendError::Transport)?;
-        if response.status() != StatusCode::OK {
-            return Err(ProjectionSendError::Rejected);
-        }
-        let response: ProjectionResponse = response
-            .json()
-            .await
-            .map_err(|_| ProjectionSendError::InvalidResponse)?;
-        let ack = response.ack;
-        let expected_final = base
-            .checked_add(
-                u64::try_from(envelope.records.len())
-                    .map_err(|_| ProjectionSendError::Configuration)?,
-            )
-            .ok_or(ProjectionSendError::Configuration)?;
-        if ack.organization_id != organization_id
-            || ack.highest_contiguous_sequence != expected_final
-        {
+        })?;
+        let ack = self.post_envelope(&envelope).await?;
+        if ack.highest_contiguous_sequence != envelope.sequence_end {
             return Err(ProjectionSendError::InvalidResponse);
         }
         Ok(ack)
@@ -363,155 +470,205 @@ impl AuthorityProjectionSender {
         ))
     }
 
+    /// Persist a snapshot acknowledgement locally and refresh readiness.
+    async fn commit_snapshot_ack(
+        &self,
+        organization_id: &str,
+        ack: &AuthorityProjectionAck,
+        cutoff: u64,
+        now: i64,
+    ) -> Result<(), ProjectionSendError> {
+        self.store
+            .acknowledge_authority_projection(
+                organization_id.to_owned(),
+                cutoff,
+                ack.last_envelope_digest.clone(),
+                now,
+            )
+            .await
+            .map_err(|error| {
+                tracing::warn!(error = %error, "could not persist Depot authority acknowledgement");
+                ProjectionSendError::Store
+            })?;
+        record_projection_ack(ack);
+        if let Ok(mut last) = self.last_ack.lock() {
+            last.insert(organization_id.to_owned(), Instant::now());
+        }
+        Ok(())
+    }
+
     /// Performs at most one bounded delivery pass. It is intended for a supervised
     /// background loop; authorization and mutation responses never await this method.
+    ///
+    /// Every Organization with pending rows gets exactly one snapshot attempt.
+    /// A failing Organization is released for backoff and does not stop the
+    /// others; the first error is reported after the pass completes.
     pub(crate) async fn send_once(&self, now: i64) -> Result<usize, ProjectionSendError> {
         let pending = self
             .store
             .claim_authority_projection_batch(now, MAX_AUTHORITY_RECORDS_PER_BATCH)
             .await
             .map_err(|_| ProjectionSendError::Store)?;
-        if pending.is_empty() {
-            return Ok(0);
-        }
-        let mut organizations: BTreeMap<String, Vec<_>> = BTreeMap::new();
+        let mut organizations: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         for row in pending {
             organizations
-                .entry(row.organization_id.clone())
+                .entry(row.organization_id)
                 .or_default()
-                .push(row);
+                .push(row.sequence);
         }
         let mut sent = 0;
-        for (organization_id, rows) in organizations {
-            let through = rows.last().map(|row| row.sequence).unwrap_or_default();
-            let result = self.send_current_snapshot(&organization_id, now).await;
-            match result {
-                Ok((ack, Some(cutoff))) if ack.organization_id == organization_id => {
-                    self.store
-                        .supersede_authority_projection_with_snapshot(
-                            organization_id,
-                            ack.last_envelope_digest,
-                            cutoff,
-                            now,
-                        )
-                        .await
-                        .map_err(|_| ProjectionSendError::Store)?;
-                    sent += rows.len();
-                }
-                Ok(_) => {
-                    self.store
-                        .release_failed_authority_projection(organization_id, through, now)
-                        .await
-                        .map_err(|_| ProjectionSendError::Store)?;
-                    return Err(ProjectionSendError::InvalidResponse);
-                }
+        let mut first_error = None;
+        for (organization_id, sequences) in organizations {
+            let through = sequences.iter().copied().max().unwrap_or_default();
+            let outcome = match self.send_current_snapshot(&organization_id, now).await {
+                Ok((ack, Some(cutoff))) => self
+                    .commit_snapshot_ack(&organization_id, &ack, cutoff, now)
+                    .await
+                    .map(|()| sequences.len()),
+                Ok((_, None)) => Err(ProjectionSendError::InvalidResponse),
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(count) => sent += count,
                 Err(error) => {
+                    tracing::warn!(
+                        organization_id,
+                        error = %error,
+                        "Depot authority snapshot delivery failed; releasing for backoff"
+                    );
                     self.store
                         .release_failed_authority_projection(organization_id, through, now)
                         .await
                         .map_err(|_| ProjectionSendError::Store)?;
-                    return Err(error);
+                    first_error.get_or_insert(error);
                 }
             }
         }
-        Ok(sent)
+        self.refresh_posture(false).await?;
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(sent),
+        }
     }
 
-    async fn send_delta(
+    async fn refresh_posture(&self, gap: bool) -> Result<(), ProjectionSendError> {
+        let status = self
+            .store
+            .authority_delivery_status()
+            .await
+            .map_err(|_| ProjectionSendError::Store)?;
+        record_delivery_posture(&status, gap);
+        Ok(())
+    }
+
+    fn heartbeat_due(&self, organization_id: &str) -> bool {
+        self.last_ack.lock().ok().is_none_or(|last| {
+            last.get(organization_id).is_none_or(|instant| {
+                instant.elapsed() >= Duration::from_secs(AUTHORITY_HEARTBEAT_INTERVAL_SECONDS)
+            })
+        })
+    }
+
+    /// Send a heartbeat for every synchronized, idle Organization whose last
+    /// acknowledgement is older than the heartbeat interval. Returns the
+    /// Organizations that were heartbeated. A chain disagreement marks a gap
+    /// and reports [`ProjectionSendError::ChainDiverged`] so the loop resyncs.
+    pub(crate) async fn send_heartbeats(
+        &self,
+        now: i64,
+    ) -> Result<Vec<String>, ProjectionSendError> {
+        let status = self
+            .store
+            .authority_delivery_status()
+            .await
+            .map_err(|_| ProjectionSendError::Store)?;
+        let mut sent = Vec::new();
+        let mut gap = false;
+        let mut first_error = None;
+        for organization in status
+            .iter()
+            .filter(|organization| organization.pending + organization.inflight == 0)
+        {
+            let organization_id = organization.organization_id.as_str();
+            let acknowledged = self
+                .store
+                .acknowledged_authority_projection(organization_id.to_owned())
+                .await
+                .map_err(|_| ProjectionSendError::Store)?;
+            let Some(persisted_digest) = acknowledged.digest else {
+                // Never synchronized: Depot would reject the heartbeat.
+                continue;
+            };
+            if !self.heartbeat_due(organization_id) {
+                continue;
+            }
+            match self
+                .send_heartbeat(organization_id, &persisted_digest, now)
+                .await
+            {
+                Ok(ack) => {
+                    record_projection_ack(&ack);
+                    if let Ok(mut last) = self.last_ack.lock() {
+                        last.insert(organization_id.to_owned(), Instant::now());
+                    }
+                    sent.push(organization_id.to_owned());
+                }
+                Err(ProjectionSendError::ChainDiverged) => {
+                    gap = true;
+                    first_error.get_or_insert(ProjectionSendError::ChainDiverged);
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        record_delivery_posture(&status, gap);
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(sent),
+        }
+    }
+
+    async fn send_heartbeat(
         &self,
         organization_id: &str,
-        rows: &[crate::access::PendingProjection],
+        persisted_digest: &str,
         now: i64,
     ) -> Result<AuthorityProjectionAck, ProjectionSendError> {
-        let current = self
-            .store
-            .authority_snapshot(organization_id.to_owned())
-            .await
-            .map_err(|_| ProjectionSendError::Store)?
-            .into_iter()
-            .map(|record| ((record.resource_type, record.resource_id), record.value))
-            .collect::<BTreeMap<_, _>>();
-        let records = rows
-            .iter()
-            .map(|row| {
-                let value: Value = serde_json::from_str(&row.payload_json)
-                    .map_err(|_| ProjectionSendError::Store)?;
-                let resource_type = value
-                    .get("resource_type")
-                    .and_then(Value::as_str)
-                    .ok_or(ProjectionSendError::Store)?
-                    .to_owned();
-                let resource_id = value
-                    .get("resource_id")
-                    .and_then(Value::as_str)
-                    .ok_or(ProjectionSendError::Store)?
-                    .to_owned();
-                let operation = value
-                    .get("operation")
-                    .and_then(Value::as_str)
-                    .ok_or(ProjectionSendError::Store)?
-                    .to_owned();
-                let authoritative = if operation == "delete" {
-                    None
-                } else if matches!(
-                    resource_type.as_str(),
-                    "principal" | "team" | "team_membership" | "team_project"
-                ) {
-                    Some(
-                        current
-                            .get(&(resource_type.clone(), resource_id.clone()))
-                            .cloned()
-                            .ok_or(ProjectionSendError::Store)?,
-                    )
-                } else {
-                    value.get("value").cloned().filter(|value| !value.is_null())
-                };
-                Ok(AuthorityProjectionRecord {
-                    sequence: row.sequence,
-                    resource_type,
-                    resource_id,
-                    operation,
-                    value: authoritative,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let previous_digest = rows.first().and_then(|row| row.previous_digest.clone());
-        let generated_at = rfc3339_timestamp(now)?;
-        let envelope = sign_envelope(
-            self.installation_id.as_ref(),
+        let readiness = self.readiness().await?;
+        let watermark = readiness
+            .organizations
+            .get(organization_id)
+            .ok_or(ProjectionSendError::ChainDiverged)?;
+        if watermark.last_envelope_digest.as_deref() != Some(persisted_digest) {
+            return Err(ProjectionSendError::ChainDiverged);
+        }
+        let envelope = self.sign_envelope(EnvelopeInput {
             organization_id,
-            ProjectionKind::Delta,
-            None,
-            None,
-            None,
-            generated_at,
-            previous_digest,
+            kind: ProjectionKind::Heartbeat,
+            sequence_start: watermark.highest_contiguous_sequence,
+            sequence_end: watermark.highest_contiguous_sequence,
+            generated_at: rfc3339_timestamp(now)?,
+            previous_digest: Some(persisted_digest.to_owned()),
+            records: Vec::new(),
+        })?;
+        let ack = self.post_envelope(&envelope).await?;
+        if ack.highest_contiguous_sequence != watermark.highest_contiguous_sequence {
+            return Err(ProjectionSendError::InvalidResponse);
+        }
+        Ok(ack)
+    }
+
+    fn sign_envelope(
+        &self,
+        input: EnvelopeInput<'_>,
+    ) -> Result<AuthorityProjectionEnvelope, ProjectionSendError> {
+        sign_envelope(
+            self.installation_id.as_ref(),
             self.key_id.as_ref(),
-            records,
             self.signing_key.as_ref(),
-        )?;
-        let body = serde_json::to_vec(&envelope).map_err(|_| ProjectionSendError::Configuration)?;
-        if body.len() > MAX_AUTHORITY_ENVELOPE_BYTES {
-            return Err(ProjectionSendError::Configuration);
-        }
-        let response = self
-            .http
-            .post(self.endpoint.clone())
-            .bearer_auth(self.bearer.as_ref())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| ProjectionSendError::Transport)?;
-        if response.status() != StatusCode::OK {
-            return Err(ProjectionSendError::Rejected);
-        }
-        let response: ProjectionResponse = response
-            .json()
-            .await
-            .map_err(|_| ProjectionSendError::InvalidResponse)?;
-        record_projection_ack(&response.ack);
-        Ok(response.ack)
+            input,
+        )
     }
 }
 
@@ -535,16 +692,13 @@ pub(crate) async fn start_managed_projection(
         .authority_endpoint
         .as_deref()
         .ok_or(ProjectionSendError::Configuration)?;
-    let bearer_env = preferences
-        .authority_bearer_token_env
-        .as_deref()
-        .filter(|name| crate::config::depot::allowed_secret_reference(name))
-        .ok_or(ProjectionSendError::Configuration)?;
-    let signing_env = preferences
-        .authority_signing_key_env
-        .as_deref()
-        .filter(|name| crate::config::depot::allowed_secret_reference(name))
-        .ok_or(ProjectionSendError::Configuration)?;
+    let bearer_env = preferences.authority_bearer_token_env();
+    let signing_env = preferences.authority_signing_key_env();
+    if !crate::config::depot::allowed_secret_reference(bearer_env)
+        || !crate::config::depot::allowed_secret_reference(signing_env)
+    {
+        return Err(ProjectionSendError::Configuration);
+    }
     let installation_id = preferences
         .authority_installation_id
         .as_deref()
@@ -554,47 +708,43 @@ pub(crate) async fn start_managed_projection(
         .as_deref()
         .ok_or(ProjectionSendError::Configuration)?;
     let bearer = std::env::var(bearer_env).map_err(|_| ProjectionSendError::Configuration)?;
-    let encoded_key = std::env::var(signing_env).map_err(|_| ProjectionSendError::Configuration)?;
-    let key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(encoded_key)
-        .map_err(|_| ProjectionSendError::Configuration)?;
-    let secret_key: [u8; 32] = key_bytes
-        .try_into()
-        .map_err(|_| ProjectionSendError::Configuration)?;
+    let encoded_key =
+        Zeroizing::new(std::env::var(signing_env).map_err(|_| ProjectionSendError::Configuration)?);
+    let key_bytes = Zeroizing::new(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded_key.trim())
+            .map_err(|_| ProjectionSendError::Configuration)?,
+    );
+    let mut secret_key = Zeroizing::new([0_u8; 32]);
+    if key_bytes.len() != secret_key.len() {
+        return Err(ProjectionSendError::Configuration);
+    }
+    secret_key.copy_from_slice(&key_bytes);
     let path = crate::config::access_db_path().map_err(|_| ProjectionSendError::Configuration)?;
     let store = AccessStore::open_existing_current(path)
         .await
         .map_err(|_| ProjectionSendError::Store)?;
     let sender = AuthorityProjectionSender::new(
-        Url::parse(endpoint).map_err(|_| ProjectionSendError::Configuration)?,
+        validate_projection_base_url(endpoint)?,
         bearer,
         installation_id,
         key_id,
-        secret_key,
+        *secret_key,
         store,
     )?;
 
     Ok(Some(tokio::spawn(async move {
         let mut loop_state = ProjectionLoopState::needs_snapshot();
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(LOOP_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_retention = Instant::now();
         loop {
             interval.tick().await;
             if loop_state.next_work() == ProjectionWork::Baseline {
                 match synchronize_baseline(&sender, unix_now()).await {
                     Ok(()) => {
                         loop_state.baseline_finished(true);
-                        match sender.send_once(unix_now()).await {
-                            Ok(_) => mark_projection_ready(sender.key_id.as_ref()),
-                            Err(error) => {
-                                set_projection_health(
-                                    true,
-                                    false,
-                                    Some("Depot authority projection delivery failed"),
-                                );
-                                tracing::warn!(error = %error, "Depot authority projection delivery failed after baseline synchronization");
-                            }
-                        }
+                        mark_projection_ready(sender.key_id.as_ref());
                     }
                     Err(error) => {
                         loop_state.baseline_finished(false);
@@ -612,12 +762,35 @@ pub(crate) async fn start_managed_projection(
             match sender.send_once(unix_now()).await {
                 Ok(_) => mark_projection_ready(sender.key_id.as_ref()),
                 Err(error) => {
-                    set_projection_health(
-                        true,
-                        false,
-                        Some("Depot authority projection delivery failed"),
-                    );
+                    if let Ok(mut health) = projection_health().lock() {
+                        health.pending =
+                            Some("Depot authority projection delivery failed".to_owned());
+                    }
                     tracing::warn!(error = %error, "Depot authority projection delivery failed");
+                }
+            }
+            match sender.send_heartbeats(unix_now()).await {
+                Ok(_) => {}
+                Err(ProjectionSendError::ChainDiverged) => {
+                    tracing::warn!(
+                        "Depot authority chain diverged; scheduling full snapshot resynchronization"
+                    );
+                    loop_state.baseline_finished(false);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Depot authority heartbeat failed");
+                }
+            }
+            if last_retention.elapsed() >= RETENTION_INTERVAL {
+                last_retention = Instant::now();
+                if let Err(error) = sender
+                    .store
+                    .retain_authority_projection(
+                        unix_now().saturating_sub(OUTBOX_RETENTION_SECONDS),
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %error, "Depot authority outbox retention failed");
                 }
             }
         }
@@ -637,27 +810,12 @@ async fn synchronize_baseline(
     }
 
     for organization in organizations {
-        match sender.send_current_snapshot(&organization, now).await? {
-            (ack, Some(cutoff)) => {
-                record_projection_ack(&ack);
-                sender
-                    .store
-                    .supersede_authority_projection_with_snapshot(
-                        organization,
-                        ack.last_envelope_digest,
-                        cutoff,
-                        now,
-                    )
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(error = %error, "could not checkpoint initial Depot authority snapshot");
-                        ProjectionSendError::Store
-                    })?;
-            }
-            (ack, None) => record_projection_ack(&ack),
-        }
+        let (ack, cutoff) = sender.send_current_snapshot(&organization, now).await?;
+        sender
+            .commit_snapshot_ack(&organization, &ack, cutoff.unwrap_or_default(), now)
+            .await?;
     }
-    Ok(())
+    sender.refresh_posture(false).await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -738,97 +896,52 @@ fn read_spooled_chunk(
             sequence: 0,
             resource_type: record.resource_type,
             resource_id: record.resource_id,
-            operation: "upsert".into(),
-            value: Some(record.value),
+            operation: RecordOperation::Upsert(record.value),
         });
     }
     Ok(chunk)
 }
 
-#[derive(Serialize)]
-struct UnsignedEnvelope<'a> {
-    schema_version: u16,
-    installation_id: &'a str,
-    organization_id: &'a str,
-    sequence_start: u64,
-    sequence_end: u64,
-    kind: ProjectionKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    snapshot_base_sequence: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    snapshot_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    snapshot_complete: Option<bool>,
-    generated_at: &'a str,
-    previous_digest: &'a Option<String>,
-    payload_digest: &'a str,
-    key_id: &'a str,
-    records: &'a [AuthorityProjectionRecord],
-}
-
+/// Sign an envelope under the shared canonical profile: the signature covers
+/// the canonical JSON of every field except `signature`; the payload digest
+/// covers the canonical JSON of `records`. Both refuse non-integer numbers.
 fn sign_envelope(
     installation_id: &str,
-    organization_id: &str,
-    kind: ProjectionKind,
-    snapshot_base_sequence: Option<u64>,
-    snapshot_id: Option<&str>,
-    snapshot_complete: Option<bool>,
-    generated_at: String,
-    previous_digest: Option<String>,
     key_id: &str,
-    records: Vec<AuthorityProjectionRecord>,
     key: &SigningKey,
+    input: EnvelopeInput<'_>,
 ) -> Result<AuthorityProjectionEnvelope, ProjectionSendError> {
-    let sequence_start = records
-        .first()
-        .map(|r| r.sequence)
-        .ok_or(ProjectionSendError::Configuration)?;
-    let sequence_end = records
-        .last()
-        .map(|r| r.sequence)
-        .ok_or(ProjectionSendError::Configuration)?;
-    let records_bytes = canonical_json(
-        &serde_json::to_value(&records).map_err(|_| ProjectionSendError::Configuration)?,
-    )?;
-    let payload_digest = format!("sha256:{}", hex::encode(Sha256::digest(&records_bytes)));
-    let unsigned = UnsignedEnvelope {
-        schema_version: AUTHORITY_PROJECTION_SCHEMA_VERSION,
-        installation_id,
-        organization_id,
-        sequence_start,
-        sequence_end,
-        kind,
-        snapshot_base_sequence,
-        snapshot_id,
-        snapshot_complete,
-        generated_at: &generated_at,
-        previous_digest: &previous_digest,
-        payload_digest: &payload_digest,
-        key_id,
-        records: &records,
-    };
-    let signing_bytes = canonical_json(
-        &serde_json::to_value(unsigned).map_err(|_| ProjectionSendError::Configuration)?,
-    )?;
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(key.sign(&signing_bytes).to_bytes());
-    Ok(AuthorityProjectionEnvelope {
+    let payload_digest =
+        canonical_json::digest(&input.records).map_err(|_| ProjectionSendError::Configuration)?;
+    let mut envelope = AuthorityProjectionEnvelope {
         schema_version: AUTHORITY_PROJECTION_SCHEMA_VERSION,
         installation_id: installation_id.into(),
-        organization_id: organization_id.into(),
-        sequence_start,
-        sequence_end,
-        kind,
-        snapshot_base_sequence,
-        snapshot_id: snapshot_id.map(str::to_owned),
-        snapshot_complete,
-        generated_at,
-        previous_digest,
-        payload_digest,
+        organization_id: input.organization_id.into(),
+        sequence_start: input.sequence_start,
+        sequence_end: input.sequence_end,
+        kind: input.kind,
+        generated_at: input.generated_at,
+        previous_digest: input.previous_digest,
+        payload_digest: payload_digest.as_str().to_owned(),
         key_id: key_id.into(),
-        records,
-        signature,
-    })
+        records: input.records,
+        signature: String::new(),
+    };
+    let signing_bytes = signing_bytes(&envelope)?;
+    envelope.signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(key.sign(&signing_bytes).to_bytes());
+    Ok(envelope)
+}
+
+/// Canonical JSON of every envelope field except `signature`.
+fn signing_bytes(envelope: &AuthorityProjectionEnvelope) -> Result<Vec<u8>, ProjectionSendError> {
+    let mut value =
+        serde_json::to_value(envelope).map_err(|_| ProjectionSendError::Configuration)?;
+    value
+        .as_object_mut()
+        .ok_or(ProjectionSendError::Configuration)?
+        .remove("signature");
+    canonical_json::canonical_value(&value).map_err(|_| ProjectionSendError::Configuration)
 }
 
 fn snapshot_id(organization_id: &str, now: i64) -> String {
@@ -866,26 +979,16 @@ fn rfc3339_timestamp(epoch_seconds: i64) -> Result<String, ProjectionSendError> 
     ))
 }
 
-fn canonical_json(value: &Value) -> Result<Vec<u8>, ProjectionSendError> {
-    fn normalize(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => Value::Object(
-                map.iter()
-                    .map(|(key, value)| (key.clone(), normalize(value)))
-                    .collect::<BTreeMap<_, _>>()
-                    .into_iter()
-                    .collect(),
-            ),
-            Value::Array(values) => Value::Array(values.iter().map(normalize).collect()),
-            other => other.clone(),
-        }
-    }
-    serde_json::to_vec(&normalize(value)).map_err(|_| ProjectionSendError::Configuration)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{AccessStore, BootstrapOwnerInput};
+    use axum::extract::State;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use ed25519_dalek::{Verifier as _, VerifyingKey};
+    use labby_auth::{Authenticator, VerifiedIdentity};
+    use serde_json::json;
 
     #[test]
     fn managed_projection_health_fails_closed_until_synchronized() {
@@ -894,8 +997,19 @@ mod tests {
             managed_projection_readiness_pending().as_deref(),
             Some("projection lag is nonzero")
         );
-        set_projection_health(true, true, None);
+        // Marking ready without a Depot acknowledgement stays stale/pending.
+        mark_projection_ready("key");
+        record_delivery_posture(&[], false);
+        assert!(managed_projection_readiness_pending().is_some());
+        assert!(!projection_readiness().unwrap().ready);
+        record_projection_ack(&AuthorityProjectionAck {
+            organization_id: "org".into(),
+            highest_contiguous_sequence: 3,
+            last_envelope_digest: format!("sha256:{}", "aa".repeat(32)),
+            snapshot_digest: None,
+        });
         assert!(managed_projection_readiness_pending().is_none());
+        assert!(projection_readiness().unwrap().ready);
         set_projection_health(false, true, None);
     }
 
@@ -903,13 +1017,8 @@ mod tests {
     fn transient_baseline_rejection_cannot_fall_through_to_empty_deltas() {
         let mut state = ProjectionLoopState::needs_snapshot();
         assert_eq!(state.next_work(), ProjectionWork::Baseline);
-
-        // A transient Depot rejection keeps the loop on full snapshots. The
-        // empty-outbox delta path is therefore not eligible to mark Ready.
         state.baseline_finished(false);
         assert_eq!(state.next_work(), ProjectionWork::Baseline);
-
-        // Only an accepted and locally checkpointed baseline unlocks deltas.
         state.baseline_finished(true);
         assert_eq!(state.next_work(), ProjectionWork::Deltas);
     }
@@ -923,12 +1032,13 @@ mod tests {
         );
         assert!(rfc3339_timestamp(-1).is_err());
     }
+
     #[test]
     fn spooled_snapshots_never_materialize_more_than_one_envelope() {
         let count = MAX_AUTHORITY_RECORDS_PER_BATCH * 8 + 1;
         let mut lines = (0..count).map(|sequence| {
             Ok::<_, std::io::Error>(
-                serde_json::json!({
+                json!({
                     "resource_type":"principal",
                     "resource_id":format!("principal-{sequence}"),
                     "value":{"status":"active"}
@@ -948,61 +1058,107 @@ mod tests {
         assert_eq!(total, count);
     }
 
-    #[test]
-    fn canonical_signing_is_stable_and_omits_signature() {
-        let key = SigningKey::from_bytes(&[7; 32]);
-        let record = AuthorityProjectionRecord {
-            sequence: 1,
+    fn record(sequence: u64, value: Value) -> AuthorityProjectionRecord {
+        AuthorityProjectionRecord {
+            sequence,
             resource_type: "team".into(),
             resource_id: "t1".into(),
-            operation: "upsert".into(),
-            value: Some(serde_json::json!({"z":1,"a":2})),
-        };
-        let one = sign_envelope(
-            "install",
-            "org",
-            ProjectionKind::Delta,
-            None,
-            None,
-            None,
-            "2026-09-05T00:00:00Z".into(),
-            None,
-            "key",
-            vec![record.clone()],
-            &key,
-        )
-        .unwrap();
-        let two = sign_envelope(
-            "install",
-            "org",
-            ProjectionKind::Delta,
-            None,
-            None,
-            None,
-            "2026-09-05T00:00:00Z".into(),
-            None,
-            "key",
-            vec![record],
-            &key,
-        )
-        .unwrap();
-        assert_eq!(one, two);
-        assert!(one.payload_digest.starts_with("sha256:"));
-        assert!(!one.signature.contains('='));
+            operation: RecordOperation::Upsert(value),
+        }
     }
 
     #[test]
-    fn canonical_json_matches_depot_golden_fixture() {
-        let value = serde_json::json!({"sequence_start":1,"records":[],"previous_digest":null,"payload_digest":"sha256:placeholder","organization_id":"org-1","kind":"delta","key_id":"key-1","installation_id":"install-1","generated_at":"2026-09-05T00:00:00Z","sequence_end":1,"schema_version":1});
+    fn canonical_signing_is_stable_verifiable_and_refuses_floats() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let build = || {
+            sign_envelope(
+                "install",
+                "key",
+                &key,
+                EnvelopeInput {
+                    organization_id: "org",
+                    kind: ProjectionKind::Delta,
+                    sequence_start: 1,
+                    sequence_end: 1,
+                    generated_at: "2026-09-05T00:00:00Z".into(),
+                    previous_digest: None,
+                    records: vec![record(1, json!({"z":1,"a":2}))],
+                },
+            )
+            .unwrap()
+        };
+        let one = build();
+        assert_eq!(one, build());
+        assert!(Sha256Digest::is_canonical(&one.payload_digest));
+        assert!(!one.signature.contains('='));
+        // Depot verifies the signature over canonical JSON of the envelope
+        // without `signature`; the payload digest covers canonical `records`.
+        let verifying = VerifyingKey::from(&key);
+        let signature = ed25519_dalek::Signature::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&one.signature)
+                .unwrap(),
+        )
+        .unwrap();
+        verifying
+            .verify(&signing_bytes(&one).unwrap(), &signature)
+            .unwrap();
         assert_eq!(
-            String::from_utf8(canonical_json(&value).unwrap()).unwrap(),
-            "{\"generated_at\":\"2026-09-05T00:00:00Z\",\"installation_id\":\"install-1\",\"key_id\":\"key-1\",\"kind\":\"delta\",\"organization_id\":\"org-1\",\"payload_digest\":\"sha256:placeholder\",\"previous_digest\":null,\"records\":[],\"schema_version\":1,\"sequence_end\":1,\"sequence_start\":1}"
+            one.payload_digest,
+            canonical_json::digest(&one.records).unwrap().as_str()
+        );
+        let float = sign_envelope(
+            "install",
+            "key",
+            &key,
+            EnvelopeInput {
+                organization_id: "org",
+                kind: ProjectionKind::Delta,
+                sequence_start: 1,
+                sequence_end: 1,
+                generated_at: "2026-09-05T00:00:00Z".into(),
+                previous_digest: None,
+                records: vec![record(1, json!({"ratio": 0.5}))],
+            },
+        );
+        assert!(matches!(float, Err(ProjectionSendError::Configuration)));
+    }
+
+    #[test]
+    fn heartbeat_envelopes_pin_the_watermark_and_carry_no_records() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let digest = format!("sha256:{}", "bb".repeat(32));
+        let heartbeat = sign_envelope(
+            "install",
+            "key",
+            &key,
+            EnvelopeInput {
+                organization_id: "org",
+                kind: ProjectionKind::Heartbeat,
+                sequence_start: 9,
+                sequence_end: 9,
+                generated_at: "2026-09-05T00:00:00Z".into(),
+                previous_digest: Some(digest.clone()),
+                records: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(heartbeat.within_bounds());
+        let encoded = serde_json::to_value(&heartbeat).unwrap();
+        assert_eq!(encoded["kind"], "heartbeat");
+        assert_eq!(encoded["records"], json!([]));
+        assert_eq!(encoded["sequence_start"], 9);
+        assert_eq!(encoded["sequence_end"], 9);
+        assert_eq!(encoded["previous_digest"], digest);
+        assert_eq!(
+            encoded["payload_digest"],
+            canonical_json::digest(&json!([])).unwrap().as_str()
         );
     }
 
     #[test]
     fn projection_response_requires_the_ack_wrapper() {
-        let wrapped = serde_json::json!({"ack": {
+        let wrapped = json!({"ack": {
             "organization_id": "org-1",
             "highest_contiguous_sequence": 4,
             "last_envelope_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1011,7 +1167,7 @@ mod tests {
         let response: ProjectionResponse = serde_json::from_value(wrapped).unwrap();
         assert_eq!(response.ack.organization_id, "org-1");
         assert!(
-            serde_json::from_value::<ProjectionResponse>(serde_json::json!({
+            serde_json::from_value::<ProjectionResponse>(json!({
                 "organization_id": "org-1",
                 "highest_contiguous_sequence": 4,
                 "last_envelope_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1019,5 +1175,380 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn projection_endpoint_requires_https_or_loopback_without_secrets_in_the_url() {
+        assert!(validate_projection_base_url("https://depot.example.test").is_ok());
+        assert!(validate_projection_base_url("http://127.0.0.1:4100").is_ok());
+        assert!(validate_projection_base_url("http://[::1]:4100").is_ok());
+        assert!(validate_projection_base_url("http://localhost:4100").is_ok());
+        assert!(validate_projection_base_url("http://depot.example.test").is_err());
+        assert!(validate_projection_base_url("http://10.0.0.5").is_err());
+        assert!(validate_projection_base_url("https://user:pw@depot.example.test").is_err());
+        assert!(validate_projection_base_url("https://depot.example.test/?x=1").is_err());
+        assert!(validate_projection_base_url("http://127.0.0.1/#frag").is_err());
+        assert!(validate_projection_base_url("ftp://127.0.0.1").is_err());
+    }
+
+    // ---- In-process Depot authority inbox stub ----------------------------
+
+    #[derive(Default)]
+    struct StubState {
+        verifying: Option<VerifyingKey>,
+        watermarks: BTreeMap<String, (u64, Option<String>)>,
+        received: Vec<Value>,
+        /// Respond to the next envelope for this Organization with a status.
+        fail_next: BTreeMap<String, u16>,
+        /// Replace the acknowledged sequence in the next ack.
+        ack_override: Option<u64>,
+    }
+
+    type Shared = Arc<Mutex<StubState>>;
+
+    async fn readiness(State(state): State<Shared>) -> Json<Value> {
+        let state = state.lock().unwrap();
+        let organizations = state
+            .watermarks
+            .iter()
+            .map(|(id, (sequence, digest))| {
+                (
+                    id.clone(),
+                    json!({"highest_contiguous_sequence": sequence, "last_envelope_digest": digest}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        Json(json!({"ready": true, "accepting": true, "organizations": organizations}))
+    }
+
+    async fn inbox(
+        State(state): State<Shared>,
+        Json(envelope): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        let mut state = state.lock().unwrap();
+        let organization = envelope["organization_id"].as_str().unwrap().to_owned();
+        if let Some(status) = state.fail_next.remove(&organization) {
+            return (
+                StatusCode::from_u16(status).unwrap(),
+                Json(json!({"ok": false})),
+            );
+        }
+        // Verify exactly what Depot verifies: signature over canonical JSON of
+        // every field except `signature`, and the payload digest of records.
+        let mut unsigned = envelope.clone();
+        let signature = unsigned
+            .as_object_mut()
+            .unwrap()
+            .remove("signature")
+            .unwrap();
+        let signing_input = canonical_json::canonical_value(&unsigned).unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(signature.as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        state
+            .verifying
+            .as_ref()
+            .unwrap()
+            .verify(&signing_input, &signature)
+            .expect("stub verifies the producer signature");
+        assert_eq!(
+            envelope["payload_digest"],
+            canonical_json::digest(&envelope["records"])
+                .unwrap()
+                .as_str()
+        );
+        let (watermark, digest) = state
+            .watermarks
+            .get(&organization)
+            .cloned()
+            .unwrap_or((0, None));
+        let start = envelope["sequence_start"].as_u64().unwrap();
+        let end = envelope["sequence_end"].as_u64().unwrap();
+        let previous = envelope["previous_digest"].as_str().map(str::to_owned);
+        let new_watermark = match envelope["kind"].as_str().unwrap() {
+            "heartbeat" => {
+                assert_eq!(envelope["records"].as_array().unwrap().len(), 0);
+                if start != watermark || end != watermark || previous != digest {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"ok": false, "error": "chain_mismatch"})),
+                    );
+                }
+                watermark
+            }
+            "snapshot" => {
+                assert_eq!(start, watermark + 1);
+                assert_eq!(
+                    envelope["records"].as_array().unwrap().len() as u64,
+                    end - start + 1
+                );
+                if previous != digest {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"ok": false, "error": "chain_mismatch"})),
+                    );
+                }
+                end
+            }
+            other => panic!("unexpected kind {other}"),
+        };
+        let envelope_digest = canonical_json::digest(&envelope)
+            .unwrap()
+            .as_str()
+            .to_owned();
+        state.watermarks.insert(
+            organization.clone(),
+            (new_watermark, Some(envelope_digest.clone())),
+        );
+        state.received.push(envelope);
+        let acknowledged = state.ack_override.take().unwrap_or(new_watermark);
+        (
+            StatusCode::OK,
+            Json(json!({"ok": true, "ack": {
+                "organization_id": organization,
+                "highest_contiguous_sequence": acknowledged,
+                "last_envelope_digest": envelope_digest,
+                "snapshot_digest": null
+            }})),
+        )
+    }
+
+    async fn stub() -> (Shared, Url) {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let state: Shared = Arc::new(Mutex::new(StubState::default()));
+        let router = Router::new()
+            .route("/api/authority/readiness", get(readiness))
+            .route("/api/authority/projection", post(inbox))
+            .with_state(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (state, Url::parse(&format!("http://{address}")).unwrap())
+    }
+
+    async fn fixture() -> (
+        tempfile::TempDir,
+        Shared,
+        AuthorityProjectionSender,
+        AccessStore,
+    ) {
+        let directory = crate::access::test_support::secure_tempdir();
+        let store = AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(identity, "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        let (state, base) = stub().await;
+        let seed = [11_u8; 32];
+        state.lock().unwrap().verifying = Some(VerifyingKey::from(&SigningKey::from_bytes(&seed)));
+        let sender = AuthorityProjectionSender::new(
+            base,
+            "bearer-secret",
+            "install-1",
+            "key-1",
+            seed,
+            store.clone(),
+        )
+        .unwrap();
+        (directory, state, sender, store)
+    }
+
+    async fn add_organization(store: &AccessStore, organization_id: &str) {
+        store
+            .execute_test_statement(Box::leak(
+                format!(
+                    "INSERT INTO organizations VALUES('{organization_id}','Second','active',0,1,1);
+                     INSERT INTO principals VALUES('{organization_id}-owner','{organization_id}','user','active',NULL,5,5);
+                     INSERT INTO access_audit VALUES('{organization_id}-audit',5,NULL,'{organization_id}-owner','{organization_id}',NULL,'access.team.create','team','t','allow','test',0,'{{}}');"
+                )
+                .into_boxed_str(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn accepted_snapshot_advances_the_persisted_watermark_and_marks_rows_sent() {
+        let (_directory, state, sender, store) = fixture().await;
+        let now = 1_000;
+        let sent = sender.send_once(now).await.unwrap();
+        assert_eq!(
+            sent, 3,
+            "bootstrap enqueued three rows, coalesced into one snapshot"
+        );
+        let received = state.lock().unwrap().received.clone();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0]["kind"], "snapshot");
+        assert_eq!(received[0]["snapshot_complete"], true);
+        assert_eq!(received[0]["snapshot_base_sequence"], 0);
+        assert_eq!(received[0]["sequence_start"], 1);
+        let acknowledged = store
+            .acknowledged_authority_projection("bootstrap-local".into())
+            .await
+            .unwrap();
+        assert_eq!(acknowledged.sequence, 3);
+        assert_eq!(
+            acknowledged.digest,
+            state.lock().unwrap().watermarks["bootstrap-local"].1
+        );
+        let status = store.authority_delivery_status().await.unwrap();
+        assert_eq!(
+            (status[0].pending, status[0].inflight, status[0].failed),
+            (0, 0, 0)
+        );
+        // Duplicate send after a crash is a no-op: nothing is pending and no
+        // envelope is re-posted.
+        assert_eq!(sender.send_once(now + 1).await.unwrap(), 0);
+        assert_eq!(state.lock().unwrap().received.len(), 1);
+        assert_eq!(
+            store
+                .claim_authority_projection_batch(now + 100_000, 256)
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn server_failure_leaves_rows_claimable_and_does_not_starve_other_organizations() {
+        let (_directory, state, sender, store) = fixture().await;
+        add_organization(&store, "second-org").await;
+        state
+            .lock()
+            .unwrap()
+            .fail_next
+            .insert("bootstrap-local".into(), 503);
+        let now = 1_000;
+        let error = sender.send_once(now).await.unwrap_err();
+        assert!(matches!(error, ProjectionSendError::Rejected));
+        // The second Organization was still delivered in the same pass.
+        assert_eq!(
+            store
+                .acknowledged_authority_projection("second-org".into())
+                .await
+                .unwrap()
+                .sequence,
+            1
+        );
+        let status = store.authority_delivery_status().await.unwrap();
+        let first = status
+            .iter()
+            .find(|organization| organization.organization_id == "bootstrap-local")
+            .unwrap();
+        assert_eq!(first.acknowledged, 0);
+        assert_eq!(
+            first.pending, 3,
+            "failed rows are released for backoff, not lost"
+        );
+        assert_eq!(first.failed, 0);
+        // After the backoff window the rows are claimable and deliver.
+        assert_eq!(sender.send_once(now + 3_600).await.unwrap(), 3);
+        assert_eq!(
+            store
+                .acknowledged_authority_projection("bootstrap-local".into())
+                .await
+                .unwrap()
+                .sequence,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_sequence_acknowledgement_is_rejected_and_rows_are_released() {
+        let (_directory, state, sender, store) = fixture().await;
+        state.lock().unwrap().ack_override = Some(42);
+        let error = sender.send_once(1_000).await.unwrap_err();
+        assert!(matches!(error, ProjectionSendError::InvalidResponse));
+        let acknowledged = store
+            .acknowledged_authority_projection("bootstrap-local".into())
+            .await
+            .unwrap();
+        assert_eq!(acknowledged.sequence, 0);
+        assert!(acknowledged.digest.is_none());
+        let status = store.authority_delivery_status().await.unwrap();
+        assert_eq!(status[0].pending, 3);
+    }
+
+    #[tokio::test]
+    async fn heartbeats_follow_the_cadence_and_only_after_synchronization() {
+        let (_directory, state, sender, store) = fixture().await;
+        // Never synchronized: no heartbeat is sent (Depot would reject it).
+        assert!(sender.send_heartbeats(1_000).await.unwrap().is_empty());
+        assert_eq!(state.lock().unwrap().received.len(), 0);
+
+        sender.send_once(1_000).await.unwrap();
+        // Freshly acknowledged: not due yet.
+        assert!(sender.send_heartbeats(1_001).await.unwrap().is_empty());
+        // Simulate the interval elapsing.
+        sender.last_ack.lock().unwrap().insert(
+            "bootstrap-local".into(),
+            Instant::now()
+                .checked_sub(Duration::from_secs(
+                    AUTHORITY_HEARTBEAT_INTERVAL_SECONDS + 1,
+                ))
+                .unwrap(),
+        );
+        let beaten = sender.send_heartbeats(1_100).await.unwrap();
+        assert_eq!(beaten, vec!["bootstrap-local".to_owned()]);
+        let received = state.lock().unwrap().received.clone();
+        assert_eq!(received.len(), 2);
+        let heartbeat = &received[1];
+        assert_eq!(heartbeat["kind"], "heartbeat");
+        assert_eq!(heartbeat["records"], json!([]));
+        // Depot's watermark counts projected records (seven in the bootstrap
+        // snapshot), distinct from the three local outbox rows it covered.
+        assert_eq!(heartbeat["sequence_start"], received[0]["sequence_end"]);
+        assert_eq!(heartbeat["sequence_end"], received[0]["sequence_end"]);
+        assert_eq!(
+            heartbeat["previous_digest"],
+            canonical_json::digest(&received[0]).unwrap().as_str()
+        );
+        // The heartbeat refreshed freshness without touching the outbox.
+        assert_eq!(
+            store
+                .acknowledged_authority_projection("bootstrap-local".into())
+                .await
+                .unwrap()
+                .sequence,
+            3
+        );
+        assert!(!sender.heartbeat_due("bootstrap-local"));
+        // Readiness advanced only through real acknowledgements.
+        assert!(projection_readiness().is_none_or(|readiness| !readiness.stale));
+
+        // Depot lost the chain (restored from an older backup): the heartbeat
+        // is refused as a chain divergence and a gap is recorded.
+        state.lock().unwrap().watermarks.insert(
+            "bootstrap-local".into(),
+            (1, Some(format!("sha256:{}", "cd".repeat(32)))),
+        );
+        sender.last_ack.lock().unwrap().insert(
+            "bootstrap-local".into(),
+            Instant::now()
+                .checked_sub(Duration::from_secs(
+                    AUTHORITY_HEARTBEAT_INTERVAL_SECONDS + 1,
+                ))
+                .unwrap(),
+        );
+        assert!(matches!(
+            sender.send_heartbeats(1_200).await,
+            Err(ProjectionSendError::ChainDiverged)
+        ));
     }
 }

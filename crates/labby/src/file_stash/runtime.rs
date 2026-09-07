@@ -180,12 +180,16 @@ impl FileStashRuntime {
         if self.status().await == FileStashStatus::Recovering {
             self.wait_for_recovery().await;
         }
-        match &*self.state.lock().await {
-            State::Ready(store) => Ok(store.clone()),
-            State::Recovering(_) => Err(FileStashBlockedReason::Unavailable),
-            State::Blocked(reason) => Err(*reason),
-            State::Shutdown => Err(FileStashBlockedReason::Unavailable),
-        }
+        resolve_store(&*self.state.lock().await)
+    }
+
+    /// Production resolution without any recovery wait: a store that is still
+    /// recovering is unavailable to callers, never handed out early.
+    #[cfg(test)]
+    pub(crate) async fn store_without_waiting(
+        &self,
+    ) -> Result<FileStashStore, FileStashBlockedReason> {
+        resolve_store(&*self.state.lock().await)
     }
     pub(crate) async fn blob_store(&self) -> Result<BlobStore, FileStashBlockedReason> {
         #[cfg(test)]
@@ -302,6 +306,16 @@ fn spawn_recovery_and_janitor(
             }
         }
     })
+}
+
+/// Non-blocking state resolution shared by the production `store()` path.
+fn resolve_store(state: &State) -> Result<FileStashStore, FileStashBlockedReason> {
+    match state {
+        State::Ready(store) => Ok(store.clone()),
+        State::Recovering(_) => Err(FileStashBlockedReason::Unavailable),
+        State::Blocked(reason) => Err(*reason),
+        State::Shutdown => Err(FileStashBlockedReason::Unavailable),
+    }
 }
 
 fn next_janitor_delay(
@@ -696,6 +710,12 @@ mod tests {
             &*restarted.state.lock().await,
             State::Recovering(_)
         ));
+        // The production resolution never waits: while recovery is in
+        // progress every caller is refused with Unavailable.
+        assert_eq!(
+            restarted.store_without_waiting().await.unwrap_err(),
+            FileStashBlockedReason::Unavailable
+        );
 
         super::super::blob::TEST_RECOVERY_RESUME.notify_one();
         assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);

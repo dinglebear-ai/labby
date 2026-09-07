@@ -264,6 +264,16 @@ impl McpRouteScope {
         }
     }
 
+    /// Team this protected route is bound to through its `team:<id>:` Loadout,
+    /// if any. A bound route is the authoritative authority selector for
+    /// team-scoped gateway actions; request parameters may not override it.
+    pub(crate) fn bound_team_id(&self) -> Option<&str> {
+        match self {
+            Self::ProtectedSubset { team_id, .. } => team_id.as_deref(),
+            Self::Root => None,
+        }
+    }
+
     pub(crate) fn team_credential_subject(&self) -> Option<String> {
         match self {
             Self::ProtectedSubset { team_id, .. } => {

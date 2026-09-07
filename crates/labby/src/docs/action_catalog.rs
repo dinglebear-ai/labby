@@ -406,7 +406,19 @@ mod tests {
         let registry = crate::registry::build_docs_registry();
         let actions = build_action_catalog(registry.services());
         for (service, action, capability, family) in [
-            ("access", "access.team.create", "scope.create", "platform"),
+            (
+                "access",
+                "access.team.create",
+                "platform.manage",
+                "platform",
+            ),
+            (
+                "access",
+                "access.team.member.add",
+                "membership.manage",
+                "platform",
+            ),
+            ("projects", "projects.get", "scope.read", "project"),
             ("agents", "agents.delete", "scope.delete", "agent"),
             ("tasks", "tasks.result", "scope.read", "task"),
             (
@@ -426,6 +438,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ownership_authority_is_not_misreported_as_transport_admin() {
         let registry = crate::registry::build_docs_registry();
@@ -434,10 +447,72 @@ mod tests {
             .iter()
             .find(|item| item.service == "stash" && item.action == "stash.metadata")
             .expect("stash.metadata action");
-        assert_eq!(stash.authorization_boundary, "principal_ownership_or_grant");
-        assert_eq!(stash.required_capability, None);
-        assert_eq!(stash.resource_family, None);
+        assert_eq!(stash.authorization_boundary, "resource_capability");
+        assert_eq!(stash.required_capability.as_deref(), Some("scope.read"));
+        assert_eq!(stash.resource_family.as_deref(), Some("stash"));
         assert!(!stash.requires_admin);
+    }
+
+    /// `requires_admin` is exactly the platform-capability axis for every
+    /// service that has a capability table; the catalog never hand-maintains
+    /// a fourth copy of that decision.
+    #[test]
+    fn requires_admin_equals_platform_capability_across_all_services() {
+        let registry = crate::registry::build_docs_registry();
+        let mut checked = 0;
+        for service in registry.services() {
+            for action in canonical_actions_for_service(service) {
+                let Some(capability) = dispatch_required_capability(service.name, action.name)
+                else {
+                    continue;
+                };
+                checked += 1;
+                assert_eq!(
+                    action.requires_admin,
+                    capability.is_platform(),
+                    "{}:{} requires_admin disagrees with {}",
+                    service.name,
+                    action.name,
+                    capability.as_wire()
+                );
+            }
+        }
+        assert!(checked > 0);
+        let actions = build_action_catalog(registry.services());
+        let create = actions
+            .iter()
+            .find(|item| item.service == "access" && item.action == "access.team.create")
+            .expect("access.team.create");
+        assert_eq!(
+            create.required_capability.as_deref(),
+            Some("platform.manage")
+        );
+        assert!(create.requires_admin);
+        assert_eq!(create.authorization_boundary, "resource_capability");
+        #[cfg(feature = "gateway")]
+        {
+            let loadout = actions
+                .iter()
+                .find(|item| item.service == "gateway" && item.action == "gateway.loadout.add")
+                .expect("gateway.loadout.add");
+            assert_eq!(loadout.required_capability.as_deref(), Some("scope.manage"));
+            assert!(!loadout.requires_admin);
+            let add = actions
+                .iter()
+                .find(|item| item.service == "gateway" && item.action == "gateway.add")
+                .expect("gateway.add");
+            assert_eq!(add.required_capability.as_deref(), Some("platform.manage"));
+            assert!(add.requires_admin);
+        }
+        let projects = actions
+            .iter()
+            .find(|item| item.service == "projects" && item.action == "projects.archive")
+            .expect("projects.archive");
+        assert_eq!(
+            projects.required_capability.as_deref(),
+            Some("scope.manage")
+        );
+        assert!(projects.destructive);
     }
 }
 
@@ -458,70 +533,87 @@ struct AuthorityMetadata {
     resource_family: Option<&'static str>,
 }
 
+/// Exact capability a dispatch table demands for `service:action`, read from
+/// the same `required_capability` tables the dispatchers evaluate. This is not
+/// a second catalog: a service without such a table reports `None`.
+pub(crate) fn dispatch_required_capability(
+    service: &str,
+    action: &str,
+) -> Option<labby_primitives::access::Capability> {
+    match service {
+        "access" => crate::dispatch::access::required_capability(action),
+        "agents" => crate::dispatch::agents::required_capability(action),
+        "tasks" => crate::dispatch::tasks::required_capability(action),
+        "projects" => crate::dispatch::projects::required_capability(action),
+        "dev_containers" => crate::dispatch::dev_containers::required_capability(
+            action,
+            labby_primitives::access::OwnerKind::Personal,
+        ),
+        "stash" => crate::dispatch::file_stash::required_capability(action),
+        #[cfg(feature = "gateway")]
+        "gateway" => {
+            let bare = action.strip_prefix("gateway.").unwrap_or(action);
+            if matches!(bare, "help" | "schema") || !action.starts_with("gateway.") {
+                None
+            } else if crate::access::gateway_transport_requires_admin(action) {
+                Some(labby_primitives::access::Capability::PlatformManage)
+            } else if matches!(
+                action,
+                "gateway.loadout.list"
+                    | "gateway.loadout.list_state"
+                    | "gateway.loadout.get"
+                    | "gateway.protected_route.list"
+                    | "gateway.protected_route.list_state"
+                    | "gateway.protected_route.get"
+            ) {
+                Some(labby_primitives::access::Capability::ScopeRead)
+            } else {
+                Some(labby_primitives::access::Capability::ScopeManage)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resource family the dispatch table authorizes against; `None` for services
+/// without a capability model.
+fn dispatch_resource_family(service: &str) -> Option<&'static str> {
+    Some(match service {
+        "access" => "platform",
+        "agents" => "agent",
+        "tasks" => "task",
+        "projects" => "project",
+        "dev_containers" => "dev_container",
+        "stash" => "stash",
+        "gateway" => "gateway",
+        _ => return None,
+    })
+}
+
 fn authority_metadata(service: &str, action: &str, requires_admin: bool) -> AuthorityMetadata {
-    if requires_admin {
+    let capability =
+        dispatch_required_capability(service, action).map(|capability| capability.as_wire());
+    if let Some(capability) = capability {
         return AuthorityMetadata {
-            boundary: "transport_admin",
-            capability: None,
-            resource_family: None,
+            boundary: "resource_capability",
+            capability: Some(capability),
+            resource_family: dispatch_resource_family(service),
         };
     }
-
-    let capability = match (service, action) {
-        ("access", "access.team.create") => Some("scope.create"),
-        ("access", "access.team_invitation.accept") => Some("scope.operate"),
-        ("access", action) if action.starts_with("access.platform_admin.") => {
-            Some("platform.manage")
-        }
-        ("access", "access.team.list" | "access.project.effective.list") => None,
-        ("access", action) if action.ends_with(".list") => Some("scope.read"),
-        ("access", action)
-            if action.starts_with("access.gateway_credential.")
-                || action == "access.team_project.assign" =>
-        {
-            Some("scope.manage")
-        }
-        ("access", _) => Some("membership.manage"),
-        ("agents", "agents.create") => Some("scope.create"),
-        ("agents", "agents.list" | "agents.get" | "agents.session.status") => Some("scope.read"),
-        ("agents", "agents.run") => Some("scope.operate"),
-        ("agents", "agents.delete") => Some("scope.delete"),
-        ("agents", "agents.update" | "agents.suspend") => Some("scope.manage"),
-        ("tasks", "tasks.create") => Some("scope.create"),
-        ("tasks", "tasks.list" | "tasks.get" | "tasks.result") => Some("scope.read"),
-        ("tasks", "tasks.queue" | "tasks.cancel") => Some("scope.operate"),
-        ("dev_containers", "dev_containers.list") => Some("scope.read"),
-        ("dev_containers", "dev_containers.create") => Some("scope.create"),
-        ("dev_containers", "dev_containers.destroy") => Some("scope.delete"),
-        (
-            "dev_containers",
-            "dev_containers.start" | "dev_containers.stop" | "dev_containers.reconcile",
-        ) => Some("scope.operate"),
-        _ => None,
-    };
-    let resource_family = match service {
-        "access" if capability.is_some() => Some("platform"),
-        "agents" if capability.is_some() => Some("agent"),
-        "tasks" if capability.is_some() => Some("task"),
-        "dev_containers" if capability.is_some() => Some("dev_container"),
-        _ => None,
-    };
     AuthorityMetadata {
-        boundary: if capability.is_some() {
-            "resource_capability"
+        boundary: if requires_admin {
+            "transport_admin"
         } else if service == "access"
             && matches!(action, "access.team.list" | "access.project.effective.list")
         {
             "caller_membership_projection"
-        } else if service == "stash" {
-            "principal_ownership_or_grant"
-        } else if service == "projects" {
+        } else if service == "projects" && action == "projects.list" {
             "team_project_membership"
         } else {
             "transport"
         },
-        capability,
-        resource_family,
+        capability: None,
+        resource_family: None,
     }
 }
 

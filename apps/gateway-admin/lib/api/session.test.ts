@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   __setBrowserSessionStateForTests,
+  LogoutRevocationError,
   getBrowserSessionEpoch,
   getBrowserSessionState,
   getSessionAuthority,
@@ -17,6 +18,12 @@ import {
 } from '../auth/auth-mode.ts'
 
 type FetchMock = typeof globalThis.fetch
+
+const originalFetch = globalThis.fetch
+test.afterEach(() => {
+  globalThis.fetch = originalFetch
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+})
 
 test('loadBrowserSession stores authenticated payloads', async () => {
   globalThis.fetch = (async () =>
@@ -219,26 +226,60 @@ test('logoutBrowserSession resets local state after POST', async () => {
   assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
 })
 
-test('logoutBrowserSession preserves the authenticated state when server revocation fails', async () => {
+test('logoutBrowserSession clears local authority state even when server revocation fails, and reports the failure separately', async () => {
   __setBrowserSessionStateForTests({
     status: 'authenticated',
     user: { sub: 'browser-user', email: 'browser@example.com' },
     expiresAt: 123,
     csrfToken: 'csrf-123',
+    authority: {
+      schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1',
+      activeOwner: { kind: 'team', id: 'team-a' }, activeTeamId: 'team-a',
+      teams: [{ id: 'team-a', role: 'owner', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read', 'platform.manage'], generation: 3,
+    },
   })
+  const before = getBrowserSessionEpoch()
 
   globalThis.fetch = (async () => new Response('boom', { status: 500 })) as FetchMock
+  await assert.rejects(logoutBrowserSession(), (error: unknown) => error instanceof LogoutRevocationError && error.status === 500 && /HTTP 500/.test(error.message))
+  assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
+  assert.equal(getSessionAuthority(), undefined)
+  assert.equal(sessionHasCapability('platform.manage'), false)
+  assert.ok(getBrowserSessionEpoch() > before, 'a cleared session must invalidate in-flight authority-scoped requests')
 
-  await assert.rejects(
-    logoutBrowserSession(),
-    /Failed to logout browser session/,
-  )
-  assert.deepEqual(getBrowserSessionState(), {
-    status: 'authenticated',
-    user: { sub: 'browser-user', email: 'browser@example.com' },
-    expiresAt: 123,
-    csrfToken: 'csrf-123',
-  })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'browser-user' }, expiresAt: 123, csrfToken: 'csrf-123' })
+  globalThis.fetch = (async () => { throw new Error('socket hang up') }) as FetchMock
+  await assert.rejects(logoutBrowserSession(), (error: unknown) => error instanceof LogoutRevocationError && error.status === undefined)
+  assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
+})
+
+test('a transport-only session refresh keeps the browser session epoch and authority', async () => {
+  const authority = {
+    schemaVersion: 1 as const, compatibilityGeneration: 1 as const, principalId: 'principal-1', organizationId: 'org-1',
+    activeOwner: { kind: 'team' as const, id: 'team-a' }, activeTeamId: 'team-a', activeProjectId: undefined,
+    teams: [{ id: 'team-a', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 3,
+  }
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'browser-user' }, expiresAt: 123, csrfToken: 'csrf-old', authority })
+  const before = getBrowserSessionEpoch()
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'browser-user' },
+    expires_at: 999,
+    csrf_token: 'csrf-rotated',
+    principal_id: 'principal-1',
+    organization_id: 'org-1',
+    active_owner: { kind: 'team', id: 'team-a' },
+    active_team_id: 'team-a',
+    teams: [{ id: 'team-a', role: 'member', membership_epoch: 1, policy_epoch: 1 }],
+    projects: [],
+    capabilities: ['scope.read'],
+    authority_generation: 3,
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status === 'authenticated' ? state.csrfToken : undefined, 'csrf-rotated')
+  assert.equal(getBrowserSessionEpoch(), before, 'rotating the CSRF token or expiry is not an authority change')
+  assert.deepEqual(getSessionAuthority(), authority)
 })
 
 test('a session load started before successful logout cannot restore the revoked session', async () => {

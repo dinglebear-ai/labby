@@ -32,3 +32,6 @@ Authenticated HTTP exposes `POST /v1/agents` and `POST /v1/tasks` with the same
 `tasks` caller-bound services only when the transport supplies a verified
 identity. Context-free invocation fails closed. Local CLI invocation is not
 offered because it has no equivalent authenticated identity binding.
+
+How a caller selects the `owner_kind` and `owner_id` context on each surface is
+listed in [Selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context).

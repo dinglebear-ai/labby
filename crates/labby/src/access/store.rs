@@ -62,15 +62,29 @@ impl AccessStore {
         .await
     }
 
+    /// Confirm the Agent and Task ledgers exist. They are installed by the
+    /// versioned schema migration, never created here; a missing table is an
+    /// integrity violation of the opened store, not something to repair.
     pub(crate) async fn ensure_agent_task_schemas(&self) -> AccessStoreResult<()> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            drop(super::agent::AgentDefinitionStore::open(&path)?);
-            drop(super::task::TaskStore::open(&path)?);
-            Ok(())
+        self.with_connection(|connection| {
+            let present: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN
+                     ('agent_definitions','agent_definition_audit','agent_sessions',
+                      'agent_tasks','agent_task_audit')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite_error)?;
+            if present == 5 {
+                Ok(())
+            } else {
+                Err(AccessStoreError::IntegrityViolation {
+                    check: "schema_manifest",
+                })
+            }
         })
         .await
-        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
     }
     pub(crate) async fn authorize_action_batch(
         &self,
@@ -141,8 +155,12 @@ impl AccessStore {
         upstream_name: String,
         now_millis: u64,
     ) -> AccessStoreResult<Option<labby_runtime::gateway_authority::TeamCredentialBinding>> {
+        // Revoking a missing or already-revoked binding is
+        // `TeamCredentialBindingUnavailable`; the `Option` wrapper is retained
+        // for the adapter signature and is always `Some` on success.
         self.with_connection(move |connection| {
             super::gateway_credential::revoke(connection, &team_id, &upstream_name, now_millis)
+                .map(Some)
         })
         .await
     }
@@ -263,18 +281,25 @@ impl AccessStore {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
             transaction_count.fetch_add(1, Ordering::Relaxed);
-            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(|_| AccessStoreError::NotAuthorized)?;
+            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(super::authority::collapse_denial)?;
             let admin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')", [&principal.id], |r| r.get(0)).map_err(map_sqlite_error)?;
             let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT t.* FROM agent_tasks t JOIN authorized_owners a USING(owner_kind,owner_id) UNION ALL SELECT t.* FROM agent_tasks t WHERE ?4 AND t.owner_kind='installation') SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code FROM visible WHERE task_id>?1 ORDER BY task_id LIMIT ?2");
             let mut statement = tx.prepare(&sql).map_err(map_sqlite_error)?;
             let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin], super::task::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
             drop(statement);
-            for record in &records {
+            // Per-record re-authorization filters the page: a row the caller
+            // may not act on is omitted, it does not abort the listing.
+            let mut authorized = Vec::with_capacity(records.len());
+            for record in records {
                 let resource = labby_primitives::access::ResourceRef::new(record.intent.owner.clone(), labby_primitives::access::ResourceFamily::Task, labby_primitives::access::ResourceId::new(record.intent.id.clone()).map_err(|_| AccessStoreError::MalformedVocabulary)?);
-                super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource))?;
+                match super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource)) {
+                    Ok(_) => authorized.push(record),
+                    Err(AccessStoreError::NotAuthorized) => {}
+                    Err(error) => return Err(error),
+                }
             }
             tx.commit().map_err(map_sqlite_error)?;
-            Ok(records)
+            Ok(authorized)
         }).await
     }
 
@@ -516,18 +541,23 @@ impl AccessStore {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
             transaction_count.fetch_add(1, Ordering::Relaxed);
-            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(|_| AccessStoreError::NotAuthorized)?;
+            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(super::authority::collapse_denial)?;
             let admin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')", [&principal.id], |r| r.get(0)).map_err(map_sqlite_error)?;
             let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT d.* FROM agent_definitions d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.state!='deleted' UNION ALL SELECT d.* FROM agent_definitions d WHERE ?4 AND d.owner_kind='installation' AND d.state!='deleted') SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM visible WHERE agent_id>?1 ORDER BY agent_id LIMIT ?2");
             let mut statement = tx.prepare(&sql).map_err(map_sqlite_error)?;
             let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin], super::agent::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
             drop(statement);
-            for record in &records {
+            let mut authorized = Vec::with_capacity(records.len());
+            for record in records {
                 let resource = labby_primitives::access::ResourceRef::new(record.owner.clone(), labby_primitives::access::ResourceFamily::Agent, labby_primitives::access::ResourceId::new(record.id.clone()).map_err(|_| AccessStoreError::MalformedVocabulary)?);
-                super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource))?;
+                match super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource)) {
+                    Ok(_) => authorized.push(record),
+                    Err(AccessStoreError::NotAuthorized) => {}
+                    Err(error) => return Err(error),
+                }
             }
             tx.commit().map_err(map_sqlite_error)?;
-            Ok(records)
+            Ok(authorized)
         }).await
     }
 
@@ -543,10 +573,14 @@ impl AccessStore {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
             transaction_count.fetch_add(1, Ordering::Relaxed);
-            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(|_| AccessStoreError::NotAuthorized)?;
+            let principal = super::read::resolve_principal(&tx, request.identity()).map_err(super::authority::collapse_denial)?;
             let admin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')", [&principal.id], |r| r.get(0)).map_err(map_sqlite_error)?;
-            let records = super::dev_container::authorized_recovery_inventory_page(&tx, &after, limit, &principal.id, admin).map_err(|_| AccessStoreError::Unavailable("Dev Container persistence unavailable".into()))?;
-            for record in &records {
+            let records = super::dev_container::authorized_recovery_inventory_page(&tx, &after, limit, &principal.id, admin).map_err(|error| match error {
+                super::DevContainerLedgerError::InvalidInput => AccessStoreError::MalformedVocabulary,
+                other => AccessStoreError::Unavailable(other.to_string()),
+            })?;
+            let mut authorized = Vec::with_capacity(records.len());
+            for record in records {
                 use labby_primitives::access::{InstallationId, PrincipalId, ProjectId, TeamId};
                 let owner = match record.owner_kind {
                     labby_primitives::access::OwnerKind::Installation => labby_primitives::access::OwnerScope::Installation(InstallationId::new(record.owner_id.clone()).map_err(|_| AccessStoreError::MalformedVocabulary)?),
@@ -555,10 +589,14 @@ impl AccessStore {
                     labby_primitives::access::OwnerKind::Personal => labby_primitives::access::OwnerScope::Personal(PrincipalId::new(record.owner_id.clone()).map_err(|_| AccessStoreError::MalformedVocabulary)?),
                 };
                 let resource = labby_primitives::access::ResourceRef::new(owner, labby_primitives::access::ResourceFamily::DevContainer, labby_primitives::access::ResourceId::new(record.instance_id.clone()).map_err(|_| AccessStoreError::MalformedVocabulary)?);
-                super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource))?;
+                match super::authority::authorize_action_in_transaction(&tx, request.for_resource(resource)) {
+                    Ok(_) => authorized.push(record),
+                    Err(AccessStoreError::NotAuthorized) => {}
+                    Err(error) => return Err(error),
+                }
             }
             tx.commit().map_err(map_sqlite_error)?;
-            Ok(records)
+            Ok(authorized)
         }).await
     }
 
@@ -624,6 +662,15 @@ impl AccessStore {
         })
         .await
     }
+    pub(crate) async fn acknowledged_authority_projection(
+        &self,
+        organization_id: String,
+    ) -> AccessStoreResult<super::outbox::AuthorityAcknowledgement> {
+        self.with_connection(move |connection| {
+            super::outbox::acknowledged(connection, &organization_id)
+        })
+        .await
+    }
     pub(crate) async fn release_failed_authority_projection(
         &self,
         organization_id: String,
@@ -642,23 +689,10 @@ impl AccessStore {
         self.with_connection(move |connection| super::outbox::retain(connection, older_than))
             .await
     }
-    pub(crate) async fn supersede_authority_projection_with_snapshot(
+    pub(crate) async fn authority_delivery_status(
         &self,
-        organization_id: String,
-        digest: String,
-        through: u64,
-        now: i64,
-    ) -> AccessStoreResult<usize> {
-        self.with_connection(move |connection| {
-            super::outbox::supersede_with_snapshot(
-                connection,
-                &organization_id,
-                &digest,
-                through,
-                now,
-            )
-        })
-        .await
+    ) -> AccessStoreResult<Vec<super::outbox::OrganizationDelivery>> {
+        self.with_connection(super::outbox::delivery_status).await
     }
     fn file_stash_principal_gate(&self, principal: &str) -> Arc<tokio::sync::RwLock<()>> {
         let mut gates = self
@@ -675,12 +709,27 @@ impl AccessStore {
     }
 
     pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
+        Self::open_with_migration_evidence(
+            path,
+            super::migrations::MigrationEvidenceSource::Environment,
+        )
+        .await
+    }
+
+    /// Open (creating or migrating) with an explicit migration approval
+    /// source. Ordinary startup uses [`Self::open`], which reads
+    /// `LABBY_ACCESS_MIGRATION_EVIDENCE`; tooling and tests inject a path.
+    pub(crate) async fn open_with_migration_evidence(
+        path: PathBuf,
+        evidence: super::migrations::MigrationEvidenceSource,
+    ) -> AccessStoreResult<Self> {
         let path = validated_access_path(&path)
             .map_err(|()| AccessStoreError::InsecurePath { path: path.clone() })?;
         let open_path = path.clone();
-        let connection = tokio::task::spawn_blocking(move || open_connection(&open_path))
-            .await
-            .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
+        let connection =
+            tokio::task::spawn_blocking(move || open_connection(&open_path, &evidence))
+                .await
+                .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             connection_admission: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -1479,7 +1528,10 @@ impl AccessStore {
     }
 }
 
-fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
+fn open_connection(
+    path: &Path,
+    evidence: &super::migrations::MigrationEvidenceSource,
+) -> AccessStoreResult<Connection> {
     if !path.is_absolute() || path.file_name().is_none_or(|name| name != "access.db") {
         return Err(AccessStoreError::InsecurePath {
             path: path.to_path_buf(),
@@ -1505,7 +1557,7 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
     let mut connection = configure_connection(open_nofollow(path)?)?;
     validate_store_file(path)?;
     validate_sidecars(path)?;
-    super::migrations::migrate(&mut connection)?;
+    super::migrations::migrate_with_evidence(&mut connection, evidence)?;
     backfill_owner_display_labels(&mut connection)?;
     validate_store_file(path)?;
     validate_sidecars(path)?;
@@ -2018,6 +2070,11 @@ mod tests {
                 "access_metadata",
                 "access_security_events",
                 "access_tombstones",
+                "agent_definition_audit",
+                "agent_definitions",
+                "agent_sessions",
+                "agent_task_audit",
+                "agent_tasks",
                 "authority_outbox_sequences",
                 "authority_projection_outbox",
                 "bootstrap_proofs",
@@ -2026,13 +2083,16 @@ mod tests {
                 "dev_container_ledger",
                 "dev_container_owner_quotas",
                 "dev_container_templates",
+                "gateway_team_credential_bindings",
                 "groups",
                 "organizations",
                 "platform_administrators",
+                "principal_epochs",
                 "principal_links",
                 "principals",
                 "project_credentials",
                 "project_loadouts",
+                "project_membership_epochs",
                 "project_memberships",
                 "project_policy_publications",
                 "projects",
@@ -2104,7 +2164,11 @@ mod tests {
         restrict_permissions(&path).unwrap();
 
         assert!(matches!(
-            AccessStore::open(path.clone()).await,
+            AccessStore::open_with_migration_evidence(
+                path.clone(),
+                super::super::migrations::MigrationEvidenceSource::UnitFixture
+            )
+            .await,
             Err(AccessStoreError::IntegrityViolation { .. })
         ));
         let connection = Connection::open(&path).unwrap();
@@ -2145,7 +2209,12 @@ mod tests {
         drop(connection);
         restrict_permissions(&path).unwrap();
 
-        let store = AccessStore::open(path).await.unwrap();
+        let store = AccessStore::open_with_migration_evidence(
+            path,
+            super::super::migrations::MigrationEvidenceSource::UnitFixture,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             store.pragma_for_test("user_version").await.unwrap(),
             super::super::migrations::SCHEMA_VERSION.to_string()
@@ -2169,6 +2238,57 @@ mod tests {
             store.bootstrap_owner(input).await,
             Err(AccessStoreError::BootstrapConflict)
         ));
+    }
+
+    #[tokio::test]
+    async fn legacy_schema_never_migrates_implicitly_on_open() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::V1_METADATA_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::DOMAIN_SCHEMA)
+            .unwrap();
+        connection.execute("INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at) VALUES(1,?1,?2,9,123)", rusqlite::params![super::super::migrations::V1_SCHEMA_VERSION, super::super::migrations::V1_SCHEMA_FINGERPRINT]).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V1_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        // Ordinary open reads LABBY_ACCESS_MIGRATION_EVIDENCE; the test
+        // environment does not set it, so every legacy version is refused.
+        let refused = AccessStore::open(path.clone()).await;
+        assert!(
+            matches!(
+                refused,
+                Err(AccessStoreError::MigrationApprovalRequired { found: 1 })
+            ),
+            "{refused:?}"
+        );
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::super::migrations::V1_SCHEMA_VERSION
+        );
     }
 
     #[tokio::test]
@@ -2205,7 +2325,12 @@ mod tests {
             .unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
-        let store = AccessStore::open(path).await.unwrap();
+        let store = AccessStore::open_with_migration_evidence(
+            path,
+            super::super::migrations::MigrationEvidenceSource::UnitFixture,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             store.bootstrap_metadata_for_test().await.unwrap(),
             (0, None)
