@@ -50,7 +50,7 @@ services:
     environment:
       DEPOT_PORT: "4100"
       DEPOT_DATA_DIR: /data
-      DEPOT_AUTH_MODE: bearer
+      DEPOT_AUTH_MODE: oauth
       DEPOT_DEPLOYMENT_ID: team-depot
       DEPOT_BACKEND_ID: r2
     volumes:

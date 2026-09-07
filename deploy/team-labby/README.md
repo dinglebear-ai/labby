@@ -30,7 +30,8 @@ every referenced artifact byte already exists in R2.
    different prefixes (or different buckets); neither credential may access
    the other Depot's objects.
 6. Set `public_host` to the exact host clients use. Keep `/mcp/linear` as the
-   public path when preserving the existing client URL.
+   public path when preserving the existing client URL. Set the route target's
+   `project_id` to the same bound project configured for Depot delegation.
 7. Set `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` in `state/labby/.env` to the verified
    company domain. If domain-wide admission is not intended, leave it empty and
    add each employee to Labby's persisted allowlist before cutover.
@@ -55,25 +56,54 @@ docker compose --env-file .env exec catalog-depot \
 ```
 
 Put the resulting values in `TEAM_DEPOT_TOKEN` and `CATALOG_DEPOT_TOKEN` in
-`state/labby/.env`, then start the complete stack:
+`state/labby/.env`. Copy the team read token into `LABBY_DEPOT_TOKEN` there as
+well, then start the complete stack:
 
 ```sh
 docker compose --env-file .env up -d
 docker compose --env-file .env ps
 ```
 
-## Publishing launch blocker
+## Configure delegated team publishing
 
-Publishing is intentionally fail-closed in this package. Labby currently uses
-one service bearer when it calls each Depot. Giving that shared bearer
-`skills:write` would make every publish appear as the same service principal;
-it would not preserve the authenticated employee's identity or provide
-per-user authorization and revocation at Depot.
+The service bearer remains read-only. For each write, Labby revalidates the
+employee's bound grant and signs a fresh, single-operation assertion lasting no
+more than 60 seconds. Depot verifies that assertion and consumes its `jti` once.
+Do not add `skills:write` to `TEAM_DEPOT_TOKEN` and do not enable
+`DEPOT_CONTROL_PLANE_SERVICE_WRITES`; either change would bypass the delegated
+employee authority.
 
-Do not add `skills:write` to `TEAM_DEPOT_TOKEN` and do not set
-`DEPOT_CONTROL_PLANE_SERVICE_WRITES=true`. Team publishing may launch only after
-the per-user Labby-to-Depot delegated authorization bridge is implemented and
-qualified end to end. Catalog service writes remain disabled permanently.
+The mappings in `state/labby/.env` and `team-depot.env` are one exact contract:
+
+- `LABBY_PUBLIC_URL` equals `DEPOT_OAUTH_ISSUER`, without authority aliases;
+- `LABBY_DEPOT_DELEGATION_AUDIENCE` equals `DEPOT_OAUTH_AUDIENCE`;
+- deployment, account, tenant, and optional team IDs equal the corresponding
+  `DEPOT_*` identity values;
+- Depot's delegation actor equals the durable value in
+  `state/labby/installation-id` (`act.sub` in each assertion);
+- Depot's organization and project IDs equal the employee grant's bound
+  organization and project; and
+- membership, organization-policy, and project-policy epochs equal the current
+  values used when Labby issues that bound grant.
+
+Labby creates `state/labby/installation-id` at its first start. Read that file
+locally, put its exact value in `DEPOT_OAUTH_DELEGATION_ACTOR`, then recreate
+`team-depot`. Never derive this value from a hostname or accept it from a
+request. Update each configured epoch whenever its authoritative membership or
+policy epoch advances; stale assertions must fail closed.
+
+Depot verifies Labby's Ed25519 assertions through
+`DEPOT_OAUTH_JWKS_URI`, which must be the public Labby issuer plus `/jwks` and
+must be reachable from `team-depot`. Keep the Labby signing key in persistent
+`state/labby`; restoring or rotating it requires verifying that the live JWKS
+contains the active `kid` before writes are enabled. Catalog Depot has no
+delegation verifier and its service writes remain disabled.
+
+Team publishing is a deployment prerequisite, not an automatic consequence of
+starting Compose. Enable client traffic only after a non-admin employee's live
+bound grant contains the configured organization, project, and current epochs,
+Depot can fetch Labby's live JWKS, and the delegated publish/replay/stale-policy
+qualification below passes.
 
 ## Employee Linear authorization
 
@@ -113,8 +143,11 @@ image digests:
   the configured account, distinct tenant, and distinct deployment ids;
 - each Depot can read a known R2-backed artifact from its own prefix;
 - neither Depot can write with its read-only service token;
-- a publish through Labby fails closed until the delegated authorization bridge
-  is implemented;
+- the team Depot accepts one delegated publish for the authenticated employee,
+  records that employee as the principal and the Labby installation as actor,
+  and rejects replaying the same assertion;
+- mismatched issuer, audience, authority IDs, actor, or any stale policy epoch
+  rejects the write;
 - an employee completes Labby login and the separate Linear upstream login;
 - one client URL lists both Depot catalogs and Linear tools;
 - stopping and recreating the stack preserves both Depot catalogs and Labby

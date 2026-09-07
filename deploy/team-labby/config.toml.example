@@ -41,6 +41,7 @@ scopes = ["lab:read", "lab"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
+project_id = "replace-with-bound-project-id"
 upstreams = ["team-depot", "catalog-depot", "linear"]
 services = ["artifacts", "bundles", "gateway", "jobs", "setup", "snippets", "sources", "uploads"]
 expose_code_mode = true
