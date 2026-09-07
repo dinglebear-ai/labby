@@ -4,6 +4,7 @@ These documents describe design contracts that are implemented by, or intentiona
 
 ## Accepted Target Architecture
 
+- [labby-depot-saas-north-star.md](./labby-depot-saas-north-star.md) — hosted and self-hosted Labby/Depot product boundary, Lime first-tenant rollout, shared tenant-aware Depot target, R2 content plane, and SaaS control-plane constraints.
 - [phabby-control-plane.md](./phabby-control-plane.md) — Phoenix/OTP control plane shared by Labby and Depot.
 - [phabby-migration-ledger.md](./phabby-migration-ledger.md) — current-to-target cutover and verification gates.
 

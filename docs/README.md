@@ -100,6 +100,7 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 ## Product Design
 
 - [Design index](./design/README.md)
+- [Labby and Depot SaaS North Star](./design/labby-depot-saas-north-star.md) — accepted target for public Depot, personal and hosted Labby, Lime as the first private tenant, paid team runtimes, R2, and the long-term tenant-aware data plane.
 - [Phabby shared control plane](./design/phabby-control-plane.md) — accepted Phoenix/OTP target and Rust/BEAM ownership boundary.
 - [Phabby migration ledger](./design/phabby-migration-ledger.md) — staged route, packaging, and ownership migration gates.
 - [Web design-system contract](./design/design-system-contract.md)
