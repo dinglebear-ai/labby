@@ -6,6 +6,7 @@ use axum::{
 };
 use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::{AuthContext, Authenticator, PrincipalLink, VerifiedIdentity};
+use labby_primitives::product_credential::BoundAccessGrant;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -888,6 +889,7 @@ async fn call(
     Extension(authority): Extension<BrowserAuthority>,
     Extension(auth): Extension<AuthContext>,
     identity: Option<Extension<VerifiedIdentity>>,
+    bound: Option<Extension<BoundAccessGrant>>,
     headers: HeaderMap,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -913,12 +915,13 @@ async fn call(
     };
     state
         .depot
-        .call(
+        .call_with_grant(
             &request.operation,
             request.params,
             &actor,
             policy,
             idempotency_key,
+            bound.as_ref().map(|Extension(grant)| grant),
         )
         .await
         .map(Json)
@@ -935,7 +938,9 @@ async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, J
 
 fn map_error(error: DepotError) -> (StatusCode, Json<Value>) {
     let status = match &error {
-        DepotError::Disabled | DepotError::Unconfigured => StatusCode::SERVICE_UNAVAILABLE,
+        DepotError::Disabled | DepotError::Unconfigured | DepotError::DelegationUnavailable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         DepotError::UnsupportedOperation => StatusCode::BAD_REQUEST,
         DepotError::InvalidCatalog => StatusCode::BAD_GATEWAY,
         DepotError::DestructiveIntentRequired => StatusCode::UNPROCESSABLE_ENTITY,
