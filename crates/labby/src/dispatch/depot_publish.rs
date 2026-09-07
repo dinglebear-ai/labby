@@ -32,7 +32,10 @@ const PARAMS: &[ParamSpec] = &[
 ];
 
 pub const ACTIONS: &[ActionSpec] = &[ActionSpec {
-    name: ACTION,
+    // Keep this literal visible to the architecture catalog scanner. Runtime
+    // dispatch uses `ACTION`; the scanner intentionally validates catalog
+    // declarations without evaluating Rust constants.
+    name: "depot.publish_skill_archive",
     description: "Publish a skill archive to the authenticated team's Depot",
     destructive: false,
     requires_admin: false,
