@@ -25,15 +25,15 @@ source. They remain independently deployable and fully self-hostable.
 The hosted product has four related surfaces:
 
 1. **Public Depot** provides public Artifact discovery, public Artifact detail,
-   creation and publication for authenticated users, personal libraries, and
-   policy-permitted forks of exact immutable revisions.
+   creation and publication for authenticated users, Depot account libraries,
+   and policy-permitted forks of exact immutable revisions.
 2. **Personal Labby** runs for one user on a laptop, workstation, server, or
    other user-controlled environment. It can use remote Artifacts, materialize
    managed copies, or own explicit forks according to distribution policy.
 3. **Hosted Labby** provides a durable personal or team MCP gateway without
    requiring the customer to operate it. It owns runtime configuration,
-   upstream connections, Loadouts, sessions, and local Artifact state for that
-   hosted runtime.
+   upstream connections, Loadouts, sessions, and the Labby runtime library for
+   that hosted runtime.
 4. **Teams and paid runtimes** add organization-scoped membership, policy,
    shared libraries, managed gateways, runtime capacity, usage accounting, and
    administration. A subscription buys service and capacity; it does not alter
@@ -87,6 +87,16 @@ That statement means the default Lime member role will receive the necessary
 Artifact create and publish grants; it does not bypass validation, namespace,
 license, secret scanning, audit, quota, or takedown policy.
 
+A **Depot account library** contains registry-authoritative drafts, authored
+Artifacts, fork heads, publication state, and personal or organization
+assignments. A **Labby runtime library** contains exact remote references,
+managed materializations, activation state, and runtime-local forks used by one
+Personal or Hosted Labby. Moving content between them is an explicit,
+authorized operation over an exact provider, Artifact, and revision. A runtime
+library never becomes a second mutable head for a Depot-authored Artifact, and
+deleting or suspending a runtime does not silently delete its Depot account
+library.
+
 ### Labby owns execution and workspace composition
 
 Labby is authoritative for:
@@ -99,6 +109,16 @@ Labby is authoritative for:
 - local Artifact materialization and activation;
 - destination pairing and Send to Labby delivery state; and
 - runtime usage facts needed for operations and metering.
+
+The Linear notification worker is an intentional exception to the general
+upstream-credential statement. Team Labby owns the public MCP session, gateway
+policy, and upstream routing, while the notification worker continues to own
+each employee's Linear credential, refresh lifecycle, Linear organization and
+actor identity, and Linear-specific audit semantics. Labby invokes it through
+a private upstream using a short-lived, audience-bound, subject-bound,
+organization-bound delegation. Labby never receives or forwards the worker's
+reusable Linear access or refresh token, and the worker never trusts
+caller-supplied identity headers.
 
 Labby consumes exact Depot revisions through the Artifact provider boundary.
 It does not reimplement Depot publication or registry policy. Depot does not
@@ -138,6 +158,16 @@ each service authorizes its own operation. Service-to-service assertions are
 short-lived, audience-bound, subject-bound, and scoped. Reusable end-user or
 organization bearer credentials are not forwarded as an integration shortcut.
 
+During the isolated Lime phase, the access-control authority resolves the
+authenticated employee and current Lime membership server-side. It issues a
+short-lived, audience-bound, principal-bound, organization-bound assertion for
+the exact Depot operation and policy epoch. Lime Depot validates that assertion
+and independently enforces create, publish, namespace, quota, and Artifact
+policy. There is no shared team write bearer: every mutation retains the human
+actor, membership generation, idempotency identity, and revocation boundary.
+Removing a member or changing policy invalidates new operations and active
+serving paths without waiting for a long-lived credential to expire.
+
 ## Tenant isolation and data planes
 
 ### Immediate Lime deployment
@@ -153,10 +183,22 @@ reduces first-tenant blast radius while tenant-aware persistence and operations
 are qualified. It is not the long-term scaling model and must not grow into one
 Depot process per customer.
 
-Lime receives a hosted team Labby connected to the Lime Depot authority. Team
-members can discover, create, publish, acquire, and fork Skills according to
-the default Lime member policy. Personal Labby remains a supported destination
-for exact managed copies and permitted forks.
+Lime receives a hosted team Labby that composes two explicit Artifact providers:
+Public Depot for public discovery and acquisition, and Lime Depot for private
+team discovery and team-authoritative writes. Every Artifact reference in this
+two-Depot phase is the tuple `{provider authority, Artifact ID, revision ID}`.
+Provider authority participates in library keys, caches, cursors, idempotency,
+lineage, transfer capabilities, and audit; equal raw IDs from different Depots
+never alias.
+
+Team members can discover, create, publish, acquire, and fork Skills according
+to the default Lime member policy. A fork from Public Depot into Lime is an
+explicit cross-authority operation: Public Depot authorizes exact acquisition,
+Lime Depot authorizes creation and records the source provider plus exact
+lineage. Partial provider failure is visible as explicit coverage state. Lime
+Depot never falls back to Public Depot for a private lookup or write, and a
+Public Depot failure does not erase or relabel Lime results. Personal Labby
+remains a supported destination for exact managed copies and permitted forks.
 
 ### Long-term shared Depot metadata plane
 
@@ -181,6 +223,11 @@ An R2 prefix alone is not a security boundary. Database policy and application
 authorization remain mandatory even when object keys are tenant-qualified.
 Where the selected database supports row-level security, it should provide an
 independent enforcement layer rather than replace explicit application checks.
+
+Migration into the shared plane preserves the provider-qualified identity used
+during the two-Depot phase. Any consolidation or deduplication uses an explicit,
+audited authority mapping; matching raw Artifact IDs or content digests alone
+never merge ownership, publication, lineage, or policy records.
 
 ### Content plane: R2
 
@@ -294,18 +341,39 @@ an exact revision, and an explicit reconciliation into Depot.
 ### Phase 1: Lime private tenant
 
 - Deploy the isolated Lime Depot process and hosted Lime team Labby.
+- Configure Team Labby with Public Depot and Lime Depot as distinct providers,
+  plus the Linear notification worker as a private MCP upstream.
 - Configure separate metadata, credentials, R2 scope, observability, and
   rollback from the public Depot process.
-- Give the default Lime member role bounded create and publish rights.
+- Implement the per-user Lime membership assertion boundary and give the
+  default Lime member role bounded create and publish rights without a shared
+  write bearer.
 - Prove discovery, authoring, validation, publication, withdrawal, exact
-  acquisition, fork lineage, MCP consumption, and Personal Labby delivery.
+  acquisition, provider-qualified identity, cross-authority fork lineage, MCP
+  consumption, and Personal Labby delivery.
+- Prove that Linear operations retain the employee's worker-owned Linear
+  identity, organization admission, attribution, refresh/revocation behavior,
+  and session isolation without forwarding reusable Linear credentials.
+- Gate hosted execution on tenant-bound process/container identity, durable
+  state, upstream credentials, network policy, resource limits, backups, logs,
+  and restore/restart proof. Exercise bounded admission, failure isolation, and
+  an operator kill/suspend path that stops execution without deleting Depot
+  Artifacts or unrecoverably discarding runtime state.
+- Test same raw Artifact IDs across providers; public/private cache, cursor, and
+  search isolation; per-user publish attribution and revocation; provider
+  outage coverage; cross-user idempotency; and backup/restore isolation.
 - Retain the old Skills repositories as read-only migration inputs.
 
 ### Phase 2: public product completion
 
 - Complete public discovery, authenticated creation/publication, personal
-  library, namespace ownership, abuse response, takedown, and permitted forks.
+  Depot account library, namespace ownership, abuse response, takedown, and
+  permitted forks.
 - Ship hosted personal Labby and paid team runtime provisioning.
+- Require entitlement, metering, quota, payment-grace, suspension, correction,
+  and recovery behavior before offering external paid hosted execution. Billing
+  may follow the internal Lime canary, but it cannot retroactively supply the
+  Phase 1 execution-isolation and recovery gates.
 - Keep product-facing public and private contexts explicit and non-fallback.
 
 ### Phase 3: shared tenant-aware Depot plane
