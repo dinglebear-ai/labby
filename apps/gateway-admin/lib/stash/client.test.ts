@@ -22,7 +22,7 @@ test('list preserves opaque cursor and search while using the server page defaul
   assert.equal(requested?.credentials, 'include')
 })
 
-test('binary upload sends exact browser content length and csrf without JSON wrapping', async () => {
+test('binary upload passes the File body and csrf without JSON wrapping', async () => {
   let requested: Request | undefined
   globalThis.fetch = async (input, init) => {
     requested = new Request(new URL(String(input), 'http://labby.test'), init)
@@ -34,6 +34,7 @@ test('binary upload sends exact browser content length and csrf without JSON wra
   assert.equal(url.search, '')
   assert.equal(decodeURIComponent(requested?.headers.get('x-labby-stash-filename') || ''), file.name)
   assert.equal(requested?.headers.get('x-csrf-token'), 'csrf-stash')
+  assert.equal(requested?.body instanceof ReadableStream, true)
   assert.equal(await requested?.text(), 'hello')
 })
 

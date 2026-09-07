@@ -40,11 +40,6 @@ pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
 mod test_support;
 mod workflow;
 
-#[allow(unused_imports)]
-pub(crate) use authority::{
-    ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
-    refresh_authority_epochs, resolve_personal_owner,
-};
 /// Durable principal identity resolved from a live [`labby_auth::PrincipalLink`]
 /// by AccessStore. The private field prevents storage services from inventing
 /// identities from actor keys or presentation metadata.
@@ -80,6 +75,11 @@ pub(crate) struct ActiveFileStashPrincipalLease {
     _guards: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
 
+#[allow(unused_imports)]
+pub(crate) use authority::{
+    ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+    refresh_authority_epochs, resolve_personal_owner,
+};
 #[allow(unused_imports)]
 pub(crate) use authorization::{
     AuthorizeProjectInput, DepotDelegationAuthoritySnapshot, LibraryAccessSnapshot,

@@ -798,7 +798,7 @@ impl LabMcpServer {
         let mut resources = CatalogSnapshotCollector::new(page_collector);
         let mut regular_resource_provenance = Vec::new();
 
-        for resource in self.file_stash_resources(&context).await {
+        for resource in self.file_stash_resources(&context).await? {
             resources.accept(resource);
             if resources.finished() {
                 break;
@@ -812,6 +812,7 @@ impl LabMcpServer {
                     .with_mime_type("application/json"),
             );
         }
+
         // Error-contract schemas: always listed so agents can discover the
         // envelope contract in-band instead of relying on out-of-band docs.
         #[cfg(feature = "skills")]

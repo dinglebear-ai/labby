@@ -1,3 +1,9 @@
+---
+title: "Agents and Agent Tasks"
+created: "2026-09-07"
+updated: "2026-09-07"
+---
+
 # Agents and Agent Tasks
 
 Labby owns durable Agent definitions and Agent Task lifecycle. These resources

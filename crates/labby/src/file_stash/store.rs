@@ -282,7 +282,7 @@ impl FileStashStore {
         self.reader_admission.close();
     }
 
-    pub(crate) async fn reserve_upload(
+    pub(crate) async fn reserve_upload_with_instance_limit(
         &self,
         owner: String,
         display_name: String,
@@ -292,6 +292,7 @@ impl FileStashStore {
         principal_quota: u64,
         instance_quota: u64,
         max_live_files: u32,
+        max_instance_live_files: u32,
     ) -> Result<UploadReservation> {
         let upload_id = ulid::Ulid::new().to_string();
         self.with_connection(move |connection| {
@@ -305,15 +306,16 @@ impl FileStashStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .map_err(FileStashStoreError::sqlite)?;
-            let instance_used: i64 = tx
+            let (instance_used, instance_live_files): (i64, i64) = tx
                 .query_row(
-                    "SELECT committed_bytes+reserved_bytes FROM stash_instance_usage WHERE singleton=1",
+                    "SELECT committed_bytes+reserved_bytes,live_files+pending_files FROM stash_instance_usage WHERE singleton=1",
                     [],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(FileStashStoreError::sqlite)?;
             let declared = i64::try_from(declared_bytes).map_err(|_| FileStashStoreError::QuotaExceeded)?;
             if live_files.saturating_add(pending_files) >= i64::from(max_live_files)
+                || instance_live_files >= i64::from(max_instance_live_files)
                 || principal_committed.saturating_add(principal_reserved).saturating_add(declared)
                     > i64::try_from(principal_quota).unwrap_or(i64::MAX)
                 || instance_used.saturating_add(declared)
@@ -330,6 +332,32 @@ impl FileStashStore {
             tx.commit().map_err(FileStashStoreError::sqlite)?;
             Ok(UploadReservation { upload_id, owner_principal_id: owner, display_name, collision_key, reserved_bytes: declared_bytes })
         }).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reserve_upload(
+        &self,
+        owner: String,
+        display_name: String,
+        collision_key: String,
+        declared_bytes: u64,
+        expires_at: i64,
+        principal_quota: u64,
+        instance_quota: u64,
+        max_live_files: u32,
+    ) -> Result<UploadReservation> {
+        self.reserve_upload_with_instance_limit(
+            owner,
+            display_name,
+            collision_key,
+            declared_bytes,
+            expires_at,
+            principal_quota,
+            instance_quota,
+            max_live_files,
+            u32::MAX,
+        )
+        .await
     }
 
     pub(crate) async fn mark_blob_published(&self, upload_id: String) -> Result<()> {
@@ -364,7 +392,7 @@ impl FileStashStore {
     }
 
     pub(crate) async fn cancel_upload(&self, upload_id: String) -> Result<()> {
-        #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+        #[cfg(all(test, target_os = "linux"))]
         {
             let mut injected = FAIL_CANCEL_ID
                 .lock()
@@ -399,13 +427,10 @@ impl FileStashStore {
     pub(crate) async fn list_files(
         &self,
         principal: String,
-        query: Option<String>,
         after: Option<StashCursor>,
         limit: usize,
     ) -> Result<Vec<StashFile>> {
         self.with_read_connection(move |connection| {
-            let query = query.unwrap_or_default();
-            let pattern = format!("%{}%", escape_like(&query));
             let (after_created, after_id) = after
                 .map(|cursor| (cursor.created_at, cursor.id))
                 .unwrap_or((i64::MAX, String::new()));
@@ -414,12 +439,11 @@ impl FileStashStore {
                  CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END \
                  FROM files f WHERE f.ready=1 \
                  AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active')) \
-                 AND (?2='' OR f.collision_key LIKE ?3 ESCAPE '\\') \
-                 AND (f.created_at<?4 OR (f.created_at=?4 AND (?5='' OR f.file_id<?5))) \
-                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?6"
+                 AND (f.created_at<?2 OR (f.created_at=?2 AND (?3='' OR f.file_id<?3))) \
+                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?4"
             ).map_err(FileStashStoreError::sqlite)?;
             let rows = statement.query_map(
-                params![principal, query, pattern, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                params![principal, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
                 |row| Ok(StashFile {
                     file_id: row.get(0)?, display_name: row.get(1)?,
                     size_bytes: row.get::<_, i64>(2)? as u64, blob_key: row.get(3)?,
@@ -606,18 +630,11 @@ impl FileStashStore {
     }
 }
 
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn inject_cancel_failure(upload_id: String) {
     *FAIL_CANCEL_ID
         .lock()
@@ -683,7 +700,7 @@ fn open_read_connection(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
@@ -840,6 +857,41 @@ mod tests {
         assert!(matches!(
             a.err().or_else(|| b.err()),
             Some(FileStashStoreError::QuotaExceeded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_uploads_count_toward_the_instance_live_file_limit() {
+        let (_temp, store) = store().await;
+        store
+            .reserve_upload_with_instance_limit(
+                "owner-a".into(),
+                "a".into(),
+                "a".into(),
+                0,
+                i64::MAX,
+                10,
+                20,
+                10,
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .reserve_upload_with_instance_limit(
+                    "owner-b".into(),
+                    "b".into(),
+                    "b".into(),
+                    0,
+                    i64::MAX,
+                    10,
+                    20,
+                    10,
+                    1,
+                )
+                .await,
+            Err(FileStashStoreError::QuotaExceeded)
         ));
     }
 
@@ -1039,22 +1091,9 @@ mod tests {
             .create_grant("other".into(), ids[2].clone(), "owner".into())
             .await
             .unwrap();
-        let available = store
-            .list_files("owner".into(), None, None, 10)
-            .await
-            .unwrap();
+        let available = store.list_files("owner".into(), None, 10).await.unwrap();
         assert_eq!(available.len(), 3);
         assert_eq!(available.iter().filter(|file| file.owned).count(), 2);
-        let matches = store
-            .list_files("owner".into(), Some("ALPHA".into()), None, 10)
-            .await
-            .unwrap();
-        assert_eq!(matches.len(), 2);
-        assert!(
-            matches
-                .iter()
-                .all(|file| file.display_name.to_lowercase().contains("alpha"))
-        );
         assert!(matches!(
             store.delete_file("other".into(), ids[0].clone()).await,
             Err(FileStashStoreError::NotFound)
@@ -1193,7 +1232,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_files("owner".into(), None, None, 37)
+                .list_files("owner".into(), None, 37)
                 .await
                 .unwrap()
                 .len(),
@@ -1201,7 +1240,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .list_files("owner".into(), Some("needle".into()), None, 13)
+                .list_files("owner".into(), None, 13)
                 .await
                 .unwrap()
                 .len(),

@@ -359,6 +359,22 @@ impl AccessRuntime {
         }
     }
 
+    pub(crate) async fn resolve_file_stash_principal(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
+        self.store()
+            .await?
+            .resolve_file_stash_principal(identity)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
+    }
+
     /// Resolve a typed Stash owner only after current domain authorization.
     /// Personal remains the default and retains the historical principal key;
     /// Team storage keys are explicitly namespaced and cannot collide.
@@ -464,22 +480,6 @@ impl AccessRuntime {
         self.authorize_file_stash_owner(identity, ceiling, owner, action, capability, now_millis)
             .await
             .map(|authorization| authorization.principal)
-    }
-
-    pub(crate) async fn resolve_file_stash_principal(
-        &self,
-        identity: labby_auth::VerifiedIdentity,
-    ) -> Result<super::AccessPrincipalId, FileStashPrincipalResolutionError> {
-        self.store()
-            .await?
-            .resolve_file_stash_principal(identity)
-            .await
-            .map_err(|error| match error {
-                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
-                    FileStashPrincipalResolutionError::IdentityUnavailable
-                }
-                _ => FileStashPrincipalResolutionError::StoreUnavailable,
-            })
     }
 
     pub(crate) async fn resolve_and_lease_file_stash_principal(
@@ -1252,6 +1252,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_stash_resolution_distinguishes_unmapped_identity() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        let missing = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:not-mapped",
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.resolve_file_stash_principal(missing).await,
+            Err(FileStashPrincipalResolutionError::IdentityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_stash_resolution_preserves_blocked_runtime_reason() {
+        let runtime = AccessRuntime::blocked_unavailable();
+        let identity =
+            VerifiedIdentity::local_credential(Authenticator::StaticBearer, "static-bearer:any")
+                .unwrap();
+        assert!(matches!(
+            runtime.resolve_file_stash_principal(identity).await,
+            Err(FileStashPrincipalResolutionError::Runtime(
+                AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable)
+            ))
+        ));
+    }
+
+    #[tokio::test]
     async fn team_stash_rechecks_membership_while_an_open_handle_and_personal_scope_survive() {
         use crate::access::{AddTeamMemberInput, CreateTeamInput, TeamMembershipInput, TeamRole};
         use rusqlite::params;
@@ -1403,38 +1436,5 @@ mod tests {
         let mut bytes = Vec::new();
         already_open.read_to_end(&mut bytes).await.unwrap();
         assert_eq!(bytes, b"finish me", "an admitted open may finish");
-    }
-
-    #[tokio::test]
-    async fn file_stash_resolution_distinguishes_unmapped_identity() {
-        let directory = super::super::test_support::secure_tempdir();
-        let path = secure_test_path(&directory);
-        let store = AccessStore::open(path.clone()).await.unwrap();
-        store.bootstrap_owner(input()).await.unwrap();
-        drop(store);
-        let runtime = AccessRuntime::initialize(path).await;
-        let missing = VerifiedIdentity::local_credential(
-            Authenticator::StaticBearer,
-            "static-bearer:not-mapped",
-        )
-        .unwrap();
-        assert!(matches!(
-            runtime.resolve_file_stash_principal(missing).await,
-            Err(FileStashPrincipalResolutionError::IdentityUnavailable)
-        ));
-    }
-
-    #[tokio::test]
-    async fn file_stash_resolution_preserves_blocked_runtime_reason() {
-        let runtime = AccessRuntime::blocked_unavailable();
-        let identity =
-            VerifiedIdentity::local_credential(Authenticator::StaticBearer, "static-bearer:any")
-                .unwrap();
-        assert!(matches!(
-            runtime.resolve_file_stash_principal(identity).await,
-            Err(FileStashPrincipalResolutionError::Runtime(
-                AccessRuntimeError::Blocked(AccessBlockedReason::Unavailable)
-            ))
-        ));
     }
 }

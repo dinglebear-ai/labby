@@ -1081,16 +1081,6 @@ impl AccessStore {
         owner: super::AccessPrincipalId,
         query: String,
         limit: usize,
-    ) -> AccessStoreResult<Vec<super::FileStashRecipient>> {
-        self.search_file_stash_recipients_with_deadline(owner, query, limit, Duration::from_secs(2))
-            .await
-    }
-
-    async fn search_file_stash_recipients_with_deadline(
-        &self,
-        owner: super::AccessPrincipalId,
-        query: String,
-        limit: usize,
         deadline: Duration,
     ) -> AccessStoreResult<Vec<super::FileStashRecipient>> {
         let deadline_at = tokio::time::Instant::now() + deadline;
@@ -1223,7 +1213,6 @@ impl AccessStore {
             },
         ))
     }
-
     pub(crate) async fn select_project(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -1555,7 +1544,6 @@ fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection
     connection
         .pragma_update(None, "synchronous", "FULL")
         .map_err(map_sqlite_error)?;
-    backfill_owner_display_labels(&mut connection)?;
     let synchronous = connection
         .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
         .map_err(map_sqlite_error)?;
@@ -2536,7 +2524,7 @@ mod tests {
         store.execute_test_statement("INSERT INTO organizations VALUES('org','Org','active',0,1,1); INSERT INTO principals VALUES('owner','org','user','active','Owner',1,1),('recipient','org','user','active','Recipient',1,1);").await.unwrap();
         assert!(matches!(
             store
-                .search_file_stash_recipients_with_deadline(
+                .search_file_stash_recipients(
                     super::super::AccessPrincipalId::for_test("owner"),
                     "Rec".into(),
                     20,
@@ -2546,7 +2534,7 @@ mod tests {
             Err(AccessStoreError::Unavailable(message)) if message.contains("deadline")
         ));
         let recipients = store
-            .search_file_stash_recipients_with_deadline(
+            .search_file_stash_recipients(
                 super::super::AccessPrincipalId::for_test("owner"),
                 "Rec".into(),
                 20,
@@ -2570,7 +2558,7 @@ mod tests {
             .unwrap();
         let started = tokio::time::Instant::now();
         let result = store
-            .search_file_stash_recipients_with_deadline(
+            .search_file_stash_recipients(
                 super::super::AccessPrincipalId::for_test("owner"),
                 "Rec".into(),
                 20,

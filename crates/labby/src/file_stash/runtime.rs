@@ -12,6 +12,8 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore};
 
+const SHUTDOWN_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FileStashBlockedReason {
     UnsafeRoot,
@@ -84,12 +86,10 @@ impl FileStashRuntime {
     ) -> Self {
         let page_limit = usize::from(preferences.page_size);
         let max_query_bytes = preferences.max_query_bytes;
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_os = "linux"))]
         {
             drop(preferences);
-            tracing::warn!(
-                "File Stash is unavailable on macOS: descriptor-rooted SQLite is not supported"
-            );
+            tracing::warn!("File Stash is unavailable: this target is not Linux-qualified");
             Self {
                 root: Arc::new(root),
                 _root_handle: None,
@@ -104,7 +104,7 @@ impl FileStashRuntime {
                 max_query_bytes,
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             let initialized = initialize_owned(&root, &preferences).await;
             let admission = Arc::new(Semaphore::new(1));
@@ -216,13 +216,20 @@ impl FileStashRuntime {
         };
         self.janitor_admission.close();
         self.janitor_cancel.cancel();
-        if let Some(task) = self.janitor_task.lock().await.take() {
-            drop(task.await);
-        }
-        if let Some(store) = store
-            && let Err(error) = store.checkpoint().await
+        if let Some(mut task) = self.janitor_task.lock().await.take()
+            && tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, &mut task)
+                .await
+                .is_err()
         {
-            tracing::warn!(?error, "file stash shutdown checkpoint failed");
+            tracing::warn!("file stash janitor did not stop before the shutdown deadline");
+            task.abort();
+        }
+        if let Some(store) = store {
+            match tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, store.checkpoint()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(?error, "file stash shutdown checkpoint failed"),
+                Err(_) => tracing::warn!("file stash shutdown checkpoint exceeded its deadline"),
+            }
         }
         if let Some(store) = match &*self.state.lock().await {
             State::Recovering(store) | State::Ready(store) => Some(store.clone()),
@@ -270,6 +277,9 @@ fn spawn_recovery_and_janitor(
                 return;
             }
         }
+        if let Err(error) = blobs.scrub_integrity(cancel.clone()).await {
+            tracing::warn!(?error, "file stash background integrity scrub failed");
+        }
         let mut delay = interval;
         loop {
             tokio::select! {
@@ -278,20 +288,31 @@ fn spawn_recovery_and_janitor(
                     let Ok(_permit) = Arc::clone(&admission).try_acquire_owned() else { continue };
                     match blobs.cleanup_expired().await {
                         Ok(_) => {
-                            if let Err(error) = blobs.cleanup_after_recovery().await {
+                            if let Err(error) = blobs.scrub_integrity(cancel.clone()).await {
                                 tracing::warn!(?error, "file stash background hygiene pass failed");
                             }
                             delay = interval;
                         }
                         Err(error) => {
                             tracing::warn!(?error, "file stash janitor pass failed");
-                            delay = delay.saturating_mul(2).min(max_backoff);
+                            delay = next_janitor_delay(delay, interval, max_backoff);
                         }
                     }
                 }
             }
         }
     })
+}
+
+fn next_janitor_delay(
+    previous: std::time::Duration,
+    interval: std::time::Duration,
+    max_backoff: std::time::Duration,
+) -> std::time::Duration {
+    previous
+        .saturating_mul(2)
+        .max(interval)
+        .min(max_backoff.max(interval))
 }
 
 async fn initialize_owned(
@@ -335,7 +356,7 @@ fn map_store_error(error: FileStashStoreError) -> FileStashBlockedReason {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn open_private_directory(root: &File, name: &str) -> Result<File, FileStashBlockedReason> {
     use rustix::fs::{Mode, OFlags, openat};
     let fd = openat(
@@ -350,7 +371,7 @@ fn open_private_directory(root: &File, name: &str) -> Result<File, FileStashBloc
     Ok(file)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 fn open_private_directory(_: &File, _: &str) -> Result<File, FileStashBlockedReason> {
     Err(FileStashBlockedReason::UnsafeRoot)
 }
@@ -587,23 +608,26 @@ fn verify_database_identity(_: &File, _: &Path) -> Result<(), FileStashBlockedRe
     Err(FileStashBlockedReason::UnsafeRoot)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn anchored_child_path(
-    _: &File,
-    root_path: &Path,
+    root: &File,
+    _: &Path,
     child: &str,
 ) -> Result<PathBuf, FileStashBlockedReason> {
-    Ok(root_path.join(child))
+    use std::os::fd::AsRawFd as _;
+    if child.is_empty() || child.contains('/') {
+        return Err(FileStashBlockedReason::UnsafeRoot);
+    }
+    // SQLite accepts only pathnames. On Linux, address the child through the
+    // already-verified directory descriptor so renaming or replacing the
+    // configured pathname cannot redirect database or WAL/SHM writes.
+    Ok(PathBuf::from(format!(
+        "/proc/self/fd/{}/{}",
+        root.as_raw_fd(),
+        child
+    )))
 }
-#[cfg(target_os = "macos")]
-fn anchored_child_path(
-    _: &File,
-    root_path: &Path,
-    child: &str,
-) -> Result<PathBuf, FileStashBlockedReason> {
-    Ok(root_path.join(child))
-}
-#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+#[cfg(not(target_os = "linux"))]
 fn anchored_child_path(_: &File, _: &Path, _: &str) -> Result<PathBuf, FileStashBlockedReason> {
     Err(FileStashBlockedReason::UnsafeRoot)
 }
@@ -611,12 +635,25 @@ fn anchored_child_path(_: &File, _: &Path, _: &str) -> Result<PathBuf, FileStash
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+
+    #[test]
+    fn janitor_failure_delay_never_drops_below_the_normal_interval() {
+        let interval = std::time::Duration::from_mins(1);
+        assert_eq!(
+            next_janitor_delay(interval, interval, std::time::Duration::from_secs(1)),
+            interval
+        );
+        assert_eq!(
+            next_janitor_delay(interval, interval, std::time::Duration::from_mins(5)),
+            std::time::Duration::from_mins(2)
+        );
+    }
+    #[cfg(target_os = "linux")]
     fn root(temp: &tempfile::TempDir, name: &str) -> PathBuf {
         std::fs::canonicalize(temp.path()).unwrap().join(name)
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn initializes_restarts_checkpoints_and_detects_mismatch() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -638,7 +675,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn background_recovery_is_observable_and_fails_closed_until_complete() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -666,7 +703,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn ready_precedes_bounded_orphan_hygiene_and_shutdown_cancels_future_passes() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -709,7 +746,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn schema_enforces_cross_table_names_and_grantee_separation() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(root(&temp, "stash")).await;
@@ -730,7 +767,7 @@ mod tests {
         }).await.unwrap();
     }
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_intermediate_symlink_and_insecure_existing_mode() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
         let temp = tempfile::TempDir::new().unwrap();
@@ -757,7 +794,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn database_symlink_substitution_is_rejected_before_target_mutation() {
         use std::os::unix::fs::symlink;
         let temp = tempfile::TempDir::new().unwrap();
@@ -779,8 +816,39 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"must-not-change");
     }
 
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn database_open_stays_bound_to_verified_root_after_path_replacement() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let stash_root = root(&temp, "stash");
+        let verified = prepare_root(&stash_root).unwrap();
+        prepare_database_files(&verified.handle).unwrap();
+        let marker = read_or_create_marker(&verified.handle).unwrap();
+
+        let displaced = temp.path().join("verified-root");
+        std::fs::rename(&stash_root, &displaced).unwrap();
+        std::fs::create_dir(&stash_root).unwrap();
+        std::fs::set_permissions(&stash_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = stash_root.join("metadata.sqlite3");
+        std::fs::write(&victim, b"must-not-change").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let database =
+            anchored_child_path(&verified.handle, &verified.path, "metadata.sqlite3").unwrap();
+        let store = FileStashStore::open(database, marker).await.unwrap();
+        store.checkpoint().await.unwrap();
+        store.close();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must-not-change");
+        assert!(!stash_root.join("metadata.sqlite3-wal").exists());
+        assert!(!stash_root.join("metadata.sqlite3-shm").exists());
+        assert!(displaced.join("metadata.sqlite3").metadata().unwrap().len() > 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn database_queue_saturates_and_shutdown_closes_existing_handles() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(root(&temp, "stash")).await;
@@ -810,7 +878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_corrupt_schema_fingerprint() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -831,7 +899,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     async fn rejects_future_schema_without_partial_migration() {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
@@ -859,9 +927,9 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     #[tokio::test]
-    async fn macos_fails_closed_without_descriptor_rooted_sqlite() {
+    async fn unsupported_targets_fail_closed_without_descriptor_rooted_sqlite() {
         let temp = tempfile::TempDir::new().unwrap();
         let runtime = FileStashRuntime::initialize(temp.path().join("stash")).await;
         assert_eq!(

@@ -424,14 +424,6 @@ fn build_v1_router(
     );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     v1 = v1.nest("/depot", services::depot::routes(state.clone()));
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    if api_auth_configured
-        && state.enabled_services.contains("stash")
-        && state.registry.dispatch_capability("stash")
-            == Some(crate::registry::DispatchCapability::CallerBound)
-    {
-        v1 = v1.nest("/stash", services::file_stash::routes(state.clone()));
-    }
     #[cfg(target_os = "linux")]
     if api_auth_configured
         && state.enabled_services.contains("stash")
@@ -1381,26 +1373,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[test]
-    fn supported_platform_mounts_caller_bound_stash_only_with_api_auth() {
-        let state = AppState::new();
-        let mounted = build_v1_router(&state, true, false);
-        assert!(
-            mounted
-                .descriptors
-                .iter()
-                .any(|route| route.mount == "stash")
-        );
-        let unauthenticated = build_v1_router(&state, false, false);
-        assert!(
-            unauthenticated
-                .descriptors
-                .iter()
-                .all(|route| route.mount != "stash")
-        );
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn supported_platform_mounts_caller_bound_stash_only_with_api_auth() {
@@ -1447,8 +1419,8 @@ mod tests {
             "dev_containers" => "/v1/dev-containers".to_string(),
             "fs" => "/v1/fs/list".to_string(),
             "projects" => "/v1/projects".to_string(),
-            "tasks" => "/v1/tasks".to_string(),
             "stash" => "/v1/stash/stats".to_string(),
+            "tasks" => "/v1/tasks".to_string(),
             name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
             | "server_logs" | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
