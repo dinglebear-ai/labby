@@ -840,7 +840,10 @@ fn required_env(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
     use super::*;
+    use base64::Engine as _;
     use wiremock::matchers::{method, path};
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
@@ -857,6 +860,44 @@ mod tests {
                         && !value.contains("inbound-user-bearer")
                         && !value.contains("shared-write-bearer")
                 })
+                && !request.headers.contains_key("x-labby-actor")
+        }
+    }
+
+    struct ExactDelegation {
+        operation: &'static str,
+        params: Value,
+        seen_jtis: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl Match for ExactDelegation {
+        fn matches(&self, request: &Request) -> bool {
+            let Some(token) = request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+            else {
+                return false;
+            };
+            let Some(payload) = token.split('.').nth(1) else {
+                return false;
+            };
+            let Ok(payload) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)
+            else {
+                return false;
+            };
+            let Ok(claims) = serde_json::from_slice::<Value>(&payload) else {
+                return false;
+            };
+            let expected_digest =
+                labby_auth::depot_delegation::depot_params_digest(&self.params).unwrap();
+            let Some(jti) = claims.get("jti").and_then(Value::as_str) else {
+                return false;
+            };
+            self.seen_jtis.lock().unwrap().push(jti.to_owned());
+            claims["depot_operation"] == self.operation
+                && claims["depot_params_sha256"] == expected_digest
                 && !request.headers.contains_key("x-labby-actor")
         }
     }
@@ -957,9 +998,14 @@ mod tests {
     #[tokio::test]
     async fn skill_archive_publish_uses_three_independently_delegated_requests() {
         let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
         Mock::given(method("POST"))
             .and(path("/api/operations/depot.uploads.create"))
-            .and(FreshDelegationWithoutActorHeader)
+            .and(ExactDelegation {
+                operation: "depot.uploads.create",
+                params: json!({"filename":"skill.zip"}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "result": {"upload": {"id": "upload-123"}}
             })))
@@ -968,7 +1014,15 @@ mod tests {
             .await;
         Mock::given(method("PUT"))
             .and(path("/uploads/upload-123"))
-            .and(FreshDelegationWithoutActorHeader)
+            .and(ExactDelegation {
+                operation: "depot.uploads.put",
+                params: json!({
+                    "contentLength": 13,
+                    "contentType": "application/octet-stream",
+                    "uploadId": "upload-123"
+                }),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "upload": {"id": "upload-123", "status": "ready"}
             })))
@@ -977,7 +1031,14 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/operations/depot.ingest.start"))
-            .and(FreshDelegationWithoutActorHeader)
+            .and(ExactDelegation {
+                operation: "depot.ingest.start",
+                params: json!({
+                    "kind":"archive",
+                    "arguments":{"namespace":"team","uploadId":"upload-123"}
+                }),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "result": {"job": {"id": "job-123"}}
             })))
@@ -1014,6 +1075,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["result"]["job"]["id"], "job-123");
+        let seen_jtis = seen_jtis.lock().unwrap();
+        assert_eq!(seen_jtis.len(), 3);
+        assert_eq!(
+            seen_jtis
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
     }
 
     fn test_client(base_url: Url, permits: usize, queue_timeout: Duration) -> DepotClient {
