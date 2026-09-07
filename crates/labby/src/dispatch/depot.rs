@@ -487,17 +487,11 @@ impl DepotClient {
             .map_err(|_| DepotError::Unavailable(TransportFailure::Request))?;
         let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
         let delegated_token = if requires_delegation {
-            let grant = delegation_grant.ok_or(DepotError::DelegationUnavailable)?;
-            let signer = self
-                .delegation
-                .as_ref()
-                .ok_or(DepotError::DelegationUnavailable)?;
-            Some(
-                signer
-                    .keys
-                    .issue_depot_delegation(&signer.target, grant, DepotDelegationScope::Write, 30)
-                    .map_err(|_| DepotError::DelegationUnavailable)?,
-            )
+            let operation = path
+                .strip_prefix("api/operations/")
+                .ok_or(DepotError::UnsupportedOperation)?;
+            let params = body.as_ref().ok_or(DepotError::UnsupportedOperation)?;
+            Some(self.delegation_token(delegation_grant, operation, params)?)
         } else {
             None
         };
@@ -530,6 +524,83 @@ impl DepotClient {
             };
             tracing::warn!(category = category.category(), "Depot transport failed");
             DepotError::Unavailable(category)
+        })?;
+        decode_response(response).await
+    }
+
+    fn delegation_token(
+        &self,
+        grant: Option<&BoundAccessGrant>,
+        operation: &str,
+        params: &Value,
+    ) -> Result<String, DepotError> {
+        let grant = grant.ok_or(DepotError::DelegationUnavailable)?;
+        let signer = self
+            .delegation
+            .as_ref()
+            .ok_or(DepotError::DelegationUnavailable)?;
+        signer
+            .keys
+            .issue_depot_delegation(
+                &signer.target,
+                grant,
+                DepotDelegationScope::Write,
+                operation,
+                params,
+                30,
+            )
+            .map_err(|_| DepotError::DelegationUnavailable)
+    }
+
+    /// Stream bytes into a principal-bound Depot upload slot. This path never
+    /// falls back to the configured read bearer and never forwards an actor
+    /// header; Depot derives ownership from the fresh delegation subject.
+    pub async fn upload_with_grant(
+        &self,
+        upload_id: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        grant: Option<&BoundAccessGrant>,
+    ) -> Result<Value, DepotError> {
+        if !self.enabled {
+            return Err(DepotError::Disabled);
+        }
+        if !valid_upload_id(upload_id) {
+            return Err(DepotError::UnsupportedOperation);
+        }
+        let _permit = tokio::time::timeout(self.queue_timeout, self.interactive.acquire())
+            .await
+            .map_err(|_| DepotError::QueueTimeout)?
+            .map_err(|_| DepotError::Unavailable(TransportFailure::Request))?;
+        let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
+        let binding = json!({
+            "contentLength": content_length,
+            "contentType": content_type,
+            "uploadId": upload_id,
+        });
+        let token = self.delegation_token(grant, "depot.uploads.put", &binding)?;
+        let url = base
+            .join(&format!("uploads/{upload_id}"))
+            .map_err(|_| DepotError::Unconfigured)?;
+        let mut request = self
+            .http
+            .put(url)
+            .bearer_auth(token)
+            .header("accept", "application/json")
+            .header("content-type", content_type)
+            .body(body);
+        if let Some(content_length) = content_length {
+            request = request.header("content-length", content_length);
+        }
+        let response = request.send().await.map_err(|error| {
+            DepotError::Unavailable(if error.is_timeout() {
+                TransportFailure::Timeout
+            } else if error.is_connect() {
+                TransportFailure::Connect
+            } else {
+                TransportFailure::Request
+            })
         })?;
         decode_response(response).await
     }
@@ -605,6 +676,14 @@ fn valid_operation_name(operation: &str) -> bool {
 
 fn valid_idempotency_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 160 && key.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+fn valid_upload_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn project_operation_groups(value: &mut Value) -> Result<(), DepotError> {

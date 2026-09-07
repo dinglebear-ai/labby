@@ -4,6 +4,8 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use labby_primitives::product_credential::BoundAccessGrant;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
 use crate::jwt::SigningKeys;
@@ -65,6 +67,8 @@ pub struct DepotDelegationClaims {
     pub depot_project_policy_epoch: u64,
     pub depot_organization_id: String,
     pub depot_project_id: String,
+    pub depot_operation: String,
+    pub depot_params_sha256: String,
 }
 
 impl SigningKeys {
@@ -76,6 +80,8 @@ impl SigningKeys {
         target: &DepotDelegationTarget,
         grant: &BoundAccessGrant,
         scope: DepotDelegationScope,
+        operation: &str,
+        params: &Value,
         ttl_secs: u64,
     ) -> Result<String, AuthError> {
         validate_target(target)?;
@@ -92,6 +98,7 @@ impl SigningKeys {
         ] {
             validate_identifier(value)?;
         }
+        validate_operation(operation)?;
 
         let now = now_unix();
         let ttl_secs = i64::try_from(ttl_secs)
@@ -132,9 +139,58 @@ impl SigningKeys {
             depot_project_policy_epoch: grant.project_policy_epoch,
             depot_organization_id: grant.organization_id.clone(),
             depot_project_id: grant.project_id.clone(),
+            depot_operation: operation.to_owned(),
+            depot_params_sha256: depot_params_digest(params)?,
         };
         self.issue_custom_token(&claims, "Depot delegation")
     }
+}
+
+/// SHA-256 over deterministic JSON with recursively sorted object keys.
+/// Numbers and strings retain serde_json's compact representation.
+pub fn depot_params_digest(params: &Value) -> Result<String, AuthError> {
+    let canonical = canonical_json(params);
+    let encoded = serde_json::to_vec(&canonical)
+        .map_err(|_| AuthError::InvalidGrant("Depot delegation params are invalid".into()))?;
+    let digest = Sha256::digest(encoded);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}")
+            .map_err(|_| AuthError::Server("failed to encode Depot request digest".into()))?;
+    }
+    Ok(hex)
+}
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<_> = object.iter().collect();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn validate_operation(value: &str) -> Result<(), AuthError> {
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(AuthError::InvalidGrant(
+            "invalid Depot delegation operation".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_target(target: &DepotDelegationTarget) -> Result<(), AuthError> {
@@ -238,6 +294,8 @@ mod tests {
                 &target(),
                 &grant(now_unix() + 600),
                 DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"skill.zip"}),
                 30,
             )
             .unwrap();
@@ -261,6 +319,11 @@ mod tests {
         assert_eq!(claims.depot_membership_epoch, 5);
         assert_eq!(claims.depot_organization_policy_epoch, 6);
         assert_eq!(claims.depot_project_policy_epoch, 7);
+        assert_eq!(claims.depot_operation, "depot.uploads.create");
+        assert_eq!(
+            claims.depot_params_sha256,
+            depot_params_digest(&serde_json::json!({"filename":"skill.zip"})).unwrap()
+        );
         assert!(claims.exp - claims.iat <= 30);
         assert_eq!(claims.jti.len(), 32);
     }
@@ -270,13 +333,41 @@ mod tests {
         let keys = keys();
         let grant = grant(now_unix() + 600);
         let first = keys
-            .issue_depot_delegation(&target(), &grant, DepotDelegationScope::Read, 30)
+            .issue_depot_delegation(
+                &target(),
+                &grant,
+                DepotDelegationScope::Read,
+                "depot.system.status",
+                &serde_json::json!({}),
+                30,
+            )
             .unwrap();
         let second = keys
-            .issue_depot_delegation(&target(), &grant, DepotDelegationScope::Read, 30)
+            .issue_depot_delegation(
+                &target(),
+                &grant,
+                DepotDelegationScope::Read,
+                "depot.system.status",
+                &serde_json::json!({}),
+                30,
+            )
             .unwrap();
         assert_ne!(first, second);
         assert!(!first.contains("inbound-secret"));
+    }
+
+    #[test]
+    fn request_digest_is_recursive_key_order_independent_and_value_sensitive() {
+        let left = serde_json::json!({"z":[{"b":2,"a":1}],"a":"value"});
+        let right = serde_json::json!({"a":"value","z":[{"a":1,"b":2}]});
+        assert_eq!(
+            depot_params_digest(&left).unwrap(),
+            depot_params_digest(&right).unwrap()
+        );
+        assert_ne!(
+            depot_params_digest(&left).unwrap(),
+            depot_params_digest(&serde_json::json!({"a":"other","z":[{"a":1,"b":2}]})).unwrap()
+        );
     }
 
     #[test]
@@ -287,6 +378,8 @@ mod tests {
                 &target(),
                 &grant(now_unix() + 600),
                 DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"skill.zip"}),
                 61
             )
             .is_err()
@@ -298,6 +391,8 @@ mod tests {
                 &target(),
                 &grant(source_expiry),
                 DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"skill.zip"}),
                 30,
             )
             .unwrap();
@@ -319,6 +414,8 @@ mod tests {
                 &bad_target,
                 &grant(now_unix() + 600),
                 DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"skill.zip"}),
                 30,
             )
             .is_err()
@@ -331,6 +428,8 @@ mod tests {
                 &bad_target,
                 &grant(now_unix() + 600),
                 DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"skill.zip"}),
                 30,
             )
             .is_err()
