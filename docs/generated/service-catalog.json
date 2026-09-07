@@ -65,9 +65,9 @@
     "feature": null,
     "exposure": "always_on",
     "surfaces": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
-      "api": true,
+      "api": false,
       "web_ui": false
     },
     "default_port": null,

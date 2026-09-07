@@ -7,6 +7,11 @@ use serde::Serialize;
 
 use super::state::AppState;
 
+/// Whether a registry service has any HTTP API surface.
+pub(crate) fn service_has_http_surface(service: &str) -> bool {
+    !matches!(service, "lab_admin" | "depot_publish")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteAuth {

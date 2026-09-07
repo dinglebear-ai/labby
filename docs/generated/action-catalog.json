@@ -2073,7 +2073,7 @@
     "surface_availability": {
       "cli": false,
       "mcp": true,
-      "api": true,
+      "api": false,
       "web_ui": false
     },
     "requires_http_subject": false,
@@ -2093,7 +2093,7 @@
     "surface_availability": {
       "cli": false,
       "mcp": true,
-      "api": true,
+      "api": false,
       "web_ui": false
     },
     "requires_http_subject": false,
@@ -2120,7 +2120,7 @@
     "surface_availability": {
       "cli": false,
       "mcp": true,
-      "api": true,
+      "api": false,
       "web_ui": false
     },
     "requires_http_subject": false,

@@ -120,9 +120,11 @@ base64-encoded skill archive:
     "name": "depot_publish",
     "arguments": {
       "action": "depot.publish_skill_archive",
-      "filename": "example-skill.tar.gz",
-      "archive_base64": "<base64-encoded-archive>",
-      "namespace": "team"
+      "params": {
+        "filename": "example-skill.tar.gz",
+        "archive_base64": "<base64-encoded-archive>",
+        "namespace": "team"
+      }
     }
   }
 }

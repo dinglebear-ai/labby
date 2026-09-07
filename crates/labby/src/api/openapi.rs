@@ -1650,7 +1650,11 @@ struct ApiDoc;
 pub fn build_openapi_spec(
     services: &[RegisteredService],
 ) -> Result<Arc<String>, serde_json::Error> {
-    let service_names: Vec<String> = services.iter().map(|s| s.name.to_string()).collect();
+    let service_names: Vec<String> = services
+        .iter()
+        .filter(|service| super::route_registry::service_has_http_surface(service.name))
+        .map(|service| service.name.to_string())
+        .collect();
 
     let injector = ActionSchemaInjector::new(services);
 
@@ -2088,6 +2092,10 @@ mod tests {
             .expect("paths should be an object");
         assert!(paths.contains_key("/health"), "missing /health path");
         assert!(paths.contains_key("/ready"), "missing /ready path");
+        assert!(
+            !paths.contains_key("/v1/depot_publish"),
+            "MCP-only Depot publishing must not be advertised as an HTTP route"
+        );
         assert!(
             paths.contains_key(APPS_MANIFEST_API_ROUTE),
             "missing {APPS_MANIFEST_API_ROUTE} path"
