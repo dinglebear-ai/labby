@@ -33,6 +33,13 @@ pub(super) use policy::{
     protected_route_json_rpc_error,
 };
 
+fn team_member_auto_provision_candidate(has_oauth_delegation: bool, upstreams: &[String]) -> bool {
+    has_oauth_delegation
+        && upstreams
+            .iter()
+            .any(|upstream| upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
+}
+
 async fn protected_mcp_route_entry(
     state: AppState,
     mut request: Request<Body>,
@@ -92,6 +99,36 @@ async fn protected_mcp_route_entry(
                     &route_resource_metadata_url(&route),
                     &route.scopes,
                 );
+            }
+            if team_member_auto_provision_candidate(
+                authenticated.oauth_delegation.is_some(),
+                &target.upstreams,
+            ) {
+                let authorized = match state.oauth_state.as_deref() {
+                    Some(auth) => auth
+                        .is_current_identity_authorized(&identity)
+                        .await
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if !authorized
+                    || state
+                        .access_runtime
+                        .provision_team_member(identity.clone(), project_id.to_owned())
+                        .await
+                        .is_err()
+                {
+                    tracing::warn!(
+                        route = %route.name,
+                        project_id,
+                        "team member provisioning rejected"
+                    );
+                    return auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
             }
             request.extensions_mut().insert(identity.clone());
             let binding = match state.gateway_manager.as_ref() {
@@ -220,6 +257,26 @@ async fn protected_mcp_route_entry(
             });
     }
     proxy_protected_mcp_route(&state, request, route).await
+}
+
+#[cfg(test)]
+mod team_member_provisioning_tests {
+    use super::team_member_auto_provision_candidate;
+
+    #[test]
+    fn auto_provision_requires_oauth_and_the_exact_team_depot_upstream() {
+        let team = vec!["team-depot".to_string()];
+        assert!(team_member_auto_provision_candidate(true, &team));
+        assert!(!team_member_auto_provision_candidate(false, &team));
+        for upstreams in [
+            Vec::<String>::new(),
+            vec!["catalog-depot".to_string()],
+            vec!["team-depot-evil".to_string()],
+            vec!["TEAM-DEPOT".to_string()],
+        ] {
+            assert!(!team_member_auto_provision_candidate(true, &upstreams));
+        }
+    }
 }
 
 pub(super) async fn protected_mcp_intercept(

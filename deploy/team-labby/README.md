@@ -83,8 +83,11 @@ The mappings in `state/labby/.env` and `team-depot.env` are one exact contract:
   `state/labby/installation-id` (`act.sub` in each assertion);
 - Depot's organization and project IDs equal the employee grant's bound
   organization and project; and
-- membership, organization-policy, and project-policy epochs equal the current
-  values used when Labby issues that bound grant.
+- the membership-policy epoch equals the current project-policy epoch, shared by
+  every member of the bound project, and the organization-policy and
+  project-policy epochs equal the current values used when Labby issues that
+  bound grant. Labby still revalidates the exact employee membership before it
+  mints every assertion.
 
 Labby creates `state/labby/installation-id` at its first start. Read that file
 locally, put its exact value in `DEPOT_OAUTH_DELEGATION_ACTOR`, then recreate
@@ -132,6 +135,16 @@ base64-encoded skill archive:
 
 `namespace` is optional. The tool must remain absent from the root MCP route,
 unprotected routes, and routes that do not contain the `team-depot` provider.
+
+On the first authenticated request to a project-bound route containing the
+`team-depot` provider, Labby provisions the caller's already-verified external
+identity into that exact route project with the fixed `member` role. Provisioning
+rechecks the current persisted inbound identity and the current email/domain
+admission policy; it is idempotent and never accepts a role, organization, or
+project from the request. An identity already bound to another organization, or
+a revoked/disabled principal, link, or membership, fails closed and is never
+reactivated automatically. Offboarding must disable the membership; also remove
+an explicit per-email admission entry when one exists.
 
 ## Employee Linear authorization
 

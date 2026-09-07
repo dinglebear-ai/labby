@@ -49,6 +49,19 @@ pub(crate) struct ProjectPermissionSnapshot {
     pub(crate) assignment_generation: u64,
 }
 
+impl ProjectPermissionSnapshot {
+    /// Shared access-policy generation used by external policy enforcers.
+    ///
+    /// `membership_epoch` is the generation of this principal's membership row,
+    /// so it cannot be compared with one process-wide value by a project-scoped
+    /// downstream service. The project policy epoch is shared by every member of
+    /// the project, while the exact membership is still revalidated before every
+    /// grant is minted.
+    pub(crate) fn shared_membership_policy_epoch(&self) -> u64 {
+        self.project_policy_epoch
+    }
+}
+
 /// One exact current membership snapshot for Labby-owned library policy.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LibraryAccessSnapshot {
@@ -337,6 +350,56 @@ mod tests {
         let denial = decision(&store, owner, "member-project", Permission::AssetUse).await;
         assert!(matches!(denial, Err(AccessStoreError::NotAuthorized)));
         assert_eq!(store.loadout_state_for_test().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn delegated_membership_policy_epoch_is_shared_but_each_member_is_revalidated() {
+        let (_directory, store, owner) = fixture().await;
+        let other = identity("other-member-subject");
+        store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES
+                   ('other-member','bootstrap-local','user','active','Other member',3,3);
+                 INSERT INTO principal_links VALUES
+                   ('other-member-link','other-member','external','https://accounts.google.com','other-member-subject',NULL,'active',1,1,3,3);
+                 INSERT INTO project_memberships VALUES
+                   ('other-member-membership','bootstrap-local','member-project','other-member','member','active','bootstrap-owner',3,99);",
+            )
+            .await
+            .unwrap();
+
+        let owner_snapshot = decision(&store, owner, "member-project", Permission::AssetUse)
+            .await
+            .unwrap();
+        let other_snapshot = decision(
+            &store,
+            other.clone(),
+            "member-project",
+            Permission::AssetUse,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(
+            owner_snapshot.membership_epoch,
+            other_snapshot.membership_epoch
+        );
+        assert_eq!(
+            owner_snapshot.shared_membership_policy_epoch(),
+            other_snapshot.shared_membership_policy_epoch()
+        );
+
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET status='disabled', updated_at=100
+                 WHERE membership_id='other-member-membership';",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            decision(&store, other, "member-project", Permission::AssetUse).await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
     }
 
     #[tokio::test]

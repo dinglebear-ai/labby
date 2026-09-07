@@ -107,7 +107,7 @@ impl TransportBoundAccessContext {
             catalog_generation: policy.catalog_generation(),
             route_id: policy.route_id().to_owned(),
             route_generation: policy.route_generation(),
-            membership_epoch: access.membership_epoch,
+            membership_epoch: access.shared_membership_policy_epoch(),
             organization_policy_epoch: access.organization_policy_epoch,
             project_policy_epoch: access.project_policy_epoch,
             credential_id: credential.credential_id.clone(),
