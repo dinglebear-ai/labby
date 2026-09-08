@@ -16,6 +16,36 @@ ROOT = pathlib.Path(os.environ.get("LABBY_TOPOLOGY_ROOT", pathlib.Path(__file__)
 
 
 class ContainerTopology(unittest.TestCase):
+    def test_gateway_admin_context_preserves_source_without_reincluding_secrets(self):
+        """Exercise Docker's real ordered ignore matcher with synthetic files only."""
+        with tempfile.TemporaryDirectory() as directory:
+            context = pathlib.Path(directory) / "context"
+            context.mkdir()
+            output = pathlib.Path(directory) / "output"
+            (context / ".dockerignore").write_text(self.text(".dockerignore"))
+            retained = ["components/example.tsx", "out/index.html", ".env.example"]
+            excluded = [
+                ".env", ".env.local", "config.env", "nested/.env.production",
+                "nested/client.key", "nested/client.pem", "nested/client.cert",
+                "nested/settings.local.json", "nested/session.db", "nested/session.db-wal",
+                "nested/config.local.toml", "node_modules/fixture.js", ".next/cache/file",
+                "nested/.cache/file", "nested/.git/config", "nested/debug.log",
+            ]
+            for name in retained + excluded:
+                path = context / "apps/gateway-admin" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic fixture only\n")
+            result = subprocess.run(
+                ["docker", "build", "--no-cache", "--output", f"type=local,dest={output}",
+                 "-f", "-", str(context)],
+                input="FROM scratch\nCOPY apps/gateway-admin /app\n",
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            actual = sorted(str(path.relative_to(output / "app"))
+                            for path in (output / "app").rglob("*") if path.is_file())
+            self.assertEqual(actual, sorted(retained))
+
     def text(self, path):
         return (ROOT / path).read_text()
 

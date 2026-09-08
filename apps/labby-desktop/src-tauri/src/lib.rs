@@ -4,7 +4,7 @@
 //! settings. This crate owns only its native window, credential-free bootstrap
 //! origin, confined navigation, and platform lifecycle.
 
-use std::{fmt::Display, net::IpAddr, path::PathBuf, sync::Mutex};
+use std::{fmt::Display, net::IpAddr, sync::Mutex};
 
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
@@ -178,6 +178,22 @@ fn is_loader_url(url: &tauri::Url) -> bool {
         && url.fragment().is_none()
 }
 
+fn bundled_loader_url(uses_http_protocol: bool) -> tauri::Url {
+    // Match Tauri's internal tauri_protocol_url(false): WebView2/Android
+    // serve custom protocols through an HTTP authority. Explicit navigate()
+    // does not perform the initial WebviewUrl::App platform conversion.
+    let base = if uses_http_protocol {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    };
+    tauri::Url::parse(&format!("{base}/{CONTROL_PLANE_LOADER}")).expect("static bundled loader URL")
+}
+
+fn loader_url() -> tauri::Url {
+    bundled_loader_url(cfg!(any(windows, target_os = "android")))
+}
+
 fn generation_url(mut url: reqwest::Url, generation: u64) -> reqwest::Url {
     url.set_fragment(Some(&format!("labby-load-generation-{generation}")));
     url
@@ -266,7 +282,9 @@ fn build_control_plane_window(app: &AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(
         app,
         CONTROL_PLANE_WINDOW,
-        WebviewUrl::App(PathBuf::from(CONTROL_PLANE_LOADER)),
+        // Keep the fallback bundled even in dev mode, where WebviewUrl::App
+        // would instead resolve to the (intentionally untrusted) dev server.
+        WebviewUrl::CustomProtocol(loader_url()),
     )
     .title("Labby Control Plane")
     .inner_size(1280.0, 820.0)
@@ -316,10 +334,7 @@ fn show_loader(app: &AppHandle) -> Result<(), String> {
         .get_webview_window(CONTROL_PLANE_WINDOW)
         .ok_or_else(|| "Control Plane window not found".to_owned())?;
     window
-        .navigate(
-            tauri::Url::parse(&format!("tauri://localhost/{CONTROL_PLANE_LOADER}"))
-                .map_err(|error| error.to_string())?,
-        )
+        .navigate(loader_url())
         .map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
@@ -578,6 +593,19 @@ mod tests {
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(config["app"]["windows"].as_array().map(Vec::len), Some(0));
         assert!(!config["app"]["macOSPrivateApi"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
+    fn bundled_loader_uses_the_platform_custom_protocol_authority() {
+        for (uses_http, expected) in [
+            (false, "tauri://localhost/control-plane-loader.html"),
+            (true, "http://tauri.localhost/control-plane-loader.html"),
+        ] {
+            let url = bundled_loader_url(uses_http);
+            assert_eq!(url.as_str(), expected);
+            assert!(is_loader_url(&url));
+            assert!(ControlPlaneLoad::default().navigation_allowed(&url));
+        }
     }
 
     #[test]

@@ -123,3 +123,25 @@ apps/*
 !apps/gateway-admin/**
 apps/gateway-admin/node_modules/
 apps/gateway-admin/.next/
+# Negations above also override earlier exclusions. Reapply private/runtime
+# exclusions recursively AFTER the app allowlist; only synthetic examples ship.
+apps/gateway-admin/**/.env
+apps/gateway-admin/**/.env.*
+apps/gateway-admin/**/*.env
+apps/gateway-admin/**/*.env.*
+!apps/gateway-admin/**/.env.example
+apps/gateway-admin/**/*.key
+apps/gateway-admin/**/*.pem
+apps/gateway-admin/**/*.cert
+apps/gateway-admin/**/config.local.toml
+apps/gateway-admin/**/settings.local.json
+apps/gateway-admin/**/*.db
+apps/gateway-admin/**/*.db-shm
+apps/gateway-admin/**/*.db-wal
+apps/gateway-admin/**/*.log
+apps/gateway-admin/**/.cache/
+apps/gateway-admin/**/.git/
+apps/gateway-admin/**/.claude/
+apps/gateway-admin/**/.codex/
+apps/gateway-admin/**/node_modules/
+apps/gateway-admin/**/.next/
