@@ -161,6 +161,51 @@ fn deterministic_round_robin_is_fair_and_provider_qualifies_identity() {
 }
 
 #[test]
+fn list_and_detail_preserve_bounded_file_counts() {
+    for count in [None, Some(0), Some(1), Some(2000)] {
+        let mut raw = json!({"id": "files", "descriptor": {"id": "files"}, "currentRevision": {"id": "rev", "components": [], "metadata": {"private": true}}});
+        if let Some(count) = count {
+            raw["currentRevision"]["fileCount"] = json!(count);
+        }
+        let detail = project_detail("files", raw.clone()).unwrap();
+        let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+        let response = merge_page(&mut pages, 0, 1).unwrap();
+        for artifact in [&detail, &response.items[0]] {
+            assert_eq!(
+                artifact["currentRevision"].get("fileCount"),
+                count.map(|value| json!(value)).as_ref()
+            );
+            assert!(artifact["currentRevision"].get("components").is_none());
+            assert!(artifact["currentRevision"].get("metadata").is_none());
+        }
+    }
+}
+
+#[test]
+fn list_and_detail_reject_invalid_file_counts() {
+    for count in [
+        json!(null),
+        json!(-1),
+        json!(1.5),
+        json!("3"),
+        json!({}),
+        json!([]),
+        json!(2001),
+    ] {
+        let raw = json!({"id": "files", "descriptor": {"id": "files"}, "currentRevision": {"fileCount": count}});
+        assert_eq!(
+            project_detail("files", raw.clone()),
+            Err(DiscoveryError::InvalidProvider)
+        );
+        let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+        assert_eq!(
+            merge_page(&mut pages, 0, 1).unwrap_err(),
+            DiscoveryError::InvalidProvider
+        );
+    }
+}
+
+#[test]
 fn list_and_detail_preserve_bounded_real_timestamps() {
     let raw = json!({
         "id": "dated", "descriptor": {"id": "dated"},

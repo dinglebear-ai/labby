@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { Check, Copy, Download, Layers3, Link2, Loader2, PackagePlus } from 'lucide-react'
 import { AURORA_DISPLAY_2, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { Badge } from '@/components/ui/badge'
+import { DiscoverFileCount } from './discover-file-count'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { FederatedArtifact } from '@/lib/api/depot-client'
@@ -54,6 +55,7 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
             <p className="text-sm leading-[var(--lh-body)]">{artifact.description ?? artifact.descriptor?.description ?? 'No description supplied by this source.'}</p>
             <div className="flex flex-wrap gap-[var(--space-2)] rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-[var(--space-3)]">
               <Badge variant="outline">{artifactKind(artifact)}</Badge>
+              <DiscoverFileCount count={artifact.currentRevision?.fileCount} />
               {artifact.publication?.state ? <Badge variant="outline">{artifact.publication.state}</Badge> : null}
               {artifact.publication?.visibility ? <Badge variant="outline">{artifact.publication.visibility}</Badge> : null}
               {artifact.currentRevision?.authoredAt ? <span className="self-center text-xs text-aurora-text-muted">Revision authored {artifact.currentRevision.authoredAt}</span> : null}

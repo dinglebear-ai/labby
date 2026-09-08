@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ArrowUpRight, Blocks, Bot, Braces, Cable, FileCode2, Layers3, MessageSquare, Shield, Terminal, type LucideIcon } from 'lucide-react'
 import { AURORA_BADGE_LABEL, AURORA_CARD_TITLE, AURORA_DENSE_META } from '@/components/aurora/tokens'
 import { Badge } from '@/components/ui/badge'
+import { DiscoverFileCount } from './discover-file-count'
 import type { FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKey } from '@/lib/depot/provider-model'
 import { artifactKind, artifactTitle, revisionAge } from './discover-model'
@@ -65,6 +66,7 @@ export function DiscoverArtifactCard({ artifact, compact, selected, href, now, d
           {description || 'No description supplied by this source.'}
         </p>
         <div className="flex flex-wrap gap-[var(--space-2)]">
+          <DiscoverFileCount count={artifact.currentRevision?.fileCount} />
           {artifact.publication?.visibility ? <Badge variant="outline">{artifact.publication.visibility}</Badge> : null}
           {artifact.publication?.distribution ? <Badge variant="outline">{artifact.publication.distribution}</Badge> : null}
           {artifact.revisionCount !== undefined ? <Badge variant="outline">{artifact.revisionCount} revisions</Badge> : null}

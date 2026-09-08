@@ -765,6 +765,13 @@ fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, Dis
             let mut summary = project_text_fields(nested, fields)?;
             if field == "currentRevision" {
                 project_timestamp(nested, &mut summary, "authoredAt")?;
+                if let Some(count) = nested.get("fileCount") {
+                    // Depot revisions contain at most 2,000 components; files are a subset.
+                    if count.as_u64().is_none_or(|count| count > 2_000) {
+                        return Err(DiscoveryError::InvalidProvider);
+                    }
+                    summary.insert("fileCount".into(), count.clone());
+                }
             }
             if field == "license"
                 && let Some(declared) = nested.get("declared")

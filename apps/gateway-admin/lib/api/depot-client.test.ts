@@ -352,6 +352,21 @@ test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', asyn
   await withFetch(json({ ...v2Page, scope: 'team' }), async () => assert.rejects(listArtifacts(), /wrong discovery scope/i))
 })
 
+test('v2 list and detail preserve only bounded integer file counts', async () => {
+  for (const fileCount of [undefined, 0, 1, 2000, null, -1, 1.5, '3', {}, [], 2001]) {
+    const currentRevision = fileCount === undefined ? {} : { fileCount }
+    const valid = fileCount === undefined || (typeof fileCount === 'number' && Number.isInteger(fileCount) && fileCount >= 0 && fileCount <= 2000)
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], currentRevision }] }), async () => {
+      if (valid) assert.equal((await listArtifacts()).items[0]?.currentRevision?.fileCount, fileCount)
+      else await assert.rejects(listArtifacts())
+    })
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', currentRevision } }), async () => {
+      if (valid) assert.equal((await getArtifact('public', 'artifact-1')).artifact.currentRevision?.fileCount, fileCount)
+      else await assert.rejects(getArtifact('public', 'artifact-1'))
+    })
+  }
+})
+
 test('v2 exact detail preserves raw IDs and verifies every identity field', async () => {
   const artifactId = 'space + % / 雪'
   const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId, artifact: { id: artifactId } }

@@ -4,6 +4,18 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DiscoverArtifactCard } from './discover-artifact-card'
 
+test('cards distinguish known zero, singular, plural and unknown file counts', () => {
+  for (const compact of [false, true]) {
+    for (const fileCount of [undefined, 0, 1, 2000]) {
+      const markup = renderToStaticMarkup(<DiscoverArtifactCard artifact={{
+        providerId: 'catalog', artifactId: 'files', currentRevision: { fileCount },
+      }} compact={compact} selected={false} href="/discover" />)
+      if (fileCount === undefined) assert.doesNotMatch(markup, />\d+ files?</)
+      else assert.match(markup, new RegExp(`>${fileCount} ${fileCount === 1 ? 'file' : 'files'}<`))
+    }
+  }
+})
+
 test('card keeps source identity and descriptor title without inventing verification or popularity', () => {
   const markup = renderToStaticMarkup(<DiscoverArtifactCard artifact={{
     providerId: 'catalog', artifactId: 'shared/id',
