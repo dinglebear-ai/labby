@@ -19,6 +19,19 @@ pub(crate) struct TaskRecord {
     pub error_code: Option<String>,
 }
 
+/// A lost race on the `task_id` primary key is a typed integrity outcome
+/// (`task_id`), never a stringly `Unavailable` cause, so dispatch can turn
+/// it into the same non-enumerating denial as a taken identifier without
+/// matching constraint text.
+fn map_task_insert_error(error: rusqlite::Error) -> AccessStoreError {
+    match error.sqlite_error().map(|failure| failure.extended_code) {
+        Some(
+            rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE,
+        ) => AccessStoreError::IntegrityViolation { check: "task_id" },
+        _ => super::store::map_sqlite_error(error),
+    }
+}
+
 impl TaskStore {
     /// Open the ledger on an already-migrated access store. The tables are
     /// part of the versioned schema (`migrations::AGENT_TASK_SCHEMA`).
@@ -50,7 +63,7 @@ impl TaskStore {
         }
         let (kind, owner) = owner(&intent.owner);
         if let Some((id,input,agent))=tx.query_row("SELECT task_id,input_digest,agent_revision_digest FROM agent_tasks WHERE owner_kind=?1 AND owner_id=?2 AND idempotency_key=?3",params![kind,owner,intent.idempotency_key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(super::store::map_sqlite_error)? { if input==intent.input_digest && agent==intent.agent_revision_digest{return Ok(id)} return Err(AccessStoreError::IntegrityViolation{check:"task_idempotency"}) }
-        tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'created',0,NULL,NULL,NULL,NULL,?13,?13)",params![intent.id,intent.idempotency_key,kind,owner,intent.project.as_ref().map(|p|p.as_str()),intent.creator.as_str(),intent.agent_id,i64::try_from(intent.agent_version).map_err(|_|AccessStoreError::MalformedVocabulary)?,intent.agent_revision_digest,intent.input_digest,intent.catalog_generation,intent.authority_fingerprint,now]).map_err(super::store::map_sqlite_error)?;
+        tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'created',0,NULL,NULL,NULL,NULL,?13,?13)",params![intent.id,intent.idempotency_key,kind,owner,intent.project.as_ref().map(|p|p.as_str()),intent.creator.as_str(),intent.agent_id,i64::try_from(intent.agent_version).map_err(|_|AccessStoreError::MalformedVocabulary)?,intent.agent_revision_digest,intent.input_digest,intent.catalog_generation,intent.authority_fingerprint,now]).map_err(map_task_insert_error)?;
         tx.execute(
             "INSERT INTO agent_task_audit VALUES(?1,?2,?3,NULL,'created',0,?4)",
             params![

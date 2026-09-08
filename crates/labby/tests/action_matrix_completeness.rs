@@ -14,13 +14,71 @@ use support::action_matrix::{
 };
 use support::authority_matrix::{
     DEPOT_OPERATIONS, OperationClass, OwnerKind, ResourceFamily, classify_labby,
-    duplicate_depot_operations,
+    depot_fixture_operation_names, depot_snapshot_operation_names, duplicate_depot_operations,
 };
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
+const AUTHORITY_MATRIX: &str =
+    include_str!("../../../docs/access-control/authority-matrix-v1.json");
+const AUTHORITY_EXPECTATIONS: &str = include_str!("fixtures/authority_action_expectations.json");
 
 fn catalog() -> Vec<CatalogAction> {
     serde_json::from_str(ACTION_CATALOG).expect("generated action catalog must parse")
+}
+
+/// Owner scope names published by `docs/access-control/authority-matrix-v1.json`.
+fn owner_scope(owner: OwnerKind) -> &'static str {
+    match owner {
+        OwnerKind::Installation => "installation",
+        OwnerKind::Team => "team",
+        OwnerKind::Project => "project",
+        OwnerKind::Personal => "personal",
+    }
+}
+
+/// Owner scopes the published v1 authority matrix allows for each service,
+/// resolved through `serviceClassifications[].resourceFamily` ->
+/// `resourceFamilies[].ownerScopes`. This is a hand-maintained product
+/// document, independent of the test-side `classify_labby` table.
+fn published_owner_scopes() -> BTreeMap<String, BTreeSet<String>> {
+    let matrix: Value = serde_json::from_str(AUTHORITY_MATRIX).expect("authority matrix parses");
+    let families = matrix["resourceFamilies"]
+        .as_object()
+        .expect("resource families");
+    matrix["serviceClassifications"]
+        .as_array()
+        .expect("service classifications")
+        .iter()
+        .map(|entry| {
+            let service = entry["service"].as_str().expect("service").to_owned();
+            let family = entry["resourceFamily"].as_str().expect("family");
+            let scopes = families[family]["ownerScopes"]
+                .as_array()
+                .expect("owner scopes")
+                .iter()
+                .map(|scope| scope.as_str().expect("scope").to_owned())
+                .collect();
+            (service, scopes)
+        })
+        .collect()
+}
+
+/// Per-principal allow/deny expectations, keyed by `service:action`, from the
+/// reviewed fixture `fixtures/authority_action_expectations.json`.
+fn expected_team_member_decisions() -> BTreeMap<String, bool> {
+    let fixture: Value =
+        serde_json::from_str(AUTHORITY_EXPECTATIONS).expect("authority expectations parse");
+    fixture["actions"]
+        .as_object()
+        .expect("actions object")
+        .iter()
+        .map(|(key, row)| {
+            (
+                key.clone(),
+                row["team_member"].as_str().expect("team_member decision") == "allow",
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -36,6 +94,8 @@ fn every_registered_action_has_an_authority_classification() {
         "registered actions lack authority classification: {unclassified:#?}"
     );
 
+    let published_scopes = published_owner_scopes();
+    let team_member_allowed = expected_team_member_decisions();
     for action in &catalog {
         let classification = classify_labby(action).expect("checked above");
         assert!(
@@ -43,38 +103,118 @@ fn every_registered_action_has_an_authority_classification() {
             "{} has no owner kind",
             action.key()
         );
-        assert_eq!(
-            classification.final_boundary_reauthorization,
-            !action.builtin,
-            "{} has an unsafe final-boundary posture",
-            action.key()
-        );
+
+        // Owner kinds are checked against the published v1 authority matrix
+        // (an independent product document) instead of the previous
+        // self-referential rule "non-platform families always carry
+        // Team/Project/Personal", which merely restated how the test table
+        // was written.
+        let published = published_scopes.get(&action.service).unwrap_or_else(|| {
+            panic!("{} has no published authority classification", action.key())
+        });
+        for owner in classification.owners {
+            assert!(
+                published.contains(owner_scope(*owner)),
+                "{}: owner {owner:?} is not a published owner scope for service {}",
+                action.key(),
+                action.service
+            );
+        }
         if classification.resource == ResourceFamily::Platform {
             assert_eq!(classification.owners, [OwnerKind::Installation]);
             assert!(!classification.delegated);
-        } else {
-            for owner in [OwnerKind::Team, OwnerKind::Project, OwnerKind::Personal] {
+        }
+
+        // The operation class is derived from the catalog's
+        // `required_capability` column. The previous assertion
+        // `destructive => Delete` compared the class against the very flag it
+        // had been derived from. It is replaced by two cross-column checks:
+        // (1) for evaluator-backed actions, the `destructive` flag (declared on
+        // the ActionSpec) must agree with a capability class that can lose
+        // state, and (2) `requires_admin` (surface policy) must be true exactly
+        // when the evaluator demands a platform-scoped capability.
+        if action.authorization_boundary == "resource_capability" {
+            if action.destructive {
                 assert!(
-                    classification.owners.contains(&owner),
-                    "{} omits {owner:?} authority",
-                    action.key()
+                    matches!(
+                        classification.operation,
+                        OperationClass::Delete | OperationClass::Administer
+                    ),
+                    "{}: destructive action must demand a manage/delete capability, got {:?} from {:?}",
+                    action.key(),
+                    classification.operation,
+                    action.required_capability
                 );
             }
+            assert_eq!(
+                action.requires_admin,
+                action.required_capability.as_deref() == Some("platform.manage"),
+                "{}: requires_admin must track the platform.manage capability",
+                action.key()
+            );
         }
-        if action.destructive {
-            assert_eq!(classification.operation, OperationClass::Delete);
+
+        // The `final_boundary_reauthorization` flag used to be asserted equal
+        // to `!builtin`, which is how the table computes it. Instead check the
+        // observable consequence against the catalog's independently emitted
+        // `authorization_boundary` column: an action that reauthorizes must
+        // name a real boundary, and builtin probes may only be transport-bound.
+        if classification.final_boundary_reauthorization {
+            assert!(
+                !action.authorization_boundary.is_empty(),
+                "{}: reauthorizing action has no authorization boundary",
+                action.key()
+            );
+        } else {
+            assert!(
+                action.builtin,
+                "{}: only builtin probes skip reauthorization",
+                action.key()
+            );
+            assert_eq!(
+                action.authorization_boundary,
+                "transport",
+                "{}",
+                action.key()
+            );
+        }
+
+        // The reviewed per-principal expectations fixture is a third source:
+        // a Team member must be allowed exactly the read/operate classes.
+        if let Some(allowed) = team_member_allowed.get(&action.key()) {
+            let member_class = matches!(
+                classification.operation,
+                OperationClass::Discover | OperationClass::Read | OperationClass::Operate
+            );
+            assert_eq!(
+                *allowed,
+                member_class,
+                "{}: operation class {:?} disagrees with the reviewed team_member expectation",
+                action.key(),
+                classification.operation
+            );
         }
     }
 }
 
 #[test]
-fn depot_operation_authority_snapshot_is_complete_and_well_formed() {
-    assert_eq!(
-        DEPOT_OPERATIONS.len(),
-        64,
-        "update the reviewed Depot operation snapshot"
+fn depot_operation_authority_snapshot_matches_the_golden_fixture() {
+    // D-I3: the hand-maintained snapshot must name exactly the operations
+    // published by docs/contracts/fixtures/depot-control-plane/operations-v1.json.
+    let golden = depot_fixture_operation_names();
+    let snapshot = depot_snapshot_operation_names();
+    let missing = golden.difference(&snapshot).collect::<Vec<_>>();
+    let stale = snapshot.difference(&golden).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "DEPOT_OPERATIONS drifted from the golden fixture\nmissing: {missing:#?}\nstale: {stale:#?}"
     );
+    assert_eq!(DEPOT_OPERATIONS.len(), golden.len());
     assert!(duplicate_depot_operations().is_empty());
+}
+
+#[test]
+fn depot_operation_authority_snapshot_is_well_formed() {
     for operation in DEPOT_OPERATIONS {
         assert!(operation.name.starts_with("depot."));
         assert!(
@@ -335,6 +475,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "access",
         "agents",
         "dev_containers",
+        "projects",
         "doctor",
         "server_logs",
         "setup",
@@ -351,6 +492,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "dev_containers",
         "gateway",
         "jobs",
+        "projects",
         "server_logs",
         "setup",
         "snippets",
@@ -373,6 +515,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "dev_containers",
                 "doctor",
                 "fs",
+                "projects",
                 "server_logs",
                 "setup",
                 "stash",
@@ -389,6 +532,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "doctor",
                 "dev_containers",
                 "jobs",
+                "projects",
                 "server_logs",
                 "setup",
                 "sources",
@@ -405,6 +549,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "dev_containers",
                 "doctor",
                 "lab_admin",
+                "projects",
                 "server_logs",
                 "setup",
                 "stash",
@@ -422,6 +567,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "fs",
                 "gateway",
                 "lab_admin",
+                "projects",
                 "server_logs",
                 "setup",
                 "artifacts",

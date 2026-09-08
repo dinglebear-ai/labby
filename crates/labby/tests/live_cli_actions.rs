@@ -957,7 +957,6 @@ async fn stateful_cli_workflows_observe_mutations_and_always_roll_them_back() {
         // can be contacted while durable configuration is exercised.
         let gateway_daemon = live_labby::LiveLabbyBuilder::new()
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
-            .env("LABBY_E2E_TEAM_ID", "bootstrap-initial-team")
             .start()
             .await
             .expect("stateful gateway daemon");

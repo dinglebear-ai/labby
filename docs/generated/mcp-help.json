@@ -943,8 +943,30 @@
         },
         {
           "name": "projects.archive",
-          "description": "Archive a Team-owned Project; there is no un-archive action yet",
-          "destructive": true,
+          "description": "Archive a Team-owned Project (reversible with projects.activate)",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": "Owning Team identifier"
+            },
+            {
+              "name": "project_id",
+              "ty": "string",
+              "required": true,
+              "description": "Project identifier"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "projects.activate",
+          "description": "Reactivate an archived Team-owned Project",
+          "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
           "params": [

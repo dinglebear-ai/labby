@@ -260,7 +260,39 @@ async fn assert_mcp_transition_readback(
     }
 }
 
+/// Team-scoped Gateway policy may reference only upstreams that carry an
+/// active Team credential binding, so a loadout or protected-route transition
+/// must bind the harness Team to its upstream first. The binding is
+/// host-custodied metadata; no secret travels through this call.
+async fn bind_harness_team_upstream(runner: &BuiltinMcpRunner, upstream: &str, intent_key: &str) {
+    let params = serde_json::json!({
+        "team_id": live_labby::LiveLabbyGuard::HARNESS_TEAM_ID,
+        "upstream_name": upstream,
+        "binding_id": format!("matrix-{upstream}-binding"),
+    });
+    let result = runner
+        .call(
+            "access",
+            "access.gateway_credential.bind",
+            params.as_object().cloned().expect("binding params"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{intent_key} credential binding wire failure: {error}"));
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{intent_key} credential binding failed: {}",
+        result_text(&result)
+    );
+}
+
 async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
+    if matches!(
+        intent.key().as_str(),
+        "gateway:gateway.loadout.update" | "gateway:gateway.protected_route.update"
+    ) {
+        bind_harness_team_upstream(runner, "matrix-owned", &intent.key()).await;
+    }
     let prerequisite = match intent.key().as_str() {
         "setup:draft.commit" => Some((
             "draft.set",

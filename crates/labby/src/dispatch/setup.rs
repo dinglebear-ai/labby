@@ -42,13 +42,29 @@ pub use types::{
 
 use labby_primitives::plugin::{Category, EnvVar, PluginMeta};
 
-const OPTIONAL_ENV: &[EnvVar] = &[EnvVar {
-    name: "LABBY_ACCESS_MIGRATION_EVIDENCE",
-    description: "Path to the source/checkpoint-bound approval evidence for an access-store schema migration",
-    example: "/run/labby/access-migration-v7.json",
-    secret: false,
-    ui: None,
-}];
+const OPTIONAL_ENV: &[EnvVar] = &[
+    EnvVar {
+        name: "LABBY_ACCESS_MIGRATION_EVIDENCE",
+        description: "Path to the source/checkpoint-bound approval evidence for an access-store schema migration",
+        example: "/run/labby/access-migration-v7.json",
+        secret: false,
+        ui: None,
+    },
+    EnvVar {
+        name: crate::config::depot::DEFAULT_AUTHORITY_BEARER_TOKEN_ENV,
+        description: "Bearer token presented to Depot's managed authority inbox (default variable for depot.authority_bearer_token_env)",
+        example: "<depot-authority-bearer>",
+        secret: true,
+        ui: None,
+    },
+    EnvVar {
+        name: crate::config::depot::DEFAULT_AUTHORITY_SIGNING_KEY_ENV,
+        description: "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes and delegated assertions (default variable for depot.authority_signing_key_env)",
+        example: "<base64url-ed25519-seed>",
+        secret: true,
+        ui: None,
+    },
+];
 
 /// Compile-time metadata for the setup Bootstrap service.
 pub const META: PluginMeta = PluginMeta {

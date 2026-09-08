@@ -359,7 +359,7 @@ async fn handle(
     crate::access::authorize_gateway_action(
         &state.access_runtime,
         identity,
-        &auth_context.0,
+        crate::access::AuthorityCeiling::from_auth_context(&auth_context.0),
         &installation_id,
         team_id,
         &req.action,

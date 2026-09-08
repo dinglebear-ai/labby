@@ -510,11 +510,56 @@ impl LiveLabbyGuard {
         &self.root
     }
 
+    /// Team context selected by every harness CLI invocation.
+    ///
+    /// The static-owner bootstrap (`LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1`) seeds
+    /// exactly this Team with the bootstrap owner as its owner, so Team-scoped
+    /// actions resolve real membership authority instead of a test-only hook.
+    pub(crate) const HARNESS_TEAM_ID: &'static str = "bootstrap-initial-team";
+
+    /// Authorize a CLI child against this daemon through product mechanisms
+    /// only: the daemon URL, the static bearer, and the global `--team-id`
+    /// flag (sent by the CLI as the `x-labby-team-id` header). Call this
+    /// before appending the subcommand arguments; `--team-id` is a clap global
+    /// argument, so it is accepted ahead of any subcommand.
+    /// Bind the harness Team to `upstream` so Team-scoped Gateway policy may
+    /// reference it. The binding is host-custodied metadata; the daemon stores
+    /// no secret for it, and the bearer stays inside this guard.
+    pub(crate) async fn bind_team_gateway_credential(&self, upstream: &str) -> Result<(), String> {
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|error| error.to_string())?
+            .post(format!("{}/v1/access/admin", self.descriptor.base_url))
+            .bearer_auth(&self.credential_canary)
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "action": "access.gateway_credential.bind",
+                "params": {
+                    "team_id": Self::HARNESS_TEAM_ID,
+                    "upstream_name": upstream,
+                    "binding_id": format!("{upstream}-binding"),
+                },
+            }))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "team credential binding for {upstream} failed: {}",
+                response.status()
+            ))
+        }
+    }
+
     pub(crate) fn authorize_cli(&self, command: &mut TokioCommand) {
         command
             .env("LABBY_SERVER_URL", &self.descriptor.base_url)
             .env("LABBY_MCP_HTTP_TOKEN", &self.credential_canary)
-            .env("LABBY_E2E_TEAM_ID", "bootstrap-initial-team");
+            .arg("--team-id")
+            .arg(Self::HARNESS_TEAM_ID);
     }
 
     pub(crate) async fn restart(&mut self) -> Result<(), String> {

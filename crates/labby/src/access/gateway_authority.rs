@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use labby_auth::{VerifiedIdentity, auth_context::AuthContext};
+use labby_auth::VerifiedIdentity;
 use labby_primitives::access::{
     ActionRef, Capability, InstallationId, OwnerScope, ResourceFamily, ResourceId, ResourceRef,
     TeamId,
@@ -159,7 +159,7 @@ fn filter_projection(value: &mut Value, prefix: &str) -> bool {
 pub(crate) async fn authorize_gateway_action(
     runtime: &AccessRuntime,
     identity: VerifiedIdentity,
-    auth: &AuthContext,
+    ceiling: AuthorityCeiling,
     installation_id: &str,
     team_id: Option<&str>,
     action: &str,
@@ -216,7 +216,7 @@ pub(crate) async fn authorize_gateway_action(
             ActionAuthoritySpec::SCHEMA_VERSION,
             action_ref.clone(),
             resource,
-            AuthorityCeiling::from_auth_context(auth),
+            ceiling,
             None,
             now,
             vec![AuthoritySafeBoundary::BeforeDispatch],

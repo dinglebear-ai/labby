@@ -512,7 +512,19 @@ mod tests {
             projects.required_capability.as_deref(),
             Some("scope.manage")
         );
-        assert!(projects.destructive);
+        assert!(
+            !projects.destructive,
+            "archive is reversible through projects.activate"
+        );
+        let activate = actions
+            .iter()
+            .find(|item| item.service == "projects" && item.action == "projects.activate")
+            .expect("projects.activate");
+        assert_eq!(
+            activate.required_capability.as_deref(),
+            Some("scope.manage")
+        );
+        assert!(!activate.destructive);
     }
 }
 

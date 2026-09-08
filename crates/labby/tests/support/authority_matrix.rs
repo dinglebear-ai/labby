@@ -48,13 +48,75 @@ const GATEWAY_OWNED: &[OwnerKind] = &[
     OwnerKind::Project,
     OwnerKind::Personal,
 ];
+/// Installation-scoped gateway administration (`platform.manage`) is owned by
+/// the installation alone even though the gateway family also has user-owned
+/// Loadout/protected-route resources.
+const INSTALLATION_GATEWAY: &[OwnerKind] = &[OwnerKind::Installation];
+/// Managed Projects are Team-owned in the v1 matrix (`resourceFamilies.project`).
+const TEAM_OWNED: &[OwnerKind] = &[OwnerKind::Team];
 
-/// Classifies the currently registered Labby services by the authority they must
-/// eventually enforce. The action intent fixture is an exact inventory of action
-/// names, so this service-level policy cannot hide an unregistered action.
+/// Identity of one registered action: the `service:action` pair that the
+/// generated catalog, the intent fixtures, and the authority expectations
+/// fixture all key on.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ActionRef {
+    pub(crate) service: String,
+    pub(crate) action: String,
+}
+
+impl ActionRef {
+    pub(crate) fn new(service: &str, action: &str) -> Self {
+        Self {
+            service: service.to_owned(),
+            action: action.to_owned(),
+        }
+    }
+
+    pub(crate) fn key(&self) -> String {
+        format!("{}:{}", self.service, self.action)
+    }
+}
+
+impl From<&CatalogAction> for ActionRef {
+    fn from(action: &CatalogAction) -> Self {
+        Self::new(&action.service, &action.action)
+    }
+}
+
+/// Operation class implied by the exact capability the shared evaluator
+/// demands. `None` means the action has no capability-gated evaluator step
+/// (builtin probes and caller-membership projections).
+pub(crate) fn operation_for_capability(capability: Option<&str>) -> Option<OperationClass> {
+    Some(match capability? {
+        "platform.read" | "scope.read" => OperationClass::Read,
+        "scope.use" | "scope.operate" | "scope.create" => OperationClass::Operate,
+        "platform.manage" | "scope.manage" | "membership.manage" | "ownership.transfer"
+        | "policy.explain" | "audit.read" => OperationClass::Administer,
+        "scope.delete" => OperationClass::Delete,
+        _ => return None,
+    })
+}
+
+/// Classifies one registered action by the authority it must enforce.
+///
+/// The resource family and owner kinds are a per-`ActionRef` policy. The
+/// operation class is derived from the catalog's `required_capability`
+/// column (the evaluator vocabulary), never from `requires_admin` or
+/// `destructive`: those are separate surface-policy axes and are compared
+/// against the derived class by the completeness tests instead of feeding it.
+///
+/// Services that have not yet moved onto the capability evaluator
+/// (`authorization_boundary` of `transport`/`transport_admin`) have no
+/// capability; their class falls back to the transport ceiling
+/// (`Administer` for `transport_admin`, `Read` otherwise) and is labelled as
+/// such through `delegated`/`resource` rather than pretending to be exact.
 pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassification> {
-    let (resource, owners, delegated) = match action.service.as_str() {
-        "access" if action.action.starts_with("access.platform_admin.") => {
+    let action_ref = ActionRef::from(action);
+    let (resource, owners, delegated) = match action_ref.service.as_str() {
+        "access" if action_ref.action.starts_with("access.platform_admin.") => {
+            (ResourceFamily::Platform, INSTALLATION, false)
+        }
+        "access" if action_ref.action == "access.team.create" => {
             (ResourceFamily::Platform, INSTALLATION, false)
         }
         "access" => (ResourceFamily::Project, USER_OWNED, false),
@@ -62,10 +124,14 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
         "artifacts" | "bundles" | "sources" | "uploads" => {
             (ResourceFamily::Library, USER_OWNED, true)
         }
+        "gateway" if action.required_capability.as_deref() == Some("platform.manage") => {
+            (ResourceFamily::Gateway, INSTALLATION_GATEWAY, false)
+        }
         "gateway" => (ResourceFamily::Gateway, GATEWAY_OWNED, true),
         "browser" | "snippets" => (ResourceFamily::Gateway, USER_OWNED, true),
         "dev_containers" => (ResourceFamily::DevContainer, USER_OWNED, false),
         "jobs" => (ResourceFamily::Task, USER_OWNED, true),
+        "projects" => (ResourceFamily::Project, TEAM_OWNED, false),
         "stash" => (ResourceFamily::Stash, USER_OWNED, false),
         "tasks" => (ResourceFamily::Task, USER_OWNED, false),
         "doctor" | "fs" | "lab_admin" | "server_logs" | "setup" => {
@@ -75,20 +141,59 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
     };
     let operation = if action.builtin {
         OperationClass::Discover
-    } else if action.destructive {
-        OperationClass::Delete
-    } else if action.requires_admin {
-        OperationClass::Administer
+    } else if let Some(operation) = operation_for_capability(action.required_capability.as_deref())
+    {
+        operation
     } else {
-        OperationClass::Read
+        match action.authorization_boundary.as_str() {
+            // Caller-membership projections: visibility is filtered inside
+            // the store, so the evaluator gate is a read.
+            "caller_membership_projection" | "team_project_membership" => OperationClass::Read,
+            // Transport-ceiling services (not yet on the capability evaluator).
+            "transport_admin" => OperationClass::Administer,
+            "transport" => OperationClass::Read,
+            _ => return None,
+        }
     };
     Some(AuthorityClassification {
         resource,
         operation,
         owners,
         delegated,
+        // Only builtin probes carry no reauthorization at the final boundary;
+        // every other action reaches the evaluator (capability) or the
+        // transport ceiling again inside dispatch.
         final_boundary_reauthorization: !action.builtin,
     })
+}
+
+/// Golden Depot control-plane operation registry. `DEPOT_OPERATIONS` is a
+/// reviewed authority snapshot of the same operation set; the completeness
+/// tests assert the two name sets are identical so the hand list cannot drift.
+pub(crate) const DEPOT_OPERATIONS_FIXTURE: &str =
+    include_str!("../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json");
+
+pub(crate) fn depot_fixture_operation_names() -> BTreeSet<String> {
+    let fixture: serde_json::Value =
+        serde_json::from_str(DEPOT_OPERATIONS_FIXTURE).expect("depot operations fixture parses");
+    fixture["operations"]
+        .as_array()
+        .expect("depot fixture has an operations array")
+        .iter()
+        .map(|operation| {
+            operation["name"]
+                .as_str()
+                .expect("depot operation has a name")
+                .to_owned()
+        })
+        .collect()
+}
+
+pub(crate) fn depot_snapshot_operation_names() -> BTreeSet<String> {
+    DEPOT_OPERATIONS
+        .iter()
+        .map(|operation| operation.name.to_owned())
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug)]

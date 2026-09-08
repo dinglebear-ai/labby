@@ -8421,11 +8421,27 @@
               "projects.create",
               "projects.get",
               "projects.update",
-              "projects.archive"
+              "projects.archive",
+              "projects.activate"
             ]
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "ProjectsProjectsActivateParams": {
+        "type": "object",
+        "required": [
+          "team_id",
+          "project_id"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
           }
         }
       },

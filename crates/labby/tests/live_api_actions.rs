@@ -21,15 +21,41 @@ async fn post_action(
     params: serde_json::Value,
     authorized: bool,
 ) -> (reqwest::StatusCode, bytes::Bytes) {
+    post_action_as(
+        client,
+        base,
+        path,
+        action,
+        params,
+        authorized.then_some(SECRET_CANARY),
+    )
+    .await
+}
+
+/// Dispatch one action as the given bearer (or anonymously). Every response
+/// body is bound and canary-scanned before the caller sees it.
+async fn post_action_as(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    action: &str,
+    params: serde_json::Value,
+    bearer: Option<&str>,
+) -> (reqwest::StatusCode, bytes::Bytes) {
     let mut request = client
         .post(format!("{base}{path}"))
         .header("content-type", "application/json")
         .json(&serde_json::json!({"action": action, "params": params}));
     if action.starts_with("gateway.loadout.") || action.starts_with("gateway.protected_route.") {
-        request = request.header("x-labby-team-id", "bootstrap-initial-team");
+        // Team context is the product `x-labby-team-id` header (the CLI's
+        // global `--team-id` flag sends the same header); no daemon test hook.
+        request = request.header(
+            "x-labby-team-id",
+            live_labby::LiveLabbyGuard::HARNESS_TEAM_ID,
+        );
     }
-    if authorized {
-        request = request.bearer_auth(SECRET_CANARY);
+    if let Some(bearer) = bearer {
+        request = request.bearer_auth(bearer);
     }
     let (status, bytes) = tokio::time::timeout(action_scenarios::CHILD_DEADLINE, async {
         let response = request.send().await?;
@@ -111,9 +137,130 @@ async fn ensure_action_fixture(
     } else {
         None
     };
+    // Team-scoped Gateway policy may reference only upstreams carrying an
+    // active Team credential binding, so bind the harness Team to the shared
+    // matrix upstream before any loadout or protected-route call. The binding
+    // is host-custodied metadata; no secret travels through this call.
+    if intent.action.starts_with("gateway.loadout.")
+        || intent.action.starts_with("gateway.protected_route.")
+    {
+        drop(
+            post_action(
+                client,
+                base,
+                "/v1/access/admin",
+                "access.gateway_credential.bind",
+                serde_json::json!({
+                    "team_id": live_labby::LiveLabbyGuard::HARNESS_TEAM_ID,
+                    "upstream_name": "matrix-owned",
+                    "binding_id": "matrix-owned-binding",
+                }),
+                true,
+            )
+            .await,
+        );
+    }
     if let Some((path, action, params)) = prerequisite {
         drop(post_action(client, base, path, action, params, true).await);
     }
+}
+
+const DEV_CONTAINERS_PATH: &str = "/v1/dev-containers";
+
+/// Recovery action the deterministic runtime reports for each lifecycle
+/// request. Its engine always inspects as `Running`, so a `running` intent
+/// needs no engine effect, a `stopped` intent issues `stop`, and a `deleted`
+/// intent issues `destroy` (`labby_runtime::dev_container_runtime::recovery_action`).
+fn dev_container_expected_recovery(action: &str) -> &'static str {
+    match action {
+        "dev_containers.start" | "dev_containers.reconcile" => "none",
+        "dev_containers.stop" => "stop",
+        "dev_containers.destroy" => "destroy",
+        other => panic!("no deterministic recovery expectation for {other}"),
+    }
+}
+
+/// Drive one Dev Container lifecycle action through the product API as the
+/// static owner and return the reported `recovery_action`.
+async fn dev_container_action(
+    client: &reqwest::Client,
+    base: &str,
+    action: &str,
+    instance_id: &str,
+) -> String {
+    dev_container_action_as(client, base, action, instance_id, SECRET_CANARY).await
+}
+
+async fn dev_container_action_as(
+    client: &reqwest::Client,
+    base: &str,
+    action: &str,
+    instance_id: &str,
+    bearer: &str,
+) -> String {
+    let (status, body) = post_action_as(
+        client,
+        base,
+        DEV_CONTAINERS_PATH,
+        action,
+        serde_json::json!({"instance_id": instance_id}),
+        Some(bearer),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "{action} for {instance_id} failed: {status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["instance_id"], instance_id);
+    value["recovery_action"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{action} lost recovery_action: {value}"))
+        .to_owned()
+}
+
+/// Read one instance's durable desired state back through `dev_containers.list`.
+async fn dev_container_desired_state(
+    client: &reqwest::Client,
+    base: &str,
+    instance_id: &str,
+) -> String {
+    dev_container_record_as(client, base, instance_id, SECRET_CANARY)
+        .await
+        .unwrap_or_else(|| panic!("{instance_id} missing from authorized inventory"))["desired_state"]
+        .as_str()
+        .expect("desired_state")
+        .to_owned()
+}
+
+async fn dev_container_record_as(
+    client: &reqwest::Client,
+    base: &str,
+    instance_id: &str,
+    bearer: &str,
+) -> Option<serde_json::Value> {
+    let (status, body) = post_action_as(
+        client,
+        base,
+        DEV_CONTAINERS_PATH,
+        "dev_containers.list",
+        serde_json::json!({"limit": "100"}),
+        Some(bearer),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "dev_containers.list failed: {status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    value["instances"]
+        .as_array()
+        .expect("instances")
+        .iter()
+        .find(|record| record["instance_id"] == instance_id)
+        .cloned()
 }
 
 fn seed_authority_fixtures(root: &std::path::Path) {
@@ -156,7 +303,6 @@ fn seed_authority_fixtures(root: &std::path::Path) {
 async fn prepare_authority_action(
     client: &reqwest::Client,
     base: &str,
-    root: &std::path::Path,
     intent: &action_matrix::CaseIntent,
     mut params: serde_json::Value,
 ) -> serde_json::Value {
@@ -264,17 +410,29 @@ async fn prepare_authority_action(
                 String::from_utf8_lossy(&body)
             );
         }
-        if matches!(
-            intent.action.as_str(),
-            "dev_containers.start" | "dev_containers.stop"
-        ) {
-            let state = if intent.action == "dev_containers.start" {
-                "stopped"
-            } else {
-                "running"
-            };
-            let connection = rusqlite::Connection::open(root.join("labby-home/access.db")).unwrap();
-            connection.execute("UPDATE dev_container_instances SET desired_state=?1,observed_state=?1 WHERE instance_id=?2", rusqlite::params![state, params["instance_id"].as_str().unwrap()]).unwrap();
+        // Drive the durable lifecycle through the product API against the
+        // deterministic runtime instead of forging ledger rows: a matrix
+        // `start` follows a real product `stop`, and a matrix `stop` follows
+        // a real product `start`, so each action is a genuine transition.
+        let prior = match intent.action.as_str() {
+            "dev_containers.start" => Some(("dev_containers.stop", "stopped")),
+            "dev_containers.stop" => Some(("dev_containers.start", "running")),
+            _ => None,
+        };
+        if let Some((prior_action, expected_desired)) = prior {
+            let recovery = dev_container_action(client, base, prior_action, &instance_id).await;
+            assert_eq!(
+                recovery,
+                dev_container_expected_recovery(prior_action),
+                "{} lifecycle prerequisite {prior_action} did not reconcile through the deterministic runtime",
+                intent.key()
+            );
+            assert_eq!(
+                dev_container_desired_state(client, base, &instance_id).await,
+                expected_desired,
+                "{} lifecycle prerequisite {prior_action} did not persist durable intent",
+                intent.key()
+            );
         }
     } else if intent.service == "tasks" {
         let task_id = format!("matrix-{action_id}");
@@ -351,7 +509,6 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let guard = live_labby::LiveLabbyBuilder::new()
             .env("LABBY_MCP_HTTP_TOKEN", SECRET_CANARY)
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
-            .env("LABBY_E2E_TEAM_ID", "bootstrap-initial-team")
             .env("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")
             .existing_root(owned_root.path())
             .config(format!("[workspace]\nroot = {:?}\n", workspace))
@@ -370,6 +527,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             ("access", "/v1/access/admin", "access.team.list"),
             ("agents", "/v1/agents", "agents.list"),
             ("tasks", "/v1/tasks", "tasks.list"),
+            ("dev_containers", DEV_CONTAINERS_PATH, "dev_containers.list"),
+            ("projects", "/v1/projects", "projects.list"),
         ] {
             let (status, body) = post_action(
                 &client,
@@ -419,7 +578,6 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                 let params = prepare_authority_action(
                     &client,
                     &guard.connection().base_url,
-                    guard.root(),
                     intent,
                     action_scenarios::fixture_params(intent),
                 )

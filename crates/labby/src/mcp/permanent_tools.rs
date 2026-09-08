@@ -704,7 +704,7 @@ mod tests {
         ("agents", false, false, false, false),
         ("tasks", false, false, false, false),
         ("dev_containers", false, true, false, false),
-        ("projects", false, true, false, false),
+        ("projects", false, false, false, false),
         ("doctor", false, false, true, true),
         ("artifacts", false, true, false, true),
         ("browser", false, false, false, true),
@@ -989,6 +989,10 @@ mod tests {
             "jobs",
             "lab_admin",
             "mcp_app",
+            // Projects is caller-bound with no destructive or platform-admin
+            // action, so a non-execute caller may reach it and the durable
+            // Team role decides, exactly as for `access` and `tasks`.
+            "projects",
             "sources",
             "tasks",
             "uploads",

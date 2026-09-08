@@ -62,30 +62,6 @@ impl AccessStore {
         .await
     }
 
-    /// Confirm the Agent and Task ledgers exist. They are installed by the
-    /// versioned schema migration, never created here; a missing table is an
-    /// integrity violation of the opened store, not something to repair.
-    pub(crate) async fn ensure_agent_task_schemas(&self) -> AccessStoreResult<()> {
-        self.with_connection(|connection| {
-            let present: i64 = connection
-                .query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN
-                     ('agent_definitions','agent_definition_audit','agent_sessions',
-                      'agent_tasks','agent_task_audit')",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(map_sqlite_error)?;
-            if present == 5 {
-                Ok(())
-            } else {
-                Err(AccessStoreError::IntegrityViolation {
-                    check: "schema_manifest",
-                })
-            }
-        })
-        .await
-    }
     pub(crate) async fn authorize_action_batch(
         &self,
         requests: Vec<super::AuthorityRequest>,
@@ -943,6 +919,13 @@ impl AccessStore {
         archive: bool,
     ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
         self.with_connection(move |c| super::team::update_managed_project(c, &input, archive))
+            .await
+    }
+    pub(crate) async fn activate_managed_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+    ) -> AccessStoreResult<super::ManagedProjectSnapshot> {
+        self.with_connection(move |c| super::team::activate_managed_project(c, &input))
             .await
     }
 

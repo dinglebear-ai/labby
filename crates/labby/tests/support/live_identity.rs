@@ -13,6 +13,11 @@ pub(crate) const LOADOUT_ID: &str = "production";
 pub(crate) const ROUTE_ID: &str = "operator";
 pub(crate) const RESOURCE: &str = "https://mcp.example.test/operator";
 pub(crate) const PUBLIC_HOST: &str = "lab.example.test";
+/// Every canonical inbound scope, so the bootstrap owner's transport ceiling
+/// admits platform capabilities in the two-principal authority harness.
+pub(crate) const AUTHORITY_SCOPES: &[&str] = &["lab:read", "lab", "lab:admin"];
+/// Credential identifier the auth layer assigns to the configured static bearer.
+const STATIC_BEARER_CREDENTIAL_ID: &str = "static-bearer:primary";
 
 pub(crate) fn policy(scopes: &[&str]) -> String {
     policy_for_loadout(scopes, LOADOUT_ID)
@@ -139,6 +144,29 @@ impl LiveIdentity {
         .await
     }
 
+    /// Bootstrap a two-principal authority harness.
+    ///
+    /// The product credential minted by the bootstrap proof is the
+    /// installation owner (`bootstrap-owner`: platform administrator and owner
+    /// of `bootstrap-initial-team`), issued with the full canonical scope set so
+    /// its transport ceiling admits every capability. The daemon also serves a
+    /// static bearer that maps to no principal until
+    /// [`Self::provision_stranger_behind_static_bearer`] binds it to a distinct
+    /// non-admin principal. Deterministic executors are enabled so Agent, Task,
+    /// and Dev Container lifecycles run without a real backend.
+    pub(crate) async fn bootstrap_authority_harness(subject: &str) -> Result<Self, String> {
+        Self::bootstrap_with_policy_issuer_and_loadout_and_env(
+            subject,
+            300,
+            &policy(AUTHORITY_SCOPES),
+            PUBLIC_HOST,
+            LOADOUT_ID,
+            AUTHORITY_SCOPES,
+            &[("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")],
+        )
+        .await
+    }
+
     async fn bootstrap_with_policy_issuer_and_loadout(
         subject: &str,
         ttl: u64,
@@ -146,6 +174,27 @@ impl LiveIdentity {
         issuer_host: &str,
         loadout_id: &str,
         prepare_scopes: &[&str],
+    ) -> Result<Self, String> {
+        Self::bootstrap_with_policy_issuer_and_loadout_and_env(
+            subject,
+            ttl,
+            policy_text,
+            issuer_host,
+            loadout_id,
+            prepare_scopes,
+            &[],
+        )
+        .await
+    }
+
+    async fn bootstrap_with_policy_issuer_and_loadout_and_env(
+        subject: &str,
+        ttl: u64,
+        policy_text: &str,
+        issuer_host: &str,
+        loadout_id: &str,
+        prepare_scopes: &[&str],
+        daemon_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         let parent = std::env::temp_dir().join("labby-live-e2e");
         std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
@@ -167,15 +216,17 @@ impl LiveIdentity {
             std::fs::read_to_string(root.join("credential.txt")).map_err(|e| e.to_string())?;
         let static_token = format!("identity-static-{}", ulid::Ulid::new());
         let seeded_canary = format!("identity-canary-{}", ulid::Ulid::new());
-        let mut guard = LiveLabbyBuilder::new()
+        let mut builder = LiveLabbyBuilder::new()
             .existing_root(&root)
             .config(policy_text)
             .env("LABBY_MCP_HTTP_TOKEN", &static_token)
             .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
             .env("LABBY_PUBLIC_URL", format!("https://{issuer_host}"))
-            .env("LABBY_IDENTITY_CANARY", &seeded_canary)
-            .start()
-            .await?;
+            .env("LABBY_IDENTITY_CANARY", &seeded_canary);
+        for (key, value) in daemon_env {
+            builder = builder.env(*key, *value);
+        }
+        let mut guard = builder.start().await?;
         let retained_evidence = std::env::temp_dir()
             .join("labby-live-e2e-evidence")
             .join(format!("{}.json", guard.identity().run_id));
@@ -271,9 +322,26 @@ impl LiveIdentity {
             self.identity.credential_id.clone(),
             principal_id.to_owned(),
             display_name.to_owned(),
-            "static-bearer:primary".to_owned(),
+            STATIC_BEARER_CREDENTIAL_ID.to_owned(),
         )
         .await
+    }
+
+    /// Bind this daemon's static bearer to a distinct principal that holds no
+    /// platform administration, Team membership, or Project membership.
+    ///
+    /// The binding goes through the production-owned `labby::testkit` seam
+    /// (the same `AccessStore` authority and schema validation the product
+    /// uses); the test never writes access-store rows itself. Afterwards
+    /// [`Self::static_token_for_request`] is a bearer for that non-admin
+    /// principal while [`Self::credential_for_request`] remains the owner.
+    pub(crate) async fn provision_stranger_behind_static_bearer(
+        &self,
+        principal_id: &str,
+        display_name: &str,
+    ) -> Result<(), String> {
+        self.provision_stash_recipient(principal_id, display_name)
+            .await
     }
     pub(crate) fn base(&self) -> &str {
         &self

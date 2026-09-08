@@ -587,7 +587,7 @@ pub(super) fn logical_fingerprint(connection: &Connection) -> AccessStoreResult<
 }
 
 /// Streamed SHA-256 of a file; the checkpoint is never read into memory whole.
-fn sha256_file(path: &Path) -> AccessStoreResult<String> {
+pub(super) fn sha256_file(path: &Path) -> AccessStoreResult<String> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)
         .map_err(|error| invalid_evidence(format!("cannot read checkpoint: {error}")))?;

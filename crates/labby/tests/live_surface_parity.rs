@@ -55,6 +55,7 @@ fn every_current_multi_surface_service_has_a_parity_partition() {
                 "fs",
                 "gateway",
                 "jobs",
+                "projects",
                 "server_logs",
                 "setup",
                 "snippets",

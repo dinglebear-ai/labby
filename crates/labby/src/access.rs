@@ -28,6 +28,42 @@ pub(crate) mod migration_fixture {
     pub(crate) const V1_METADATA_SCHEMA: &str = super::migrations::V1_METADATA_SCHEMA;
     pub(crate) const V1_SCHEMA_FINGERPRINT: &str = super::migrations::V1_SCHEMA_FINGERPRINT;
     pub(crate) const V1_SCHEMA_VERSION: i64 = super::migrations::V1_SCHEMA_VERSION;
+
+    /// Model the operator flow that follows a same-major backup restore: the
+    /// restored legacy store is checkpointed and the resulting artifact is
+    /// approved for activation. Returns the evidence source the next open must
+    /// present, so a restore never migrates a legacy store implicitly.
+    pub(crate) fn approve_restored_store(
+        database: &std::path::Path,
+        checkpoint: &std::path::Path,
+        evidence: &std::path::Path,
+    ) -> super::migrations::MigrationEvidenceSource {
+        let source = rusqlite::Connection::open(database).expect("open restored access store");
+        let found: i64 = source
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("restored schema version");
+        source
+            .execute("VACUUM INTO ?1", [checkpoint.to_string_lossy().as_ref()])
+            .expect("checkpoint the restored store");
+        drop(source);
+        let digest = super::migrations::sha256_file(checkpoint).expect("checkpoint digest");
+        std::fs::write(
+            evidence,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": "labby.access-migration-approval/v1",
+                "operation_id": format!("restore-{found}-to-{}", super::migrations::SCHEMA_VERSION),
+                "source_version": found,
+                "target_version": super::migrations::SCHEMA_VERSION,
+                "target_fingerprint": super::migrations::SCHEMA_FINGERPRINT,
+                "checkpoint_path": checkpoint,
+                "checkpoint_sha256": digest,
+                "activate": true
+            }))
+            .expect("serialize approval"),
+        )
+        .expect("write approval");
+        super::migrations::MigrationEvidenceSource::Path(evidence.to_path_buf())
+    }
 }
 mod read;
 mod resolver;

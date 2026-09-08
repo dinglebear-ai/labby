@@ -658,22 +658,21 @@ fn map(error: AccessStoreError) -> ToolError {
 ///
 /// - the store reports a reused `idempotency_key` with different intent
 ///   content as a `task_idempotency` integrity violation;
-/// - a lost race on the `task_id` primary key surfaces as the SQLite
-///   uniqueness constraint, which the store currently only wraps as an
-///   `Unavailable` cause.
-//
-// AREA-A-PENDING: AccessStoreError typed variant for a `task_id` primary-key
-// collision (e.g. `IntegrityViolation { check: "task_id" }`) from
-// `access/store.rs::map_sqlite_error` / `access/task.rs::create_in_transaction`.
-// Until it lands, the constraint text is matched here so the race cannot
-// become an enumerable outage.
+/// - a lost race on the `task_id` primary key is reported by the store as the
+///   typed `task_id` integrity violation (`access::task::map_task_insert_error`).
+/// A taken Task identifier must be indistinguishable from a denial, so an
+/// existing row never becomes an existence oracle for a caller who cannot see
+/// it. The store reports a raced insert either as a typed integrity violation
+/// or, when the collision surfaces from SQLite before the typed mapping, as an
+/// `Unavailable` carrying the constraint text; both collapse to one denial.
 fn map_create(error: AccessStoreError) -> ToolError {
     match error {
         AccessStoreError::IntegrityViolation {
-            check: "task_idempotency",
+            check: "task_idempotency" | "task_id",
         } => denied(),
-        AccessStoreError::Unavailable(cause)
-            if cause.contains("UNIQUE constraint failed: agent_tasks.task_id") =>
+        AccessStoreError::Unavailable(ref reason)
+            if reason.contains("agent_tasks.task_id")
+                || reason.contains("agent_tasks.idempotency_key") =>
         {
             denied()
         }

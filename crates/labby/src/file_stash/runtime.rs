@@ -712,10 +712,10 @@ mod tests {
         ));
         // The production resolution never waits: while recovery is in
         // progress every caller is refused with Unavailable.
-        assert_eq!(
-            restarted.store_without_waiting().await.unwrap_err(),
-            FileStashBlockedReason::Unavailable
-        );
+        assert!(matches!(
+            restarted.store_without_waiting().await,
+            Err(FileStashBlockedReason::Unavailable)
+        ));
 
         super::super::blob::TEST_RECOVERY_RESUME.notify_one();
         assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);
@@ -741,9 +741,14 @@ mod tests {
         )
         .await;
 
+        // Readiness is published by the recovery pass itself. Exhaustive
+        // hygiene runs behind it, so the transition must not wait for a
+        // janitor tick. Timing the transition proves that without racing the
+        // scrub, which may legitimately finish before the next statement.
+        let ready_at = std::time::Instant::now();
         assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);
         assert!(
-            first_orphan.exists(),
+            ready_at.elapsed() < std::time::Duration::from_millis(500),
             "exhaustive orphan hygiene must not delay the Ready transition"
         );
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -754,12 +759,16 @@ mod tests {
         .await
         .expect("bounded janitor cadence did not remove orphan");
 
+        // `shutdown` cancels the token and joins the janitor before it
+        // returns, so an orphan created afterwards can only survive if no
+        // further hygiene pass runs.
+        restarted.shutdown().await;
+        assert_eq!(restarted.status().await, FileStashStatus::Shutdown);
         let cancelled_orphan = root.join("blobs/01J00000000000000000000001");
         std::fs::write(&cancelled_orphan, b"keep after shutdown").unwrap();
         std::fs::set_permissions(&cancelled_orphan, std::fs::Permissions::from_mode(0o600))
             .unwrap();
-        restarted.shutdown().await;
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
         assert!(
             cancelled_orphan.exists(),
             "shutdown must cancel later hygiene passes"

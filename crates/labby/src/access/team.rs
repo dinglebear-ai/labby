@@ -1040,6 +1040,45 @@ pub(super) fn update_managed_project(
     Ok(snapshot)
 }
 
+/// Reverse `update_managed_project(.., archive = true)`: flip a `disabled`
+/// Project back to `active` in one immediate transaction. Requires the same
+/// Team manager authority as archiving and writes an `access.project.activate`
+/// audit row so the projection outbox observes the change.
+pub(super) fn activate_managed_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+) -> AccessStoreResult<ManagedProjectSnapshot> {
+    let tx = immediate(connection)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    let assigned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM team_project_assignments WHERE organization_id=?1 AND team_id=?2 AND project_id=?3 AND status='active')",params![actor.organization_id,input.team_id,input.project_id],|r|r.get(0)).map_err(map_sqlite_error)?;
+    if !assigned {
+        return Err(AccessStoreError::TeamUnavailable);
+    }
+    let now = unix_now()?;
+    let changed = tx.execute("UPDATE projects SET status='active',project_policy_epoch=project_policy_epoch+1,updated_at=?1 WHERE organization_id=?2 AND project_id=?3 AND status='disabled'",params![now,actor.organization_id,input.project_id]).map_err(map_sqlite_error)?;
+    if changed != 1 {
+        // Not archived (or absent): indistinguishable from "not yours".
+        return Err(AccessStoreError::TeamUnavailable);
+    }
+    let snapshot=tx.query_row("SELECT p.name,p.status,a.role,p.project_policy_epoch FROM projects p JOIN team_project_assignments a ON a.organization_id=p.organization_id AND a.project_id=p.project_id WHERE p.organization_id=?1 AND p.project_id=?2 AND a.team_id=?3",params![actor.organization_id,input.project_id,input.team_id],|r|Ok(ManagedProjectSnapshot{project_id:input.project_id.clone(),team_id:input.team_id.clone(),name:r.get(0)?,status:r.get(1)?,role:r.get(2)?,policy_epoch:u64::try_from(r.get::<_,i64>(3)?).map_err(|_|rusqlite::Error::InvalidQuery)?,can_manage:true})).map_err(map_sqlite_error)?;
+    let revision = advance_global_revision(&tx, now)?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        "access.project.activate",
+        "project",
+        &input.project_id,
+        snapshot.policy_epoch,
+        "team_manage",
+    )?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
 pub(super) fn list_effective_projects(
     connection: &mut Connection,
     identity: &VerifiedIdentity,

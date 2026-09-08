@@ -3,10 +3,10 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-pub(crate) const EXPECTED_ACTIONS: usize = 269;
+pub(crate) const EXPECTED_ACTIONS: usize = 277;
 pub(crate) const EXPECTED_CLI_ACTIONS: usize = 76;
-pub(crate) const EXPECTED_MCP_ACTIONS: usize = 268;
-pub(crate) const EXPECTED_API_ACTIONS: usize = 266;
+pub(crate) const EXPECTED_MCP_ACTIONS: usize = 276;
+pub(crate) const EXPECTED_API_ACTIONS: usize = 274;
 pub(crate) const EXPECTED_WEB_ACTIONS: usize = 122;
 pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 76;
 
@@ -107,6 +107,14 @@ pub(crate) struct CatalogAction {
     pub(crate) destructive: bool,
     pub(crate) requires_admin: bool,
     pub(crate) required_scopes: Vec<String>,
+    /// Exact capability the shared authority evaluator demands, or `None` for
+    /// builtin help/schema probes and caller-membership projections.
+    #[serde(default)]
+    pub(crate) required_capability: Option<String>,
+    /// Which boundary authorizes the action (`resource_capability`,
+    /// `transport`, `transport_admin`, `caller_membership_projection`, ...).
+    #[serde(default)]
+    pub(crate) authorization_boundary: String,
     pub(crate) surface_availability: SurfaceAvailability,
     pub(crate) requires_http_subject: bool,
     pub(crate) auth_posture: String,
@@ -412,6 +420,7 @@ fn approved_fixture(name: &str) -> bool {
             | "gateway"
             | "jobs"
             | "lab_admin"
+            | "projects"
             | "server_logs"
             | "setup"
             | "skills"

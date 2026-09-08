@@ -201,7 +201,8 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `lab_admin` | `onboarding.audit` | false | false | false |  | `transport` | `-` | `-` | `services*: string[]` | `AuditReport` | mcp |
 | `lab_admin` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp |
 | `projects` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
-| `projects` | `projects.archive` | false | true | false |  | `resource_capability` | `scope.manage` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
+| `projects` | `projects.activate` | false | false | false |  | `resource_capability` | `scope.manage` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
+| `projects` | `projects.archive` | false | false | false |  | `resource_capability` | `scope.manage` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
 | `projects` | `projects.create` | false | false | false |  | `resource_capability` | `scope.create` | `project` | `team_id*: string`<br>`project_id*: string`<br>`name*: string` | `object` | mcp, api |
 | `projects` | `projects.get` | false | false | false |  | `resource_capability` | `scope.read` | `project` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
 | `projects` | `projects.list` | false | false | false |  | `team_project_membership` | `-` | `-` |  | `object` | mcp, api |

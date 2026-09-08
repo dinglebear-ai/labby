@@ -7079,9 +7079,45 @@
   },
   {
     "service": "projects",
+    "action": "projects.activate",
+    "description": "Reactivate an archived Team-owned Project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
     "action": "projects.archive",
-    "description": "Archive a Team-owned Project; there is no un-archive action yet",
-    "destructive": true,
+    "description": "Archive a Team-owned Project (reversible with projects.activate)",
+    "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
     "authorization_boundary": "resource_capability",

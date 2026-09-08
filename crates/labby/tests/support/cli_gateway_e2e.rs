@@ -13,7 +13,6 @@ const ROUTE: &str = "matrix-owned-route";
 pub(crate) async fn run() {
     let guard = crate::live_labby::LiveLabbyBuilder::new()
         .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
-        .env("LABBY_E2E_TEAM_ID", "bootstrap-initial-team")
         .start()
         .await
         .expect("authoritative gateway CLI daemon");
@@ -265,6 +264,14 @@ pub(crate) async fn run() {
         EvidenceLevel::LiveStateTransition,
         "owned_runtime_reconciled",
     );
+
+    // Every harness CLI call carries `--team-id`, and Team-scoped Gateway
+    // policy may reference only upstreams that carry an active Team credential
+    // binding, so bind the Team to this upstream before the policy workflow.
+    guard
+        .bind_team_gateway_credential(UPSTREAM)
+        .await
+        .expect("harness team credential binding");
 
     let loadout_add = success(
         &guard,

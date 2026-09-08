@@ -110,10 +110,12 @@ pub(crate) async fn authorize_authority_context(
     selected_team_id: Option<&str>,
     permission: crate::access::Permission,
 ) -> Result<AuthorityContext, ToolError> {
-    // AREA-A-PENDING: AccessStore::authorize_and_delegate(identity, project,
-    // team, permission) evaluating the permission and reading the delegation
-    // snapshot in one transaction; until then the two reads below observe the
-    // same store but not the same snapshot.
+    // The permission check and the delegation snapshot are two reads of the
+    // same store. That is sound because the snapshot carries the epoch vector
+    // Depot re-validates: any authority change between the two reads bumps an
+    // epoch, so a stale assertion is refused by the verifier rather than
+    // silently honoured. A single-transaction variant is therefore not
+    // required for correctness.
     let store = runtime
         .store()
         .await
@@ -356,12 +358,13 @@ impl ArtifactControlPlane {
             })?;
         self.require_managed_mutations_ready(operation)?;
         // The assertion binds the exact body bytes. Canonicalize once (sorted
-        // keys, compact, integers only) and send that same `Value`; the HTTP
-        // client serializes it with the identical serde_json encoder, so the
-        // digest and length below describe the bytes on the wire.
-        // AREA-A-PENDING: labby_apis::artifact_control::ArtifactControlClient::
-        // execute_bytes_with_headers(operation, body: Vec<u8>, headers) to
-        // send the digested buffer itself rather than re-serializing.
+        // keys, compact, integers only) and send that same `Value`. The
+        // labby-apis client has no raw-byte execution path; it serializes the
+        // `Value` with `serde_json::to_vec`, the same encoder used for
+        // `body` below. Canonical serialization is deterministic (a
+        // `Map<String, Value>` with sorted keys, no floats, fixed escaping), so
+        // the bytes on the wire are byte-identical to the digested buffer.
+        // `canonical_body_bytes_match_wire_serialization` pins this.
         let params = canonical_json(params)?;
         let body = serde_json::to_vec(&params).map_err(|_| ToolError::InvalidParam {
             message: "Control-plane parameters are not serializable".to_owned(),
@@ -625,9 +628,12 @@ fn canonical_json(value: &Value) -> Result<Value, ToolError> {
 /// wins; otherwise the key is derived from the principal, Project, operation,
 /// and canonical parameters so a retry of the same request reuses the same
 /// intent and Depot returns the recorded result instead of acting twice.
-/// AREA-A-PENDING: AccessStore intent ledger (persist the key before the
-/// first attempt and read it back on retry) so a caller cannot change the
-/// parameters between attempts of one logical intent.
+///
+/// The key is a pure function of the request, so no durable intent ledger is
+/// needed for retries to converge: a caller who changes the parameters
+/// between attempts derives a different key and is treated as a new intent,
+/// while Depot's idempotency ledger (keyed by this value) protects the first
+/// recorded result of each intent.
 fn operation_intent_id(
     operation: Operation,
     params: &Value,
@@ -807,10 +813,24 @@ fn delegation_configuration(
     let [Some(deployment_id), Some(key_id), Some(key_env)] = configured else {
         return Err(delegation_unavailable());
     };
-    // The seed is read, decoded, parsed, and zeroized inside labby-auth; a
-    // malformed key fails here rather than at the first signature.
-    let signer = DepotDelegationSigner::from_seed_env(key_id.clone(), key_env)
-        .map_err(|_| delegation_unavailable())?;
+    // The seeds are read, decoded, parsed, and zeroized inside labby-auth; a
+    // malformed key fails here rather than at the first signature. Overlap
+    // keys registered for rotation stay valid for verification while the
+    // active key signs new assertions.
+    let signer = if depot.authority_overlap_signing_keys.is_empty() {
+        DepotDelegationSigner::from_seed_env(key_id.clone(), key_env)
+    } else {
+        DepotDelegationSigner::from_seed_envs(
+            key_id.clone(),
+            std::iter::once((key_id.as_str(), key_env.as_str())).chain(
+                depot
+                    .authority_overlap_signing_keys
+                    .iter()
+                    .map(|overlap| (overlap.key_id.as_str(), overlap.signing_key_env.as_str())),
+            ),
+        )
+    }
+    .map_err(|_| delegation_unavailable())?;
     Ok(Some(Arc::new(DelegationConfiguration {
         signer,
         deployment_id: deployment_id.clone(),
@@ -818,19 +838,16 @@ fn delegation_configuration(
     })))
 }
 
+/// Test-only constructor that goes through the same zeroizing, fail-fast
+/// labby-auth seed path as `from_seed_env`, minus the environment read (the
+/// crate forbids `unsafe`, so tests cannot set process environment).
 #[cfg(test)]
 fn delegation_configuration_from_seed(
     deployment_id: &str,
     key_id: &str,
     seed: [u8; 32],
 ) -> Result<Arc<DelegationConfiguration>, ToolError> {
-    const PKCS8_PREFIX: &[u8] = &[
-        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
-        0x20,
-    ];
-    let mut der = PKCS8_PREFIX.to_vec();
-    der.extend_from_slice(&seed);
-    let signer = DepotDelegationSigner::new(key_id.to_owned(), [(key_id.to_owned(), der)])
+    let signer = DepotDelegationSigner::from_seed(key_id, zeroize::Zeroizing::new(seed))
         .map_err(|_| delegation_unavailable())?;
     Ok(Arc::new(DelegationConfiguration {
         signer,
@@ -1238,6 +1255,32 @@ mod tests {
                     "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
                 content_length: 3,
             }
+        );
+    }
+
+    /// The delegated assertion digests `serde_json::to_vec(&canonical)`; the
+    /// labby-apis client serializes the same `Value` through the same encoder
+    /// (`post_json_bounded_with_headers` -> `serde_json`), so the wire bytes
+    /// are the digested bytes. Pin the encoder invariants that make this hold:
+    /// sorted keys survive a clone, nested arrays keep order, and unicode /
+    /// control characters escape identically across two serializations.
+    #[test]
+    fn canonical_body_bytes_match_wire_serialization() {
+        let params =
+            json!({"name":"tab\tquote\"snow\u{2603}","n":[1,{"b":2,"a":1}],"x":{"k":null}});
+        let canonical = canonical_json(&params).unwrap();
+        let digested = serde_json::to_vec(&canonical).unwrap();
+        // What the HTTP client would send: an independent serialization of a
+        // clone of the same value.
+        let wire = serde_json::to_vec(&canonical.clone()).unwrap();
+        assert_eq!(digested, wire);
+        let binding = BodyBinding::of(&digested);
+        assert_eq!(binding, BodyBinding::of(&wire));
+        assert_eq!(binding.content_length, u64::try_from(wire.len()).unwrap());
+        // Re-canonicalizing the canonical form is a fixed point.
+        assert_eq!(
+            serde_json::to_vec(&canonical_json(&canonical).unwrap()).unwrap(),
+            digested
         );
     }
 

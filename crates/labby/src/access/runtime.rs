@@ -303,7 +303,7 @@ impl AccessRuntime {
             dyn labby_runtime::dev_container_runtime::ContainerRuntime<
                     Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
                 >,
-        > = if cfg!(debug_assertions)
+        > = if cfg!(feature = "proxy-testkit")
             && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
         {
             Arc::new(DeterministicDevContainerRuntime)
@@ -337,7 +337,11 @@ impl AccessRuntime {
                 Error = labby_runtime::dev_container_runtime::DisabledRuntimeError,
             >,
     > {
-        if cfg!(debug_assertions) && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
+        // Test-only hook: compiled in only under `proxy-testkit` (test support,
+        // never a product slice), like the deterministic Agent/Task executor.
+        // Product builds compile the branch out; the variable has no effect.
+        if cfg!(feature = "proxy-testkit")
+            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
         {
             return Arc::new(DeterministicDevContainerRuntime);
         }
@@ -912,6 +916,34 @@ fn credential_runtime_error(error: AccessStoreError) -> CredentialLifecycleError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Release-profile guard: without `proxy-testkit` the deterministic Dev
+    /// Container runtime is compiled out, so `LABBY_E2E_DETERMINISTIC_EXECUTORS`
+    /// cannot substitute a fake engine in a product build. The crate forbids
+    /// `unsafe`, so the variable cannot be set from inside the test; run the
+    /// suite with it exported to exercise the guard in both states.
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn dev_container_runtime_hook_is_inert_without_testkit() {
+        use labby_runtime::dev_container_runtime::{ContainerRuntime as _, EngineHandle};
+        let runtime = AccessRuntime::blocked_unavailable();
+        let handle = EngineHandle {
+            instance_id: labby_primitives::dev_container::DevContainerId::new("dc-1").unwrap(),
+            lifecycle_nonce: labby_primitives::dev_container::LifecycleNonce::new(
+                "11111111111111111111111111111111",
+            )
+            .unwrap(),
+        };
+        assert!(
+            runtime
+                .dev_container_runtime()
+                .inspect(&handle)
+                .await
+                .is_err(),
+            "product builds must keep the disabled engine (env set: {})",
+            std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
+        );
+    }
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_primitives::access::{Capability, OwnerScope, TeamId};
 

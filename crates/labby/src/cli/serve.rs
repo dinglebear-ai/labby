@@ -409,13 +409,6 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             )
             .await
             .context("bootstrap live-test static bearer authority")?;
-        access_runtime
-            .store()
-            .await
-            .context("open live-test authority store")?
-            .ensure_agent_task_schemas()
-            .await
-            .context("initialize live-test agent and task schemas")?;
     }
     let _authority_projection =
         crate::dispatch::depot::authority_projection::start_managed_projection(&config.depot)

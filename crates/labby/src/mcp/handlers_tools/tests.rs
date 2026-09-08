@@ -6514,3 +6514,92 @@ async fn settings_mutations_use_the_setup_destructive_policy() {
             .await
     );
 }
+
+/// B-I3: a protected route bound to a `team:<id>:...` Loadout is the
+/// authoritative Team selector. A `params.team_id` that disagrees with the
+/// bound Team must be rejected as `invalid_param` on `team_id` before any
+/// gateway authority evaluation or dispatch runs.
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn gateway_call_on_team_bound_route_rejects_mismatching_team_id_param() {
+    let loadout = GatewayLoadoutConfig {
+        name: "team:alpha:prod".to_string(),
+        services: vec!["gateway".to_string()],
+        expose_tools: true,
+        expose_resources: true,
+        expose_prompts: true,
+        expose_skills: false,
+        expose_code_mode: false,
+        ..GatewayLoadoutConfig::default()
+    };
+    let route = ProtectedMcpRouteConfig {
+        name: "team-alpha".to_string(),
+        enabled: true,
+        public_host: "mcp.example.com".to_string(),
+        public_path: "/team-alpha".to_string(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".to_string(),
+        scopes: vec![],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some(loadout.name.clone()),
+                ..Default::default()
+            },
+        )),
+    };
+    let scope = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+        &route,
+        std::slice::from_ref(&loadout),
+    )
+    .expect("loadout scope resolves")
+    .expect("gateway subset scope");
+    assert_eq!(scope.bound_team_id(), Some("alpha"));
+    assert!(scope.allows_service("gateway"));
+
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gateway.loadout.get".to_string()),
+            ),
+            (
+                "params".to_string(),
+                serde_json::json!({ "team_id": "beta", "name": "prod" }),
+            ),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(
+        result.is_error.unwrap_or(false),
+        "a mismatching team_id must not dispatch"
+    );
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("gateway error envelope");
+    assert_eq!(envelope["ok"], false, "{text}");
+    assert_eq!(envelope["error"]["kind"], "invalid_param", "{text}");
+    assert_eq!(envelope["error"]["param"], "team_id", "{text}");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Team bound to this route")),
+        "{text}"
+    );
+}

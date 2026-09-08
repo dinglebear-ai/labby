@@ -1785,25 +1785,13 @@ impl LabMcpServer {
                         (None, requested) => requested,
                     };
                     // Absent auth is trusted only on transports that imply
-                    // local stdio; everywhere else it is a denial.
-                    let trusted_auth;
-                    let auth = match (auth, self.absent_auth_trust()) {
-                        (Some(auth), _) => auth,
+                    // local stdio; everywhere else it is a denial. The
+                    // transport ceiling is passed as such: trusted local stdio
+                    // is the full ceiling, never a synthesized AuthContext.
+                    let ceiling = match (auth, self.absent_auth_trust()) {
+                        (Some(auth), _) => crate::access::AuthorityCeiling::from_auth_context(auth),
                         (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
-                            // AREA-A-PENDING: authorize_gateway_action taking an
-                            // AuthorityCeiling instead of an AuthContext; until
-                            // then trusted local stdio is expressed as the
-                            // equivalent lab:admin transport context.
-                            trusted_auth = labby_auth::auth_context::AuthContext {
-                                sub: "trusted-local".into(),
-                                actor_key: None,
-                                scopes: vec!["lab:admin".into()],
-                                issuer: "local".into(),
-                                via_session: false,
-                                csrf_token: None,
-                                email: None,
-                            };
-                            &trusted_auth
+                            crate::access::AuthorityCeiling::trusted_local()
                         }
                         (None, crate::mcp::context::AbsentAuth::Untrusted) => {
                             return Ok(error_result_from_envelope(build_error(
@@ -1859,7 +1847,7 @@ impl LabMcpServer {
                     if let Err(error) = crate::access::authorize_gateway_action(
                         &self.access_runtime,
                         identity,
-                        auth,
+                        ceiling,
                         &installation_id,
                         team_id.as_deref(),
                         &action,

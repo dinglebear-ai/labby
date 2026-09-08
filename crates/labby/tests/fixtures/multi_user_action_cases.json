@@ -1580,5 +1580,286 @@
     "exclusion_reason": null,
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "help",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "contract_probe",
+    "scenario_id": "contract_probe::projects::help",
+    "minimum_evidence": "metadata_only",
+    "setup_ref": "catalog-only",
+    "fixture_params": {
+      "fixture": "catalog_metadata",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "catalog_governance"
+  },
+  {
+    "service": "projects",
+    "action": "schema",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "contract_probe",
+    "scenario_id": "contract_probe::projects::schema",
+    "minimum_evidence": "metadata_only",
+    "setup_ref": "catalog-only",
+    "fixture_params": {
+      "fixture": "catalog_metadata",
+      "parameters": {
+        "action": "$fixture.action"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "catalog_governance"
+  },
+  {
+    "service": "projects",
+    "action": "projects.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_list",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "projects.create",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_create",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id",
+        "name": "$fixture.name"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "projects.get",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_get",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "projects.update",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_update",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id",
+        "name": "$fixture.name"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "projects.archive",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_archive",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "projects",
+    "action": "projects.activate",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::projects::projects_activate",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_projects_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
   }
 ]

@@ -13,11 +13,11 @@
 //! through `tracing` (WARN for outages that heal on their own, ERROR for
 //! integrity failures that require operator action) and never enters the
 //! response envelope.
-//
-// AREA-A-PENDING: crate::access::error shared AccessStoreError→ToolError map.
-// Area A is adding the canonical map inside `access/error.rs`; once it lands,
-// `map_store_error` below should delegate to it and this module keeps only the
-// runtime-lifecycle helper and the per-service denial wrapper.
+//!
+//! This module is the canonical `AccessStoreError` → `ToolError` map for the
+//! product crate. `access/error.rs` deliberately stays a pure error vocabulary
+//! with no surface-envelope knowledge, so the map lives here at the dispatch
+//! boundary and every dispatcher/adapter delegates to it.
 
 use crate::access::{AccessBlockedReason, AccessRuntimeError, AccessSetupReason, AccessStoreError};
 use crate::dispatch::error::ToolError;

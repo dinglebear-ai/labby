@@ -52,8 +52,9 @@ Setup and doctor inspect access-store health read-only. They do not call this en
 
 The registered `projects` service owns Team-scoped Project lifecycle. It is a
 distinct multi-surface service, unlike the bootstrap route above. Its actions
-are `projects.list`, `projects.create`, `projects.get`, `projects.update`, and
-`projects.archive`, exposed over authenticated HTTP at `POST /v1/projects` with
+are `projects.list`, `projects.create`, `projects.get`, `projects.update`,
+`projects.archive`, and `projects.activate`, exposed over authenticated HTTP at
+`POST /v1/projects` with
 the shared `action` plus `params` envelope and as the `projects` MCP tool.
 
 Every action runs as the verified Principal; `team_id` and `project_id` params
@@ -62,16 +63,19 @@ select the context and never establish authority:
 - `projects.list` returns the Projects assigned to Teams where the caller holds
   an active membership. A platform administrator sees every active assignment.
 - `projects.get` requires active membership in the named Team.
-- `projects.create`, `projects.update`, and `projects.archive` require a Team
-  manager: an active `owner` or `admin` Team membership, or platform
+- `projects.create`, `projects.update`, `projects.archive`, and
+  `projects.activate` require a Team manager: an active `owner` or `admin` Team membership, or platform
   administration. Creating a Project assigns it to the Team with the `admin`
   assignment role.
 - Absent and unauthorized Team or Project identifiers return the same
   non-enumerating `forbidden` denial.
 
 `projects.archive` sets the Project to `disabled` and advances its policy
-epoch. It is classified `destructive` because there is no un-archive action
-yet; an archived Project is not restorable through this service.
+epoch; an archived Project leaves `projects.list`. `projects.activate` reverses
+it (`disabled` back to `active`, again advancing the policy epoch) in one
+transaction and writes an `access.project.activate` audit row. Because archive
+is reversible, neither action is classified `destructive`. Activating a Project
+that is not archived returns the same non-enumerating denial as an absent one.
 
 ## Related docs
 

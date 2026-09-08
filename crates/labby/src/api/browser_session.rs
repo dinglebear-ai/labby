@@ -300,10 +300,11 @@ async fn resolve_session_authority(
             ));
         }
     }
-    // AREA-A-PENDING: AccessRuntime::session_authority typed error. The
-    // runtime wrapper erases every store failure into
-    // `AccessRuntimeError::LifecycleUnavailable`, so this handler goes through
-    // the Ready-only `store()` handle and the store's typed result instead.
+    // `AccessRuntime::session_authority` erases every store failure into
+    // `AccessRuntimeError::LifecycleUnavailable`, which cannot distinguish an
+    // unprovisioned identity (200 + `authority_state: "unprovisioned"`) from a
+    // store outage (503). This handler therefore goes through the Ready-only
+    // `store()` handle and consumes the store's typed `AccessStoreError`.
     let store = state
         .access_runtime
         .store()

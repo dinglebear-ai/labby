@@ -1317,8 +1317,17 @@ mod tests {
                 .await
                 .unwrap(),
         );
+        // Restoring a same-major backup does not silently cross the access
+        // store's ownership boundary: the restored legacy store is
+        // checkpointed and approved, exactly as an operator would, and the
+        // migration activates only against that approval.
+        let evidence = crate::access::migration_fixture::approve_restored_store(
+            &access,
+            &temp.path().join("access-restore.checkpoint.db"),
+            &temp.path().join("access-restore-approval.json"),
+        );
         drop(
-            crate::access::AccessStore::open(access.clone())
+            crate::access::AccessStore::open_with_migration_evidence(access.clone(), evidence)
                 .await
                 .unwrap(),
         );

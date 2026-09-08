@@ -84,15 +84,18 @@ pub const ACTIONS: &[ActionSpec] = &[
         false,
         &[TEAM_ID, PROJECT_ID, NAME],
     ),
-    // AREA-A-PENDING: AccessStore::activate_managed_project (or a tri-state
-    // `update_managed_project`) that flips `projects.status` back to `active`.
-    // Until that store operation exists there is no `projects.activate`
-    // action, so archiving is hard to recover from and is classified
-    // destructive so every surface applies its confirmation contract.
+    // Archiving is reversible through `projects.activate`, so it is a state
+    // mutation rather than a destructive (hard-to-recover) action.
     action(
         "projects.archive",
-        "Archive a Team-owned Project; there is no un-archive action yet",
-        true,
+        "Archive a Team-owned Project (reversible with projects.activate)",
+        false,
+        &[TEAM_ID, PROJECT_ID],
+    ),
+    action(
+        "projects.activate",
+        "Reactivate an archived Team-owned Project",
+        false,
         &[TEAM_ID, PROJECT_ID],
     ),
 ];
@@ -105,7 +108,7 @@ pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
         "projects.get" => Capability::ScopeRead,
         "projects.create" => Capability::ScopeCreate,
-        "projects.update" | "projects.archive" => Capability::ScopeManage,
+        "projects.update" | "projects.archive" | "projects.activate" => Capability::ScopeManage,
         _ => return None,
     })
 }
@@ -173,6 +176,7 @@ pub(crate) async fn dispatch(
                 .update_managed_project(input(None)?, true)
                 .await
         }
+        "projects.activate" => context.store.activate_managed_project(input(None)?).await,
         _ => return Err(unknown_action(action)),
     }
     .map_err(map)?;
@@ -332,8 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn catalog_is_complete_and_archive_is_the_only_destructive_action() {
-        assert_eq!(ACTIONS.len(), 5);
+    fn catalog_is_complete_and_nothing_is_destructive() {
+        assert_eq!(ACTIONS.len(), 6);
         assert!(
             ACTIONS
                 .iter()
@@ -345,7 +349,9 @@ mod tests {
             .filter(|spec| spec.destructive)
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
-        assert_eq!(destructive, ["projects.archive"]);
+        // Archive is reversible through `projects.activate`, so no Project
+        // action can cause permanent loss.
+        assert!(destructive.is_empty(), "{destructive:?}");
         for spec in ACTIONS {
             assert_eq!(
                 spec.requires_admin,
@@ -412,6 +418,48 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(archived["status"], "disabled");
+        // Archived Projects leave the membership listing and come back on
+        // activation with a newer policy epoch.
+        let listed = dispatch(context.clone(), "projects.list", json!({}))
+            .await
+            .unwrap();
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|project| project["project_id"] != "p1")
+        );
+        let activated = dispatch(
+            context.clone(),
+            "projects.activate",
+            json!({"team_id":"bootstrap-initial-team","project_id":"p1"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(activated["status"], "active");
+        assert_eq!(activated["name"], "Two");
+        assert!(activated["policy_epoch"].as_u64() > archived["policy_epoch"].as_u64());
+        let listed = dispatch(context.clone(), "projects.list", json!({}))
+            .await
+            .unwrap();
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|project| project["project_id"] == "p1")
+        );
+        // Activating an already-active Project is the same non-enumerating
+        // denial as an absent one.
+        let again = dispatch(
+            context.clone(),
+            "projects.activate",
+            json!({"team_id":"bootstrap-initial-team","project_id":"p1"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(again.kind(), "forbidden");
 
         let missing = dispatch(context.clone(), "projects.get", json!({"team_id":"t"}))
             .await

@@ -15,7 +15,7 @@ use labby_primitives::{
         ResourceFamily, ResourceId, ResourceRef, TeamId,
     },
     action::{ActionSpec, ParamSpec},
-    dev_container::{DesiredState, DevContainerId, LifecycleNonce},
+    dev_container::{DesiredState, DevContainerId, LifecycleNonce, ObservedState},
 };
 use labby_runtime::dev_container::DevContainerAdmissionError;
 use serde_json::Value;
@@ -31,6 +31,7 @@ pub(crate) use labby_runtime::dev_container_runtime::{
     RecoveryAction, RuntimeError, create, reconcile,
 };
 
+use crate::access::{DevContainerLedgerError, DevContainerStorageFailure};
 use crate::dispatch::access_errors::{map_runtime_error, map_store_error};
 use crate::dispatch::error::ToolError;
 
@@ -339,43 +340,32 @@ async fn lifecycle(
         .ok_or_else(denied)?;
     let owner = stored_owner_scope(&record)?;
     let capability = required_capability(action, owner.kind()).ok_or_else(denied)?;
-    let (lease, _) = authorize(context, store, action, owner.clone(), instance_id)
-        .await
-        .map_err(store_error)?;
     let now = now_millis()?;
-    if let Some(desired) = desired {
-        // AREA-A-PENDING: authorize_and_set_dev_container_desired_state(store,
-        // request: AuthorityRequest, instance_id, lifecycle_nonce, desired,
-        // actor, now) -> Result<AuthorityLease, AccessStoreError>. Until that
-        // single Immediate-transaction path lands, re-read the row right before
-        // the write and refuse if the owner or lifecycle nonce moved since the
-        // lease was issued.
-        let fresh = lookup_record(store, instance_id)
-            .await?
-            .ok_or_else(denied)?;
-        if fresh.owner_kind != record.owner_kind
-            || fresh.owner_id != record.owner_id
-            || fresh.lifecycle_nonce != record.lifecycle_nonce
-        {
-            tracing::warn!(
-                service = SERVICE,
-                instance_id,
-                kind = "forbidden",
-                "Dev Container owner or lifecycle changed between authorization and write"
-            );
-            return Err(denied());
-        }
-        crate::access::set_desired_for_store(
+    let lease = match desired {
+        // Authorization and the desired-state write share one immediate
+        // transaction: the persisted owner and lifecycle nonce are re-read
+        // under the write lock and compared with the lease binding, so a row
+        // whose owner or lifecycle moved since the read above is refused
+        // instead of being mutated under a stale authorization.
+        Some(desired) => crate::access::authorize_and_set_dev_container_desired_state(
             store,
+            authority_request(context, action, owner.clone(), instance_id, now)
+                .map_err(store_error)?,
             record.instance_id.clone(),
             record.lifecycle_nonce.clone(),
             desired,
-            format!("{}-{now}", action.replace('.', "-")),
+            format!("{}:{now}", context.identity.safe_fingerprint()),
             seconds(now)?,
         )
         .await
-        .map_err(|error| ledger_error(instance_id, &error))?;
-    }
+        .map_err(store_error)?,
+        None => {
+            authorize(context, store, action, owner.clone(), instance_id)
+                .await
+                .map_err(store_error)?
+                .0
+        }
+    };
     let intent = match desired.unwrap_or(record.desired_state) {
         DesiredState::Running => DurableIntent::Running,
         DesiredState::Stopped => DurableIntent::Stopped,
@@ -404,18 +394,24 @@ async fn lifecycle(
     .await
     .map_err(|error| runtime_error(instance_id, error))?;
     if result == RecoveryAction::MarkFailed {
-        // AREA-A-PENDING: set_observed_for_store(store, instance_id,
-        // lifecycle_nonce, ObservedState::Failed, event_id, now)
-        // -> Result<(), DevContainerLedgerError>. The ledger's
-        // `record_observation` setter is connection-scoped and not reachable
-        // from dispatch, so the Failed observation is reported but not yet
-        // persisted.
+        // The engine no longer knows the instance: persist the Failed
+        // observation so the durable ledger stops describing it as live.
         tracing::warn!(
             service = SERVICE,
             instance_id,
             recovery_action = "mark_failed",
-            "Dev Container is missing from the engine; durable Failed observation is pending"
+            "Dev Container is missing from the engine; recording the Failed observation"
         );
+        crate::access::set_observed_for_store(
+            store,
+            record.instance_id.clone(),
+            record.lifecycle_nonce.clone(),
+            ObservedState::Failed,
+            format!("observed-failed-{}-{now}", record.instance_id),
+            seconds(now)?,
+        )
+        .await
+        .map_err(|error| ledger_error(instance_id, &error))?;
     }
     Ok(
         serde_json::json!({"instance_id":instance_id,"recovery_action":format!("{result:?}").to_ascii_lowercase()}),
@@ -430,16 +426,9 @@ async fn lookup_record(
     store: &crate::access::AccessStore,
     instance_id: &str,
 ) -> Result<Option<crate::access::RecoveryRecord>, ToolError> {
-    // AREA-A-PENDING: lookup_dev_container_for_store(store, instance_id)
-    // -> Result<Option<RecoveryRecord>, DevContainerLedgerError>. The access
-    // module only exposes the full recovery inventory today, so this is a
-    // table scan filtered in memory.
-    let inventory = crate::access::recovery_inventory_for_store(store)
+    crate::access::lookup_dev_container_for_store(store, instance_id.to_owned())
         .await
-        .map_err(|error| ledger_error(instance_id, &error))?;
-    Ok(inventory
-        .into_iter()
-        .find(|item| item.instance_id == instance_id))
+        .map_err(|error| ledger_error(instance_id, &error))
 }
 
 async fn authorize(
@@ -563,28 +552,43 @@ fn store_error(error: crate::access::AccessStoreError) -> ToolError {
     map_store_error(SERVICE, error, denied)
 }
 
-/// Map a durable-ledger failure surfaced by the `*_for_store` helpers.
+/// Map a typed durable-ledger failure surfaced by the `*_for_store` helpers.
 ///
-/// AREA-A-PENDING: crate::access::DevContainerLedgerError re-export plus
-/// typed passthrough in `create_approved_for_store` /
-/// `set_desired_for_store` / `recovery_inventory_for_store`. The ledger enum
-/// lives in the private `access::dev_container` module and the store
-/// wrappers collapse every cause to `Storage`, so dispatch cannot name its
-/// variants yet. Intended typed map once it lands:
-///   InvalidInput        -> ToolError::InvalidParam { param: "params" }
-///   TemplateUnavailable -> ToolError::InvalidParam { param: "template_id" }
-///                          (templates stay non-enumerable)
-///   QuotaExhausted      -> ToolError::Sdk { sdk_kind: "quota_exceeded" }
-///   Storage             -> WARN log with instance id + service_unavailable
-fn ledger_error<E: std::error::Error>(instance_id: &str, error: &E) -> ToolError {
-    tracing::warn!(
-        service = SERVICE,
-        instance_id,
-        cause = %error,
-        kind = "service_unavailable",
-        "Dev Container ledger operation failed"
-    );
-    unavailable()
+/// Caller-fixable input problems stay `invalid_param`; templates are not
+/// enumerable, so an unknown template reads as an invalid `template_id`;
+/// quota exhaustion is the shared `quota_exceeded` kind; every storage
+/// failure is logged with its typed cause and instance id, and returned as a
+/// fixed-string outage.
+fn ledger_error(instance_id: &str, error: &DevContainerLedgerError) -> ToolError {
+    match error {
+        DevContainerLedgerError::InvalidInput => invalid("params"),
+        DevContainerLedgerError::TemplateUnavailable => invalid("template_id"),
+        DevContainerLedgerError::QuotaExhausted => ToolError::Sdk {
+            sdk_kind: "quota_exceeded".into(),
+            message: "Dev Container quota is exhausted for this owner or template".into(),
+        },
+        DevContainerLedgerError::Storage(failure) => {
+            match failure {
+                DevContainerStorageFailure::Corrupt
+                | DevContainerStorageFailure::IntegrityViolation
+                | DevContainerStorageFailure::ForeignKeyViolation => tracing::error!(
+                    service = SERVICE,
+                    instance_id,
+                    cause = %failure,
+                    kind = "service_unavailable",
+                    "Dev Container ledger integrity failure; operator action required"
+                ),
+                _ => tracing::warn!(
+                    service = SERVICE,
+                    instance_id,
+                    cause = %failure,
+                    kind = "service_unavailable",
+                    "Dev Container ledger operation failed"
+                ),
+            }
+            unavailable()
+        }
+    }
 }
 
 /// Map a typed engine/authority failure to the shared envelope. Engine causes
@@ -986,12 +990,30 @@ mod tests {
 
     #[test]
     fn ledger_and_store_failures_are_fixed_string_outages_or_denials() {
-        #[derive(Debug, thiserror::Error)]
-        #[error("sqlite: /secret/path/access.db busy")]
-        struct Cause;
-        let mapped = ledger_error("dc-1", &Cause);
-        assert_eq!(mapped.kind(), "service_unavailable");
-        assert!(!mapped.to_string().contains("/secret"));
+        for failure in [
+            DevContainerStorageFailure::Locked,
+            DevContainerStorageFailure::Corrupt,
+            DevContainerStorageFailure::Unavailable,
+        ] {
+            let mapped = ledger_error("dc-1", &DevContainerLedgerError::Storage(failure));
+            assert_eq!(mapped.kind(), "service_unavailable");
+            assert!(!mapped.to_string().contains("sqlite"));
+        }
+        assert_eq!(
+            ledger_error("dc-1", &DevContainerLedgerError::QuotaExhausted).kind(),
+            "quota_exceeded"
+        );
+        assert_eq!(
+            param_of(&ledger_error(
+                "dc-1",
+                &DevContainerLedgerError::TemplateUnavailable
+            )),
+            Some("template_id")
+        );
+        assert_eq!(
+            ledger_error("dc-1", &DevContainerLedgerError::InvalidInput).kind(),
+            "invalid_param"
+        );
         assert_eq!(
             store_error(crate::access::AccessStoreError::NotAuthorized).to_string(),
             denied().to_string()
@@ -1000,5 +1022,217 @@ mod tests {
             store_error(crate::access::AccessStoreError::Locked).kind(),
             "service_unavailable"
         );
+    }
+
+    /// Engine stub whose `inspect` answer is fixed so reconcile outcomes are
+    /// deterministic per test.
+    struct FixedEngine(EngineState);
+    impl ContainerRuntime for FixedEngine {
+        type Error = DisabledRuntimeError;
+        fn create<'a>(
+            &'a self,
+            _: EngineCreateRequest,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn inspect<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<EngineState, Self::Error>> + Send + 'a>>
+        {
+            Box::pin(async move { Ok(self.0) })
+        }
+        fn start<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn stop<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn destroy<'a>(
+            &'a self,
+            _: &'a EngineHandle,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// Bootstrap owner plus an approved template and a personal quota for
+    /// the bootstrap principal, with the engine answer fixed to `state`.
+    async fn engine_fixture(
+        state: EngineState,
+    ) -> (tempfile::TempDir, DevContainerDispatchContext) {
+        let (directory, context) = fixture().await;
+        let connection = rusqlite::Connection::open(directory.path().join("access.db")).unwrap();
+        connection.execute("INSERT INTO dev_container_templates(template_id,image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status,policy_epoch,created_at,updated_at) VALUES('tpl',?1,4,1000,1073741824,1073741824,3600,'[]','approved',1,1,1)", [format!("sha256:{}", "a".repeat(64))]).unwrap();
+        connection.execute("INSERT INTO dev_container_owner_quotas(owner_kind,owner_id,max_active_instances,policy_epoch,updated_at) VALUES('personal','bootstrap-owner',4,1,1)", []).unwrap();
+        drop(connection);
+        let runtime = Arc::try_unwrap(context.access_runtime)
+            .ok()
+            .expect("fixture holds the only runtime handle")
+            .with_dev_container_runtime(Arc::new(FixedEngine(state)));
+        (
+            directory,
+            DevContainerDispatchContext {
+                access_runtime: Arc::new(runtime),
+                ..context
+            },
+        )
+    }
+
+    fn open_ledger(directory: &tempfile::TempDir) -> rusqlite::Connection {
+        rusqlite::Connection::open(directory.path().join("access.db")).unwrap()
+    }
+
+    fn ledger_states(directory: &tempfile::TempDir, instance_id: &str) -> (String, String, String) {
+        open_ledger(directory)
+            .query_row(
+                "SELECT desired_state,observed_state,lifecycle_nonce FROM dev_container_instances WHERE instance_id=?1",
+                [instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    async fn create_dc(context: &DevContainerDispatchContext, id: &str) {
+        dispatch(
+            context.clone(),
+            "dev_containers.create",
+            serde_json::json!({
+                "instance_id": id,
+                "template_id": "tpl",
+                "owner_kind": "personal",
+                "owner_id": "bootstrap-owner",
+            }),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_writes_desired_state_inside_the_authorizing_transaction() {
+        let (directory, context) = engine_fixture(EngineState::Running).await;
+        create_dc(&context, "dc-1").await;
+        let stopped = dispatch(
+            context.clone(),
+            "dev_containers.stop",
+            serde_json::json!({"instance_id":"dc-1"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stopped["recovery_action"], "stop");
+        let (desired, _, _) = ledger_states(&directory, "dc-1");
+        assert_eq!(desired, "stopped");
+    }
+
+    #[tokio::test]
+    async fn stale_lifecycle_nonce_is_refused_inside_the_write_transaction() {
+        let (directory, context) = engine_fixture(EngineState::Running).await;
+        create_dc(&context, "dc-1").await;
+        // The row's lifecycle moved after the caller's read: the persisted
+        // nonce no longer matches the one the lease was bound to, and the
+        // record in the ledger is what the transaction compares against.
+        // Exercise the store path directly with the stale nonce.
+        let store = context.access_runtime.store().await.unwrap();
+        let now = now_millis().unwrap();
+        let request = authority_request(
+            &context,
+            "dev_containers.stop",
+            OwnerScope::Personal(PrincipalId::new("bootstrap-owner").unwrap()),
+            "dc-1",
+            now,
+        )
+        .unwrap();
+        let error = crate::access::authorize_and_set_dev_container_desired_state(
+            &store,
+            request,
+            "dc-1".into(),
+            "00000000000000000000000000000000".into(),
+            DesiredState::Stopped,
+            "actor".into(),
+            seconds(now).unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::access::AccessStoreError::NotAuthorized
+        ));
+        let (desired, _, _) = ledger_states(&directory, "dc-1");
+        assert_eq!(desired, "running", "stale nonce must not mutate the row");
+    }
+
+    #[tokio::test]
+    async fn mismatched_owner_is_refused_inside_the_write_transaction() {
+        let (directory, context) = engine_fixture(EngineState::Running).await;
+        create_dc(&context, "dc-1").await;
+        let (_, _, nonce) = ledger_states(&directory, "dc-1");
+        // Re-home the row after the caller's read: the lease is bound to the
+        // personal owner, and the persisted owner is now a Team the caller has
+        // no membership in, so neither the write transaction nor a fresh
+        // dispatch may act on it.
+        open_ledger(&directory)
+            .execute(
+                "UPDATE dev_container_instances SET owner_kind='team',owner_id='foreign-team' WHERE instance_id='dc-1'",
+                [],
+            )
+            .unwrap();
+        let store = context.access_runtime.store().await.unwrap();
+        let now = now_millis().unwrap();
+        let request = authority_request(
+            &context,
+            "dev_containers.stop",
+            OwnerScope::Personal(PrincipalId::new("bootstrap-owner").unwrap()),
+            "dc-1",
+            now,
+        )
+        .unwrap();
+        let error = crate::access::authorize_and_set_dev_container_desired_state(
+            &store,
+            request,
+            "dc-1".into(),
+            nonce,
+            DesiredState::Stopped,
+            "actor".into(),
+            seconds(now).unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::access::AccessStoreError::NotAuthorized
+        ));
+        let (desired, _, _) = ledger_states(&directory, "dc-1");
+        assert_eq!(desired, "running", "owner mismatch must not mutate the row");
+        // Through dispatch the same situation is the non-enumerating denial.
+        let error = failure(
+            &context,
+            "dev_containers.stop",
+            serde_json::json!({"instance_id":"dc-1"}),
+        )
+        .await;
+        assert_eq!(error.kind(), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn mark_failed_persists_the_failed_observation() {
+        let (directory, context) = engine_fixture(EngineState::Missing).await;
+        create_dc(&context, "dc-1").await;
+        let result = dispatch(
+            context.clone(),
+            "dev_containers.reconcile",
+            serde_json::json!({"instance_id":"dc-1"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["recovery_action"], "markfailed");
+        let (desired, observed, _) = ledger_states(&directory, "dc-1");
+        assert_eq!(desired, "running");
+        assert_eq!(observed, "failed");
     }
 }
