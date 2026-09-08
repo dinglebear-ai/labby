@@ -11,6 +11,34 @@ fn cli_output_outer_cancellation_releases_the_runtime_and_child() {
     assert_runtime_cleanup("cancel");
 }
 
+#[tokio::test]
+async fn cli_output_preserves_both_streams_and_nonzero_exit_status() {
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "cli_output_tests::cli_output_echo_fixture",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ]);
+    let output = crate::live_labby::bounded_cli_output(&mut command, Duration::from_secs(5))
+        .await
+        .expect("collect completed child output");
+    assert_eq!(output.status.code(), Some(7));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CLI stdout fixture"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("CLI stderr fixture"));
+}
+
+#[test]
+#[ignore = "subprocess-only output and exit-status fixture"]
+fn cli_output_echo_fixture() {
+    use std::io::Write as _;
+    println!("CLI stdout fixture");
+    eprintln!("CLI stderr fixture");
+    std::io::stdout().flush().unwrap();
+    std::io::stderr().flush().unwrap();
+    std::process::exit(7);
+}
+
 #[cfg(windows)]
 #[test]
 fn cli_output_timeout_releases_descendant_held_pipes() {
@@ -153,6 +181,15 @@ fn cli_output_runtime_fixture() {
                 crate::live_labby::bounded_cli_output(&mut command, Duration::from_secs(2)).await;
             let error = result.unwrap_err();
             assert!(error.contains("CLI child exceeded"), "{error}");
+        }
+        #[cfg(unix)]
+        {
+            let pid: i32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+            assert_eq!(
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+                Err(nix::errno::Errno::ESRCH),
+                "CLI child must be reaped before the helper releases control",
+            );
         }
     });
     // Windows' blocking stdout/stderr readers must have been released too.
