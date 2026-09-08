@@ -486,6 +486,15 @@ pub(crate) fn dedicated_contract_accepts_for(
             "forbidden" | "upstream_connect_error" | "service_unavailable"
         );
     }
+    // On Linux the authenticated Stash routes are mounted, so a sweep without
+    // a durable principal link is refused at one of two points on the same
+    // boundary: owner-scope authorization answers the non-enumerating denial
+    // for a file-scoped action, and an unresolvable principal reports the
+    // store outage. Both are stable; the authenticated restart journey
+    // supplies the success evidence.
+    if key.starts_with("stash:") && surface == Surface::Api && cfg!(target_os = "linux") {
+        return matches!(error_kind, "not_found" | "service_unavailable");
+    }
     dedicated_contract_for(key, surface)
         .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
 }
