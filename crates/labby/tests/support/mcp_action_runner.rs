@@ -160,7 +160,7 @@ pub(crate) struct BuiltinMcpRunner {
     identity: IdentityTuple,
     concurrency: tokio::sync::Semaphore,
     outstanding: tokio::sync::Semaphore,
-    stdio_process: Option<(u32, String)>,
+    stdio_process: Option<u32>,
 }
 
 fn capped_http_client() -> BodyCappedHttpClient {
@@ -185,7 +185,7 @@ impl BuiltinMcpRunner {
     pub(crate) async fn start_stdio(command: std::process::Command) -> Result<Self, String> {
         let transport = TokioChildProcess::new(tokio::process::Command::from(command))
             .map_err(|error| error.to_string())?;
-        let stdio_process = transport.id().map(|pid| (pid, process_start_identity(pid)));
+        let stdio_process = transport.id();
         let confirmation_client = ExactDestructiveConfirmationClient::default();
         let service = tokio::time::timeout(
             REQUEST_TIMEOUT,
@@ -427,12 +427,16 @@ impl BuiltinMcpRunner {
         if let Some(error) = cancellation_failure {
             cleanup.failures.push(error);
         }
-        if let Some((pid, identity)) = self.stdio_process.take()
-            && !wait_for_process_exit(pid, &identity).await
-        {
-            cleanup.failures.push(format!(
-                "stdio MCP child {pid} retained its original process identity after cancellation"
-            ));
+        if let Some(pid) = self.stdio_process.take() {
+            match wait_for_process_exit(pid).await {
+                Ok(true) => {}
+                Ok(false) => cleanup.failures.push(format!(
+                    "stdio MCP child {pid} remained observable after cancellation"
+                )),
+                Err(error) => cleanup.failures.push(format!(
+                    "stdio MCP child {pid} exit could not be verified: {error}"
+                )),
+            }
         }
         cleanup
     }
@@ -445,34 +449,37 @@ impl BuiltinMcpRunner {
 }
 
 #[cfg(unix)]
-fn process_start_identity(pid: u32) -> String {
-    std::process::Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
+fn process_is_alive(pid: u32) -> Result<bool, String> {
+    let pid = i32::try_from(pid)
         .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|identity| !identity.is_empty())
-        .unwrap_or_else(|| "absent".to_string())
-}
-
-#[cfg(windows)]
-fn process_start_identity(pid: u32) -> String {
-    if labby_winjob::pid_is_alive(pid) {
-        format!("pid:{pid}:alive")
-    } else {
-        format!("pid:{pid}:absent")
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| "invalid child PID".to_owned())?;
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(error.to_string()),
     }
 }
 
-async fn wait_for_process_exit(pid: u32, identity: &str) -> bool {
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> Result<bool, String> {
+    use labby_winjob::ProcessLiveness;
+    match labby_winjob::pid_liveness(pid).map_err(|error| error.to_string())? {
+        ProcessLiveness::Exited | ProcessLiveness::NotFound => Ok(false),
+        ProcessLiveness::Alive => Ok(true),
+    }
+}
+
+async fn wait_for_process_exit(pid: u32) -> Result<bool, String> {
     let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
     loop {
-        if process_start_identity(pid) != identity {
-            return true;
+        // Observation only: a reused live PID conservatively remains a cleanup
+        // failure; this helper never gains authority to signal that process.
+        if !process_is_alive(pid)? {
+            return Ok(true);
         }
         if tokio::time::Instant::now() >= deadline {
-            return false;
+            return Ok(false);
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -511,16 +518,54 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn stdio_process_identity_observes_actual_termination() {
+    async fn stdio_process_exit_observes_actual_termination() {
         let mut child = tokio::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("owned child");
         let pid = child.id().expect("child pid");
-        let identity = process_start_identity(pid);
-        assert_ne!(identity, "absent");
+        assert!(process_is_alive(pid).unwrap());
         child.kill().await.expect("kill owned child");
         child.wait().await.expect("reap owned child");
-        assert!(wait_for_process_exit(pid, &identity).await);
+        assert!(wait_for_process_exit(pid).await.unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_process_identity_is_an_error_not_verified_exit() {
+        for pid in [0, u32::MAX] {
+            assert!(process_is_alive(pid).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stdio_process_exit_observes_native_windows_termination() {
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "mcp_action_runner::tests::stdio_process_sleep_fixture",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("owned native child");
+        let pid = child.id().expect("native child PID");
+        assert!(matches!(
+            labby_winjob::pid_liveness(pid).unwrap(),
+            labby_winjob::ProcessLiveness::Alive
+        ));
+        child.kill().await.expect("kill native child");
+        child.wait().await.expect("reap native child");
+        assert!(wait_for_process_exit(pid).await.unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "subprocess-only native child liveness fixture"]
+    fn stdio_process_sleep_fixture() {
+        std::thread::sleep(Duration::from_secs(30));
     }
 }

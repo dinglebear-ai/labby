@@ -537,6 +537,7 @@ fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn handle_run_event(app: &AppHandle, event: RunEvent) {
     if let RunEvent::Reopen { .. } = event
         && let Err(error) = restore_control_plane(app)
@@ -544,6 +545,9 @@ fn handle_run_event(app: &AppHandle, event: RunEvent) {
         warn("failed to reopen Control Plane", error);
     }
 }
+
+#[cfg(not(target_os = "macos"))]
+fn handle_run_event(_app: &AppHandle, _event: RunEvent) {}
 
 /// Run the Labby desktop Control Plane shell.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {

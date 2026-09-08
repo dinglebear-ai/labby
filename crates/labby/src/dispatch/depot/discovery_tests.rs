@@ -8,10 +8,7 @@ use serde_json::json;
 fn unfiltered_provider_list_omits_absent_fields_but_preserves_search_and_cursor() {
     for query in ["", " ", "\t\n", "   "] {
         validate_request(query, 25).unwrap();
-        assert_eq!(
-            provider_list_body(query, 25, None),
-            json!({"limit":25})
-        );
+        assert_eq!(provider_list_body(query, 25, None), json!({"limit":25}));
     }
     assert_eq!(
         provider_list_body("  artifact search  ", 10, Some("next")),
