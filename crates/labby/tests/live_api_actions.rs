@@ -790,11 +790,16 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         for provider_backed in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             success_capable_services.remove(provider_backed);
         }
-        // Stash resolves the bootstrap owner's personal scope through the same
-        // owner-scope authorization every other caller-bound service uses, so
-        // its read path now produces a live success here too. The
+        // On Linux, Stash resolves the bootstrap owner's personal scope through
+        // the same owner-scope authorization every other caller-bound service
+        // uses, so its read path produces a live success here; the
         // authenticated two-principal restart journey still owns the
-        // cross-principal sharing evidence.
+        // cross-principal sharing evidence. Elsewhere the routes are not
+        // mounted at all because the platform lacks the verified
+        // descriptor-relative filesystem primitives.
+        if !cfg!(target_os = "linux") {
+            success_capable_services.remove("stash");
+        }
         assert_eq!(
             successes, success_capable_services,
             "every locally self-contained API service needs a live success"
