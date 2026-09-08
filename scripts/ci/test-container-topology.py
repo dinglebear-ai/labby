@@ -30,6 +30,9 @@ class ContainerTopology(unittest.TestCase):
                 "nested/settings.local.json", "nested/session.db", "nested/session.db-wal",
                 "nested/config.local.toml", "node_modules/fixture.js", ".next/cache/file",
                 "nested/.cache/file", "nested/.git/config", "nested/debug.log",
+                ".beads-credential-key", "backups/config.bak", "nested/backups/state.bak",
+                "data/runtime.json", "nested/.dolt/state", "nested/.omc/state",
+                "nested/.codex/config.toml", "nested/.vscode/settings.json",
             ]
             for name in retained + excluded:
                 path = context / "apps/gateway-admin" / name
@@ -243,7 +246,8 @@ class ContainerTopology(unittest.TestCase):
             text,
         )
         dockerignore = self.text(".dockerignore")
-        self.assertIn("!apps/gateway-admin/**", dockerignore)
+        self.assertIn("!apps/gateway-admin/\n", dockerignore)
+        self.assertNotIn("!apps/gateway-admin/**\n", dockerignore)
         self.assertIn("apps/gateway-admin/node_modules/", dockerignore)
         self.assertIn("apps/gateway-admin/.next/", dockerignore)
         self.assertNotIn("\napps/\n", dockerignore)

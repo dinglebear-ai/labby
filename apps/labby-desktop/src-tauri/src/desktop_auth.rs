@@ -14,8 +14,14 @@ const START_PATH: &str = "/auth/desktop/start";
 const AUTHORIZE_PATH: &str = "/auth/desktop/authorize";
 const POLL_PATH: &str = "/auth/desktop/poll";
 const REDEEM_PATH: &str = "/auth/desktop/redeem";
-const POLL_INTERVAL: Duration = Duration::from_millis(750);
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_FLOW_DURATION: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, PartialEq, Eq)]
+enum PollResult {
+    Ready,
+    RetryAfter(Duration),
+}
 
 #[derive(Default)]
 pub(crate) struct DesktopAuthState(AtomicU64);
@@ -179,7 +185,7 @@ async fn post_poll(
     origin: &str,
     poll_token: &str,
     now: i64,
-) -> Result<bool, String> {
+) -> Result<PollResult, String> {
     let response = client
         .post(endpoint(origin, POLL_PATH)?)
         .header(reqwest::header::ORIGIN, origin)
@@ -188,6 +194,20 @@ async fn post_poll(
         .await
         .map_err(|error| format!("could not check sign-in: {error}"))?;
     let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        // Labby emits Retry-After as delta-seconds. Missing or malformed values
+        // use its conservative one-minute rate-limit recovery interval.
+        let delay = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(60))
+            .max(POLL_INTERVAL)
+            .min(MAX_FLOW_DURATION);
+        return Ok(PollResult::RetryAfter(delay));
+    }
     if !matches!(
         status,
         reqwest::StatusCode::ACCEPTED | reqwest::StatusCode::OK
@@ -198,7 +218,47 @@ async fn post_poll(
         .json()
         .await
         .map_err(|error| format!("Labby returned an invalid sign-in status: {error}"))?;
-    poll_ready(status, &response, now)
+    poll_ready(status, &response, now).map(|ready| {
+        if ready {
+            PollResult::Ready
+        } else {
+            PollResult::RetryAfter(POLL_INTERVAL)
+        }
+    })
+}
+
+async fn poll_until_ready<F, Fut>(
+    deadline: tokio::time::Instant,
+    is_current: impl Fn() -> bool,
+    mut poll: F,
+) -> Result<bool, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<PollResult, String>>,
+{
+    let mut delay = Duration::ZERO;
+    loop {
+        if !delay.is_zero() {
+            let wake = (tokio::time::Instant::now() + delay).min(deadline);
+            tokio::time::sleep_until(wake).await;
+        }
+        if !is_current() {
+            return Ok(false);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Sign-in timed out. Try again.".to_owned());
+        }
+        let response = tokio::time::timeout_at(deadline, poll())
+            .await
+            .map_err(|_| "Sign-in timed out. Try again.".to_owned())??;
+        if !is_current() {
+            return Ok(false);
+        }
+        match response {
+            PollResult::Ready => return Ok(true),
+            PollResult::RetryAfter(retry_after) => delay = retry_after,
+        }
+    }
 }
 
 fn unix_now() -> i64 {
@@ -304,17 +364,14 @@ async fn run(app: AppHandle, generation: u64, return_to: String) -> Result<(), S
         u64::try_from(response.expires_at.saturating_sub(unix_now())).unwrap_or_default();
     let deadline =
         tokio::time::Instant::now() + Duration::from_secs(expires_in).min(MAX_FLOW_DURATION);
-    loop {
-        if !app.state::<DesktopAuthState>().is_current(generation) {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err("Sign-in timed out. Try again.".to_owned());
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-        if post_poll(&client, &origin, &response.poll_token, unix_now()).await? {
-            break;
-        }
+    if !poll_until_ready(
+        deadline,
+        || app.state::<DesktopAuthState>().is_current(generation),
+        || post_poll(&client, &origin, &response.poll_token, unix_now()),
+    )
+    .await?
+    {
+        return Ok(());
     }
 
     if !app.state::<DesktopAuthState>().is_current(generation) {
@@ -619,6 +676,102 @@ setTimeout(() => {{
     }
 
     #[test]
+    fn default_poll_cadence_leaves_room_in_the_server_rate_budget() {
+        assert!(POLL_INTERVAL >= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn throttled_poll_is_recoverable_instead_of_ending_sign_in() {
+        let (origin, request) = mock_once(|_| {
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after: 2\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into()
+        });
+        let result = run_async(post_poll(&test_client(), &origin, "poll", 1_000));
+        request.join().unwrap();
+        assert!(result.is_ok(), "429 must remain recoverable: {result:?}");
+    }
+
+    #[test]
+    fn polling_retries_a_throttled_response_then_completes() {
+        let (first_origin, first_request) = mock_once(|_| {
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after: 2\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into()
+        });
+        let (second_origin, second_request) = mock_once(|_| {
+            let body = r#"{"ready":true,"expires_at":2000}"#;
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        });
+        let calls = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        let result = run_async(poll_until_ready(
+            started + Duration::from_secs(10),
+            || true,
+            || {
+                let origin = if calls.get() == 0 {
+                    first_origin.clone()
+                } else {
+                    second_origin.clone()
+                };
+                calls.set(calls.get() + 1);
+                async move { post_poll(&test_client(), &origin, "poll", 1_000).await }
+            },
+        ));
+        first_request.join().unwrap();
+        second_request.join().unwrap();
+        assert_eq!(result, Ok(true));
+        assert_eq!(calls.get(), 2);
+        assert!(started.elapsed() >= POLL_INTERVAL);
+    }
+
+    #[test]
+    fn throttled_poll_stops_at_deadline_without_a_fast_retry() {
+        let calls = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        let result = run_async(async {
+            poll_until_ready(
+                tokio::time::Instant::now() + Duration::from_millis(100),
+                || true,
+                || {
+                    calls.set(calls.get() + 1);
+                    async { Ok(PollResult::RetryAfter(Duration::from_secs(60))) }
+                },
+            )
+            .await
+        });
+        assert!(result.unwrap_err().contains("timed out"));
+        assert_eq!(calls.get(), 1);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn poll_request_itself_cannot_outlive_the_flow_deadline() {
+        let result = run_async(poll_until_ready(
+            tokio::time::Instant::now() + Duration::from_millis(30),
+            || true,
+            std::future::pending,
+        ));
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[test]
+    fn throttled_poll_uses_a_bounded_nonzero_retry_delay() {
+        for (header, expected) in [("0", 2), ("invalid", 60), ("18446744073709551615", 300)] {
+            let (origin, request) = mock_once(move |_| {
+                format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nretry-after: {header}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                )
+            });
+            let result = run_async(post_poll(&test_client(), &origin, "poll", 1_000));
+            request.join().unwrap();
+            assert_eq!(
+                result,
+                Ok(PollResult::RetryAfter(Duration::from_secs(expected)))
+            );
+        }
+    }
+
+    #[test]
     fn poll_protocol_handles_pending_then_ready_mock_responses() {
         for (status, ready, expected) in [(202, false, false), (200, true, true)] {
             let (origin, request) = mock_once(move |_| {
@@ -630,7 +783,11 @@ setTimeout(() => {{
             });
             assert_eq!(
                 run_async(post_poll(&test_client(), &origin, "poll-secret", 1_000)).unwrap(),
-                expected
+                if expected {
+                    PollResult::Ready
+                } else {
+                    PollResult::RetryAfter(POLL_INTERVAL)
+                }
             );
             let request = request.join().unwrap();
             assert!(request.starts_with("POST /auth/desktop/poll HTTP/1.1\r\n"));

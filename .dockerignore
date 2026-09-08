@@ -120,11 +120,10 @@ config.local.toml
 # compile time, so the image build needs the app source as well as its export.
 apps/*
 !apps/gateway-admin/
-!apps/gateway-admin/**
 apps/gateway-admin/node_modules/
 apps/gateway-admin/.next/
-# Negations above also override earlier exclusions. Reapply private/runtime
-# exclusions recursively AFTER the app allowlist; only synthetic examples ship.
+# Root ignore patterns do not cover nested app files. Preserve the complete
+# private/runtime/cache policy recursively after reopening the app directory.
 apps/gateway-admin/**/.env
 apps/gateway-admin/**/.env.*
 apps/gateway-admin/**/*.env
@@ -145,3 +144,42 @@ apps/gateway-admin/**/.claude/
 apps/gateway-admin/**/.codex/
 apps/gateway-admin/**/node_modules/
 apps/gateway-admin/**/.next/
+apps/gateway-admin/**/.gitignore
+apps/gateway-admin/**/.gitattributes
+apps/gateway-admin/**/target/
+apps/gateway-admin/**/*.rs.bk
+apps/gateway-admin/**/*.profraw
+apps/gateway-admin/**/*.profdata
+apps/gateway-admin/**/logs/
+apps/gateway-admin/**/backups/
+apps/gateway-admin/**/data/
+apps/gateway-admin/**/*.pid
+apps/gateway-admin/**/*.bak
+apps/gateway-admin/**/*.bak-*
+apps/gateway-admin/**/.omc/
+apps/gateway-admin/**/.lavra/
+apps/gateway-admin/**/.beads/
+apps/gateway-admin/**/.dolt/
+apps/gateway-admin/**/.serena/
+apps/gateway-admin/**/.worktrees/
+apps/gateway-admin/**/.full-review/
+apps/gateway-admin/**/.full-review-archive-*
+apps/gateway-admin/**/.bivvy
+apps/gateway-admin/**/.superpowers/
+apps/gateway-admin/**/.codex
+apps/gateway-admin/**/.gemini
+apps/gateway-admin/**/.beads-credential-key
+apps/gateway-admin/**/CLAUDE.md.local
+apps/gateway-admin/**/.vscode/
+apps/gateway-admin/**/.cursor/
+apps/gateway-admin/**/.windsurf/
+apps/gateway-admin/**/.1code/
+apps/gateway-admin/**/.idea/
+apps/gateway-admin/**/.zed/
+apps/gateway-admin/**/*.iml
+apps/gateway-admin/**/*.swp
+apps/gateway-admin/**/*.swo
+apps/gateway-admin/**/*~
+apps/gateway-admin/**/.emdash.json
+apps/gateway-admin/**/.DS_Store
+apps/gateway-admin/**/Thumbs.db
