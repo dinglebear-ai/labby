@@ -120,9 +120,11 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
     },
 ];
 
-pub(crate) const PINNED_ROUTE_COUNT: usize = 120;
+// Reviewed additions: four desktop OAuth handoff routes, owner-link consume,
+// and the GET/POST Depot publish pair. Keep this independent from generation.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 127;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "4861d6e4bf1d6c9858481604852ad2f29c8da66eff7db33c54ef31c2fc48bd6a";
+    "dc0eb4cf33be8f2b5061929e5436ceb27b9c7bbd60b31413082f7db84924a0a3";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
