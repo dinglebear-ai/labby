@@ -287,10 +287,12 @@ async fn bind_harness_team_upstream(runner: &BuiltinMcpRunner, upstream: &str, i
 }
 
 async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
-    if matches!(
-        intent.key().as_str(),
-        "gateway:gateway.loadout.update" | "gateway:gateway.protected_route.update"
-    ) {
+    // Team-scoped Gateway policy may reference only upstreams carrying an
+    // active Team credential binding, so bind the harness Team before any
+    // loadout or protected-route action, not just its transition prerequisite.
+    if intent.action.starts_with("gateway.loadout.")
+        || intent.action.starts_with("gateway.protected_route.")
+    {
         bind_harness_team_upstream(runner, "matrix-owned", &intent.key()).await;
     }
     let prerequisite = match intent.key().as_str() {
