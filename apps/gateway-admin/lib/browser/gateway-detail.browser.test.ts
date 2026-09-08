@@ -814,7 +814,7 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   const fixtures = [
-    { providerId: 'team', artifactId: 'review', id: 'review', kind: 'skill', title: 'Review changes', namespace: 'team', description: 'Review a scoped change before publishing.', currentRevision: { id: 'r1', authoredAt: '2026-09-08T10:00:00Z' } },
+    { providerId: 'team', artifactId: 'review', id: 'review', kind: 'skill', title: 'Review changes', namespace: 'team', description: 'Review a scoped change before publishing.', currentRevision: { id: 'r1', authoredAt: '2026-09-08T10:00:00Z' }, license: { declared: 'MIT', reviewState: 'unreviewed' } },
     { providerId: 'catalog', artifactId: 'review', id: 'review', kind: 'agent', title: 'Release reviewer', namespace: 'community', description: 'Check a release against its acceptance criteria.' },
   ]
   let releaseInitial!: () => void
@@ -880,6 +880,8 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   const dialog = page.getByRole('dialog')
   await dialog.waitFor()
   await dialog.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  await dialog.getByText('Declared license', { exact: true }).waitFor()
+  await dialog.getByText('MIT', { exact: true }).waitFor()
   const box = await dialog.boundingBox()
   assert.ok(box && box.width > 600 && Math.abs(box.x + box.width / 2 - 720) < 3)
   assert.match(page.url(), /artifactProvider=team/)

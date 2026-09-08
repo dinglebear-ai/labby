@@ -70,8 +70,8 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
               </div>
             </section>
             <dl className="grid grid-cols-2 gap-[var(--space-4)] text-xs">
-              {([['Revisions', artifact.revisionCount?.toString()], ['Distribution', artifact.publication?.distribution], ['License review', artifact.license?.reviewState], ['Redistribution', artifact.license?.redistribution]] as const).map(([label, value]) =>
-                <div key={label}><dt className={AURORA_MUTED_LABEL}>{label}</dt><dd className="mt-[var(--space-2)] text-aurora-text-muted">{value || 'Not supplied'}</dd></div>
+              {([['Declared license', artifact.license?.declared], ['License review', artifact.license?.reviewState], ['Distribution', artifact.publication?.distribution], ['Redistribution', artifact.license?.redistribution], ['Revisions', artifact.revisionCount?.toString()]] as const).map(([label, value]) =>
+                <div key={label} className="min-w-0"><dt className={AURORA_MUTED_LABEL}>{label}</dt><dd className="mt-[var(--space-2)] break-words text-aurora-text-muted">{value || 'Not supplied'}</dd></div>
               )}
             </dl>
           </div>

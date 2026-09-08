@@ -204,7 +204,7 @@ const federatedArtifactSchema = z.object({
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
   contentDigest: bounded(512).optional(),
   createdAt: bounded(128).nullish(), updatedAt: bounded(128).nullish(),
-  license: z.object({ redistribution: bounded(128).optional(), reviewState: bounded(128).optional(), takedownState: bounded(128).optional() }).strict().optional(),
+  license: z.object({ declared: bounded(1024).nullish(), redistribution: bounded(128).optional(), reviewState: bounded(128).optional(), takedownState: bounded(128).optional() }).strict().optional(),
   publication: z.object({ state: bounded(128).optional(), visibility: bounded(128).optional(), distribution: bounded(128).optional() }).strict().optional(),
   revisionCount: z.number().safe().int().nonnegative().optional(),
   descriptor: z.object({ id: rawId.optional(), kind: bounded(128).optional(), namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(), description: bounded(16384).optional() }).strict().optional(),

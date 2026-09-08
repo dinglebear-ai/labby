@@ -203,6 +203,23 @@ test('preserves server error codes', async () => {
 
 const v2Page = { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [{ providerId: 'public', artifactId: 'artifact-1', id: 'artifact-1' }], providerOutcomes: [{ providerId: 'public', state: 'exhausted' }], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null }
 
+test('federated details accept the declared license returned by public discovery', async () => {
+  for (const declared of ['MIT', null]) {
+    const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', license: { declared, redistribution: 'allowed', reviewState: 'unreviewed' } } }
+    await withFetch(json(response), async () => {
+      assert.equal((await getArtifact('public', 'artifact-1')).artifact.license?.declared, declared)
+    })
+  }
+})
+
+test('federated licenses reject structured or oversized declarations and unknown fields', async () => {
+  for (const license of [{ declared: { text: 'MIT' } }, { declared: 'x'.repeat(1025) }, { declared: 'MIT', privateEvidence: 'not public' }]) {
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], license }] }), async () => {
+      await assert.rejects(listArtifacts(), /incompatible discovery response/)
+    })
+  }
+})
+
 test('federated timestamp projection preserves authoredAt and nullable artifact dates', async () => {
   const item = { ...v2Page.items[0], createdAt: null, updatedAt: '2026-09-08T00:00:00Z', currentRevision: { id: 'revision-1', authoredAt: '2026-09-07T00:00:00Z' } }
   await withFetch(json({ ...v2Page, items: [item] }), async () => {

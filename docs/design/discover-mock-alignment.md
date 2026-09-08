@@ -82,3 +82,10 @@ Both failures reproduce in isolation in the unchanged gateway OAuth dialog tests
 `switching away from OAuth invalidates an in-flight OAuth start`. The same isolated
 tests pass on Node 24. That comparison is diagnostic evidence, not a replacement
 for the package's declared Node 22 gate; the Node 22 full-suite gate remains open.
+
+A follow-up contract regression reproduces the rejection of Depot's existing
+`license.declared` detail field. The parser now accepts a nullable string bounded
+to Depot's 1,024-character limit, while still rejecting structured declarations,
+oversized values, and unknown license fields. The inspector displays the supplied
+declaration without implying that it has been reviewed. The focused 25-test
+client/card/model suite and desktop/mobile browser regression pass on Node 22.
