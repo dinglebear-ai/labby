@@ -294,10 +294,13 @@ async fn fetch_pages(
 }
 
 pub(super) fn provider_list_body(query: &str, limit: usize, cursor: Option<&str>) -> Value {
-    let mut body = serde_json::json!({"limit": limit, "cursor": cursor});
+    let mut body = serde_json::json!({"limit": limit});
     // Depot treats an omitted query as an unfiltered listing, but rejects "".
     if !query.trim().is_empty() {
         body["query"] = Value::String(query.to_owned());
+    }
+    if let Some(cursor) = cursor {
+        body["cursor"] = Value::String(cursor.to_owned());
     }
     body
 }
