@@ -256,6 +256,69 @@ async fn assert_mcp_transition_readback(
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
             true
         }
+        // A multi-user mutation is only proven when the owning surface can
+        // read the new state back through its own authority, so each of these
+        // reads the collection the mutation changed and asserts the change is
+        // visible rather than trusting the mutation's own response.
+        "access:access.gateway_credential.bind" | "access:access.gateway_credential.revoke" => {
+            let (ok, text) = read(
+                "access",
+                "access.gateway_credential.list",
+                serde_json::json!({"team_id": live_labby::LiveLabbyGuard::HARNESS_TEAM_ID}),
+            )
+            .await;
+            assert!(ok, "{key} readback: {text}");
+            // Revocation is a tombstone, not a deletion: the binding stays
+            // listed so an operator can see it was withdrawn.
+            let binding = text
+                .split("\"binding_id\"")
+                .find(|entry| entry.contains("matrix-upstream"))
+                .unwrap_or_else(|| panic!("{key} readback lost the binding: {text}"));
+            let expected_status = if key.ends_with("bind") {
+                "\"status\":\"active\""
+            } else {
+                "\"status\":\"revoked\""
+            };
+            assert!(
+                binding.contains(expected_status),
+                "{key} binding status did not follow the mutation: {text}"
+            );
+            true
+        }
+        "access:access.team.create" | "access:access.team.suspend" => {
+            let (ok, text) = read("access", "access.team.list", serde_json::json!({})).await;
+            assert!(ok && text.contains("matrix-team"), "{key} readback: {text}");
+            true
+        }
+        "access:access.team_project.assign" => {
+            let (ok, text) = read(
+                "access",
+                "access.project.effective.list",
+                serde_json::json!({}),
+            )
+            .await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
+        "agents:agents.create" | "agents:agents.delete" => {
+            let (ok, text) = read("agents", "agents.list", serde_json::json!({})).await;
+            assert!(ok, "{key} readback: {text}");
+            let present = text.contains("matrix-agent");
+            assert_eq!(
+                present,
+                key.ends_with("create"),
+                "{key} agent visibility did not follow the mutation: {text}"
+            );
+            true
+        }
+        "projects:projects.create"
+        | "projects:projects.update"
+        | "projects:projects.archive"
+        | "projects:projects.activate" => {
+            let (ok, text) = read("projects", "projects.list", serde_json::json!({})).await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
         _ => false,
     }
 }

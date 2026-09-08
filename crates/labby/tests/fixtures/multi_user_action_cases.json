@@ -55,10 +55,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::access::access_gateway_credential_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_gateway_credential_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_access_workflow",
@@ -68,8 +68,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "access",
@@ -196,10 +196,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::access::access_project_effective_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_project_effective_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_access_workflow",
@@ -207,8 +207,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "access",
@@ -300,10 +300,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::access::access_team_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_team_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_access_workflow",
@@ -311,8 +311,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "access",
@@ -769,10 +769,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::agents::agents_get",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_get",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_agents_workflow",
@@ -782,8 +782,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "agents",
@@ -804,10 +804,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::agents::agents_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_agents_workflow",
@@ -815,8 +815,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "agents",
@@ -872,10 +872,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::agents::agents_session_status",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_status",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_agents_workflow",
@@ -886,8 +886,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "agents",
@@ -1117,10 +1117,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::dev_containers::dev_containers_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_dev_containers_workflow",
@@ -1128,8 +1128,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "dev_containers",
@@ -1462,10 +1462,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::tasks::tasks_get",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_get",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_tasks_workflow",
@@ -1475,8 +1475,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "tasks",
@@ -1497,10 +1497,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::tasks::tasks_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_tasks_workflow",
@@ -1508,8 +1508,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "tasks",
@@ -1565,10 +1565,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::tasks::tasks_result",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_result",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_tasks_workflow",
@@ -1578,8 +1578,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "projects",
@@ -1666,10 +1666,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::projects::projects_list",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::projects::projects_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_projects_workflow",
@@ -1677,8 +1677,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "projects",
@@ -1736,10 +1736,10 @@
       "no-default",
       "skills"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::projects::projects_get",
-    "minimum_evidence": "cross_surface_parity",
-    "api_minimum": "live_state_transition",
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::projects::projects_get",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
     "setup_ref": "disposable-home",
     "fixture_params": {
       "fixture": "isolated_projects_workflow",
@@ -1750,8 +1750,8 @@
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "durable",
-    "scenario_owner": "stateful_workflow_runner"
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   },
   {
     "service": "projects",
