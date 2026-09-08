@@ -129,6 +129,17 @@ server-held secret/file, and restart all Labby processes. Never put secrets in
 TOML, command lines, logs, or support bundles.
 ## Startup Behavior
 
+### Native loopback callbacks
+
+At authorization, HTTP loopback redirects (`127.0.0.1`, `[::1]`, and
+`localhost`) may use an OS-assigned port different from the registered URI.
+This supports native clients such as `codex mcp login lab`, whose CIMD document
+registers a portless callback. Only the port may differ: scheme, host, path,
+and query remain exact, with no normalization or wildcard expansion. Other
+redirects still require an exact registered match. Authorization-code redemption
+continues to require the exact redirect URI used in that authorization request,
+including its selected port, together with the PKCE verifier.
+
 When OAuth mode is configured, `labby serve` performs these steps at startup:
 
 1. Validate `LABBY_PUBLIC_URL`, `LABBY_AUTH_ADMIN_EMAIL`, and exactly one

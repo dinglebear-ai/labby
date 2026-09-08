@@ -106,7 +106,7 @@ pub async fn authorize(
     if !client
         .redirect_uris
         .iter()
-        .any(|uri| uri == &query.redirect_uri)
+        .any(|uri| redirect::registered_redirect_matches(uri, &query.redirect_uri))
     {
         warn!(
             client_id = %fingerprint(&query.client_id),
@@ -3530,6 +3530,24 @@ pub mod tests {
                 .split_whitespace()
                 .any(|scope| scope == "lab:admin")
         );
+    }
+
+    #[tokio::test]
+    async fn authorize_accepts_cimd_loopback_ephemeral_port() {
+        let state = test_auth_state_with_registered_client().await;
+        let client_id = "https://chatgpt.com/oauth/codex/client.json";
+        let mut client = state.store.find_client("client").await.unwrap().unwrap();
+        client.client_id = client_id.to_string();
+        client.redirect_uris = vec!["http://127.0.0.1/callback".to_string()];
+        state
+            .cimd_cache
+            .insert(client_id.to_string(), (client, now_unix() + 60));
+        let response = router(state).oneshot(
+            Request::builder()
+                .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Fcodex%2Fclient.json&redirect_uri=http%3A%2F%2F127.0.0.1%3A56505%2Fcallback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
     }
 
     #[tokio::test]
