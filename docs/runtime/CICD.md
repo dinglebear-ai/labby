@@ -170,8 +170,12 @@ registry/provider behavior as well as MCP adapters without gateway support.
 The focused MCP job also runs `skills_mcp_e2e` cases prefixed `skills_`:
 real Labby processes serve and federate native Skills over HTTP and stdio,
 using legacy initialization and modern discovery. The HTTP cases exercise
-the production body-capped client, including its OAuth wrapper (not an OAuth
-authorization flow). These cases check list/get/read, entrypoint digests,
+the production body-capped client, including its OAuth wrapper. A controlled
+authorization-server case drives the production OAuth manager through metadata
+discovery, code exchange, PKCE verifier validation, and proactive token refresh
+before reading Skills from a real Labby server without a static client bearer.
+Consent is simulated; this is not browser or external-provider acceptance.
+These cases check list/get/read, entrypoint digests,
 unknown-skill errors, and process cleanup. Live trust-policy cases also verify
 that disabled Skills proxying and restrictive allowlists block both native
 skill lookup and direct resource reads without hiding the gateway's own skill.

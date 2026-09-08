@@ -6,6 +6,8 @@
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
+#[path = "support/skills_oauth.rs"]
+mod skills_oauth;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
 use labby_runtime::skills::wire::{SkillsGetResult, SkillsListResult};
