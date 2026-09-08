@@ -498,6 +498,9 @@ pub(crate) fn dedicated_contract_accepts_for(
     if key.starts_with("gateway:") && surface == Surface::Cli {
         return matches!(error_kind, "daemon_unavailable" | "unknown_action");
     }
+    if key.starts_with("artifacts:") && surface == Surface::Mcp {
+        return matches!(error_kind, "forbidden" | "internal_error");
+    }
     dedicated_contract_for(key, surface)
         .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
 }
@@ -604,10 +607,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.set_publication"
         )
     {
-        return Some((
-            "requires_project_bound_artifact_authority",
-            "internal_error",
-        ));
+        // Artifact authority failures now collapse to the non-enumerating
+        // denial instead of leaking a store outage as an internal error, so
+        // both kinds are stable on this boundary.
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
     }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
