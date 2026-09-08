@@ -63,9 +63,17 @@ export function DepotPageContent() {
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<View>('cards')
   const [importing,setImporting] = useState(false)
   const [density, setDensity] = useState<DiscoveryDensity>('default')
+  const [now, setNow] = useState<number>()
   const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const paginationControllerRef = useRef<AbortController>(null)
+
+  useEffect(() => {
+    const refresh = () => setNow(Date.now())
+    refresh()
+    const timer = window.setInterval(refresh, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const load = useCallback(async (searchQuery:string,cursor?:string,signal?:AbortSignal) => {
     const key = JSON.stringify([selectedProvider,searchQuery,cursor??null])
@@ -190,7 +198,7 @@ export function DepotPageContent() {
         <div className="flex items-end justify-between gap-3 px-0.5"><h2 id="artifact-results-title" className="text-base font-semibold text-aurora-text-primary">{activeQuery?`Results for “${activeQuery}”`:'Catalog results'}</h2><span className="text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Searching…':`${results.length} shown · ${state.window.rowCount} retained of ${resultCount}`}</span></div>
         {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
         {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
-        {query.length>0&&query.length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} loading={state.loading} view={view} density={density} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>}
+        {query.length>0&&query.length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} loading={state.loading} view={view} density={density} now={now} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>}
         {state.cursor?<div ref={loadMoreRef} className="flex min-h-12 items-center justify-center" role="status" aria-live="polite"><Button variant="outline" onClick={()=>void load(activeQuery,state.cursor)} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}{state.loading?'Loading more artifacts…':'Load more'}</Button></div>:null}
       </section>
     </div></div>
@@ -198,8 +206,8 @@ export function DepotPageContent() {
   </>
 }
 
-function ArtifactResults({artifacts,loading,view,density,selectedKey,artifactHref}:{artifacts:FederatedArtifact[];loading:boolean;view:View;density:DiscoveryDensity;selectedKey?:string;artifactHref:(providerId?:string,id?:string)=>string}){
+function ArtifactResults({artifacts,loading,view,density,now,selectedKey,artifactHref}:{artifacts:FederatedArtifact[];loading:boolean;view:View;density:DiscoveryDensity;now?:number;selectedKey?:string;artifactHref:(providerId?:string,id?:string)=>string}){
   if(loading&&!artifacts.length)return <div className="flex min-h-56 items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-subtle text-sm text-aurora-text-muted"><Loader2 className="mr-2 size-4 animate-spin"/>Searching Bazaar…</div>
   if(!artifacts.length)return <div className="flex min-h-56 items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-subtle text-sm text-aurora-text-muted">No artifacts match this search.</div>
-  return <div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'space-y-2'}>{artifacts.map(artifact=><ArtifactCard key={artifactKey(artifact.providerId,artifact.artifactId)} artifact={artifact} compact={view==='list'} density={density} selected={selectedKey===artifactKey(artifact.providerId,artifact.artifactId)} href={artifactHref(artifact.providerId,artifact.artifactId)}/>)}</div>
+  return <div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'space-y-2'}>{artifacts.map(artifact=><ArtifactCard key={artifactKey(artifact.providerId,artifact.artifactId)} artifact={artifact} compact={view==='list'} density={density} now={now} selected={selectedKey===artifactKey(artifact.providerId,artifact.artifactId)} href={artifactHref(artifact.providerId,artifact.artifactId)}/>)}</div>
 }

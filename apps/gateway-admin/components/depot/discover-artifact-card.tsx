@@ -6,7 +6,7 @@ import { AURORA_BADGE_LABEL, AURORA_CARD_TITLE, AURORA_DENSE_META } from '@/comp
 import { Badge } from '@/components/ui/badge'
 import type { FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKey } from '@/lib/depot/provider-model'
-import { artifactKind, artifactTitle } from './discover-model'
+import { artifactKind, artifactTitle, revisionAge } from './discover-model'
 import type { DiscoveryDensity } from './discover-view-options'
 
 const kindPresentation: Record<string, { family: string; icon: LucideIcon }> = {
@@ -24,12 +24,13 @@ const kindPresentation: Record<string, { family: string; icon: LucideIcon }> = {
 }
 
 /** Source identity remains explicit even when two providers return the same artifact. */
-export function DiscoverArtifactCard({ artifact, compact, selected, href, density = compact ? 'compact' : 'default' }: {
+export function DiscoverArtifactCard({ artifact, compact, selected, href, now, density = compact ? 'compact' : 'default' }: {
   artifact: FederatedArtifact
   compact: boolean
   selected: boolean
   href: string
   density?: DiscoveryDensity
+  now?: number
 }) {
   const kind = artifactKind(artifact)
   const { family, icon: Icon } = kindPresentation[kind.toLowerCase()] ?? { family: 'Artifact', icon: Layers3 }
@@ -55,7 +56,7 @@ export function DiscoverArtifactCard({ artifact, compact, selected, href, densit
           <h3 className={`${AURORA_CARD_TITLE} truncate text-aurora-text-primary`} title={artifactTitle(artifact)}>{artifactTitle(artifact)}</h3>
           <div className={`mt-[var(--space-2)] flex flex-wrap items-center gap-[var(--space-2)] ${AURORA_DENSE_META} text-aurora-text-muted`}>
             <span className="truncate">{namespace || 'Publisher not supplied'}</span>
-            {validDate ? <time dateTime={validDate} title={validDate}>{validDate.slice(0, 10)}</time> : null}
+            {validDate ? <time dateTime={validDate} title={`Revision authored ${validDate}`}>{revisionAge(validDate, now)}</time> : null}
           </div>
         </div>
       </div>

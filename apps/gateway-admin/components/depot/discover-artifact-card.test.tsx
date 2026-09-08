@@ -29,3 +29,13 @@ test('compact cards handle unknown kinds, absent publisher and invalid dates', (
   assert.match(markup, /Publisher not supplied/)
   assert.doesNotMatch(markup, /<time|aria-current/)
 })
+
+test('card displays a relative revision age without losing its exact timestamp', () => {
+  const markup = renderToStaticMarkup(<DiscoverArtifactCard artifact={{
+    providerId: 'catalog', artifactId: 'dated',
+    currentRevision: { authoredAt: '2026-09-08T10:00:00Z' },
+  }} compact={false} selected={false} href="/depot?artifact=dated&artifactProvider=catalog" now={Date.parse('2026-09-08T14:00:00Z')} />)
+  assert.match(markup, />4h ago<\/time>/)
+  assert.match(markup, /title="Revision authored 2026-09-08T10:00:00Z"/)
+  assert.match(markup, /dateTime="2026-09-08T10:00:00Z"/)
+})

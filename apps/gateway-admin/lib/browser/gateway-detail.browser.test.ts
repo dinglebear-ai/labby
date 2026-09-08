@@ -814,7 +814,7 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   const fixtures = [
-    { providerId: 'team', artifactId: 'review', id: 'review', kind: 'skill', title: 'Review changes', namespace: 'team', description: 'Review a scoped change before publishing.', currentRevision: { id: 'r1', authoredAt: '2026-09-08T10:00:00Z' }, license: { declared: 'MIT', reviewState: 'unreviewed' } },
+    { providerId: 'team', artifactId: 'review', id: 'review', kind: 'skill', title: 'Review changes', namespace: 'team', description: 'Review a scoped change before publishing.', currentRevision: { id: 'r1', authoredAt: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString() }, license: { declared: 'MIT', reviewState: 'unreviewed' } },
     { providerId: 'catalog', artifactId: 'review', id: 'review', kind: 'agent', title: 'Release reviewer', namespace: 'community', description: 'Check a release against its acceptance criteria.' },
   ]
   let releaseInitial!: () => void
@@ -852,6 +852,8 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   releaseInitial()
   await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
   assert.equal(await page.locator('article').count(), 2)
+  await page.locator('article time').filter({ hasText: '4h ago' }).waitFor()
+  assert.equal(await page.locator('article time').getAttribute('datetime'), fixtures[0].currentRevision?.authoredAt)
   await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
   const filters = page.getByRole('dialog', { name: 'Kind and source filters', exact: true })
   await filters.getByRole('button', { name: 'agent', exact: true }).click()
