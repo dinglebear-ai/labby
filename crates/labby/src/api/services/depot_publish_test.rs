@@ -60,6 +60,32 @@ async fn google_viewer_can_publish_but_cannot_execute_manage_or_link_owner() {
 }
 
 async fn publish_fixture(google_browser: bool, member_role: Option<&str>) {
+    publish_fixture_with_revocation(google_browser, member_role, None).await;
+}
+
+#[tokio::test]
+async fn product_publish_stops_after_live_credential_revocation_at_either_phase() {
+    for phase in [0, 1] {
+        publish_fixture_with_revocation(false, None, Some((phase,
+            "UPDATE project_credentials SET status='revoked',revoked_at=1 WHERE credential_id='credential-1'",
+        ))).await;
+    }
+}
+
+#[tokio::test]
+async fn google_publish_stops_after_live_membership_revocation_at_either_phase() {
+    for phase in [0, 1] {
+        publish_fixture_with_revocation(true, Some("viewer"), Some((phase,
+            "UPDATE project_memberships SET status='disabled' WHERE membership_id='member-membership'",
+        ))).await;
+    }
+}
+
+async fn publish_fixture_with_revocation(
+    google_browser: bool,
+    member_role: Option<&str>,
+    revoke: Option<(usize, &'static str)>,
+) {
     let dir = tempfile::tempdir().unwrap();
     #[cfg(unix)]
     {
@@ -119,7 +145,7 @@ async fn publish_fixture(google_browser: bool, member_role: Option<&str>) {
         .await
         .unwrap();
     drop(store);
-    let runtime = AccessRuntime::initialize(db).await;
+    let runtime = AccessRuntime::initialize(db.clone()).await;
     let adapter = runtime.credential_adapter(Arc::new(CurrentPolicy));
     let source = ProductCredentialGrant {
         issuer: "https://accounts.google.com".into(),
@@ -172,7 +198,7 @@ async fn publish_fixture(google_browser: bool, member_role: Option<&str>) {
         .await
         .unwrap();
     let server = MockServer::start().await;
-    for (verb, url, body) in [
+    for (phase, (verb, url, body)) in [
         (
             "POST",
             "/api/operations/depot.uploads.create",
@@ -188,11 +214,31 @@ async fn publish_fixture(google_browser: bool, member_role: Option<&str>) {
             "/api/operations/depot.ingest.start",
             json!({"result":{"job":{"id":"job-1","status":"queued"}}}),
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let db = db.clone();
         Mock::given(method(verb))
             .and(path(url))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .expect(1)
+            .respond_with(move |_: &wiremock::Request| {
+                // Change the real isolated credential/membership store before
+                // returning the upstream phase response, without timing sleeps.
+                if let Some((revoke_phase, sql)) = revoke
+                    && phase == revoke_phase
+                {
+                    rusqlite::Connection::open(&db)
+                        .unwrap()
+                        .execute_batch(sql)
+                        .unwrap();
+                }
+                ResponseTemplate::new(200).set_body_json(body.clone())
+            })
+            .expect(if revoke.is_some_and(|(last, _)| phase > last) {
+                0
+            } else {
+                1
+            })
             .mount(&server)
             .await;
     }
@@ -518,9 +564,16 @@ async fn publish_fixture(google_browser: bool, member_role: Option<&str>) {
             source: "---\nname: review\ndescription: Review code\n---\n# Review\n".into(),
         }),
     )
-    .await
-    .unwrap();
-    assert_eq!(result.0, json!({"jobId":"job-1","status":"queued"}));
+    .await;
+    if let Some((phase, _)) = revoke {
+        assert_eq!(result.unwrap_err().0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(server.received_requests().await.unwrap().len(), phase + 1);
+    } else {
+        assert_eq!(
+            result.unwrap().0,
+            json!({"jobId":"job-1","status":"queued"})
+        );
+    }
     for request in server.received_requests().await.unwrap() {
         let bearer = request
             .headers

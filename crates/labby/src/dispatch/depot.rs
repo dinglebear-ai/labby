@@ -674,14 +674,18 @@ impl DepotClient {
         decode_response(response).await
     }
 
-    pub async fn publish_skill_archive(
+    pub async fn publish_skill_archive_revalidated<F, Fut>(
         &self,
         filename: &str,
         archive: Vec<u8>,
         namespace: Option<&str>,
-        grant: &BoundAccessGrant,
-    ) -> Result<Value, DepotError> {
-        self.publish_skill_archive_for_subject(filename, archive, namespace, grant.into())
+        authorize: F,
+    ) -> Result<Value, DepotError>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<BoundAccessGrant, DepotError>>,
+    {
+        self.publish_skill_archive_with_authority(filename, archive, namespace, authorize)
             .await
     }
 
@@ -696,12 +700,29 @@ impl DepotClient {
         F: Fn() -> Fut,
         Fut: Future<Output = Result<BrowserDepotAuthorization, DepotError>>,
     {
+        self.publish_skill_archive_with_authority(filename, archive, namespace, authorize)
+            .await
+    }
+
+    async fn publish_skill_archive_with_authority<A, F, Fut>(
+        &self,
+        filename: &str,
+        archive: Vec<u8>,
+        namespace: Option<&str>,
+        authorize: F,
+    ) -> Result<Value, DepotError>
+    where
+        A: PartialEq,
+        for<'a> &'a A: Into<DepotDelegationSubject<'a>>,
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<A, DepotError>>,
+    {
         let create_authorization = authorize().await?;
         let created = self
             .call_with_subject(
                 super::depot_publish::UPLOAD_CREATE_OPERATION,
                 json!({"filename": filename}),
-                &create_authorization.principal_id,
+                (&create_authorization).into().principal_id(),
                 OperationPolicy {
                     read_only: false,
                     destructive: false,
@@ -746,71 +767,13 @@ impl DepotClient {
         self.call_with_subject(
             super::depot_publish::INGEST_START_OPERATION,
             json!({"kind":"archive","arguments":arguments}),
-            &ingest_authorization.principal_id,
+            (&ingest_authorization).into().principal_id(),
             OperationPolicy {
                 read_only: false,
                 destructive: false,
             },
             None,
             Some((&ingest_authorization).into()),
-        )
-        .await
-    }
-
-    async fn publish_skill_archive_for_subject(
-        &self,
-        filename: &str,
-        archive: Vec<u8>,
-        namespace: Option<&str>,
-        subject: DepotDelegationSubject<'_>,
-    ) -> Result<Value, DepotError> {
-        let actor = subject.principal_id();
-        let created = self
-            .call_with_subject(
-                super::depot_publish::UPLOAD_CREATE_OPERATION,
-                json!({"filename": filename}),
-                actor,
-                OperationPolicy {
-                    read_only: false,
-                    destructive: false,
-                },
-                None,
-                Some(subject),
-            )
-            .await?;
-        let upload_id = created
-            .pointer("/result/upload/id")
-            .or_else(|| created.pointer("/upload/id"))
-            .or_else(|| created.get("id"))
-            .and_then(Value::as_str)
-            .filter(|id| valid_upload_id(id))
-            .ok_or(DepotError::InvalidResponse)?
-            .to_owned();
-        let content_length =
-            u64::try_from(archive.len()).map_err(|_| DepotError::InvalidResponse)?;
-        self.upload_with_subject(
-            &upload_id,
-            reqwest::Body::from(archive),
-            Some(content_length),
-            "application/octet-stream",
-            Some(subject),
-        )
-        .await?;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("uploadId".into(), Value::String(upload_id));
-        if let Some(namespace) = namespace {
-            arguments.insert("namespace".into(), Value::String(namespace.to_owned()));
-        }
-        self.call_with_subject(
-            super::depot_publish::INGEST_START_OPERATION,
-            json!({"kind":"archive","arguments":arguments}),
-            actor,
-            OperationPolicy {
-                read_only: false,
-                destructive: false,
-            },
-            None,
-            Some(subject),
         )
         .await
     }
@@ -1234,16 +1197,21 @@ mod tests {
             },
         }));
 
+        let product_authorization_checks = Arc::new(AtomicUsize::new(0));
         let result = client
-            .publish_skill_archive(
+            .publish_skill_archive_revalidated(
                 "skill.zip",
                 b"archive bytes".to_vec(),
                 Some("team"),
-                &delegation_grant(),
+                || {
+                    product_authorization_checks.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(delegation_grant()) }
+                },
             )
             .await
             .unwrap();
         assert_eq!(result["result"]["job"]["id"], "job-123");
+        assert_eq!(product_authorization_checks.load(Ordering::SeqCst), 3);
         let authorization_checks = Arc::new(AtomicUsize::new(0));
         let result = client
             .publish_skill_archive_for_browser_revalidated(

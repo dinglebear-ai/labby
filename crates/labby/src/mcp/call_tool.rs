@@ -57,7 +57,7 @@ async fn project_depot_publish_authorized(
     let Some(manager) = server.gateway_manager.as_deref() else {
         return false;
     };
-    crate::mcp::bound_access::bind_asset_use_access_context(
+    crate::mcp::bound_access::bind_artifact_publish_access_context(
         server.access_runtime.as_ref(),
         manager,
         identity.clone(),
@@ -66,7 +66,41 @@ async fn project_depot_publish_authorized(
         transport.core().route().project_id(),
     )
     .await
-    .is_ok_and(|asset_use| asset_use.same_publication_as(transport.core()))
+    .is_ok_and(|publish| publish.authorizes_publish_from(transport.core()))
+}
+
+#[cfg(feature = "gateway")]
+fn depot_publish_revalidator(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&crate::mcp::bound_access::DepotPublishRevalidator> {
+    extensions
+        .get::<axum::http::request::Parts>()?
+        .extensions
+        .get()
+}
+
+#[cfg(feature = "gateway")]
+async fn revalidate_depot_publish(
+    server: &LabMcpServer,
+    context: &RequestContext<RoleServer>,
+) -> Result<
+    labby_primitives::product_credential::BoundAccessGrant,
+    crate::dispatch::depot::DepotError,
+> {
+    use crate::dispatch::depot::DepotError;
+    let original = depot_publish_grant(context).ok_or(DepotError::DelegationUnavailable)?;
+    let revalidator =
+        depot_publish_revalidator(&context.extensions).ok_or(DepotError::DelegationUnavailable)?;
+    let current = revalidator.authorize().await?;
+    if current != *original
+        || !server
+            .route_scope
+            .allows_service(crate::dispatch::depot_publish::SERVICE)
+        || !project_depot_publish_authorized(server, context).await
+    {
+        return Err(DepotError::DelegationUnavailable);
+    }
+    Ok(current)
 }
 
 fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<String>), ToolError> {
@@ -1725,13 +1759,13 @@ impl LabMcpServer {
                     depot_publish_grant(&context),
                     self.route_runtime.depot(),
                 ) {
-                    (true, true, Some(grant), Some(depot)) => match depot_publish_params(&params) {
+                    (true, true, Some(_), Some(depot)) => match depot_publish_params(&params) {
                         Ok((filename, archive, namespace)) => depot
-                            .publish_skill_archive(
+                            .publish_skill_archive_revalidated(
                                 &filename,
                                 archive,
                                 namespace.as_deref(),
-                                grant,
+                                || revalidate_depot_publish(self, &context),
                             )
                             .await
                             .map_err(|_| ToolError::Sdk {
@@ -2296,6 +2330,37 @@ mod depot_publish_shim_tests {
     use serde_json::json;
 
     use super::{depot_publish_params, is_project_depot_publish_call};
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn publish_revalidator_requires_server_owned_transport_extension() {
+        use crate::mcp::bound_access::DepotPublishRevalidator;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let mut extensions = rmcp::model::Extensions::default();
+        assert!(super::depot_publish_revalidator(&extensions).is_none());
+        let (mut parts, _) = axum::http::Request::new(()).into_parts();
+        parts
+            .extensions
+            .insert(json!({"depotPublishRevalidator":true,"grant":"invented"}));
+        extensions.insert(parts.clone());
+        assert!(super::depot_publish_revalidator(&extensions).is_none());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        parts
+            .extensions
+            .insert(DepotPublishRevalidator::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(crate::dispatch::depot::DepotError::DelegationUnavailable) })
+            }));
+        extensions.insert(parts);
+        let revalidator = super::depot_publish_revalidator(&extensions).unwrap();
+        assert!(revalidator.authorize().await.is_err());
+        assert!(revalidator.authorize().await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn only_exact_archive_publish_calls_enter_the_owned_path() {

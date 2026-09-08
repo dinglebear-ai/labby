@@ -326,7 +326,7 @@ pub(super) async fn publish(
             .await
             .map_err(map_error)?
     } else {
-        let grant = authorize(
+        authorize(
             &state,
             &authority,
             &auth,
@@ -342,7 +342,17 @@ pub(super) async fn publish(
         })?;
         state
             .depot
-            .publish_skill_archive("skill.tar.gz", archive, None, &grant)
+            .publish_skill_archive_revalidated("skill.tar.gz", archive, None, || async {
+                authorize(
+                    &state,
+                    &authority,
+                    &auth,
+                    source.as_ref().map(|v| &v.0),
+                    bound.as_ref().map(|v| &v.0),
+                )
+                .await
+                .map_err(|_| DepotError::DelegationUnavailable)
+            })
             .await
             .map_err(map_error)?
     };
