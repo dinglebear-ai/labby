@@ -1280,15 +1280,12 @@ pub mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let logs = crate::test_support::captured_logs(buf);
-        assert!(
-            !logs.contains(secret),
-            "redirect query leaked into logs: {logs}"
-        );
+        assert!(!logs.contains(secret), "redirect query leaked into logs");
         assert!(
             !logs.contains("redirect_uris"),
-            "redirect URI list entered logs: {logs}"
+            "redirect URI list entered logs"
         );
-        assert!(logs.contains("\"redirect_uri_count\":1"), "{logs}");
+        assert!(logs.contains("\"redirect_uri_count\":1"));
     }
 
     #[tokio::test]
@@ -1939,22 +1936,22 @@ pub mod tests {
         ] {
             assert!(
                 !logs.contains(secret),
-                "OAuth authorization secret leaked into logs: {secret}\n{logs}"
+                "OAuth authorization secret leaked into logs"
             );
             let encoded: String = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect();
             assert!(
                 !logs.contains(&encoded),
-                "encoded OAuth authorization secret leaked into logs: {encoded}\n{logs}"
+                "encoded OAuth authorization secret leaked into logs"
             );
         }
         assert!(
             logs.contains(
                 "\"provider_authorization_endpoint\":\"https://accounts.google.com/o/oauth2/v2/auth\""
             ),
-            "{logs}"
+            "provider authorization endpoint missing from logs"
         );
-        assert!(logs.contains("\"oauth_state_id\":"), "{logs}");
-        assert!(!logs.contains("\"location\":"), "{logs}");
+        assert!(logs.contains("\"oauth_state_id\":"));
+        assert!(!logs.contains("\"location\":"));
     }
 
     #[tokio::test]
@@ -2261,7 +2258,7 @@ pub mod tests {
         let logs = crate::test_support::captured_logs(buf);
         assert!(
             !logs.contains(return_to_secret),
-            "browser return_to query leaked into logs: {logs}"
+            "browser return_to query leaked into logs"
         );
     }
 
@@ -4234,7 +4231,7 @@ pub mod tests {
             let params: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
             assert!(
                 params.contains_key("code"),
-                "expected code in redirect: {redirect}"
+                "expected authorization code in redirect"
             );
             assert_eq!(
                 params.get("state").map(|value| value.as_ref()),
@@ -4246,7 +4243,7 @@ pub mod tests {
             );
             assert!(
                 !params.contains_key("error"),
-                "unexpected error in redirect: {redirect}"
+                "unexpected error in redirect"
             );
         }
 
@@ -4280,10 +4277,10 @@ pub mod tests {
             ] {
                 assert!(
                     !logs.contains(secret),
-                    "OAuth redirect secret leaked into debug logs: {secret}\n{logs}"
+                    "OAuth redirect secret leaked into debug logs"
                 );
             }
-            assert!(logs.contains("\"redirect_path\":\"/callback\""), "{logs}");
+            assert!(logs.contains("\"redirect_path\":\"/callback\""));
         }
 
         /// Email not in admin or allowed_users must be rejected in the browser-login

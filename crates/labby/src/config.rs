@@ -3096,7 +3096,7 @@ api_key_header = "X-Custom-Key""#;
             Some(labby_openapi::OpenApiCredential::ApiKey { header, .. }) => {
                 assert_eq!(header, "X-Custom-Key");
             }
-            other => panic!("expected ApiKey credential, got {other:?}"),
+            _ => panic!("expected ApiKey credential"),
         }
     }
 
@@ -4076,7 +4076,7 @@ url = "https://acme.example.com/.well-known/oauth-client"
             UpstreamOauthRegistration::ClientMetadataDocument { url } => {
                 assert_eq!(url, "https://acme.example.com/.well-known/oauth-client");
             }
-            other => panic!("unexpected registration: {other:?}"),
+            _ => panic!("expected client metadata document registration"),
         }
         upstream.validate().expect("validate ok");
     }
@@ -4109,7 +4109,7 @@ client_id = "my-client"
                 assert_eq!(client_id, "my-client");
                 assert!(client_secret_env.is_none());
             }
-            other => panic!("unexpected registration: {other:?}"),
+            _ => panic!("expected preregistered OAuth client"),
         }
     }
 
@@ -4201,7 +4201,7 @@ client_secret_env = "ACME_CLIENT_SECRET"
                 assert_eq!(client_id, "my-client");
                 assert_eq!(client_secret_env.as_deref(), Some("ACME_CLIENT_SECRET"));
             }
-            other => panic!("unexpected registration: {other:?}"),
+            _ => panic!("expected preregistered OAuth client with secret reference"),
         }
     }
 
@@ -4251,7 +4251,7 @@ strategy = "dynamic"
         let err = cfg.upstream[0].validate().unwrap_err();
         match err {
             ConfigError::ConflictingAuth { name } => assert_eq!(name, "acme"),
-            other => panic!("expected ConflictingAuth, got {other:?}"),
+            _ => panic!("expected ConflictingAuth"),
         }
     }
 
