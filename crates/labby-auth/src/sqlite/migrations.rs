@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 16;
+pub(crate) const SCHEMA_VERSION: i64 = 17;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -377,6 +377,40 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
                 "injected v16 migration fault".to_string(),
             ));
         }
+        transaction.commit().map_err(sqlite_error)?;
+    }
+    if current < 17 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS desktop_login_states (
+               state_hash TEXT PRIMARY KEY NOT NULL,
+               return_to TEXT NOT NULL,
+               provider_code_verifier TEXT NOT NULL,
+               poll_token_hash TEXT UNIQUE NOT NULL,
+               redeem_code_hash TEXT UNIQUE NOT NULL,
+               launch_code_challenge TEXT NOT NULL,
+               phase INTEGER NOT NULL DEFAULT 0 CHECK(phase BETWEEN 0 AND 2),
+               identity_issuer TEXT NOT NULL,
+               provider_generation INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_desktop_login_states_expiry ON desktop_login_states(expires_at);
+             CREATE TABLE IF NOT EXISTS desktop_session_handoffs (
+               poll_token_hash TEXT PRIMARY KEY NOT NULL,
+               redeem_code_hash TEXT UNIQUE NOT NULL,
+               launch_code_challenge TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               identity_issuer TEXT NOT NULL,
+               provider_generation INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_desktop_session_handoffs_expiry
+               ON desktop_session_handoffs(expires_at);
+             PRAGMA user_version = 17;",
+            )
+            .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
     Ok(())

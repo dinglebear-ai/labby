@@ -145,7 +145,9 @@ Do not declare success from compilation alone. Run focused tests for the behavio
 
 `apps/gateway-admin` is the operator web UI and uses the Aurora design system. Reuse existing tokens/components/patterns before introducing new primitives. See its nested `CLAUDE.md` plus [docs/design/design-system-contract.md](docs/design/design-system-contract.md) and [docs/design/component-development.md](docs/design/component-development.md).
 
-`apps/palette-tauri` has separate nested instructions for the launcher/Tauri boundary.
+`apps/labby-desktop` is the native Tauri shell for the canonical Gateway Admin
+Control Plane. It must not grow a separate desktop-only renderer or product
+surface; see its nested instructions for the native webview boundary.
 
 ## Plugin Boundary
 

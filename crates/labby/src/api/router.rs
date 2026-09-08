@@ -375,6 +375,49 @@ async fn auth_native_poll(
     .await?)
 }
 
+async fn auth_desktop_start(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Json<labby_auth::types::DesktopStartRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_start(
+        State(app_auth_state(&state)?),
+        labby_auth::authorize::RemoteAddr(addr),
+        headers,
+        body,
+    )
+    .await?)
+}
+async fn auth_desktop_authorize(
+    State(state): State<AppState>,
+    query: Query<labby_auth::types::DesktopAuthorizeQuery>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_authorize(State(app_auth_state(&state)?), query).await?)
+}
+async fn auth_desktop_poll(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    body: Json<labby_auth::types::DesktopPollRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_poll(
+        State(app_auth_state(&state)?),
+        labby_auth::authorize::RemoteAddr(addr),
+        body,
+    )
+    .await?)
+}
+async fn auth_desktop_redeem(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Json<labby_auth::types::DesktopRedeemRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(
+        labby_auth::authorize::desktop_redeem(State(app_auth_state(&state)?), headers, body)
+            .await?,
+    )
+}
+
 async fn reject_ambiguous_request_target(
     request: Request<Body>,
     next: Next,
@@ -1035,6 +1078,10 @@ pub(crate) fn build_router_with_external_auth(
                 AuthRouteId::Register => continue,
                 AuthRouteId::Authorize => get(auth_authorize),
                 AuthRouteId::BrowserLogin => get(auth_browser_login),
+                AuthRouteId::DesktopStart => post(auth_desktop_start),
+                AuthRouteId::DesktopAuthorize => get(auth_desktop_authorize),
+                AuthRouteId::DesktopPoll => post(auth_desktop_poll),
+                AuthRouteId::DesktopRedeem => post(auth_desktop_redeem),
                 AuthRouteId::ProviderCallback => get(auth_callback),
                 AuthRouteId::NativeCallback => get(auth_native_callback),
                 AuthRouteId::NativePoll => post(auth_native_poll),

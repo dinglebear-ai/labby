@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -28,7 +29,7 @@ use crate::at_rest::TokenEncryptionKey;
 use crate::error::AuthError;
 use crate::types::{
     AuthorizationCodeRow, AuthorizationRequestRow, BrowserLoginStateRow, BrowserSessionRow,
-    NativeAuthorizationResultRow, RegisteredClient,
+    DesktopLoginStateRow, DesktopSessionHandoffRow, NativeAuthorizationResultRow, RegisteredClient,
 };
 
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
@@ -674,6 +675,132 @@ impl SqliteStore {
         .await
     }
 
+    pub async fn insert_desktop_session_handoff(
+        &self,
+        handoff: DesktopSessionHandoffRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let poll_token_hash = handoff.poll_token_hash.clone();
+            let count = transaction
+                .execute(
+                    "INSERT INTO desktop_session_handoffs
+                 (poll_token_hash, redeem_code_hash, launch_code_challenge, session_id,
+                  identity_issuer, provider_generation, expires_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+                 WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                   WHERE singleton = 1 AND issuer = ?5 AND generation = ?6)",
+                    params![
+                        handoff.poll_token_hash,
+                        handoff.redeem_code_hash,
+                        handoff.launch_code_challenge,
+                        handoff.session_id,
+                        binding.identity_issuer,
+                        binding.provider_generation,
+                        handoff.expires_at
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if count == 1 {
+                transaction
+                    .execute(
+                        "DELETE FROM desktop_login_states WHERE poll_token_hash=?1 AND phase=2",
+                        params![poll_token_hash],
+                    )
+                    .map_err(sqlite_error)?;
+                transaction.commit().map_err(sqlite_error)
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider changed while desktop login was in progress".into(),
+                ))
+            }
+        })
+        .await
+    }
+
+    pub async fn insert_desktop_login_state(
+        &self,
+        login: DesktopLoginStateRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let count = conn.execute("INSERT INTO desktop_login_states
+              (state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,phase,identity_issuer,provider_generation,created_at,expires_at)
+              SELECT ?1,?2,?3,?4,?5,?6,0,?7,?8,?9,?10 WHERE EXISTS
+              (SELECT 1 FROM inbound_identity_provider WHERE singleton=1 AND issuer=?7 AND generation=?8)", params![login.state_hash,login.return_to,login.provider_code_verifier,login.poll_token_hash,login.redeem_code_hash,login.launch_code_challenge,binding.identity_issuer,binding.provider_generation,login.created_at,login.expires_at]).map_err(sqlite_error)?;
+            if count == 1 { Ok(()) } else { Err(AuthError::InvalidGrant("inbound provider runtime is no longer active".into())) }
+        }).await
+    }
+
+    pub async fn advance_desktop_login_state(
+        &self,
+        launch_state: &str,
+        provider_state: &str,
+        verifier: &str,
+    ) -> Result<Option<crate::types::ProviderBound<DesktopLoginStateRow>>, AuthError> {
+        let launch_hash = hash_token(launch_state);
+        let provider_hash = hash_token(provider_state);
+        let verifier = verifier.to_owned();
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET state_hash=?2,provider_code_verifier=?3,phase=1 WHERE state_hash=?1 AND phase=0 AND expires_at>?4 AND identity_issuer=(SELECT issuer FROM inbound_identity_provider WHERE singleton=1) AND provider_generation=(SELECT generation FROM inbound_identity_provider WHERE singleton=1) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![launch_hash,provider_hash,verifier,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
+    }
+
+    pub async fn claim_desktop_login_state(
+        &self,
+        provider_state: &str,
+    ) -> Result<Option<crate::types::ProviderBound<DesktopLoginStateRow>>, AuthError> {
+        let state_hash = hash_token(provider_state);
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET phase=2 WHERE state_hash=?1 AND phase=1 AND expires_at>?2 AND identity_issuer=(SELECT issuer FROM inbound_identity_provider WHERE singleton=1) AND provider_generation=(SELECT generation FROM inbound_identity_provider WHERE singleton=1) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![state_hash,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
+    }
+
+    pub async fn desktop_session_handoff_status(
+        &self,
+        poll_token: &str,
+    ) -> Result<Option<(bool, i64)>, AuthError> {
+        let poll_hash = hash_token(poll_token);
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT ready, expires_at FROM (
+                   SELECT 1 AS ready, expires_at, identity_issuer, provider_generation
+                     FROM desktop_session_handoffs WHERE poll_token_hash = ?1
+                   UNION ALL
+                   SELECT 0 AS ready, expires_at, identity_issuer, provider_generation
+                     FROM desktop_login_states WHERE poll_token_hash = ?1
+                 ) candidate JOIN inbound_identity_provider provider ON provider.singleton = 1
+                 WHERE candidate.expires_at > ?2
+                   AND candidate.identity_issuer = provider.issuer
+                   AND candidate.provider_generation = provider.generation
+                 ORDER BY ready DESC LIMIT 1",
+                params![poll_hash, now],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    pub async fn take_desktop_session_handoff(
+        &self,
+        redeem_code: &str,
+        code_verifier: &str,
+    ) -> Result<Option<String>, AuthError> {
+        let redeem_hash = hash_token(redeem_code);
+        let verifier_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row(
+            "DELETE FROM desktop_session_handoffs
+             WHERE redeem_code_hash = ?1 AND launch_code_challenge = ?2 AND expires_at > ?3
+               AND identity_issuer = (SELECT issuer FROM inbound_identity_provider WHERE singleton = 1)
+               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+             RETURNING session_id",
+            params![redeem_hash, verifier_challenge, now], |row| row.get(0))
+            .optional().map_err(sqlite_error)).await
+    }
+
     pub async fn execute_test_statement(&self, sql: &str) -> Result<(), AuthError> {
         let sql = sql.to_string();
         self.with_conn(move |conn| conn.execute_batch(&sql).map_err(sqlite_error))
@@ -765,8 +892,10 @@ impl SqliteStore {
                     |row| row.get(0),
                 )
                 .map_err(sqlite_error)?;
+            let desktop_states: i64 = conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM desktop_login_states WHERE expires_at > ?1) + (SELECT COUNT(*) FROM desktop_session_handoffs WHERE expires_at > ?1)", params![now], |row| row.get(0)).map_err(sqlite_error)?;
             Ok(
-                (authorization_requests + browser_login_states + native_authorization_results)
+                (authorization_requests + browser_login_states + native_authorization_results + desktop_states)
                     as usize,
             )
         })
@@ -936,6 +1065,8 @@ impl SqliteStore {
                 ("browser_sessions", "session_id"),
                 ("browser_login_states", "state"),
                 ("native_authorization_results", "poll_token_hash"),
+                ("desktop_login_states", "state_hash"),
+                ("desktop_session_handoffs", "poll_token_hash"),
             ] {
                 let deleted = transaction
                     .execute(
@@ -1278,6 +1409,27 @@ fn hash_token(token: &str) -> String {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
+}
+
+fn desktop_login_state_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::types::ProviderBound<DesktopLoginStateRow>> {
+    Ok(crate::types::ProviderBound {
+        value: DesktopLoginStateRow {
+            state_hash: row.get(0)?,
+            return_to: row.get(1)?,
+            provider_code_verifier: row.get(2)?,
+            poll_token_hash: row.get(3)?,
+            redeem_code_hash: row.get(4)?,
+            launch_code_challenge: row.get(5)?,
+            created_at: row.get(6)?,
+            expires_at: row.get(7)?,
+        },
+        binding: crate::types::ProviderBinding {
+            identity_issuer: row.get(8)?,
+            provider_generation: row.get(9)?,
+        },
+    })
 }
 
 fn validate_or_reopen_connection(conn: &mut Connection, path: &Path) -> Result<(), AuthError> {
@@ -2695,7 +2847,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            16
+            migrations::SCHEMA_VERSION
         );
     }
 
@@ -2751,7 +2903,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 16);
+        assert_eq!(schema_version, migrations::SCHEMA_VERSION);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

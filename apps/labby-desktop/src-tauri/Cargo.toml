@@ -1,0 +1,60 @@
+[package]
+name = "labby-desktop"
+version = "0.1.0"
+description = "Native desktop shell for the Labby Control Plane"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace]
+
+[workspace.lints.rust]
+missing_crate_level_docs = "deny"
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+missing_safety_doc = "deny"
+mod_module_files = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_rust_codeblocks = "deny"
+invalid_html_tags = "deny"
+bare_urls = "warn"
+private_intra_doc_links = "warn"
+redundant_explicit_links = "warn"
+unescaped_backticks = "warn"
+
+[lints]
+workspace = true
+
+[lib]
+name = "labby_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "labby-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+getrandom = "0.3"
+open = "5"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = ["image-png", "tray-icon"] }
+tokio = { version = "1", features = ["time", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

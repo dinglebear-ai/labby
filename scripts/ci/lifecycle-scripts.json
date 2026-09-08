@@ -42,8 +42,6 @@
     "scripts/ci/qualify-container-operator.sh",
     "scripts/ci/container-healthcheck.sh",
     "scripts/run-compose-prod.sh",
-    "apps/palette-tauri/scripts/agent-os-smoke.sh",
-    "apps/palette-tauri/scripts/live-smoke.sh",
     "plugins/scripts/check-dozzle-skill",
     "plugins/scripts/check-oauth.sh",
     "plugins/scripts/cleanup-leaked-mcp.sh",
@@ -59,8 +57,7 @@
     "unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.labby"
   ],
   "powershell": [
-    "scripts/install.ps1",
-    "apps/palette-tauri/scripts/desktop-smoke.ps1"
+    "scripts/install.ps1"
   ],
   "public_copies": ["apps/gateway-admin/public/install.sh"],
   "tests": [

@@ -7,7 +7,8 @@ use axum::routing::{get, post};
 use std::time::Instant;
 
 use crate::authorize::{
-    authorize, browser_login, callback, native_callback, native_poll, register_client,
+    authorize, browser_login, callback, desktop_authorize, desktop_poll, desktop_redeem,
+    desktop_start, native_callback, native_poll, register_client,
 };
 use crate::error::AuthErrorKind;
 use crate::metadata::{authorization_server_metadata, jwks, protected_resource_metadata};
@@ -23,6 +24,10 @@ pub enum AuthRouteId {
     Register,
     Authorize,
     BrowserLogin,
+    DesktopStart,
+    DesktopAuthorize,
+    DesktopPoll,
+    DesktopRedeem,
     ProviderCallback,
     NativeCallback,
     NativePoll,
@@ -87,6 +92,30 @@ pub fn auth_route_specs(provider: crate::config::InboundProviderKind) -> Vec<Aut
             id: AuthRouteId::BrowserLogin,
             method: "GET",
             path: "/auth/login",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::DesktopStart,
+            method: "POST",
+            path: "/auth/desktop/start",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::DesktopAuthorize,
+            method: "GET",
+            path: "/auth/desktop/authorize",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::DesktopPoll,
+            method: "POST",
+            path: "/auth/desktop/poll",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::DesktopRedeem,
+            method: "POST",
+            path: "/auth/desktop/redeem",
             browser_only: true,
         },
         AuthRouteSpec {
@@ -165,6 +194,10 @@ fn build_protocol_router(state: &AuthState, include_browser: bool) -> Router<Aut
             AuthRouteId::Register => app.route(spec.path, post(register_client)),
             AuthRouteId::Authorize => app.route(spec.path, get(authorize)),
             AuthRouteId::BrowserLogin => app.route(spec.path, get(browser_login)),
+            AuthRouteId::DesktopStart => app.route(spec.path, post(desktop_start)),
+            AuthRouteId::DesktopAuthorize => app.route(spec.path, get(desktop_authorize)),
+            AuthRouteId::DesktopPoll => app.route(spec.path, post(desktop_poll)),
+            AuthRouteId::DesktopRedeem => app.route(spec.path, post(desktop_redeem)),
             AuthRouteId::ProviderCallback => app.route(spec.path, get(callback)),
             AuthRouteId::NativeCallback => app.route(spec.path, get(native_callback)),
             AuthRouteId::NativePoll => app.route(spec.path, post(native_poll)),
@@ -208,6 +241,10 @@ pub const BEARER_ONLY_ROUTER_FORBIDDEN_PATHS: &[(&str, &str)] = &[
     ("POST", "/register"),
     ("GET", "/native/callback"),
     ("POST", "/native/poll"),
+    ("POST", "/auth/desktop/start"),
+    ("GET", "/auth/desktop/authorize"),
+    ("POST", "/auth/desktop/poll"),
+    ("POST", "/auth/desktop/redeem"),
 ];
 
 /// Emit the canonical API dispatch event for an inbound OAuth endpoint.
@@ -302,6 +339,10 @@ fn auth_dispatch_action(path: &str) -> &'static str {
                     AuthRouteId::Register => "oauth.register",
                     AuthRouteId::Authorize => "oauth.authorize",
                     AuthRouteId::BrowserLogin => "oauth.browser_login",
+                    AuthRouteId::DesktopStart => "oauth.desktop_start",
+                    AuthRouteId::DesktopAuthorize => "oauth.desktop_authorize",
+                    AuthRouteId::DesktopPoll => "oauth.desktop_poll",
+                    AuthRouteId::DesktopRedeem => "oauth.desktop_redeem",
                     AuthRouteId::ProviderCallback => "oauth.callback",
                     AuthRouteId::NativeCallback => "oauth.native_callback",
                     AuthRouteId::NativePoll => "oauth.native_poll",

@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use rusqlite::params;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::Connection;
+use sha2::{Digest as _, Sha256};
 
 use crate::at_rest::TokenEncryptionKey;
 use crate::jwt::{AccessClaims, SigningKeys};
@@ -11,6 +13,125 @@ use crate::types::{
     GoogleProviderCredentialUpdate, ProviderSwitchRevocation, RefreshTokenRow, RegisteredClient,
     UpstreamOauthCredentialRow, UpstreamOauthStateRow,
 };
+
+#[tokio::test]
+async fn desktop_handoff_wrong_verifier_does_not_consume_then_replay_fails() {
+    let store = temp_store().await;
+    store
+        .activate_inbound_provider("google", "https://accounts.google.com", "test", now_unix())
+        .await
+        .unwrap();
+    let active = store.inbound_provider_state().await.unwrap();
+    let binding = crate::types::ProviderBinding {
+        identity_issuer: active.issuer,
+        provider_generation: active.generation,
+    };
+    let verifier = "desktop-verifier-with-enough-entropy-for-the-contract";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let secret_hash = |value: &str| {
+        Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    store
+        .insert_desktop_session_handoff(
+            crate::types::DesktopSessionHandoffRow {
+                poll_token_hash: secret_hash("poll-secret"),
+                redeem_code_hash: secret_hash("redeem-secret"),
+                launch_code_challenge: challenge,
+                session_id: "desktop-session".into(),
+                expires_at: now_unix() + 60,
+            },
+            binding,
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .take_desktop_session_handoff("redeem-secret", "wrong-verifier")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .take_desktop_session_handoff("redeem-secret", verifier)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("desktop-session")
+    );
+    assert!(
+        store
+            .take_desktop_session_handoff("redeem-secret", verifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let active = store.inbound_provider_state().await.unwrap();
+    let binding = crate::types::ProviderBinding {
+        identity_issuer: active.issuer,
+        provider_generation: active.generation,
+    };
+    store
+        .insert_desktop_session_handoff(
+            crate::types::DesktopSessionHandoffRow {
+                poll_token_hash: secret_hash("expired-poll"),
+                redeem_code_hash: secret_hash("expired-redeem"),
+                launch_code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+                session_id: "expired-session".into(),
+                expires_at: now_unix() - 1,
+            },
+            binding,
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .take_desktop_session_handoff("expired-redeem", verifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let active = store.inbound_provider_state().await.unwrap();
+    let stale_binding = crate::types::ProviderBinding {
+        identity_issuer: active.issuer,
+        provider_generation: active.generation,
+    };
+    store
+        .insert_desktop_session_handoff(
+            crate::types::DesktopSessionHandoffRow {
+                poll_token_hash: secret_hash("stale-provider-poll"),
+                redeem_code_hash: secret_hash("stale-provider-redeem"),
+                launch_code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+                session_id: "stale-provider-session".into(),
+                expires_at: now_unix() + 60,
+            },
+            stale_binding,
+        )
+        .await
+        .unwrap();
+    store
+        .activate_inbound_provider("authelia", "https://id.example.com", "switched", now_unix())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .desktop_session_handoff_status("stale-provider-poll")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .take_desktop_session_handoff("stale-provider-redeem", verifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
 
 use crate::util::now_unix;
 
@@ -1489,7 +1610,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        16
+        migrations::SCHEMA_VERSION
     );
 }
 
@@ -1545,7 +1666,7 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
         })
         .await
         .unwrap();
-    assert_eq!(schema_version, 16);
+    assert_eq!(schema_version, migrations::SCHEMA_VERSION);
     let row = migrated
         .find_google_provider_credential("google-subject-v7")
         .await
@@ -1782,7 +1903,7 @@ fn v16_migration_fault_rolls_back_and_retry_installs_expiry_indexes() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        16
+        migrations::SCHEMA_VERSION
     );
     for index in [
         "idx_authorization_requests_expiry",

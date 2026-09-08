@@ -148,8 +148,8 @@ jobs when their changed-path category is enabled:
 | Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
-| Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
-| Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Labby desktop shell | `desktop` | frozen install and static loader build |
+| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
