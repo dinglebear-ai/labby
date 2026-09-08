@@ -495,18 +495,27 @@ pub(crate) fn dedicated_contract_accepts_for(
     if key.starts_with("stash:") && surface == Surface::Api && cfg!(target_os = "linux") {
         return matches!(error_kind, "not_found" | "service_unavailable");
     }
-    // `gateway.clients.list` is advertised by the Gateway catalog but the
-    // daemon's action router does not dispatch it, so no surface can reach a
-    // live success. The compiled CLI probe additionally runs without a daemon
-    // and now fails closed instead of answering from a local one-shot manager.
-    if key == "gateway:gateway.clients.list" && surface == Surface::Cli {
-        return matches!(error_kind, "unknown_action" | "daemon_unavailable");
+    if key.starts_with("gateway:") && surface == Surface::Cli {
+        return matches!(error_kind, "daemon_unavailable" | "unknown_action");
     }
     dedicated_contract_for(key, surface)
         .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    // Gateway actions are owned by the running daemon. The CLI dispatches them
+    // over the daemon's HTTP API and fails closed when none is reachable
+    // instead of answering from a local one-shot manager, so the compiled CLI
+    // probe cannot reach a live success. The owned gateway CLI workflow runs
+    // against a real daemon and supplies that evidence for the actions it
+    // covers; `gateway.clients.list` additionally has no daemon-side dispatch
+    // route at all.
+    if key.starts_with("gateway:") && surface == Surface::Cli {
+        return Some((
+            "requires_running_daemon_covered_by_owned_workflow",
+            "daemon_unavailable",
+        ));
+    }
     if key.starts_with("stash:") {
         return if surface == Surface::Mcp {
             Some((
