@@ -6,7 +6,11 @@
   "success_action": "access.team.list",
   "invalid_action": "schema",
   "policy_action": "access.platform_admin.grant",
-  "workflow": ["access.team.create", "access.team.suspend", "access.team.activate"],
+  "workflow": [
+    "access.team.create",
+    "access.team.suspend",
+    "access.team.activate"
+  ],
   "parameters": {
     "action": "access.team.list",
     "binding_id": "matrix-binding",
@@ -22,6 +26,15 @@
   "action_params": {
     "access.team.member.role.set": {
       "role": "admin"
+    },
+    "access.gateway_credential.bind": {
+      "team_id": "bootstrap-initial-team"
+    },
+    "access.gateway_credential.list": {
+      "team_id": "bootstrap-initial-team"
+    },
+    "access.gateway_credential.revoke": {
+      "team_id": "bootstrap-initial-team"
     }
   }
 }
