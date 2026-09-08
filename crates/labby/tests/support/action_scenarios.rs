@@ -495,6 +495,13 @@ pub(crate) fn dedicated_contract_accepts_for(
     if key.starts_with("stash:") && surface == Surface::Api && cfg!(target_os = "linux") {
         return matches!(error_kind, "not_found" | "service_unavailable");
     }
+    // `gateway.clients.list` is advertised by the Gateway catalog but the
+    // daemon's action router does not dispatch it, so no surface can reach a
+    // live success. The compiled CLI probe additionally runs without a daemon
+    // and now fails closed instead of answering from a local one-shot manager.
+    if key == "gateway:gateway.clients.list" && surface == Surface::Cli {
+        return matches!(error_kind, "unknown_action" | "daemon_unavailable");
+    }
     dedicated_contract_for(key, surface)
         .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
 }
