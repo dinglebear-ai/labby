@@ -673,6 +673,7 @@ impl AuthState {
 
     /// Viewer evidence comes only from the provider-verified durable row, never
     /// a request email or the display email on an unverified session alone.
+    #[cfg(feature = "http-axum")]
     pub(crate) async fn verified_viewer_domain_for_session(
         &self,
         session: &crate::types::ProviderBound<crate::types::BrowserSessionRow>,

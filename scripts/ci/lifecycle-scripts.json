@@ -6,6 +6,7 @@
     "scripts/incus-bootstrap.sh",
     "scripts/with_timeout.sh",
     "scripts/bench-labby-slimming",
+    "scripts/build-on-tootie-incus.sh",
     "scripts/check-feature-slices.sh",
     "scripts/check-incus-ssh",
     "scripts/check-retired-features.sh",
@@ -66,6 +67,7 @@
     "scripts/tests/n-minus-one-installers.sh",
     "scripts/tests/incus-bootstrap-transaction.sh",
     "scripts/tests/incus-bootstrap-full-fake.py",
-    "scripts/ci/test-container-topology.py"
+    "scripts/ci/test-container-topology.py",
+    "scripts/ci/test-build-on-tootie-incus.py"
   ]
 }

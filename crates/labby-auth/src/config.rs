@@ -304,6 +304,7 @@ impl Default for AuthConfig {
 }
 
 impl AuthConfig {
+    #[cfg(feature = "http-axum")]
     pub(crate) fn viewer_domain_for_verified_email(
         &self,
         email: Option<&str>,
@@ -518,6 +519,7 @@ impl AuthConfig {
         Ok(())
     }
 
+    #[cfg(feature = "http-axum")]
     pub(crate) fn desktop_origin(&self) -> Option<&Url> {
         self.desktop_origin.as_ref().or(self.public_url.as_ref())
     }

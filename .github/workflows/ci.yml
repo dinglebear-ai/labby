@@ -1393,7 +1393,8 @@ jobs:
           scripts/ci/validate-supply-manifest.py
           LABBY_IMAGE="ghcr.io/dinglebear-ai/labby@sha256:$(printf 'a%.0s' {1..64})" scripts/ci/validate-container-inputs.sh
           python3 scripts/ci/test-container-topology.py
-          grep -Fq 'COPY apps/gateway-admin/out' config/Dockerfile
+          # The action catalog embeds UI source as well as the static export.
+          grep -Fxq 'COPY apps/gateway-admin apps/gateway-admin' config/Dockerfile
           grep -Fq 'ARG LABBY_NPM_VERSION' config/Dockerfile
           grep -Fq 'ARG LABBY_NPM_SHA512' config/Dockerfile
           grep -Fq 'registry.npmjs.org/npm/-/npm-' config/Dockerfile
