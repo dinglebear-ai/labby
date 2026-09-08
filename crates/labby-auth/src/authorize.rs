@@ -3074,12 +3074,40 @@ pub mod tests {
         state
             .cimd_cache
             .insert(client_id.to_string(), (client, now_unix() + 60));
-        let response = router(state).oneshot(
+        let response = router(state.clone()).oneshot(
             Request::builder()
                 .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Fcodex%2Fclient.json&redirect_uri=http%3A%2F%2F127.0.0.1%3A56505%2Fcallback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
                 .body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
+        let location = Url::parse(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_state = location
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let pending = state
+            .store
+            .take_bound_authorization_request(&provider_state)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.value.redirect_uri,
+            "http://127.0.0.1:56505/callback"
+        );
+        assert_eq!(pending.value.client_id, client_id);
+        assert_eq!(pending.value.client_state, "abc");
+        assert_eq!(pending.value.code_challenge, "pkce");
+        assert_eq!(pending.value.code_challenge_method, "S256");
     }
 
     #[tokio::test]

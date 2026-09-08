@@ -126,9 +126,8 @@ emergency way to invalidate residual access JWTs. If the Authelia client secret
 or private CA material is compromised, rotate it at Authelia, replace the
 server-held secret/file, and restart all Labby processes. Never put secrets in
 TOML, command lines, logs, or support bundles.
-## Startup Behavior
 
-### Native loopback callbacks
+## Native loopback callbacks
 
 At authorization, HTTP loopback redirects (`127.0.0.1`, `[::1]`, and
 `localhost`) may use an OS-assigned port different from the registered URI.
@@ -138,6 +137,40 @@ and query remain exact, with no normalization or wildcard expansion. Other
 redirects still require an exact registered match. Authorization-code redemption
 continues to require the exact redirect URI used in that authorization request,
 including its selected port, together with the PKCE verifier.
+
+### Reverse-proxy requirements
+
+The reverse proxy must preserve the authorization response's `Location` URI,
+including the HTTP scheme for native loopback listeners. A generic rule such as
+`proxy_redirect http:// $scheme://;` can silently rewrite that callback to HTTPS.
+The browser then attempts TLS against an HTTP-only listener and times out before
+the client sends a token request to Labby.
+
+Disable redirect rewriting in the proxy locations serving authorization responses,
+or place narrowly scoped loopback-preserving rules before a generic rewrite. For
+SWAG configurations that include `proxy.conf`, these rules must precede that
+include in the affected OAuth location:
+
+```nginx
+proxy_redirect http://127.0.0.1: http://127.0.0.1:;
+proxy_redirect http://localhost: http://localhost:;
+proxy_redirect http://[::1]: http://[::1]:;
+include /config/nginx/proxy.conf;
+```
+
+These rules cover explicitly ported native callbacks. Apply the same preservation
+contract to the selected provider callback (`/auth/google/callback` or
+`/auth/oidc/callback`) and any authorization/consent route that returns a client
+redirect. Do not change unrelated proxy routes or disable browser TLS protections.
+Validate the proxy configuration before reloading it.
+
+Verify with a fresh browser login, a successful client token exchange, and an
+authenticated MCP call. A server-side callback log alone does not prove completion.
+If a callback stalls, compare the browser's full scheme/host/port with the requested
+redirect and check whether Labby received the subsequent `/token` request. Never
+copy authorization codes, state, or tokens into logs or support reports.
+
+## Startup Behavior
 
 When OAuth mode is configured, `labby serve` performs these steps at startup:
 
