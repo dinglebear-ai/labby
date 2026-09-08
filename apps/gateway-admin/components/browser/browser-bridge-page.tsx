@@ -43,6 +43,7 @@ export function BrowserBridgePage() {
   const [busyKey, setBusyKey] = React.useState<string>()
   const [revokeTarget, setRevokeTarget] = React.useState<BrowserIdentity>()
   const loadGeneration = React.useRef(0)
+  const mutationPending = React.useRef(false)
 
   const load = React.useCallback(async (signal?: AbortSignal, announce = false) => {
     const generation = ++loadGeneration.current
@@ -80,16 +81,21 @@ export function BrowserBridgePage() {
   }, [load])
 
   async function mutate(key: string, operation: () => Promise<unknown>, success: string) {
+    if (mutationPending.current) return false
+    mutationPending.current = true
     setBusyKey(key)
     try {
       await operation()
       toast.success(success)
       const refreshed = await load()
       if (!refreshed) toast.warning('The operation succeeded, but refreshed browser state could not be loaded.')
+      return true
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : 'The browser operation failed.')
+      return false
     } finally {
       setBusyKey(undefined)
+      mutationPending.current = false
     }
   }
 
@@ -155,7 +161,7 @@ export function BrowserBridgePage() {
                 </CardHeader>
                 <CardContent className="grid gap-3 pb-6 text-sm sm:grid-cols-[1fr_auto] sm:items-end">
                   <dl className="grid gap-1 text-aurora-text-muted"><div><dt className="inline font-medium text-aurora-text-primary">Paired: </dt><dd className="inline">{formatUiDateTime(browser.paired_at * 1000)}</dd></div><div><dt className="inline font-medium text-aurora-text-primary">Last seen: </dt><dd className="inline">{browser.last_seen_at ? formatUiRelativeTime(browser.last_seen_at * 1000) : 'Never'}</dd></div></dl>
-                  {!browser.revoked_at ? <Button variant="outline" size="sm" onClick={() => setRevokeTarget(browser)}>Revoke</Button> : null}
+                  {!browser.revoked_at ? <Button variant="outline" size="sm" disabled={Boolean(busyKey)} onClick={() => setRevokeTarget(browser)}>Revoke</Button> : null}
                 </CardContent>
               </Card>
             ))}
@@ -185,7 +191,7 @@ export function BrowserBridgePage() {
         )}
       </section>
 
-      <ActionConfirmationDialog open={Boolean(revokeTarget)} title="Revoke browser identity?" description={`This disconnects ${revokeTarget?.display_name ?? 'the browser'}, disables its active page sessions, and requires a new pairing before it can reconnect.`} confirmLabel="Revoke browser" busy={busyKey?.startsWith('revoke:')} onOpenChange={(open) => { if (!open) setRevokeTarget(undefined) }} onConfirm={() => { if (!revokeTarget) return; const target = revokeTarget; void mutate(`revoke:${target.id}`, () => browserApi.revoke(target.id), `${target.display_name} revoked`).then(() => setRevokeTarget(undefined)) }} />
+      <ActionConfirmationDialog open={Boolean(revokeTarget)} title="Revoke browser identity?" description={`This disconnects ${revokeTarget?.display_name ?? 'the browser'}, disables its active page sessions, and requires a new pairing before it can reconnect.`} confirmLabel="Revoke browser" busy={Boolean(busyKey)} onOpenChange={(open) => { if (!open) setRevokeTarget(undefined) }} onConfirm={() => { if (!revokeTarget) return; const target = revokeTarget; void mutate(`revoke:${target.id}`, () => browserApi.revoke(target.id), `${target.display_name} revoked`).then((succeeded) => { if (succeeded) setRevokeTarget(undefined) }) }} />
     </div>
   )
 }

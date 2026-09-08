@@ -15,7 +15,7 @@ export function expectedTool(overrides = {}) {
     description: "Search",
     input_schema: {},
     origin: "",
-    annotations: {read_only_hint: false, untrusted_content_hint: false},
+    annotations: {read_only_hint: false, untrusted_content_hint: false, consequential_hint: false},
     ...overrides
   };
 }

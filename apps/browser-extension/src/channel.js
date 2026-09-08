@@ -1,14 +1,19 @@
+import {bridgeFailureKind} from "./errors.js";
+
 const VERSION = 1;
+/** @typedef {{isCurrent: () => boolean, messageNow: (type: string, payload: any) => Promise<any>}} Connection */
 
 /** Plain JSON WebSocket adapter for Labby's Rust browser bridge. */
 export class LabbyBrowserChannel {
-  /** @param {{baseUrl: string, extensionId: string, browserId?: string, onChallenge: (payload: any) => Promise<any> | void, onReady?: () => Promise<any> | void, onEvent?: (payload: any) => Promise<any> | void, onError?: (error: unknown, payload?: any) => void, replyTimeoutMs?: number}} options */
-  constructor({baseUrl, extensionId, browserId, onChallenge, onReady, onEvent, onError = reportChannelError, replyTimeoutMs = 10_000}) {
+  /** @param {{baseUrl: string, extensionId: string, browserId?: string, onChallenge: (payload: any, channel: Pick<LabbyBrowserChannel, "messageNow">) => Promise<any> | void, onReady?: () => Promise<any> | void, onEvent?: (payload: any, connection: Connection) => Promise<any> | void, onDisconnect?: (connection: Connection) => Promise<any> | void, onError?: (error: unknown, payload?: any) => void, replyTimeoutMs?: number}} options */
+  constructor({baseUrl, extensionId, browserId, onChallenge, onReady, onEvent, onDisconnect, onError = reportChannelError, replyTimeoutMs = 10_000}) {
     this.baseUrl = baseUrl; this.extensionId = extensionId; this.browserId = browserId;
     this.onChallenge = onChallenge; this.onReady = onReady; this.onEvent = onEvent; this.onError = onError; this.replyTimeoutMs = replyTimeoutMs;
+    this.onDisconnect = onDisconnect;
+    /** @type {Connection | undefined} */ this.connection;
     /** @type {Map<string, {resolve: (value: any) => void, reject: (reason?: any) => void, timeout: ReturnType<typeof setTimeout>}>} */
     this.pending = new Map();
-    /** @type {WebSocket} */ this.socket;
+    /** @type {WebSocket | undefined} */ this.socket;
     /** @type {Promise<void>} */ this.ready;
     /** @type {(value?: void) => void} */ this.resolveReady;
     /** @type {(reason?: any) => void} */ this.rejectReady;
@@ -17,30 +22,44 @@ export class LabbyBrowserChannel {
   }
 
   connect() {
+    this.close();
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
-    this.ready.catch((error) => this.onError(error, {kind: "connection_setup_failed"}));
     const url = new URL("/browser/socket", this.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
     this.socket = socket;
+    const connection = {isCurrent: () => this.socket === socket, messageNow: (/** @type {string} */ type, /** @type {any} */ payload) => this.messageNow(type, payload, socket)};
+    this.connection = connection;
+    this.ready.catch((error) => { if (this.socket === socket) this.onError(error, {kind: "connection_setup_failed"}); });
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;
-      try { this.receive(JSON.parse(event.data)); } catch (error) { this.onError(error, {kind: "invalid_json"}); }
+      try { this.receive(JSON.parse(event.data), connection); } catch (error) { this.onError(error, {kind: "invalid_json"}); }
     };
     socket.onopen = async () => {
       if (this.socket !== socket) return;
       try {
         if (this.browserId) {
           const challenge = await this.request({type: "auth_challenge", browser_id: this.browserId});
-          await this.onChallenge({challenge_id: challenge.challenge_id, nonce: challenge.nonce});
+          if (this.socket !== socket) return;
+          /** @type {Pick<LabbyBrowserChannel, "messageNow">} */
+          const capability = {messageNow: (type, payload) => this.messageNow(type, payload, socket)};
+          await this.onChallenge({challenge_id: challenge.challenge_id, nonce: challenge.nonce}, capability);
         }
+        if (this.socket !== socket) return;
         this.resolveReady();
         await this.onReady?.();
+        if (this.socket !== socket) return;
         this.reconnectAttempt = 0;
-      } catch (error) { this.onError(error, {kind: "authentication_or_resync_failed"}); this.rejectReady(error); socket.close(); }
+      } catch (error) {
+        if (this.socket !== socket) return;
+        this.onError(error, {kind: "authentication_or_resync_failed"}); this.rejectReady(error); socket.close();
+      }
     };
     socket.onclose = () => {
       if (this.socket !== socket) return;
+      this.socket = undefined;
+      this.connection = undefined;
+      this.notifyDisconnect(connection);
       this.rejectReady(new Error("channel_disconnected"));
       this.rejectPending(new Error("channel_disconnected"));
       const delay = Math.min(30_000, 1_000 * (2 ** this.reconnectAttempt)) + Math.floor(Math.random() * 250);
@@ -50,21 +69,23 @@ export class LabbyBrowserChannel {
   }
 
   /** @param {string} type @param {any} payload */
-  async message(type, payload) { await this.ready; return this.messageNow(type, payload); }
+  async message(type, payload) { const socket = this.socket; await this.ready; return this.messageNow(type, payload, socket); }
 
-  /** @param {string} type @param {any} payload */
-  async messageNow(type, payload) {
+  /** @param {string} type @param {any} payload @param {WebSocket | undefined} [socket] */
+  async messageNow(type, payload, socket = this.socket) {
+    if (this.socket !== socket) throw new Error("channel_disconnected");
     if (type === "browser.hello" || type === "browser.settings") return {payload: {ignored_origins: []}};
     if (type === "browser.resync" || type === "discovery.observed") {
-      for (const observation of payload.observations || []) await this.request(observeMessage(observation));
+      for (const observation of payload.observations || []) await this.request(observeMessage(observation), socket);
       return {payload: {ignored_origins: []}};
     }
-    const reply = await this.request(translateOutbound(type, payload, this.extensionId));
+    const reply = await this.request(translateOutbound(type, payload, this.extensionId), socket);
     return translateReply(reply);
   }
 
-  /** @param {Record<string, any>} message @returns {Promise<any>} */
-  request(message) {
+  /** @param {Record<string, any>} message @param {WebSocket | undefined} [socket] @returns {Promise<any>} */
+  request(message, socket = this.socket) {
+    if (this.socket !== socket) return Promise.reject(new Error("channel_disconnected"));
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("channel_not_ready"));
     const requestId = crypto.randomUUID();
     this.socket.send(JSON.stringify({version: VERSION, request_id: requestId, ...message}));
@@ -74,8 +95,8 @@ export class LabbyBrowserChannel {
     });
   }
 
-  /** @param {any} envelope */
-  receive(envelope) {
+  /** @param {any} envelope @param {Connection | undefined} [connection] */
+  receive(envelope, connection = this.connection) {
     if (!envelope || envelope.version !== VERSION || typeof envelope.type !== "string") throw new Error("invalid_protocol_envelope");
     if (envelope.request_id && this.pending.has(envelope.request_id)) {
       const pending = this.pending.get(envelope.request_id);
@@ -86,14 +107,26 @@ export class LabbyBrowserChannel {
       return;
     }
     const event = translateInbound(envelope);
-    if (event) Promise.resolve(this.onEvent?.(event)).catch((error) => this.onError(error, event));
+    if (event && connection?.isCurrent()) Promise.resolve(this.onEvent?.(event, connection)).catch((error) => this.onError(error, event));
   }
 
   close() {
     clearTimeout(this.reconnectTimer);
-    if (this.socket) this.socket.onclose = null;
+    const socket = this.socket;
+    const connection = this.connection;
+    this.socket = undefined;
+    this.connection = undefined;
+    if (connection) this.notifyDisconnect(connection);
+    if (socket) socket.onclose = null;
+    this.rejectReady?.(new Error("channel_closed"));
     this.rejectPending(new Error("channel_closed"));
-    this.socket?.close();
+    socket?.close();
+  }
+
+  /** @param {Connection} connection */
+  notifyDisconnect(connection) {
+    try { Promise.resolve(this.onDisconnect?.(connection)).catch((error) => this.onError(error, {kind: "disconnect_cancellation_failed"})); }
+    catch (error) { this.onError(error, {kind: "disconnect_cancellation_failed"}); }
   }
 
   /** @param {Error} reason */
@@ -154,5 +187,5 @@ function translateInbound(envelope) {
 
 /** @param {unknown} error @param {any} payload */
 function reportChannelError(error, payload) {
-  console.error("Labby browser bridge event failed", {callId: payload?.payload?.call_id, error});
+  console.error("Labby browser bridge event failed", {callId: payload?.payload?.call_id, kind: bridgeFailureKind(error)});
 }

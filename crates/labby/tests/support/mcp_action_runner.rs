@@ -174,6 +174,15 @@ fn capped_http_client() -> BodyCappedHttpClient {
 }
 
 impl BuiltinMcpRunner {
+    pub(crate) fn http_base_url(&self) -> &str {
+        &self
+            .guard
+            .as_ref()
+            .expect("HTTP MCP runner")
+            .connection()
+            .base_url
+    }
+
     pub(crate) async fn start() -> Result<Self, String> {
         Self::start_with_config(None).await
     }

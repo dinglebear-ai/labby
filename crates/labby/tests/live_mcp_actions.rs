@@ -465,6 +465,7 @@ async fn live_errors_are_structured_redacted_and_terminal() {
 #[tokio::test]
 async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
+    action_scenarios::initialize_browser_fixture(runner.http_base_url()).await;
     let expected = mcp_intents()
         .into_iter()
         // lab_admin is intentionally local-only. depot_publish is owned by a

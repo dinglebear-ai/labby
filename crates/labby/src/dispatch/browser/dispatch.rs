@@ -28,10 +28,14 @@ struct CallParams {
 }
 
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+    // Discovery must not create a second runtime or require an attached browser.
+    match action {
+        "help" => return Ok(help_payload("browser", ACTIONS)),
+        "schema" => return action_schema(ACTIONS, require_str(&params, "action")?),
+        _ => {}
+    }
     let bridge = browser_bridge().await?;
     match action {
-        "help" => Ok(help_payload("browser", ACTIONS)),
-        "schema" => action_schema(ACTIONS, require_str(&params, "action")?),
         "browser.status" => Ok(json!({
             "available": true,
             "database": bridge.store().path(),

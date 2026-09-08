@@ -247,6 +247,35 @@ pub(crate) fn exact_plans(surface: Surface) -> BTreeMap<String, Disposition> {
         .collect()
 }
 
+/// Admit an inert extension through the owned daemon's real socket. No pairing
+/// or document consent is granted by this action-matrix fixture.
+pub(crate) async fn initialize_browser_fixture(base_url: &str) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    let url = format!(
+        "{}/browser/socket",
+        base_url.replacen("http://", "ws://", 1)
+    );
+    let mut request = url.into_client_request().expect("browser fixture URL");
+    request.headers_mut().insert(
+        "Origin",
+        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap(),
+    );
+    tokio::time::timeout(CHILD_DEADLINE, async {
+        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("browser fixture socket");
+        socket
+            .close(None)
+            .await
+            .expect("close inert browser fixture");
+    })
+    .await
+    .expect("browser fixture deadline");
+}
+
 pub(crate) async fn run_cli_probe(home: &Path, args: &[String]) -> Result<Output, String> {
     let mut command = tokio::process::Command::from(isolated_command(home));
     command.args(args).env("LABBY_MATRIX_CANARY", SECRET_CANARY);

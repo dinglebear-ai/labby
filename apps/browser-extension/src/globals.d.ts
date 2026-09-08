@@ -14,3 +14,6 @@ declare var __webbyToolCalls: Map<string, AbortController | {
   cancelled: boolean;
   controller: AbortController | null;
 }> | undefined;
+
+/** Sticky fail-closed state when cancellation evidence exceeds the document budget. */
+declare var __webbyToolCallsSaturated: boolean | undefined;

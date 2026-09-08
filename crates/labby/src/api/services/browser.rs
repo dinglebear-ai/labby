@@ -19,7 +19,7 @@ use crate::api::oauth::AuthContext;
 use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
-use crate::dispatch::browser::runtime::browser_bridge;
+use crate::dispatch::browser::runtime::{browser_bridge, initialize_browser_bridge};
 use crate::dispatch::error::ToolError;
 
 pub fn routes(_state: AppState) -> RouteGroup {
@@ -116,7 +116,7 @@ async fn upgrade(
             required_scopes: Vec::new(),
         }));
     }
-    browser_bridge().await?;
+    initialize_browser_bridge().await?;
     Ok(upgrade
         .max_message_size(512 * 1024)
         .max_frame_size(512 * 1024)

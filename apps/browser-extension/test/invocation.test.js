@@ -3,6 +3,22 @@ import assert from "node:assert/strict";
 import {cancelWebMcp, invokeWebMcp} from "../src/probe.js";
 import {normalizeTools, stableStringify} from "../src/scanning.js";
 
+test("cancellation evidence stays bounded and fails closed without evicting early cancellation", async () => {
+  globalThis.__webbyToolCalls = new Map();
+  try {
+    for (let index = 0; index < 2048; index += 1) cancelWebMcp(`cancel-${index}`);
+    assert.equal(globalThis.__webbyToolCalls.size, 1024);
+    assert.equal(globalThis.__webbyToolCalls.get("cancel-0").cancelled, true);
+    for (const callId of ["cancel-0", "cancel-2047", "new-call"]) {
+      await assert.rejects(invokeWebMcp("mutate", {}, callId, "[]"), /capacity_exhausted: reload this page/);
+    }
+    assert.equal(globalThis.__webbyToolCalls.size, 1024);
+  } finally {
+    delete globalThis.__webbyToolCalls;
+    delete globalThis.__webbyToolCallsSaturated;
+  }
+});
+
 test("executes only the named tool from the expected catalog", async () => {
   const tool = {name: "find", description: "Find", inputSchema: {type: "object"}};
   globalThis.document = {modelContext: {
