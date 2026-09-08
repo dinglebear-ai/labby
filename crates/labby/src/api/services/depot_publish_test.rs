@@ -234,11 +234,7 @@ async fn publish_fixture_with_revocation(
                 }
                 ResponseTemplate::new(200).set_body_json(body.clone())
             })
-            .expect(if revoke.is_some_and(|(last, _)| phase > last) {
-                0
-            } else {
-                1
-            })
+            .expect(u64::from(!revoke.is_some_and(|(last, _)| phase > last)))
             .mount(&server)
             .await;
     }
