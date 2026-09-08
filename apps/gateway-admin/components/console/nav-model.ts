@@ -69,13 +69,6 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         tooltipDetail: 'upstream MCP servers',
       },
       {
-        id: 'Labby',
-        label: 'Labby',
-        href: '/gateway/?id=labby',
-        icon: Cable,
-        tooltipDetail: 'Labby gateway server',
-      },
-      {
         id: 'Browsers',
         label: 'Browsers',
         href: '/browsers',

@@ -22,7 +22,7 @@ impl McpRouteCapabilityGates {
         }
     }
 
-    fn from_loadout(loadout: &GatewayLoadoutConfig) -> Self {
+    pub(crate) fn from_loadout(loadout: &GatewayLoadoutConfig) -> Self {
         Self {
             expose_tools: loadout.expose_tools,
             expose_resources: loadout.expose_resources,
@@ -155,8 +155,18 @@ impl McpRouteScope {
 
     pub(crate) fn allows_service(&self, service: &str) -> bool {
         match self {
-            Self::Root => true,
-            Self::ProtectedSubset { services, .. } => services.contains(service),
+            Self::Root => service != crate::dispatch::depot_publish::SERVICE,
+            Self::ProtectedSubset {
+                services,
+                upstreams,
+                expose_tools,
+                ..
+            } => {
+                services.contains(service)
+                    || (service == crate::dispatch::depot_publish::SERVICE
+                        && *expose_tools
+                        && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM))
+            }
         }
     }
 
@@ -240,6 +250,7 @@ mod tests {
     fn root_allows_everything() {
         let scope = McpRouteScope::Root;
         assert!(scope.allows_service("gateway"));
+        assert!(!scope.allows_service("depot_publish"));
         assert!(scope.allows_upstream("gateway-alpha"));
         assert!(scope.exposes_tools());
         assert!(scope.exposes_resources());
@@ -248,6 +259,15 @@ mod tests {
         assert!(scope.exposes_code_mode());
         assert!(scope.is_root());
         assert_eq!(scope.label(), "root");
+    }
+
+    #[test]
+    fn depot_publish_shim_is_owned_only_by_team_depot_protected_routes() {
+        let allowed = McpRouteScope::protected_subset("linear", ["team-depot"], ["skills"], false);
+        let wrong_upstream =
+            McpRouteScope::protected_subset("linear", ["catalog-depot"], ["skills"], false);
+        assert!(allowed.allows_service("depot_publish"));
+        assert!(!wrong_upstream.allows_service("depot_publish"));
     }
 
     #[test]

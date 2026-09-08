@@ -7,6 +7,11 @@ use serde::Serialize;
 
 use super::state::AppState;
 
+/// Whether a registry service has any HTTP API surface.
+pub(crate) fn service_has_http_surface(service: &str) -> bool {
+    service != "lab_admin" && service != crate::dispatch::depot_publish::SERVICE
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteAuth {
@@ -481,6 +486,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     routes.extend(prefixed(
         "/auth/bootstrap",
         crate::api::services::access_bootstrap_proof::descriptors(),
+    ));
+    routes.extend(prefixed(
+        "/v1/access/owner-link",
+        crate::api::services::owner_link::descriptors(),
     ));
     routes.extend(crate::api::services::local_session::descriptors());
     routes.extend(prefixed(

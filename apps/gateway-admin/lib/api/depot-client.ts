@@ -7,6 +7,7 @@ import { refreshBrowserSession } from './service-action-client'
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
 const bounded = (max: number) => z.string().max(max)
+const optionalCatalogText = z.string().nullish().transform(value => value ?? undefined)
 const rawId = bounded(2048).refine(value => new TextEncoder().encode(value).length <= 2048, 'artifact ID exceeds 2048 UTF-8 bytes')
 const cursorSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/)
 
@@ -18,6 +19,7 @@ const contractSchema = z.object({
 const schemaScalar = z.union([z.string().max(4096), z.number().safe()])
 const schemaItem = z.object({
   type: z.enum(['string', 'boolean', 'integer', 'number', 'object', 'array']),
+  description: bounded(4096).optional(),
   enum: z.array(schemaScalar).max(100).optional(),
   minimum: z.number().safe().optional(), maximum: z.number().safe().optional(),
   minLength: z.number().int().min(0).max(16_384).optional(), maxLength: z.number().int().min(0).max(16_384).optional(),
@@ -62,6 +64,7 @@ const operationSchema = z.object({
     if (schema.additionalProperties === true) context.addIssue({ code: 'custom', path: ['additionalProperties'], message: 'additional properties are not supported' })
   }),
   annotations: z.object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional(), idempotentHint: z.boolean().optional(), openWorldHint: z.boolean().optional() }).passthrough().optional(),
+  outputSchema: z.record(z.string(), z.unknown()).refine(schema => new TextEncoder().encode(JSON.stringify(schema)).length <= 65_536, 'output schema exceeds 65536 bytes').optional(),
   group: z.enum(['catalog', 'access', 'operations']).optional(),
 }).strict()
 const operationsSchema = z.object({ operations: z.array(operationSchema).max(1000) }).passthrough()
@@ -104,16 +107,16 @@ export type DepotArtifact = {
   lineage?: { following?: boolean; upstreamArtifactId?: string }
 }
 
-const artifactSchema: z.ZodType<DepotArtifact> = z.object({
+const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
-  name: z.string().optional(), title: z.string().optional(), description: z.string().optional(),
+  name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
   currentRevisionId: z.string().optional(), contentDigest: z.string().optional(),
   revisionCount: z.number().int().nonnegative().optional(),
-  descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: z.string().optional(), description: z.string().optional() }).passthrough().optional(),
-  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: z.string().optional(), components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
+  descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText }).passthrough().optional(),
+  currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
   publication: z.object({ state: z.string().optional(), visibility: z.string().optional(), distribution: z.string().optional() }).passthrough().optional(),
   license: z.object({ redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
-  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: z.string().optional() }).passthrough().optional(),
+  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText }).passthrough().optional(),
 }).passthrough().refine((artifact) => Boolean(artifact.id?.trim() || artifact.descriptor?.id?.trim()), { message: 'artifact identity is missing' })
 
 const listSchema = contractSchema.extend({ result: z.object({ artifacts: z.array(artifactSchema), nextCursor: z.string().optional(), total: z.number().int().nonnegative().optional() }).passthrough() })
@@ -136,7 +139,7 @@ function safeDepotError(value: string, status: number): string {
   return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Depot request failed (${status}, ${value})` : `Depot request failed (${status})`
 }
 
-function validate<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
+function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
   const result = schema.safeParse(value)
   if (result.success) return result.data
   const issue = result.error.issues[0]
@@ -147,6 +150,38 @@ function validate<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
 export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
   const response = await fetch('/v1/depot/status', { credentials: 'same-origin', signal })
   return validate(z.object({ depot: depotStatusSchema }).passthrough(), await parse(response), 'status response').depot
+}
+
+const publishCapabilitySchema = z.object({
+  available: z.boolean(), reason: bounded(4096).optional(), projectId: bounded(256).optional(),
+})
+const publishReceiptSchema = z.object({ jobId: bounded(512).min(1), status: bounded(128).min(1) })
+export type DepotPublishCapability = z.infer<typeof publishCapabilitySchema>
+export type DepotPublishReceipt = z.infer<typeof publishReceiptSchema>
+
+export async function depotPublishCapability(signal?: AbortSignal): Promise<DepotPublishCapability> {
+  return requestV2('/v1/depot/publish', { signal }, publishCapabilitySchema, 'publishing capability')
+}
+
+export async function consumeOwnerLinkApproval(): Promise<{ linked: true; projectId: string }> {
+  const csrf = getSessionCsrfToken()
+  if (!csrf) throw new Error('Sign in again before confirming the owner link.')
+  // Identity and target come exclusively from the verified session and operator approval.
+  // Never retry this one-use mutation automatically after an uncertain response.
+  return requestV2('/v1/access/owner-link/consume', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify({}),
+  }, z.object({ linked: z.literal(true), projectId: bounded(256).min(1) }).strict(), 'owner link receipt')
+}
+
+export async function publishDepotSkill(name: string, source: string): Promise<DepotPublishReceipt> {
+  const csrf = getSessionCsrfToken()
+  if (!csrf) throw new Error('Sign in again before publishing.')
+  // A successful mutation whose response is lost must never be replayed automatically.
+  return requestV2('/v1/depot/publish', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify({ name, source }),
+  }, publishReceiptSchema, 'publish receipt')
 }
 
 export async function depotOperations(signal?: AbortSignal): Promise<DepotOperation[]> {
@@ -191,7 +226,7 @@ const detailV2Schema = z.object({
 }).strict()
 const providerSchema = z.object({
   id: bounded(64).refine(value => value !== 'all'), name: bounded(256), endpoint: bounded(2048),
-  enabled: z.boolean(), authMode: z.enum(['anonymous', 'bearer']), builtin: z.boolean(), configVersion: bounded(128), credentialConfigured: z.boolean(), health: z.object({
+  enabled: z.boolean(), authMode: z.enum(['anonymous', 'bearer']), builtin: z.boolean(), hostManaged: z.boolean().optional(), configVersion: bounded(128), credentialConfigured: z.boolean(), health: z.object({
     state: z.enum(['unknown', 'healthy', 'unauthorized', 'incompatible', 'unavailable']),
     observedAt: z.number().safe().int().nonnegative().nullable(), provenance: bounded(64).nullable(),
     retryNotBefore: z.number().safe().int().nonnegative().nullable(),

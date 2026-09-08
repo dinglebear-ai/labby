@@ -14,6 +14,7 @@ mod browser_authority_tests;
 pub mod cimd;
 pub mod config;
 mod config_providers;
+pub mod depot_delegation;
 pub mod error;
 pub mod google;
 #[cfg(any(test, feature = "http-axum", feature = "upstream-oauth-rmcp"))]
@@ -51,6 +52,8 @@ pub mod types;
 pub mod upstream;
 pub mod util;
 mod verified_identity;
+#[cfg(all(test, feature = "http-axum"))]
+mod viewer_domain_tests;
 
 pub use verified_identity::{
     Authenticator, PrincipalLink, VerifiedIdentity, VerifiedIdentityError,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { depotCall, depotOperations, depotStatus, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
+import { consumeOwnerLinkApproval, depotCall, depotOperations, depotStatus, depotPublishCapability, publishDepotSkill, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -10,6 +10,83 @@ async function withFetch(response: Response, run: () => Promise<void>) {
 }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
+
+test('owner link confirmation sends only session CSRF and an empty body', async () => {
+  const original = globalThis.fetch
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'google-user' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-link' })
+  let requests = 0
+  globalThis.fetch = (async (url, init) => {
+    requests++
+    assert.equal(url, '/v1/access/owner-link/consume')
+    assert.equal(init?.method, 'POST')
+    assert.equal(new Headers(init?.headers).get('x-csrf-token'), 'csrf-link')
+    assert.deepEqual(JSON.parse(String(init?.body)), {})
+    return json({ linked: true, projectId: 'existing-team' })
+  }) as typeof fetch
+  try {
+    assert.deepEqual(await consumeOwnerLinkApproval(), { linked: true, projectId: 'existing-team' })
+    assert.equal(requests, 1)
+  } finally { globalThis.fetch = original; __setBrowserSessionStateForTests({ status: 'unauthenticated' }) }
+})
+
+test('owner linking requires a session and never retries a failed one-use approval', async () => {
+  const original = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => {
+    requests++
+    return json({ kind: 'forbidden', message: 'approval expired' }, 403)
+  }) as typeof fetch
+  try {
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await assert.rejects(consumeOwnerLinkApproval(), /Sign in again/)
+    assert.equal(requests, 0)
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'google-user' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-link' })
+    await assert.rejects(consumeOwnerLinkApproval(), /approval expired/)
+    assert.equal(requests, 1)
+  } finally { globalThis.fetch = original; __setBrowserSessionStateForTests({ status: 'unauthenticated' }) }
+})
+
+test('publishing respects server capability and requires a valid receipt', async () => {
+  await withFetch(json({ available: false, reason: 'project_session_required' }), async () => {
+    assert.equal((await depotPublishCapability()).available, false)
+  })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'owner' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-test', projectId: 'test-project' })
+  try {
+    await withFetch(json({ status: 'accepted' }), async () => assert.rejects(publishDepotSkill('demo', 'source'), /incompatible publish receipt/))
+  } finally { __setBrowserSessionStateForTests({ status: 'unauthenticated' }) }
+})
+
+test('publishing sends the complete source and CSRF once without retrying errors', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'owner' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-test', projectId: 'test-project' })
+  const original = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async (url, init) => {
+    requests++
+    assert.equal(url, '/v1/depot/publish')
+    assert.equal(new Headers(init?.headers).get('x-csrf-token'), 'csrf-test')
+    assert.deepEqual(JSON.parse(String(init?.body)), { name: 'demo', source: '---\nname: demo\n---\nComplete skill body' })
+    return json({ kind: 'publish_failed', message: 'Check the submitted job before retrying.' }, 503)
+  }) as typeof fetch
+  try {
+    await assert.rejects(publishDepotSkill('demo', '---\nname: demo\n---\nComplete skill body'), /Check the submitted job/)
+    assert.equal(requests, 1)
+  } finally { globalThis.fetch = original; __setBrowserSessionStateForTests({ status: 'unauthenticated' }) }
+})
+
+test('publishing discards a successful receipt after the browser identity changes', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'owner' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-test', projectId: 'test-project' })
+  const original = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => {
+    requests++
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    return json({ jobId: 'accepted-before-logout', status: 'queued' })
+  }) as typeof fetch
+  try {
+    await assert.rejects(publishDepotSkill('demo', 'source'), /Session changed/)
+    assert.equal(requests, 1)
+  } finally { globalThis.fetch = original; __setBrowserSessionStateForTests({ status: 'unauthenticated' }) }
+})
 
 test('accepts complete status, list, and detail contracts', async () => {
   await withFetch(json({ depot: { configured: true, enabled: true, authority: 'unknown', maxResponseBytes: 1_048_576 } }), async () => assert.equal((await depotStatus()).configured, true))
@@ -35,9 +112,36 @@ test('rejects artifacts without identity in list and detail results', async () =
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: { descriptor: { name: 'anonymous' } } } }), async () => assert.rejects(depotCall('depot.artifacts.get', {}), /artifact identity is missing/i))
 })
 
+test('normalizes absent optional catalog metadata without accepting invalid identities or types', async () => {
+  const published = { ...artifact, title: null, description: null, descriptor: { id: artifact.id, title: null }, currentRevision: { id: 'revision-1', createdAt: null }, lineage: { following: false, upstreamArtifactId: null } }
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [published], total: 1 } }), async () => {
+    const response = await depotCall<{ result: { artifacts: Array<{ id: string; title?: string }> } }>('depot.artifacts.list', {})
+    assert.equal(response.result.artifacts[0]?.id, artifact.id)
+    assert.equal(response.result.artifacts[0]?.title, undefined)
+  })
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: published } }), async () => {
+    const response = await depotCall<{ result: { artifact: { currentRevision: { createdAt?: string } } } }>('depot.artifacts.get', {})
+    assert.equal(response.result.artifact.currentRevision.createdAt, undefined)
+  })
+  for (const invalid of [{ id: null }, { ...artifact, title: 42 }]) {
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [invalid] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /incompatible artifact list response/))
+  }
+})
+
 test('accepts the canonical operation catalog and generic operation results', async () => {
   await withFetch(json({ operations: [{ name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] }), async () => assert.equal((await depotOperations())[0]?.name, 'depot.system.status'))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
+})
+
+test('accepts bounded output schema metadata without weakening operation input validation', async () => {
+  const operation = { name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object' } }
+  const outputSchema = { type: 'object', properties: { result: { anyOf: [{ type: 'string' }, { type: 'null' }] } }, additionalProperties: false }
+  await withFetch(json({ operations: [{ ...operation, outputSchema }] }), async () => assert.deepEqual((await depotOperations())[0]?.outputSchema, outputSchema))
+  for (const invalid of [null, 'object', [], { description: 'x'.repeat(65_537) }]) {
+    await withFetch(json({ operations: [{ ...operation, outputSchema: invalid }] }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  }
+  await withFetch(json({ operations: [{ ...operation, outputSchema, unknownMetadata: true }] }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  await withFetch(json({ operations: [{ ...operation, outputSchema, inputSchema: { type: 'object', additionalProperties: true } }] }), async () => assert.rejects(depotOperations(), /additional properties are not supported/i))
 })
 
 test('sends destructive intent only when explicitly supplied', async () => {
@@ -78,6 +182,8 @@ test('does not surface privileged Depot rejection details', async () => {
 
 test('rejects operation schemas outside the bounded renderer subset', async () => {
   const operation = (inputSchema: unknown) => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema }] })
+  await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'Operation names to include' } } } }), async () => assert.equal((await depotOperations()).length, 1))
+  await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'x'.repeat(4097) } } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: null } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'null' } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'string', pattern: '[' } } }), async () => assert.rejects(depotOperations(), /valid regular expression/i))
@@ -223,6 +329,8 @@ test('admin provider projection is strict and contains no credential material', 
   const provider = { id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'bearer', builtin: false, configVersion: 'v1', credentialConfigured: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
   await withFetch(json([{ ...provider, token: 'secret' }]), async () => assert.rejects(listProviders(), /unrecognized/i))
   await withFetch(json([provider]), async () => assert.equal((await listProviders())[0]?.credentialConfigured, true))
+  await withFetch(json([{ ...provider, endpoint: 'http://127.0.0.1:4100/', hostManaged: true }]), async () => assert.equal((await listProviders())[0]?.hostManaged, true))
+  await withFetch(json([{ ...provider, hostManaged: 'true' }]), async () => assert.rejects(listProviders(), /boolean/i))
 })
 
 test('provider mutations carry CSRF and preserve operation identity', async () => {

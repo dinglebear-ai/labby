@@ -328,6 +328,12 @@ impl AppState {
 
     #[must_use]
     pub fn with_oauth_state(mut self, auth_state: labby_auth::state::AuthState) -> Self {
+        self.depot = Arc::new(
+            crate::dispatch::depot::DepotClient::from_env().with_delegation_from_env(
+                Arc::clone(&auth_state.signing_keys),
+                auth_state.config.public_url.as_ref(),
+            ),
+        );
         if let Some(store) = self.depot_store.clone() {
             self.depot_admin = Some(Arc::new(crate::dispatch::depot::admin::Admin::new(
                 Arc::clone(&self.depot_manager),

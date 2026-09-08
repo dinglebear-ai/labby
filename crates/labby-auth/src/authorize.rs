@@ -330,6 +330,61 @@ fn sanitized_authorization_endpoint(location: &url::Url) -> String {
     endpoint.to_string()
 }
 
+/// Browser and desktop logins share admission and verified identity persistence.
+/// This deliberately does not use the OAuth-client grant's admin elevation.
+async fn create_admitted_browser_session(
+    state: &AuthState,
+    identity: crate::oauth_provider::ProviderExchange,
+    binding: crate::types::ProviderBinding,
+) -> Result<crate::types::BrowserSessionRow, AuthError> {
+    if binding != state.inbound_provider_binding() {
+        return Err(AuthError::InvalidGrant(
+            "browser login provider changed during authorization".into(),
+        ));
+    }
+    let allowed = state.resolve_allowed_emails().await?;
+    let authelia_domain = matches!(
+        state.inbound_provider.kind(),
+        crate::config::InboundProviderKind::Authelia
+    )
+    .then(|| {
+        identity
+            .email
+            .as_deref()?
+            .rsplit_once('@')
+            .map(|(_, domain)| domain)
+    })
+    .flatten();
+    if state
+        .config
+        .viewer_domain_for_verified_email(identity.email.as_deref(), identity.email_verified)
+        .is_none()
+    {
+        check_email_allowlist(
+            identity.email.as_deref(),
+            identity.email_verified,
+            identity.hosted_domain.as_deref().or(authelia_domain),
+            &allowed,
+            &state.config.allowed_email_domains,
+        )?;
+    }
+    if identity.email_verified == Some(true)
+        && let Some(email) = identity.email.as_deref()
+    {
+        state
+            .store
+            .upsert_bound_verified_inbound_identity(
+                &identity.subject,
+                email,
+                now_unix(),
+                binding.clone(),
+            )
+            .await?;
+    }
+    crate::session::create_bound_browser_session(state, identity.subject, identity.email, binding)
+        .await
+}
+
 pub async fn callback(
     State(state): State<AuthState>,
     headers: HeaderMap,
@@ -401,33 +456,7 @@ pub async fn callback(
                 &query.state,
             )
             .await?;
-        let allowed = state.resolve_allowed_emails().await?;
-        let authelia_domain = matches!(
-            state.inbound_provider.kind(),
-            crate::config::InboundProviderKind::Authelia
-        )
-        .then(|| {
-            google
-                .email
-                .as_deref()?
-                .rsplit_once('@')
-                .map(|(_, domain)| domain)
-        })
-        .flatten();
-        check_email_allowlist(
-            google.email.as_deref(),
-            google.email_verified,
-            google.hosted_domain.as_deref().or(authelia_domain),
-            &allowed,
-            &state.config.allowed_email_domains,
-        )?;
-        let session = crate::session::create_bound_browser_session(
-            &state,
-            google.subject,
-            google.email,
-            bound_login.binding,
-        )
-        .await?;
+        let session = create_admitted_browser_session(&state, google, bound_login.binding).await?;
         let mut response = Redirect::to(&login.return_to).into_response();
         append_set_cookie(
             &mut response,
@@ -576,13 +605,32 @@ pub async fn callback(
             .map(|(_, domain)| domain)
     })
     .flatten();
-    if let Err(denial) = check_email_allowlist(
-        google.email.as_deref(),
-        google.email_verified,
-        google.hosted_domain.as_deref().or(authelia_domain),
-        &allowed,
-        &state.config.allowed_email_domains,
-    ) {
+    // Viewer-domain admission is browser-only. In particular an alias whose
+    // Google `hd` matches a legacy administrative domain must not acquire the
+    // unconditional admin elevation used by this OAuth-client grant flow.
+    let domain_only_viewer = state
+        .config
+        .viewer_domain_for_verified_email(google.email.as_deref(), google.email_verified)
+        .is_some()
+        && !google.email.as_deref().is_some_and(|email| {
+            allowed
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(email.trim()))
+        });
+    let admission = if domain_only_viewer {
+        Err(AuthError::AuthFailed(
+            "domain Viewer admission is limited to browser sessions".into(),
+        ))
+    } else {
+        check_email_allowlist(
+            google.email.as_deref(),
+            google.email_verified,
+            google.hosted_domain.as_deref().or(authelia_domain),
+            &allowed,
+            &state.config.allowed_email_domains,
+        )
+    };
+    if let Err(denial) = admission {
         let mut redirect_target = callback_try!(
             url::Url::parse(&request.redirect_uri).map_err(|error| {
                 // Unreachable in practice: redirect_uri was validated against the
@@ -2752,7 +2800,32 @@ pub mod tests {
 
     #[tokio::test]
     async fn desktop_browser_handoff_completes_once_without_exposing_session() {
-        let state = test_auth_state_with_mock_google().await;
+        assert_desktop_browser_handoff(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_domain_viewer_handoff_preserves_browser_admission() {
+        assert_desktop_browser_handoff(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_handoff_supports_distinct_control_plane_and_issuer_origins() {
+        assert_desktop_browser_handoff(true, true).await;
+    }
+
+    async fn assert_desktop_browser_handoff(viewer: bool, split_origin: bool) {
+        let mut state = test_auth_state_with_mock_google().await;
+        if split_origin {
+            std::sync::Arc::make_mut(&mut state.config).public_url =
+                Some(Url::parse("https://issuer.example.com").unwrap());
+            std::sync::Arc::make_mut(&mut state.config).desktop_origin =
+                Some(Url::parse("https://lab.example.com").unwrap());
+        }
+        if viewer {
+            let config = std::sync::Arc::make_mut(&mut state.config);
+            config.admin_email = "admin@elsewhere.example".into();
+            config.viewer_email_domains = vec!["example.com".into()];
+        }
         let app =
             router(state.clone()).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))));
         let verifier = "desktop-verifier-with-at-least-forty-three-characters";
@@ -2955,6 +3028,21 @@ pub mod tests {
             .unwrap();
         assert!(cookie.contains("HttpOnly"));
         let session_id = cookie.split(';').next().unwrap().split_once('=').unwrap().1;
+        if viewer {
+            let session = state
+                .store
+                .find_bound_browser_session(session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                state
+                    .verified_viewer_domain_for_session(&session)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
         assert!(
             state
                 .store
@@ -3808,12 +3896,25 @@ pub mod tests {
     }
 
     pub(crate) fn signed_test_id_token() -> String {
+        signed_test_id_token_with_email("user@example.com", true)
+    }
+
+    pub(crate) fn signed_test_id_token_with_email(email: &str, verified: bool) -> String {
+        signed_test_id_token_with_email_and_hosted_domain(email, verified, None)
+    }
+
+    pub(crate) fn signed_test_id_token_with_email_and_hosted_domain(
+        email: &str,
+        verified: bool,
+        hosted_domain: Option<&str>,
+    ) -> String {
         let claims = json!({
             "iss": "https://accounts.google.com",
             "aud": "client-id",
             "sub": "google-subject-123",
-            "email": "user@example.com",
-            "email_verified": true,
+            "email": email,
+            "email_verified": verified,
+            "hd": hosted_domain,
             "iat": now_unix() as usize,
             "exp": (now_unix() + 3600) as usize,
         });

@@ -1160,6 +1160,12 @@ pub struct AuthFileConfig {
     /// hosted in the domain qualify.
     #[serde(default)]
     pub allowed_email_domains: Option<Vec<String>>,
+    /// Exact verified email domains eligible for automatic Viewer membership.
+    #[serde(default)]
+    pub viewer_email_domains: Option<Vec<String>>,
+    /// Host-selected project for domain Viewers; never selected by a request.
+    #[serde(default)]
+    pub viewer_project_id: Option<String>,
     /// Active inbound human identity provider (`google` or `authelia`).
     #[serde(default)]
     pub provider: Option<String>,
@@ -1316,6 +1322,12 @@ fn resolve_auth_with_env(
                 domains.join(","),
             );
         }
+        if let Some(domains) = config.viewer_email_domains.as_ref() {
+            merged.insert(
+                "LABBY_AUTH_VIEWER_EMAIL_DOMAINS".to_string(),
+                domains.join(","),
+            );
+        }
         insert_if_some(
             &mut merged,
             "LABBY_GOOGLE_CLIENT_ID",
@@ -1466,10 +1478,23 @@ fn resolve_auth_with_env(
         _ => {}
     }
 
-    auth_config::AuthConfigBuilder::new()
+    let resolved = auth_config::AuthConfigBuilder::new()
         .env_prefix("LABBY")
         .build_from_sources(merged)
-        .map_err(anyhow::Error::from)
+        .map_err(anyhow::Error::from)?;
+    if !resolved.viewer_email_domains.is_empty()
+        && config
+            .and_then(|config| config.viewer_project_id.as_deref())
+            .is_none_or(|project| {
+                project.is_empty()
+                    || project.len() > 96
+                    || project.trim() != project
+                    || project.chars().any(char::is_control)
+            })
+    {
+        anyhow::bail!("auth.viewer_project_id is required when viewer_email_domains is enabled");
+    }
+    Ok(resolved)
 }
 
 fn insert_if_some(target: &mut HashMap<String, String>, key: &str, value: Option<String>) {
@@ -3291,6 +3316,8 @@ future = "keep"
                 "https://callback.example.com/callback/*".to_string(),
             ]),
             allowed_email_domains: None,
+            viewer_email_domains: None,
+            viewer_project_id: None,
             provider: None,
             authelia_issuer_url: None,
             authelia_client_id: None,
@@ -3480,6 +3507,66 @@ future = "keep"
     fn resolve_auth_defaults_allowed_email_domains_to_empty() {
         let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
         assert!(resolved.allowed_email_domains.is_empty());
+    }
+
+    #[test]
+    fn viewer_domain_policy_requires_an_explicit_host_project() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.viewer_email_domains = Some(vec!["example.org".into()]);
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+        cfg.viewer_project_id = Some(" bootstrap-default ".into());
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32))],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+        cfg.viewer_project_id = Some("bootstrap-default".into());
+        let resolved = resolve_oauth_fixture(&cfg);
+        assert_eq!(resolved.viewer_email_domains, vec!["example.org"]);
+    }
+
+    #[test]
+    fn viewer_domains_env_overrides_file_but_cannot_supply_project() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.viewer_email_domains = Some(vec!["old.example".into()]);
+        cfg.viewer_project_id = Some("bootstrap-default".into());
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_VIEWER_EMAIL_DOMAINS".into(),
+                    "new.example".into(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(resolved.viewer_email_domains, vec!["new.example"]);
+        cfg.viewer_project_id = None;
+        let error = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_VIEWER_PROJECT_ID".into(),
+                    "bootstrap-default".into(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".into(), "11".repeat(32)),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("auth.viewer_project_id"));
+    }
+
+    #[test]
+    fn viewer_policy_is_default_off() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.viewer_email_domains.is_empty());
     }
 
     #[test]

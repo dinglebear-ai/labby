@@ -1,8 +1,107 @@
 use super::discovery::{
-    DiscoveryError, ProviderPage, merge_page, project_detail, provider_request_limit,
-    validate_request,
+    DiscoveryError, ProviderPage, merge_page, project_detail, provider_list_body,
+    provider_request_limit, validate_request,
 };
 use serde_json::json;
+
+#[test]
+fn unfiltered_provider_list_omits_query_but_preserves_nonempty_search() {
+    for query in ["", " ", "\t\n", "   "] {
+        validate_request(query, 25).unwrap();
+        assert_eq!(
+            provider_list_body(query, 25, None),
+            json!({"limit":25,"cursor":null})
+        );
+    }
+    assert_eq!(
+        provider_list_body("  artifact search  ", 10, Some("next")),
+        json!({"query":"  artifact search  ","limit":10,"cursor":"next"})
+    );
+}
+
+#[test]
+fn real_depot_null_display_fields_and_extra_license_metadata_are_projected() {
+    let source = json!({
+        "id":"artifact-1", "name":"Team skill", "title":null,"description":null,
+        "currentRevisionId":"revision-1", "contentDigest":"sha256:source",
+        "license":{"redistribution":"unknown","reviewState":"unreviewed","takedownState":"clear","declared":null,"schemaVersion":1},
+        "publication":{"visibility":"private","state":"listed","distribution":"metadata","metadata":{},"schemaVersion":1}
+    });
+    let mut pages = [ProviderPage::participating(
+        "team",
+        vec![source],
+        None,
+        Some(1),
+    )];
+    let result = merge_page(&mut pages, 0, 10).unwrap();
+    let item = &result.items[0];
+    assert!(item.get("title").is_none());
+    assert!(item.get("description").is_none());
+    assert_eq!(
+        item["license"],
+        json!({"redistribution":"unknown","reviewState":"unreviewed","takedownState":"clear"})
+    );
+    assert_eq!(
+        item["publication"],
+        json!({"visibility":"private","state":"listed","distribution":"metadata"})
+    );
+    for declared in [json!(null), json!("MIT")] {
+        let detail = project_detail("artifact-1", json!({
+            "descriptor":{"id":"artifact-1","name":"Team skill","title":null,"description":"Description","schemaVersion":1,"metadata":{},"tags":[]},
+            "currentRevisionId":"revision-1",
+            "currentRevision":{"id":"revision-1","contentDigest":"sha256:source","components":[],"authoredAt":null,"schemaVersion":1},
+            "license":{"redistribution":"unknown","reviewState":"unreviewed","takedownState":"clear","declared":declared,"detected":[],"metadata":{}},
+            "publication":{"visibility":"private","state":"listed","distribution":"metadata","publishedAt":null,"schemaVersion":1}
+        })).unwrap();
+        assert_eq!(
+            detail["descriptor"],
+            json!({"id":"artifact-1","name":"Team skill","description":"Description"})
+        );
+        assert_eq!(
+            detail["currentRevision"],
+            json!({"id":"revision-1","contentDigest":"sha256:source"})
+        );
+        assert!(detail["license"].get("declared").is_none());
+        assert!(detail["publication"].get("publishedAt").is_none());
+    }
+}
+
+#[test]
+fn projection_rejects_wrong_known_types_and_identity_conflicts() {
+    for bad in [
+        json!({"id":"artifact-1","title":42}),
+        json!({"id":"artifact-1","name":null}),
+        json!({"id":"artifact-1","license":{"redistribution":false}}),
+        json!({"id":"artifact-1","publication":{"visibility":[]}}),
+        json!({"id":"artifact-1","currentRevision":{"id":null}}),
+        json!({"id":"artifact-1","revisionCount":-1}),
+    ] {
+        let mut pages = [ProviderPage::participating(
+            "team",
+            vec![bad],
+            None,
+            Some(1),
+        )];
+        assert_eq!(
+            merge_page(&mut pages, 0, 10).unwrap_err(),
+            DiscoveryError::InvalidProvider
+        );
+    }
+    assert_eq!(
+        project_detail(
+            "artifact-1",
+            json!({"id":"artifact-1","descriptor":{"id":"artifact-other"}})
+        ),
+        Err(DiscoveryError::InvalidProvider)
+    );
+    assert_eq!(
+        project_detail(
+            "artifact-1",
+            json!({"descriptor":{"id":"artifact-1","title":false}})
+        ),
+        Err(DiscoveryError::InvalidProvider)
+    );
+}
 
 fn page(id: &str, count: usize) -> ProviderPage {
     ProviderPage::participating(

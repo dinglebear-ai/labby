@@ -1,6 +1,9 @@
 //! Top-level axum router — mounts `POST /v1/<service>` for every enabled service
 //! and the MCP streamable HTTP transport at `/mcp`.
 
+#[path = "domain_viewer.rs"]
+mod domain_viewer;
+
 #[cfg(feature = "gateway")]
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
@@ -630,6 +633,10 @@ fn build_v1_router(
         );
     }
     v1 = v1
+        .nest(
+            "/access/owner-link",
+            services::owner_link::routes(state.clone()),
+        )
         .merge(services::access_credentials::issue_routes(state.clone()))
         .nest(
             "/access/credentials",
@@ -895,7 +902,14 @@ pub(crate) fn build_router_with_external_auth(
         layer
     };
     let v1_protected = if credential_auth_configured {
-        v1_group.map_router(|router| router.route_layer(make_auth_layer(true)))
+        v1_group.map_router(|router| {
+            router
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    domain_viewer::provision,
+                ))
+                .route_layer(make_auth_layer(true))
+        })
     } else {
         v1_group
     };
@@ -1449,8 +1463,10 @@ mod tests {
     /// MCP-only service. Every other entry must resolve to a mounted route and be
     /// rejected by the shared authentication layer before its handler runs.
     fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
+        if service == "lab_admin" || service == crate::dispatch::depot_publish::SERVICE {
+            return None;
+        }
         let path = match service {
-            "lab_admin" => return None,
             "fs" => "/v1/fs/list".to_string(),
             "stash" => "/v1/stash/stats".to_string(),
             name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
@@ -1498,7 +1514,11 @@ mod tests {
 
         for service in registry.services() {
             let Some((method, path)) = registry_http_auth_probe(service.name) else {
-                assert_eq!(service.name, "lab_admin", "only lab_admin is MCP-only");
+                assert!(
+                    service.name == "lab_admin"
+                        || service.name == crate::dispatch::depot_publish::SERVICE,
+                    "only reviewed MCP-only services may omit an HTTP route"
+                );
                 continue;
             };
             let response = build_router_with_bearer(

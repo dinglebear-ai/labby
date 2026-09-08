@@ -689,7 +689,16 @@ async fn authenticate(
                         layer,
                     ));
                 }
-                if !authorized {
+                let viewer_domain = auth_state
+                    .verified_viewer_domain_for_session(&crate::types::ProviderBound {
+                        value: session.clone(),
+                        binding: bound_session.binding.clone(),
+                    })
+                    .await
+                    .map_err(|_| {
+                        auth_error_response("verified browser admission is unavailable", layer)
+                    })?;
+                if !authorized && viewer_domain.is_none() {
                     auth_state
                         .store
                         .revoke_inbound_identity(
@@ -705,6 +714,13 @@ async fn authenticate(
                         layer,
                     ));
                 }
+                // Domain-only browser admission never inherits the gateway's
+                // administrative static-token scopes, even if configured there.
+                let browser_scopes = if authorized {
+                    layer.static_token_scopes.clone()
+                } else {
+                    vec!["lab:read".into()]
+                };
                 let browser_authority = if matches!(
                     auth_state.inbound_provider.kind(),
                     crate::config::InboundProviderKind::Google
@@ -713,7 +729,7 @@ async fn authenticate(
                         crate::browser_authority::BrowserAuthority::from_google(
                             auth_state.clone(),
                             session.clone(),
-                            layer.static_token_scopes.clone(),
+                            browser_scopes.clone(),
                         )
                         .await
                         .map_err(|_| {
@@ -737,7 +753,7 @@ async fn authenticate(
                 let auth = AuthContext {
                     actor_key,
                     sub: session.subject,
-                    scopes: layer.static_token_scopes.clone(),
+                    scopes: browser_scopes,
                     issuer: "browser-session".to_string(),
                     via_session: true,
                     csrf_token: Some(session.csrf_token),

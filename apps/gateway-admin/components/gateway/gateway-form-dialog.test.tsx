@@ -228,6 +228,8 @@ test('renaming a gateway invalidates an in-flight OAuth start', async () => {
 
   const originalFetch = globalThis.fetch
   let startResolve: ((response: Response) => void) | null = null
+  let signalStartCalled: (() => void) | null = null
+  const startCalled = new Promise<void>((resolve) => { signalStartCalled = resolve })
   globalThis.fetch = (async (input, init) => {
     const path = String(input)
     if (path === '/v1/gateway' && init?.method === 'POST') return gatewayActionResponse(init, {})
@@ -240,7 +242,10 @@ test('renaming a gateway invalidates an in-flight OAuth start', async () => {
       })
     }
     if (path === '/v1/gateway/oauth/start') {
-      return new Promise<Response>((resolve) => { startResolve = resolve })
+      return new Promise<Response>((resolve) => {
+        startResolve = resolve
+        signalStartCalled?.()
+      })
     }
     throw new Error(`unexpected fetch ${path}`)
   }) as typeof fetch
@@ -253,8 +258,8 @@ test('renaming a gateway invalidates an in-flight OAuth start', async () => {
     assert.ok(urlInput)
     await setInputValue(window, nameInput, 'old-name')
     await setInputValue(window, urlInput, 'https://github.example/mcp')
-    await waitFor(() => assert.ok(startResolve))
-
+    await waitForSignal(startCalled, 'OAuth start request')
+    assert.ok(startResolve)
     await setInputValue(window, nameInput, 'new-name')
     await act(async () => {
       startResolve?.(jsonResponse({ authorization_url: 'https://github.example/oauth/authorize' }))
@@ -282,6 +287,8 @@ test('switching away from OAuth invalidates an in-flight OAuth start', async () 
 
   const originalFetch = globalThis.fetch
   let startResolve: ((response: Response) => void) | null = null
+  let signalStartCalled: (() => void) | null = null
+  const startCalled = new Promise<void>((resolve) => { signalStartCalled = resolve })
   globalThis.fetch = (async (input, init) => {
     const path = String(input)
     if (path === '/v1/gateway' && init?.method === 'POST') return gatewayActionResponse(init, {})
@@ -294,7 +301,10 @@ test('switching away from OAuth invalidates an in-flight OAuth start', async () 
       })
     }
     if (path === '/v1/gateway/oauth/start') {
-      return new Promise<Response>((resolve) => { startResolve = resolve })
+      return new Promise<Response>((resolve) => {
+        startResolve = resolve
+        signalStartCalled?.()
+      })
     }
     throw new Error(`unexpected fetch ${path}`)
   }) as typeof fetch
@@ -304,23 +314,18 @@ test('switching away from OAuth invalidates an in-flight OAuth start', async () 
     const urlInput = document.querySelector('#url') as HTMLInputElement | null
     assert.ok(urlInput)
     await setInputValue(window, urlInput, 'https://github.example/mcp')
-    await waitFor(() => assert.ok(startResolve))
-
-    const authSelect = document.querySelector('[role="combobox"]') as HTMLElement | null
-    assert.ok(authSelect)
+    await waitForSignal(startCalled, 'OAuth start request')
+    assert.ok(startResolve)
     await act(async () => {
+      const authSelect = document.querySelector('[role="combobox"]') as HTMLElement | null
+      assert.ok(authSelect)
       authSelect.click()
       await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    const noAuth = [...document.querySelectorAll('[role="option"]')]
-      .find((option) => option.textContent?.includes('No auth')) as HTMLElement | undefined
-    assert.ok(noAuth)
-    await act(async () => {
+      const noAuth = [...document.querySelectorAll('[role="option"]')]
+        .find((option) => option.textContent?.includes('No auth')) as HTMLElement | undefined
+      assert.ok(noAuth)
       noAuth.click()
       await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-
-    await act(async () => {
       startResolve?.(jsonResponse({ authorization_url: 'https://github.example/oauth/authorize' }))
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
@@ -1092,6 +1097,20 @@ async function waitFor(assertion: () => void) {
   throw lastError
 }
 
+async function waitForSignal(signal: Promise<void>, label: string) {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      signal,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 2_000)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 async function renderOpenGatewayDialog(
   gateway: Gateway | null = null,
   onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<(() => Promise<void>) | void> = async () => {},
@@ -1112,11 +1131,15 @@ async function renderOpenGatewayDialog(
 
 async function setInputValue(window: Window, input: HTMLInputElement, value: string) {
   await act(async () => {
-    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-    setValue?.call(input, value)
-    input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+    dispatchInputValue(window, input, value)
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
+}
+
+function dispatchInputValue(window: Window, input: HTMLInputElement, value: string) {
+  const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+  setValue?.call(input, value)
+  input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
 }
 
 async function setTextareaValue(window: Window, input: HTMLTextAreaElement, value: string) {

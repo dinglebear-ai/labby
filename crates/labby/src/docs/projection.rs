@@ -17,6 +17,7 @@ use crate::registry::{RegisteredService, build_docs_registry};
 
 #[cfg(feature = "api-docs")]
 use crate::api::openapi::build_openapi_spec;
+use crate::api::route_registry::service_has_http_surface;
 
 const LABBY_CRATE: &str = "labby";
 const LABBY_APIS_CRATE: &str = "labby-apis";
@@ -187,6 +188,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         core_env("LABBY_MCP_GATEWAY_URL", false, false, "https://mcp.example.com", "Canonical public MCP gateway URL"),
         auth_env("LABBY_AUTH_MODE", false, false, "bearer", "Inbound authentication mode: bearer or oauth"),
         auth_env("LABBY_PUBLIC_URL", true, false, "https://lab.example.com", "Canonical public application URL and OAuth issuer"),
+        auth_env("LABBY_AUTH_DESKTOP_ORIGIN", false, false, "https://lab.example.com", "Trusted Control Plane origin for desktop browser-session handoff; defaults to public URL origin"),
         auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier used in oauth mode"),
         auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret used in oauth mode"),
         auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Active inbound identity provider: google or authelia"),
@@ -803,9 +805,9 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "fs" | "stash"),
+        cli: !matches!(service, "fs" | "stash" | "depot_publish"),
         mcp: true,
-        api: service != "lab_admin",
+        api: service_has_http_surface(service),
         web_ui: matches!(
             service,
             "gateway"

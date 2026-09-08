@@ -11,6 +11,7 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+pub(crate) mod owner_link;
 #[cfg(test)]
 pub(crate) mod migration_fixture {
     pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;
@@ -23,6 +24,7 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+mod team_provision;
 #[cfg(test)]
 mod test_support;
 mod workflow;
@@ -104,6 +106,7 @@ pub(crate) use runtime::{
 };
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
+pub(crate) use team_provision::TeamMemberProvisionOutcome;
 #[allow(unused_imports)]
 pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
 

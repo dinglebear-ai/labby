@@ -86,7 +86,11 @@ fn invalid_overlay_changes_produce_actionable_failures() {
             .any(|error| error.contains("named hermetic recipe"))
     );
 
-    let mut impossible = intents()[0].clone();
+    let mut impossible = intents()
+        .iter()
+        .find(|intent| intent.required)
+        .expect("matrix contains a required intent")
+        .clone();
     impossible.required = false;
     assert!(
         validate_intent_shape(&impossible)
@@ -245,11 +249,12 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
-    let base = BTreeSet::from(["doctor", "server_logs", "setup", "stash"]);
+    let base = BTreeSet::from(["depot_publish", "doctor", "server_logs", "setup", "stash"]);
     let gateway = BTreeSet::from([
         "artifacts",
         "browser",
         "bundles",
+        "depot_publish",
         "doctor",
         "gateway",
         "jobs",
@@ -268,13 +273,21 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ("gateway-host", gateway),
         (
             "fs",
-            BTreeSet::from(["doctor", "fs", "server_logs", "setup", "stash"]),
+            BTreeSet::from([
+                "depot_publish",
+                "doctor",
+                "fs",
+                "server_logs",
+                "setup",
+                "stash",
+            ]),
         ),
         (
             "skills",
             BTreeSet::from([
                 "artifacts",
                 "bundles",
+                "depot_publish",
                 "doctor",
                 "jobs",
                 "server_logs",
@@ -286,12 +299,20 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ),
         (
             "lab-admin",
-            BTreeSet::from(["doctor", "lab_admin", "server_logs", "setup", "stash"]),
+            BTreeSet::from([
+                "depot_publish",
+                "doctor",
+                "lab_admin",
+                "server_logs",
+                "setup",
+                "stash",
+            ]),
         ),
         (
             "all",
             BTreeSet::from([
                 "browser",
+                "depot_publish",
                 "doctor",
                 "fs",
                 "gateway",

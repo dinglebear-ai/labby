@@ -55,6 +55,9 @@ impl Identity {
 
 #[derive(PartialEq, Eq)]
 struct RuntimeKey {
+    provider_id: String,
+    host_managed: bool,
+    read_project_id: Option<String>,
     endpoint: String,
     enabled: bool,
     auth: AuthMode,
@@ -65,6 +68,9 @@ struct RuntimeKey {
 impl RuntimeKey {
     fn new(view: &ProviderView, token: Option<&str>, policy: &NetworkPolicy) -> Self {
         Self {
+            provider_id: view.id.clone(),
+            host_managed: view.host_managed,
+            read_project_id: view.read_project_id.clone(),
             endpoint: crate::config::depot::canonical_endpoint(&view.endpoint)
                 .map_or_else(|_| view.endpoint.clone(), |url| url.to_string()),
             enabled: view.enabled,
@@ -99,14 +105,23 @@ impl ProviderRuntime {
                 .filter(|value| !value.trim().is_empty())
                 .ok_or(Failure::Configuration)
                 .and_then(|value| {
-                    Secret::bearer(&view.endpoint, value)
-                        .map(Some)
-                        .map_err(|_| Failure::Configuration)
+                    let bound = if view.host_managed {
+                        Secret::local_bearer(&view.id, &view.endpoint, value)
+                    } else {
+                        Secret::bearer(&view.endpoint, value)
+                    };
+                    bound.map(Some).map_err(|_| Failure::Configuration)
                 }),
         };
         let client = secret.and_then(|secret| {
-            NetworkClient::new(&view.endpoint, secret, policy.clone())
-                .map_err(|_| Failure::Configuration)
+            let client = if view.host_managed {
+                secret
+                    .ok_or(NetworkError::CredentialBinding)
+                    .and_then(|secret| NetworkClient::local(&view.id, &view.endpoint, secret))
+            } else {
+                NetworkClient::new(&view.endpoint, secret, policy.clone())
+            };
+            client.map_err(|_| Failure::Configuration)
         });
         Self {
             incarnation: uuid::Uuid::new_v4().to_string(),

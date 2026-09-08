@@ -376,7 +376,7 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
         .filter(|service| {
             !matches!(
                 service.as_str(),
-                "lab_admin" | "bundles" | "jobs" | "sources" | "uploads"
+                "lab_admin" | "bundles" | "depot_publish" | "jobs" | "sources" | "uploads"
             )
         })
         .cloned()
@@ -467,9 +467,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
     let expected = mcp_intents()
         .into_iter()
-        // lab_admin is intentionally local-only and therefore cannot be
-        // exercised through the HTTP MCP route owned by this runner.
-        .filter(|intent| intent.service != "lab_admin")
+        // lab_admin is intentionally local-only. depot_publish is owned by a
+        // protected team route and requires a bound user grant. Neither can be
+        // exercised through the root HTTP MCP route owned by this runner.
+        .filter(|intent| !matches!(intent.service.as_str(), "lab_admin" | "depot_publish"))
         .collect::<Vec<_>>();
     let expected_count = expected.len();
 
@@ -565,6 +566,55 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         assert!(consumed.insert(intent.key()), "duplicate action execution");
     }
     assert_eq!(consumed.len(), expected_count);
+
+    let cleanup = runner.finish().await;
+    assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
+}
+
+#[tokio::test]
+async fn depot_publish_service_requires_the_protected_team_route_contract() {
+    let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
+    let intents = mcp_intents()
+        .into_iter()
+        .filter(|intent| intent.service == "depot_publish")
+        .collect::<Vec<_>>();
+    assert_eq!(intents.len(), 3);
+
+    for intent in intents {
+        let params = action_scenarios::fixture_params(intent)
+            .as_object()
+            .cloned()
+            .expect("fixture params are an object");
+        let result = runner
+            .call(&intent.service, &intent.action, params)
+            .await
+            .expect("root MCP returns a protocol result");
+        let body = result_text(&result);
+        assert_eq!(result.is_error, Some(true));
+        let error_kind = result_error_kind(&body).unwrap_or_else(|| "mcp_error".to_owned());
+        assert!(
+            action_scenarios::dedicated_contract_accepts_for(
+                &intent.key(),
+                Surface::Mcp,
+                &error_kind,
+            ),
+            "unexpected root-route error kind {error_kind}: {body}"
+        );
+        let reason = action_scenarios::dedicated_contract_reason_for(&intent.key(), Surface::Mcp)
+            .expect("dedicated protected-route contract");
+        action_scenarios::ActionOutcome {
+            key: intent.key(),
+            surface: Surface::Mcp,
+            disposition: action_scenarios::disposition(intent),
+            evidence: EvidenceLevel::LiveErrorPath,
+            owner: intent.scenario_owner,
+            outcome_kind: format!("dedicated_contract:{reason}:{error_kind}"),
+            recovery: "isolated_root_route_probe".into(),
+            side_effects: "none_observed".into(),
+            canary_free: !body.contains(action_scenarios::SECRET_CANARY),
+        }
+        .record();
+    }
 
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);

@@ -8,8 +8,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 use super::{
-    AUTH_REQUEST_TTL_SECS, NATIVE_SUCCESS_PAGE, RemoteAddr, check_email_allowlist, remote_ip,
-    sanitize_return_to,
+    AUTH_REQUEST_TTL_SECS, NATIVE_SUCCESS_PAGE, RemoteAddr, create_admitted_browser_session,
+    remote_ip, sanitize_return_to,
 };
 use crate::{
     error::AuthError,
@@ -53,21 +53,7 @@ pub(super) async fn complete_provider_callback(
             &query.state,
         )
         .await?;
-    let allowed = state.resolve_allowed_emails().await?;
-    check_email_allowlist(
-        identity.email.as_deref(),
-        identity.email_verified,
-        identity.hosted_domain.as_deref(),
-        &allowed,
-        &state.config.allowed_email_domains,
-    )?;
-    let session = crate::session::create_bound_browser_session(
-        state,
-        identity.subject,
-        identity.email,
-        bound.binding.clone(),
-    )
-    .await?;
+    let session = create_admitted_browser_session(state, identity, bound.binding.clone()).await?;
     state
         .store
         .insert_desktop_session_handoff(
@@ -104,8 +90,7 @@ fn no_store(mut response: Response) -> Response {
 fn validate_origin(state: &AuthState, headers: &HeaderMap) -> Result<(), AuthError> {
     let public = state
         .config
-        .public_url
-        .as_ref()
+        .desktop_origin()
         .ok_or_else(|| AuthError::AuthFailed("desktop login unavailable".into()))?;
     let expected_origin = public.origin().ascii_serialization();
     let expected_host = public
@@ -164,8 +149,8 @@ pub async fn desktop_start(
         .await?;
     let mut authorization_url = state
         .config
-        .public_url
-        .clone()
+        .desktop_origin()
+        .cloned()
         .ok_or_else(|| AuthError::AuthFailed("desktop login unavailable".into()))?;
     authorization_url.set_path("/auth/desktop/authorize");
     authorization_url.set_query(Some(&format!("state={launch_state}")));

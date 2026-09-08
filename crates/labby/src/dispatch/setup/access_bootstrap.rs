@@ -582,7 +582,7 @@ pub(crate) fn installation_id(paths: &InstallationPaths) -> anyhow::Result<Strin
     }
 }
 
-fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
+pub(super) fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
     let bytes = read_private(&paths.root().join(INSTALLATION_ID_FILE))?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| std::io::Error::other("installation ID is not UTF-8"))?

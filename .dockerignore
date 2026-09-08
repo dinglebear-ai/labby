@@ -115,7 +115,11 @@ docker-compose.yml
 *.cert
 config.local.toml
 
-# ── Frontend apps (exclude build artifacts / node_modules, keep only out/) ────
-apps/
-!apps/gateway-admin/out
-!apps/gateway-admin/out/**
+# ── Frontend apps ────────────────────────────────────────────────────────────
+# The Rust action catalog embeds selected Gateway Admin TypeScript sources at
+# compile time, so the image build needs the app source as well as its export.
+apps/*
+!apps/gateway-admin/
+!apps/gateway-admin/**
+apps/gateway-admin/node_modules/
+apps/gateway-admin/.next/

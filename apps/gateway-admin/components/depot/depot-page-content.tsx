@@ -22,6 +22,16 @@ import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 type LoadState = { loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 type View = 'cards' | 'list'
 
+export function depotCoveragePulse(coverage?: string, error?: string) {
+  if (error || coverage === 'all_failed') {
+    return { color: 'var(--aurora-error)', label: coverage ?? 'unavailable' }
+  }
+  if (coverage === 'partial' || coverage === 'deferred' || coverage === 'all_disabled') {
+    return { color: 'var(--aurora-warn)', label: coverage }
+  }
+  return { color: 'var(--aurora-success)', label: coverage ?? 'ready' }
+}
+
 export function mergeArtifactPages(current: DepotArtifact[], incoming: DepotArtifact[]): DepotArtifact[] {
   const seen = new Set(current.map(artifact => artifact.id ?? artifact.descriptor?.id).filter(Boolean))
   return [...current, ...incoming.filter(artifact => {
@@ -103,7 +113,7 @@ export function DepotPageContent() {
   return <>
     <AppHeader breadcrumbs={[{label:'Depot'},{label:'Discover'}]}/>
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME}>
-      <ConsoleHero eyebrow="Depot · Bazaar" title="Discover" description="Browse and acquire exact artifact revisions reported by configured Depot providers." pulse={{color:state.error?'var(--aurora-warn)':'var(--aurora-success)',label:state.coverage??'ready'}}>
+      <ConsoleHero eyebrow="Depot · Bazaar" title="Discover" description="Browse and acquire exact artifact revisions reported by configured Depot providers." pulse={depotCoveragePulse(state.coverage,state.error)}>
         <div className="space-y-3"><p className="px-1 text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Loading catalog…':`${resultCount} artifact${resultCount===1?'':'s'} reported by Depot`}</p>
           <div className="flex flex-col gap-2 xl:flex-row"><label className="sr-only" htmlFor="depot-provider">Depot provider</label><select id="depot-provider" value={selectedProvider} onChange={event=>{lanes.current.invalidate('list');const params=new URLSearchParams(window.location.search);params.set('provider',event.target.value);params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}?${params}`,{scroll:false})}} className="h-11 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface px-3 text-sm text-aurora-text-primary"><option value="all">All providers</option>{providers.map(provider=><option key={provider.id} value={provider.id} disabled={!provider.enabled}>{provider.name} · {provider.id}{provider.enabled?'':' (disabled)'}</option>)}</select><div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-accent-primary"/><Input aria-label="Search Depot artifacts" className="h-11 rounded-aurora-2 border-aurora-accent-primary/70 bg-aurora-control-surface pl-10 text-sm" value={query} onChange={e=>{lanes.current.invalidate('list');setQuery(e.target.value)}} placeholder="Search Depot artifacts"/></div>
             <div className="flex h-11 items-center rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface p-1">{([['cards',Grid2X2],['list',List]] as const).map(([mode,Icon])=><button key={mode} type="button" onClick={()=>setView(mode)} aria-label={`${mode} view`} aria-pressed={view===mode} className="rounded-aurora-1 p-2 text-aurora-text-muted aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-4"/></button>)}</div>

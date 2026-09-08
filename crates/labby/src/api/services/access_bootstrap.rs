@@ -187,7 +187,7 @@ async fn bootstrap_owner(
     no_store(response)
 }
 
-fn require_browser_admin(
+pub(super) fn require_browser_admin(
     state: &AppState,
     auth: &AuthContext,
     identity: &VerifiedIdentity,

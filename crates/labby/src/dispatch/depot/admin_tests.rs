@@ -12,7 +12,45 @@ fn provider(endpoint: &str, auth_mode: AuthMode, enabled: bool) -> ProviderView 
         auth_mode,
         bearer_token_env: (auth_mode == AuthMode::Bearer)
             .then(|| "LABBY_DEPOT_PROVIDER_TEAM_TOKEN".into()),
+        host_managed: false,
+        read_project_id: None,
     }
+}
+
+#[test]
+fn host_local_ids_and_token_references_cannot_be_mutated_by_browser() {
+    let config = r#"
+[depot]
+read_project_id = "team-project"
+[[depot.local_providers]]
+id = "team-local"
+name = "Host Team"
+endpoint = "http://127.0.0.1:4100"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_COLLISION_TOKEN"
+"#;
+    for id in ["team-local", "collision"] {
+        let mutation = Mutation {
+            id: id.into(),
+            name: "Browser override".into(),
+            endpoint: "https://example.com".into(),
+            enabled: true,
+            auth_mode: AuthMode::Bearer,
+            credential: CredentialChange::Replace("new-token".into()),
+        };
+        assert!(matches!(
+            build_upsert(config, "", &mutation),
+            Err(AdminError::Invalid)
+        ));
+    }
+    assert!(matches!(
+        build_remove(config, "", "team-local"),
+        Err(AdminError::Invalid)
+    ));
+    let malformed = config.replace("http://127.0.0.1:4100", "http://not-loopback:4100");
+    assert!(matches!(
+        build_remove(&malformed, "", "team-local"),
+        Err(AdminError::Invalid)
+    ));
 }
 
 #[test]

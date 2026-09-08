@@ -124,10 +124,33 @@ impl SigningKeys {
     }
 
     pub fn issue_access_token(&self, claims: &AccessClaims) -> Result<String, AuthError> {
+        self.issue_custom_token(claims, "access")
+    }
+
+    pub(crate) fn issue_custom_token<T: Serialize>(
+        &self,
+        claims: &T,
+        token_kind: &str,
+    ) -> Result<String, AuthError> {
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
         encode(&header, &claims, &self.encoding_key)
-            .map_err(|error| AuthError::Storage(format!("encode access token: {error}")))
+            .map_err(|error| AuthError::Storage(format!("encode {token_kind} token: {error}")))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_custom_token<T: serde::de::DeserializeOwned>(
+        &self,
+        token: &str,
+        audience: &str,
+        issuer: &str,
+    ) -> T {
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.set_audience(&[audience]);
+        validation.set_issuer(&[issuer]);
+        decode::<T>(token, &self.decoding_key, &validation)
+            .expect("test token must validate")
+            .claims
     }
 
     /// Validate signature, algorithm, audience, AND issuer in a single

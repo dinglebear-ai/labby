@@ -19,6 +19,15 @@ use crate::registry::RegisteredService;
 const BIND_ATTEMPTS: usize = 3;
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone)]
+pub(crate) struct OAuthDelegationCredential {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) credential_id: String,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) expires_at: u64,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct BoundAccessContextId(u64);
 
@@ -67,6 +76,49 @@ impl TransportBoundAccessContext {
 
     pub(crate) fn core(&self) -> &BoundAccessContext {
         &self.core
+    }
+
+    pub(crate) fn oauth_depot_grant(
+        &self,
+        installation_id: &str,
+        credential: &OAuthDelegationCredential,
+        policy: &labby_gateway::gateway::manager::PublishedBootstrapPolicyLease,
+    ) -> Result<labby_primitives::product_credential::BoundAccessGrant, BoundAccessContextError>
+    {
+        let access = self.core.catalog.access();
+        if installation_id.is_empty()
+            || access.loadout_name != policy.loadout_id()
+            || self.core.route.route_name() != policy.route_id()
+            || self.core.route.project_id() != access.project_id
+            || credential.expires_at == 0
+        {
+            return Err(BoundAccessContextError::Unavailable);
+        }
+        Ok(labby_primitives::product_credential::BoundAccessGrant {
+            installation_id: installation_id.to_owned(),
+            issuer: credential.issuer.clone(),
+            subject: credential.subject.clone(),
+            principal_id: access.principal_id.clone(),
+            organization_id: access.organization_id.clone(),
+            project_id: access.project_id.clone(),
+            loadout_id: policy.loadout_id().to_owned(),
+            loadout_generation: policy.loadout_generation(),
+            assignment_generation: access.assignment_generation,
+            catalog_generation: policy.catalog_generation(),
+            route_id: policy.route_id().to_owned(),
+            route_generation: policy.route_generation(),
+            membership_epoch: access.shared_membership_policy_epoch(),
+            organization_policy_epoch: access.organization_policy_epoch,
+            project_policy_epoch: access.project_policy_epoch,
+            credential_id: credential.credential_id.clone(),
+            credential_generation: 1,
+            scopes: credential.scopes.clone(),
+            resource: policy.resource().to_owned(),
+            audience: policy.audience().to_owned(),
+            expires_at: credential.expires_at,
+            requires_admin: false,
+            destructive: false,
+        })
     }
 
     pub(crate) fn credential_instance_fingerprint(&self) -> &str {

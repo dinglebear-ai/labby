@@ -1,5 +1,5 @@
 use super::types::RouteDoc;
-use crate::api::route_registry::{RouteAuth, build_route_descriptors};
+use crate::api::route_registry::{RouteAuth, build_route_descriptors, service_has_http_surface};
 
 pub fn build_route_docs(_service_names: &[String]) -> Vec<RouteDoc> {
     build_route_descriptors()
@@ -51,7 +51,7 @@ pub fn build_route_docs(_service_names: &[String]) -> Vec<RouteDoc> {
 }
 
 pub fn service_has_action_api_route(service: &str) -> bool {
-    !matches!(service, "lab_admin" | "doctor" | "setup")
+    service_has_http_surface(service) && !matches!(service, "doctor" | "setup")
 }
 
 #[cfg(test)]
@@ -66,6 +66,7 @@ mod tests {
     fn route_docs_do_not_include_non_http_service_dispatch_routes() {
         let routes = build_route_docs(&[]);
         assert!(!routes.iter().any(|route| route.path == "/v1/lab_admin"));
+        assert!(!service_has_action_api_route("depot_publish"));
     }
 
     #[test]

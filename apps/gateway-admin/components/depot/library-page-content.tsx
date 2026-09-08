@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Archive, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, Filter, Grid2X2, Link2, List, Loader2, RefreshCw, Search, ShieldCheck, Table2, X } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -15,9 +15,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { depotCall, depotStatus, type DepotArtifact, type DepotStatus } from '@/lib/api/depot-client'
+import { depotCall, depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, filterArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
+import { updateLibraryUrl as updateUrl } from './library-url'
 
 type LibraryState = {
   artifacts: DepotArtifact[]
@@ -25,6 +27,7 @@ type LibraryState = {
   error?: string
   loading: boolean
   status?: DepotStatus
+  publishing?: DepotPublishCapability
   total?: number
 }
 
@@ -32,8 +35,7 @@ const PAGE_SIZE = 50
 type ViewMode = 'table' | 'list' | 'cards'
 
 export function LibraryPageContent() {
-  const router = useRouter()
-  const pathname = usePathname()
+  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   const searchParams = useSearchParams()
   const selectedId = searchParams.get('artifact')?.trim() ?? ''
   const initialQuery = searchParams.get('q')?.trim() ?? ''
@@ -61,31 +63,28 @@ export function LibraryPageContent() {
     return () => media.removeEventListener('change', applyResponsiveDefault)
   }, [])
 
-  const updateUrl = useCallback((values: { artifact?: string | null; kind?: string; q?: string }) => {
-    const params = new URLSearchParams(window.location.search)
-    for (const [key, value] of Object.entries(values)) {
-      if (value && value !== 'all') params.set(key, value)
-      else params.delete(key)
-    }
-    router.replace(`${pathname}${params.size ? `?${params}` : ''}`, { scroll: false })
-  }, [pathname, router])
-
   const load = useCallback(async (search: string, cursor?: string, signal?: AbortSignal) => {
-    setState((current) => ({ ...current, loading: true, error: undefined, artifacts: cursor ? current.artifacts : [] }))
+    const loadingSessionEpoch = getBrowserSessionEpoch()
+    setState((current) => ({ ...current, loading: true, error: undefined, publishing: undefined, artifacts: cursor ? current.artifacts : [] }))
     try {
-      const [status, response] = await Promise.all([
-        depotStatus(signal),
+      // Status primes the server's actor-scoped operation policy; reads must
+      // wait for it on a cold process or after the policy cache expires.
+      const status = await depotStatus(signal)
+      const [response, publishing] = await Promise.all([
         depotCall<{ result?: { artifacts?: DepotArtifact[]; nextCursor?: string; total?: number } }>(
           'depot.artifacts.list',
           { limit: PAGE_SIZE, ...(search ? { query: search } : {}), ...(cursor ? { cursor } : {}) },
           signal,
         ),
+        depotPublishCapability(signal).catch(() => undefined),
       ])
+      if (signal?.aborted || loadingSessionEpoch !== getBrowserSessionEpoch()) return
       setState((current) => ({
         artifacts: cursor ? [...current.artifacts, ...(response.result?.artifacts ?? [])] : (response.result?.artifacts ?? []),
         cursor: response.result?.nextCursor,
         loading: false,
         status,
+        publishing,
         total: response.result?.total,
       }))
     } catch (error) {
@@ -102,13 +101,14 @@ export function LibraryPageContent() {
       void load(next, undefined, controller.signal)
     }, query ? 300 : 0)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [load, query, updateUrl])
+  }, [load, query, sessionEpoch])
 
   useEffect(() => {
     if (!selectedId) { setDetail(null); return }
     const controller = new AbortController()
     setDetailLoading(true)
-    void depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal)
+    void depotStatus(controller.signal)
+      .then(() => depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal))
       .then((response) => setDetail(response.result?.artifact ?? null))
       .catch((error) => { if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : String(error)) })
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false) })
@@ -144,7 +144,7 @@ export function LibraryPageContent() {
         { label: activeQuery ? 'Matches' : 'Published artifacts', value: state.total ?? '—', icon: <Archive size={12}/> },
         { label: 'Loaded', value: state.artifacts.length, icon: <Box size={12}/> },
         { label: 'Kinds loaded', value: kinds.length, icon: <FileText size={12}/> },
-        { label: 'Authority', value: state.status?.authority === 'write' ? 'Read + write' : state.status?.authority === 'read' ? 'Read only' : 'Unknown', icon: <ShieldCheck size={12}/> },
+        { label: 'Your access', value: state.publishing?.available ? 'Read + publish' : state.publishing?.reason === 'owner_link_approval_pending' ? 'Confirm owner link' : state.publishing ? 'Read only' : 'Unknown', icon: <ShieldCheck size={12}/> },
       ]}/>
       {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Refresh after Depot is connected.</p></DashboardPanel> : null}
       <DashboardPanel title="Artifacts" icon={<Box className="size-4"/>} action={<div className="flex flex-wrap items-center justify-end gap-2"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/><Input aria-label="Search library" className="h-9 w-[min(22rem,52vw)] pl-9 pr-9" placeholder="Search the full Depot catalog…" value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-aurora-text-muted" onClick={() => setQuery('')}><X className="size-4"/></button> : null}</div><Popover><PopoverTrigger asChild><Button variant="outline" size="sm" aria-label="Filter library by artifact type" className={kind !== 'all' ? 'border-aurora-accent-primary text-aurora-text-primary' : ''}><Filter className="size-3.5"/>{kind === 'all' ? 'Filters' : artifactTypeDefinition(kind).label}<ChevronDown className="size-3.5"/></Button></PopoverTrigger><PopoverContent align="end" className="w-64 p-2"><div className="px-2 pb-2 pt-1"><p className="text-xs font-semibold text-aurora-text-primary">Artifact type</p><p className="mt-0.5 text-[11px] text-aurora-text-muted">Show one catalog family at a time.</p></div><button type="button" onClick={() => { setKind('all'); updateUrl({ kind: 'all' }) }} aria-pressed={kind === 'all'} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border border-aurora-border-subtle"><Box className="size-3.5"/></span><span className="flex-1 font-semibold">All artifacts</span>{kind === 'all' ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button>{ARTIFACT_TYPES.map((item) => { const definition = artifactTypeDefinition(item); const Icon = definition.icon; return <button key={item} type="button" onClick={() => { setKind(item); updateUrl({ kind: item }) }} aria-pressed={kind === item} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border" style={{ color: definition.color, borderColor: `color-mix(in srgb, ${definition.color} 38%, transparent)` }}><Icon className="size-3.5"/></span><span className="flex-1 font-semibold">{definition.label}</span>{kind === item ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button> })}</PopoverContent></Popover><div className="hidden rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5 sm:flex">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode]) => <button key={mode} type="button" aria-label={`${label} view`} title={`${label} view`} aria-pressed={view === mode} onClick={() => setView(mode)} className="rounded p-1.5 text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-3.5"/></button>)}</div></div>}>

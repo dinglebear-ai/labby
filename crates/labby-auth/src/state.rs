@@ -648,9 +648,62 @@ impl AuthState {
         }))
     }
 
+    /// Recheck a provider-bound external identity against the current admission policy.
+    pub async fn is_current_identity_authorized(
+        &self,
+        identity: &crate::VerifiedIdentity,
+    ) -> Result<bool, AuthError> {
+        let crate::PrincipalLink::External { issuer, subject } = identity.principal_link() else {
+            return Ok(false);
+        };
+        let Some(email) = self
+            .store
+            .current_verified_inbound_email(issuer, subject)
+            .await?
+        else {
+            return Ok(false);
+        };
+        self.is_email_authorized(&email).await
+    }
+
     pub async fn is_email_explicitly_allowed(&self, email: &str) -> Result<bool, AuthError> {
         Ok(email.eq_ignore_ascii_case(&self.config.admin_email)
             || self.store.is_allowed_user_email(email).await?)
+    }
+
+    /// Viewer evidence comes only from the provider-verified durable row, never
+    /// a request email or the display email on an unverified session alone.
+    pub(crate) async fn verified_viewer_domain_for_session(
+        &self,
+        session: &crate::types::ProviderBound<crate::types::BrowserSessionRow>,
+    ) -> Result<Option<String>, AuthError> {
+        if self.config.viewer_email_domains.is_empty()
+            || session.binding != self.inbound_provider_binding()
+            || session.value.project_binding.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(email) = self
+            .store
+            .current_verified_inbound_email(
+                &session.binding.identity_issuer,
+                &session.value.subject,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !session
+            .value
+            .email
+            .as_deref()
+            .is_some_and(|display| display.eq_ignore_ascii_case(&email))
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .config
+            .viewer_domain_for_verified_email(Some(&email), Some(true)))
     }
 
     /// Rejects new OAuth state rows when the pending count exceeds `max_pending_oauth_states`.
@@ -943,6 +996,62 @@ mod tests {
         let state = resolve_state("admin@example.com").await;
         let emails = state.resolve_allowed_emails().await.unwrap();
         assert_eq!(emails, vec!["admin@example.com"]);
+    }
+
+    #[tokio::test]
+    async fn current_identity_admission_rejects_wrong_domain_and_accepts_allowed_email() {
+        let state = resolve_state("employee@example.com").await;
+        state
+            .store
+            .upsert_verified_inbound_identity(
+                crate::google::GOOGLE_ISSUER,
+                "employee-subject",
+                "outsider@evil.example",
+                10,
+            )
+            .await
+            .unwrap();
+        let identity = crate::VerifiedIdentity::external(
+            crate::Authenticator::OauthBearer,
+            crate::google::GOOGLE_ISSUER,
+            "employee-subject",
+        )
+        .unwrap();
+        let missing = crate::VerifiedIdentity::external(
+            crate::Authenticator::OauthBearer,
+            crate::google::GOOGLE_ISSUER,
+            "missing-subject",
+        )
+        .unwrap();
+        assert!(
+            !state
+                .is_current_identity_authorized(&missing)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !state
+                .is_current_identity_authorized(&identity)
+                .await
+                .unwrap()
+        );
+
+        state
+            .store
+            .upsert_verified_inbound_identity(
+                crate::google::GOOGLE_ISSUER,
+                "employee-subject",
+                "employee@example.com",
+                11,
+            )
+            .await
+            .unwrap();
+        assert!(
+            state
+                .is_current_identity_authorized(&identity)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

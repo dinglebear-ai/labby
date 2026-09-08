@@ -1,0 +1,110 @@
+name: team-labby
+
+services:
+  labby:
+    image: ${LABBY_IMAGE:?set LABBY_IMAGE to an immutable image digest}
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      team-depot:
+        condition: service_healthy
+      catalog-depot:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${LABBY_HOST_PORT:-8765}:8765"
+    volumes:
+      - ./state/labby:/home/labby/.labby
+      - labby-data:/home/labby/.local
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
+    environment:
+      LABBY_HOME: /home/labby/.labby
+      LABBY_MCP_HTTP_HOST: 0.0.0.0
+      LABBY_MCP_HTTP_PORT: "8765"
+      RUST_LOG: labby=info,warn
+    networks: [backend]
+    healthcheck:
+      test: [CMD, /usr/local/bin/labby-healthcheck]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+
+  team-depot:
+    image: ${DEPOT_IMAGE:?set DEPOT_IMAGE to an immutable image digest}
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+    env_file: [team-depot.env]
+    environment:
+      DEPOT_PORT: "4100"
+      DEPOT_DATA_DIR: /data
+      DEPOT_AUTH_MODE: oauth
+      DEPOT_DEPLOYMENT_ID: team-depot
+      DEPOT_BACKEND_ID: r2
+    volumes:
+      - team-depot-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1g,uid=1000,gid=1000
+    networks: [backend]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, "5", http://127.0.0.1:4100/health]
+      interval: 30s
+      timeout: 6s
+      start_period: 10m
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+
+  catalog-depot:
+    image: ${DEPOT_IMAGE:?set DEPOT_IMAGE to an immutable image digest}
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+    env_file: [catalog-depot.env]
+    environment:
+      DEPOT_PORT: "4100"
+      DEPOT_DATA_DIR: /data
+      DEPOT_AUTH_MODE: bearer
+      DEPOT_DEPLOYMENT_ID: catalog-depot
+      DEPOT_BACKEND_ID: r2
+    volumes:
+      - catalog-depot-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1g,uid=1000,gid=1000
+    networks: [backend]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, "5", http://127.0.0.1:4100/health]
+      interval: 30s
+      timeout: 6s
+      start_period: 30m
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+
+volumes:
+  labby-data: {}
+  team-depot-data: {}
+  catalog-depot-data: {}
+
+networks:
+  # No Depot port is published. This ordinary bridge still permits outbound R2
+  # and notification-worker traffic; an `internal` network would block it.
+  backend: {}

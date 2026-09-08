@@ -206,6 +206,17 @@ class ContainerTopology(unittest.TestCase):
                 self.assertIn("--connect-timeout", line)
                 self.assertIn("--max-time", line)
         self.assertNotIn("npm install --omit=dev", text)
+        self.assertIn("COPY apps/gateway-admin apps/gateway-admin", text)
+        self.assertNotIn("COPY apps/gateway-admin/out apps/gateway-admin/out", text)
+        self.assertIn(
+            "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
+            text,
+        )
+        dockerignore = self.text(".dockerignore")
+        self.assertIn("!apps/gateway-admin/**", dockerignore)
+        self.assertIn("apps/gateway-admin/node_modules/", dockerignore)
+        self.assertIn("apps/gateway-admin/.next/", dockerignore)
+        self.assertNotIn("\napps/\n", dockerignore)
         release = self.text(".github/workflows/release.yml")
         self.assertIn("source config/container-supply.conf", release)
         self.assertIn("LABBY_BUILDER_IMAGE=${{ steps.container_supply.outputs.builder }}", release)
