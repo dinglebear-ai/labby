@@ -666,7 +666,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;
@@ -705,7 +705,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "invalid_cursor",
+                        kind: "invalid_cursor".into(),
                     },
                 )
                 .await;
@@ -1049,7 +1049,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind,
+                    kind: kind.into(),
                 },
             )
             .await;
@@ -1076,7 +1076,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;
@@ -1401,7 +1401,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "access_context_unavailable",
+                        kind: "access_context_unavailable".into(),
                     },
                 )
                 .await;
@@ -1476,7 +1476,10 @@ impl LabMcpServer {
                             "lab",
                             "read_resource",
                             elapsed_ms,
-                            DispatchLogOutcome::Failure { level, kind },
+                            DispatchLogOutcome::Failure {
+                                level,
+                                kind: kind.into(),
+                            },
                         )
                         .await;
                         if unavailable {
@@ -1720,7 +1723,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "route_scope_denied",
+                        kind: "route_scope_denied".into(),
                     },
                 )
                 .await;
@@ -1897,7 +1900,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Error,
-                        kind: "internal_error",
+                        kind: "internal_error".into(),
                     },
                 )
                 .await;
@@ -2105,7 +2108,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "forbidden",
+                    kind: "forbidden".into(),
                 },
             )
             .await;
@@ -2208,7 +2211,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "forbidden",
+                    kind: "forbidden".into(),
                 },
             )
             .await;
@@ -2285,7 +2288,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "not_found",
+                    kind: "not_found".into(),
                 },
             )
             .await;
@@ -2311,7 +2314,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "forbidden",
+                    kind: "forbidden".into(),
                 },
             )
             .await;
@@ -2384,7 +2387,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "not_found",
+                    kind: "not_found".into(),
                 },
             )
             .await;
@@ -2409,7 +2412,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "forbidden",
+                    kind: "forbidden".into(),
                 },
             )
             .await;
@@ -3169,6 +3172,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .await;
         let code_mode_app_state = manager.code_mode_app_state();
         LabMcpServer {
+            installation_id: None,
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -3290,6 +3294,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .await;
 
         LabMcpServer {
+            installation_id: None,
             registry: Arc::new(registry),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -3366,6 +3371,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             });
         }
         LabMcpServer {
+            installation_id: None,
             registry: Arc::new(registry),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

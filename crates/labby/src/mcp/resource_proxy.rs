@@ -74,7 +74,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "unavailable",
+                    kind: "unavailable".into(),
                 },
             )
             .await;
@@ -135,7 +135,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error",
+                        kind: "upstream_error".into(),
                     },
                 )
                 .await;
@@ -205,7 +205,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;
@@ -327,7 +327,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Error,
-                        kind: "internal_error",
+                        kind: "internal_error".into(),
                     },
                 )
                 .await;
@@ -356,7 +356,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;
@@ -442,7 +442,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Warning,
-                            kind: "subject_scoped_ui_unavailable",
+                            kind: "subject_scoped_ui_unavailable".into(),
                         },
                     )
                     .await;
@@ -499,7 +499,7 @@ impl LabMcpServer {
                 (
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Error,
-                        kind: "internal_error",
+                        kind: "internal_error".into(),
                     },
                     Err(ErrorData::internal_error(message, None)),
                 )
@@ -517,7 +517,7 @@ impl LabMcpServer {
                 (
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                     Err(ErrorData::resource_not_found(
                         format!("unknown UI resource: {uri}"),
@@ -618,7 +618,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error",
+                        kind: "upstream_error".into(),
                     },
                 )
                 .await;

@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
 use crate::mcp::error::DispatchError;
-use crate::mcp::error::canonical_kind;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 
 pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToolError) -> Value {
@@ -185,7 +184,10 @@ pub(crate) fn format_dispatch_result(
         }
         Err(e) => {
             let (kind, message, extra) = extract_error_info(&e);
-            let is_fatal = matches!(kind, "internal_error" | "server_error" | "decode_error");
+            let is_fatal = matches!(
+                kind.as_ref(),
+                "internal_error" | "server_error" | "decode_error"
+            );
             if is_fatal {
                 tracing::error!(
                     surface = "mcp",
@@ -199,7 +201,7 @@ pub(crate) fn format_dispatch_result(
                     elapsed_ms,
                     input_tokens,
                     output_tokens = 0,
-                    kind,
+                    kind = %kind,
                     "dispatch error"
                 );
             } else {
@@ -215,13 +217,13 @@ pub(crate) fn format_dispatch_result(
                     elapsed_ms,
                     input_tokens,
                     output_tokens = 0,
-                    kind,
+                    kind = %kind,
                     "dispatch error"
                 );
             }
             let envelope = extra.map_or_else(
-                || build_error(service, action, kind, &message),
-                |ref extra| build_error_extra(service, action, kind, &message, extra),
+                || build_error(service, action, &kind, &message),
+                |ref extra| build_error_extra(service, action, &kind, &message, extra),
             );
             (
                 error_result_from_envelope(envelope),
@@ -245,7 +247,12 @@ pub(crate) fn format_dispatch_result(
 /// 2. Parse `e.to_string()` as JSON `{ "kind": "…" }` — covers `ToolError`
 ///    errors that were serialized to string before entering anyhow.
 /// 3. Fall back to `"internal_error"`.
-pub(crate) fn extract_error_info(e: &anyhow::Error) -> (&'static str, String, Option<Value>) {
+///
+/// Paths 1 and 2 carry the kind the dispatcher declared verbatim; only the
+/// unstructured fallback invents one.
+pub(crate) fn extract_error_info(
+    e: &anyhow::Error,
+) -> (std::borrow::Cow<'static, str>, String, Option<Value>) {
     // 1. Structured DispatchError
     if let Some(de) = e.downcast_ref::<DispatchError>() {
         let extra = if de.valid.is_some() || de.param.is_some() || de.hint.is_some() {
@@ -257,14 +264,14 @@ pub(crate) fn extract_error_info(e: &anyhow::Error) -> (&'static str, String, Op
         } else {
             None
         };
-        return (de.kind, de.message.clone(), extra);
+        return (de.kind.clone(), de.message.clone(), extra);
     }
     // 2. ToolError serialized as a JSON string by legacy service paths.
     let msg = e.to_string();
     if let Ok(v) = serde_json::from_str::<Value>(&msg)
         && let Some(kind_str) = v.get("kind").and_then(|k| k.as_str())
     {
-        let kind: &'static str = canonical_kind(kind_str);
+        let kind = std::borrow::Cow::Owned(kind_str.to_owned());
         let message = v["message"].as_str().unwrap_or(&msg).to_string();
         // Preserve structured extras (valid list, param name, hint) if present.
         let has_valid = v.get("valid").is_some_and(|v| !v.is_null());
@@ -282,7 +289,7 @@ pub(crate) fn extract_error_info(e: &anyhow::Error) -> (&'static str, String, Op
         return (kind, message, extra);
     }
     // 3. Generic fallback
-    ("internal_error", msg, None)
+    (std::borrow::Cow::Borrowed("internal_error"), msg, None)
 }
 
 #[cfg(test)]

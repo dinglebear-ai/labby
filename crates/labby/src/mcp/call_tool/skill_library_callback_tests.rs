@@ -264,6 +264,7 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
     use crate::mcp::server::LabMcpServer;
 
     let server = LabMcpServer {
+        installation_id: None,
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -496,6 +497,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     );
 
     let server = LabMcpServer {
+        installation_id: None,
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::clone(&access_runtime),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -903,6 +905,7 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
         )
         .await;
     let server = LabMcpServer {
+        installation_id: None,
         registry: Arc::new(crate::registry::build_default_registry()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

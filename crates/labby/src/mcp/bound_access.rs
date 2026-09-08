@@ -795,6 +795,7 @@ mod tests {
     #[cfg(feature = "proxy-testkit")]
     fn project_shadow_test_server() -> crate::mcp::server::LabMcpServer {
         crate::mcp::server::LabMcpServer {
+            installation_id: None,
             registry: Arc::new(crate::registry::build_default_registry()),
             access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -2187,6 +2188,7 @@ mod tests {
         .unwrap();
 
         let server = crate::mcp::server::LabMcpServer {
+            installation_id: None,
             registry,
             access_runtime: Arc::clone(&runtime),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

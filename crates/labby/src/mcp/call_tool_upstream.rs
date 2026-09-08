@@ -473,7 +473,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind,
+                    kind: kind.into(),
                 },
             )
             .await;
@@ -652,7 +652,7 @@ impl LabMcpServer {
                     } else {
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Warning,
-                            kind,
+                            kind: kind.into(),
                         }
                     };
                     tracing::info!(
@@ -727,7 +727,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Error,
-                            kind,
+                            kind: kind.into(),
                         },
                     )
                     .await;
@@ -781,7 +781,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Error,
-                            kind,
+                            kind: kind.into(),
                         },
                     )
                     .await;
@@ -936,7 +936,7 @@ impl LabMcpServer {
                             // infrastructure error.
                             DispatchLogOutcome::Failure {
                                 level: LoggingLevel::Warning,
-                                kind,
+                                kind: kind.into(),
                             }
                         } else {
                             tracing::info!(
@@ -1005,7 +1005,7 @@ impl LabMcpServer {
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
                                 level: LoggingLevel::Error,
-                                kind,
+                                kind: kind.into(),
                             },
                         )
                         .await;
@@ -1427,6 +1427,7 @@ mod tests {
                 )
                 .await;
             LabMcpServer {
+                installation_id: None,
                 registry: Arc::new(crate::registry::ToolRegistry::new()),
                 access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
                 file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

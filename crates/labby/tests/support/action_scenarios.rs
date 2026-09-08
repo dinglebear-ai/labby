@@ -503,6 +503,22 @@ pub(crate) fn dedicated_contract_accepts_for(
     if key.starts_with("gateway:") && surface == Surface::Cli {
         return matches!(error_kind, "daemon_unavailable" | "unknown_action");
     }
+    // The MCP sweep acts as one authenticated caller with no membership in the
+    // owner scopes these fixtures name, so a write to another principal's or
+    // Team's resource is refused by the multi-user boundary this PR enforces.
+    // That refusal is the point, not a gap: the API journey drives the same
+    // action to its durable state change under an owner it actually holds.
+    if surface == Surface::Mcp
+        && (key.starts_with("access:") || key.starts_with("agents:") || key.starts_with("tasks:"))
+    {
+        return error_kind == "forbidden";
+    }
+    // Dev Container authority is refused at either of two points on the same
+    // boundary: the operation is denied outright, or the template this caller
+    // may use is not enumerable and reads as an invalid `template_id`.
+    if surface == Surface::Mcp && key.starts_with("dev_containers:") {
+        return matches!(error_kind, "forbidden" | "invalid_param");
+    }
     if key.starts_with("artifacts:") && surface == Surface::Mcp {
         return matches!(error_kind, "forbidden" | "internal_error");
     }
@@ -543,6 +559,17 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
         } else {
             None
         };
+    }
+    if surface == Surface::Mcp
+        && (key.starts_with("access:")
+            || key.starts_with("agents:")
+            || key.starts_with("tasks:")
+            || key.starts_with("dev_containers:"))
+    {
+        return Some((
+            "requires_owner_scope_membership_covered_by_api_journey",
+            "forbidden",
+        ));
     }
     if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
         return Some(("requires_skills_runtime", "feature_not_compiled"));

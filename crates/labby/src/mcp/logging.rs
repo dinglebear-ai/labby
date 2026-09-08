@@ -16,7 +16,7 @@ pub(crate) enum DispatchLogOutcome {
     Success,
     Failure {
         level: LoggingLevel,
-        kind: &'static str,
+        kind: std::borrow::Cow<'static, str>,
     },
 }
 
@@ -134,7 +134,7 @@ mod tests {
             44,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Error,
-                kind: "upstream_error",
+                kind: "upstream_error".into(),
             },
             Some("actor-fixture"),
         );
@@ -151,7 +151,7 @@ mod tests {
             44,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Error,
-                kind: "internal_error",
+                kind: "internal_error".into(),
             },
             None,
         );

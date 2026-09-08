@@ -344,6 +344,11 @@ pub struct LabMcpServer {
     /// decisions while constructing a request handler.
     #[allow(dead_code)] // Consumed by the next project-binding/enforcement wave.
     pub(crate) access_runtime: Arc<AccessRuntime>,
+    /// Durable installation identity this process resolved at startup, shared
+    /// verbatim with the HTTP surface. Installation-scoped administration is a
+    /// property of the process, not of the transport, so both adapters must
+    /// read the same binding instead of re-deriving one per surface.
+    pub(crate) installation_id: Option<Arc<str>>,
     /// Process-owned File Stash runtime shared by every surface adapter.
     pub(crate) file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
     /// Shared gateway manager used to resolve the current live upstream pool.
@@ -1042,6 +1047,7 @@ mod tests {
         LabMcpServer {
             registry: std::sync::Arc::new(ToolRegistry::new()),
             access_runtime: std::sync::Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            installation_id: None,
             file_stash_runtime: std::sync::Arc::new(crate::file_stash::FileStashRuntime::blocked()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,

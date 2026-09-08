@@ -195,7 +195,7 @@ impl LabMcpServer {
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
                                 level: LoggingLevel::Error,
-                                kind: "upstream_error",
+                                kind: "upstream_error".into(),
                             },
                         )
                         .await;

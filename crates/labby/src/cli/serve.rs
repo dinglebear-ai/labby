@@ -495,6 +495,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::clone(&gateway_manager),
                 Arc::clone(&access_runtime),
                 Arc::clone(&file_stash_runtime),
+                Some(Arc::from(installation_id.as_str())),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -507,6 +508,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::new(registry),
                 Arc::clone(&access_runtime),
                 Arc::clone(&file_stash_runtime),
+                Some(Arc::from(installation_id.as_str())),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -1976,6 +1978,9 @@ fn run_stdio(
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
     access_runtime: Arc<AccessRuntime>,
     file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
+    // Durable installation identity this process resolved at startup. The
+    // stdio route administers the same installation the HTTP route does.
+    stdio_installation_id: Option<Arc<str>>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -2026,6 +2031,7 @@ fn run_stdio(
         );
         let service_count = registry.services().len();
         let server = LabMcpServer {
+            installation_id: stdio_installation_id,
             registry,
             access_runtime,
             file_stash_runtime,
@@ -2130,6 +2136,9 @@ fn build_mcp_service_with_scope(
     let registry = Arc::clone(&state.registry);
     let access_runtime = Arc::clone(&state.access_runtime);
     let file_stash_runtime = Arc::clone(&state.file_stash_runtime);
+    // The MCP route serves the same installation this process bound for the
+    // HTTP surface; both adapters must see one identity.
+    let installation_id = state.installation_id.clone();
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
@@ -2204,6 +2213,7 @@ fn build_mcp_service_with_scope(
                 "initializing HTTP MCP session handler"
             );
             Ok(LabMcpServer {
+                installation_id: installation_id.clone(),
                 registry: reg,
                 access_runtime,
                 file_stash_runtime,

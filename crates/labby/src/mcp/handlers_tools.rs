@@ -100,7 +100,7 @@ impl LabMcpServer {
             elapsed_ms,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Warning,
-                kind: "access_context_unavailable",
+                kind: "access_context_unavailable".into(),
             },
         )
         .await;
@@ -167,7 +167,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;
@@ -573,7 +573,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind,
+                    kind: kind.into(),
                 },
             )
             .await;
@@ -606,7 +606,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;

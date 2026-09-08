@@ -225,6 +225,7 @@ fn test_server(
         .map(|manager| manager.code_mode_app_state())
         .unwrap_or_default();
     LabMcpServer {
+        installation_id: None,
         registry: Arc::new(registry),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -5598,6 +5599,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
     );
     let notifier = crate::mcp::peers::PeerNotifier::default();
     let server = LabMcpServer {
+        installation_id: None,
         registry: Arc::new(ToolRegistry::new()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

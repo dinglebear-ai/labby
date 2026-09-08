@@ -410,7 +410,7 @@ impl LabMcpServer {
                 } else {
                     LoggingLevel::Warning
                 },
-                kind,
+                kind: kind.into(),
             },
         )
         .await;
@@ -450,7 +450,7 @@ impl LabMcpServer {
             elapsed_ms,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Warning,
-                kind: "route_scope_denied",
+                kind: "route_scope_denied".into(),
             },
         );
     }
@@ -614,9 +614,9 @@ impl LabMcpServer {
                     DispatchLogOutcome::Failure {
                         level,
                         kind: if access_context_unavailable {
-                            "access_context_unavailable"
+                            "access_context_unavailable".into()
                         } else {
-                            kind
+                            kind.into()
                         },
                     },
                 )
@@ -1614,27 +1614,19 @@ impl LabMcpServer {
                         match self.access_runtime.store().await {
                             Ok(store) => match self.caller_ceiling(auth) {
                                 Some(ceiling) => {
+                                    // A route-bound grant pins administration
+                                    // to the installation it was issued for.
+                                    // Otherwise this is the installation the
+                                    // process bound at startup — the same
+                                    // binding the HTTP surface dispatches with,
+                                    // so one identity governs both adapters.
                                     let installation_id = match bound_installation_id {
                                         Some(value) => value,
-                                        None if identity.authenticator()
-                                            == labby_auth::Authenticator::StaticBearer =>
-                                        {
-                                            match store.installation_id().await {
-                                                Ok(value) => value.unwrap_or_default(),
-                                                Err(error) => {
-                                                    tracing::warn!(
-                                                        surface = "mcp",
-                                                        service = %service,
-                                                        action = %action,
-                                                        cause = %error,
-                                                        kind = "service_unavailable",
-                                                        "installation identity lookup failed"
-                                                    );
-                                                    String::new()
-                                                }
-                                            }
-                                        }
-                                        None => String::new(),
+                                        None => self
+                                            .installation_id
+                                            .as_deref()
+                                            .unwrap_or_default()
+                                            .to_owned(),
                                     };
                                     if installation_id.is_empty()
                                         && crate::dispatch::access::required_capability(&action)
@@ -1642,6 +1634,13 @@ impl LabMcpServer {
                                                 labby_primitives::access::Capability::is_platform,
                                             )
                                     {
+                                        tracing::warn!(
+                                            surface = "mcp",
+                                            service = %service,
+                                            action = %action,
+                                            kind = "service_unavailable",
+                                            "installation identity is not bound on this process"
+                                        );
                                         Err(ToolError::Sdk {
                                                 sdk_kind: "service_unavailable".to_owned(),
                                                 message:
@@ -1974,7 +1973,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;

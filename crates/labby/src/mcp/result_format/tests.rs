@@ -186,6 +186,29 @@ fn extract_error_info_preserves_unknown_action_from_json_fallback() {
     assert_eq!(extra["hint"], serde_json::json!("status.get"));
 }
 
+/// The dispatch seam must carry a declared kind verbatim, including kinds that
+/// `canonical_kind` does not list. Collapsing one to `internal_error` would
+/// rewrite the agent-facing contract: a typed, retryable outage would reach the
+/// caller as an unexplained internal failure with "escalate" recovery.
+#[test]
+fn dispatch_seam_preserves_unlisted_declared_kinds() {
+    for kind in [
+        "service_unavailable",
+        "forbidden",
+        "quota_exceeded",
+        "not_supported",
+        "upstream_connect_error",
+    ] {
+        let anyhow_error = anyhow::Error::from(DispatchError::from(ToolError::Sdk {
+            sdk_kind: kind.to_owned(),
+            message: "boom".to_owned(),
+        }));
+        let (recovered, message, _) = extract_error_info(&anyhow_error);
+        assert_eq!(recovered, kind);
+        assert_eq!(message, "boom");
+    }
+}
+
 /// Every kind that `ToolError::kind()` can return must have an explicit arm
 /// in `canonical_kind()`.  If a new variant or SDK kind is added to `ToolError`
 /// without a matching arm here, this test will catch the silent downgrade to
