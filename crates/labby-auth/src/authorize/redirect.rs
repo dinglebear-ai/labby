@@ -42,7 +42,7 @@ pub(super) fn registered_redirect_matches(registered: &str, requested: &str) -> 
 }
 
 fn is_loopback_redirect(url: &reqwest::Url) -> bool {
-    url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+    url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
 }
 
 fn is_native_app_scheme_redirect(url: &reqwest::Url) -> bool {
@@ -154,6 +154,24 @@ pub(super) fn host_pattern_matches(pattern_host: &str, candidate_host: &str) -> 
 #[cfg(test)]
 mod registered_redirect_tests {
     use super::registered_redirect_matches;
+
+    #[test]
+    fn advertised_loopback_hosts_pass_admission_without_patterns() {
+        for uri in [
+            "http://127.0.0.1:56505/callback",
+            "http://localhost:56505/callback",
+            "http://[::1]:56505/callback",
+        ] {
+            assert!(super::is_allowed_redirect_uri(uri, &[]), "{uri}");
+        }
+        for uri in [
+            "http://[::2]:56505/callback",
+            "http://[2001:db8::1]:56505/callback",
+            "https://[::1]:56505/callback",
+        ] {
+            assert!(!super::is_allowed_redirect_uri(uri, &[]), "{uri}");
+        }
+    }
 
     #[test]
     fn loopback_port_is_the_only_permitted_difference() {
