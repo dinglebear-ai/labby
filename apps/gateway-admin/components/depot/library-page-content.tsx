@@ -36,6 +36,11 @@ type ViewMode = 'table' | 'list' | 'cards'
 
 export function LibraryPageContent() {
   const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
+  // Session changes invalidate both retained data and every in-flight read.
+  return <SessionLibraryPage key={sessionEpoch} />
+}
+
+function SessionLibraryPage() {
   const searchParams = useSearchParams()
   const selectedId = searchParams.get('artifact')?.trim() ?? ''
   const initialQuery = searchParams.get('q')?.trim() ?? ''
@@ -43,11 +48,13 @@ export function LibraryPageContent() {
   const [activeQuery, setActiveQuery] = useState(initialQuery)
   const [kind, setKind] = useState(searchParams.get('kind')?.trim().toLocaleLowerCase() || 'all')
   const [state, setState] = useState<LibraryState>({ artifacts: [], loading: true })
-  const [detail, setDetail] = useState<DepotArtifact | null>(null)
+  const [detailResult, setDetail] = useState<{ selectedId: string; artifact: DepotArtifact } | null>(null)
+  const detail = detailResult?.selectedId === selectedId ? detailResult.artifact : null
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
   const [view, setViewState] = useState<ViewMode>('table')
   const viewSelectedByUser = useRef(false)
+  const listController = useRef<AbortController | null>(null)
   const setView = useCallback((next: ViewMode) => {
     viewSelectedByUser.current = true
     setViewState(next)
@@ -63,13 +70,21 @@ export function LibraryPageContent() {
     return () => media.removeEventListener('change', applyResponsiveDefault)
   }, [])
 
-  const load = useCallback(async (search: string, cursor?: string, signal?: AbortSignal) => {
+  const load = useCallback(async (search: string, cursor?: string) => {
+    listController.current?.abort()
+    const controller = new AbortController()
+    listController.current = controller
+    const signal = controller.signal
     const loadingSessionEpoch = getBrowserSessionEpoch()
-    setState((current) => ({ ...current, loading: true, error: undefined, publishing: undefined, artifacts: cursor ? current.artifacts : [] }))
+    const isCurrent = () => !signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
+    setState((current) => cursor
+      ? { ...current, loading: true, error: undefined, publishing: undefined }
+      : { artifacts: [], loading: true })
     try {
       // Status primes the server's actor-scoped operation policy; reads must
       // wait for it on a cold process or after the policy cache expires.
       const status = await depotStatus(signal)
+      if (!isCurrent()) return
       const [response, publishing] = await Promise.all([
         depotCall<{ result?: { artifacts?: DepotArtifact[]; nextCursor?: string; total?: number } }>(
           'depot.artifacts.list',
@@ -78,7 +93,7 @@ export function LibraryPageContent() {
         ),
         depotPublishCapability(signal).catch(() => undefined),
       ])
-      if (signal?.aborted || loadingSessionEpoch !== getBrowserSessionEpoch()) return
+      if (!isCurrent()) return
       setState((current) => ({
         artifacts: cursor ? [...current.artifacts, ...(response.result?.artifacts ?? [])] : (response.result?.artifacts ?? []),
         cursor: response.result?.nextCursor,
@@ -88,30 +103,33 @@ export function LibraryPageContent() {
         total: response.result?.total,
       }))
     } catch (error) {
-      if (!signal?.aborted) setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error), loading: false }))
+      if (isCurrent()) setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error), loading: false }))
     }
   }, [])
 
   useEffect(() => {
-    const controller = new AbortController()
     const timer = window.setTimeout(() => {
       const next = query.trim()
       setActiveQuery(next)
       updateUrl({ artifact: null, q: next })
-      void load(next, undefined, controller.signal)
+      void load(next)
     }, query ? 300 : 0)
-    return () => { window.clearTimeout(timer); controller.abort() }
-  }, [load, query, sessionEpoch])
+    return () => { window.clearTimeout(timer); listController.current?.abort() }
+  }, [load, query])
 
   useEffect(() => {
-    if (!selectedId) { setDetail(null); return }
+    setDetail(null)
+    setDetailLoading(false)
+    if (!selectedId) return
     const controller = new AbortController()
+    const loadingSessionEpoch = getBrowserSessionEpoch()
+    const isCurrent = () => !controller.signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
     setDetailLoading(true)
     void depotStatus(controller.signal)
-      .then(() => depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal))
-      .then((response) => setDetail(response.result?.artifact ?? null))
-      .catch((error) => { if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : String(error)) })
-      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false) })
+      .then(() => isCurrent() ? depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal) : undefined)
+      .then((response) => { if (isCurrent()) setDetail(response?.result?.artifact ? { selectedId, artifact: response.result.artifact } : null) })
+      .catch((error) => { if (isCurrent()) toast.error(error instanceof Error ? error.message : String(error)) })
+      .finally(() => { if (isCurrent()) setDetailLoading(false) })
     return () => controller.abort()
   }, [selectedId])
 
