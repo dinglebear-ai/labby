@@ -481,9 +481,14 @@ pub(crate) fn dedicated_contract_accepts_for(
     // authority. These are stable errors; the authenticated restart journey
     // supplies the success evidence.
     if key.starts_with("stash:") && surface == Surface::Mcp {
+        // The principal-scoped read path now resolves, so `stash.list`,
+        // `stash.search`, and `stash.stats` prove live success here. A
+        // file-scoped action still answers the non-enumerating denial because
+        // this sweep owns no file; the authenticated restart journey supplies
+        // the sharing evidence.
         return matches!(
             error_kind,
-            "forbidden" | "upstream_connect_error" | "service_unavailable"
+            "forbidden" | "not_found" | "upstream_connect_error" | "service_unavailable"
         );
     }
     // On Linux the authenticated Stash routes are mounted, so a sweep without
