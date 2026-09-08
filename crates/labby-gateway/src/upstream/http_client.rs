@@ -9,7 +9,7 @@
 //! wrapper inserts the cap at the transport layer.
 //!
 //! Cap semantics:
-//! - `post_message` → `Json(_, _)`: cumulative cap on the buffered body.
+//! - `post_message` → `RawJson(_, _)`: cumulative cap on the buffered body.
 //! - `post_message` → `Sse(_, _)`: PER-EVENT cap (not cumulative), so
 //!   long-lived legitimate SSE subscriptions are not disconnected.
 //! - `get_stream`: PER-EVENT cap (not cumulative).
@@ -31,6 +31,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use reqwest::header::{ACCEPT, HeaderName, HeaderValue, WWW_AUTHENTICATE};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
+use rmcp::service::RawRxJsonRpcMessage;
 use rmcp::transport::common::http_header::{
     BASE64_HEADER_PREFIX, BASE64_HEADER_SUFFIX, EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID,
     HEADER_MCP_METHOD, HEADER_MCP_NAME, HEADER_SESSION_ID, JSON_MIME_TYPE,
@@ -543,6 +544,10 @@ fn chunk_contains_event_boundary(chunk: &[u8], prev_ended_with_lf: bool) -> bool
 impl StreamableHttpClient for BodyCappedHttpClient {
     type Error = reqwest::Error;
 
+    fn preserves_raw_responses() -> bool {
+        true
+    }
+
     async fn get_stream(
         &self,
         uri: Arc<str>,
@@ -757,8 +762,8 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             Some(ct) if ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()) => {
                 let _permit = self.acquire_response_budget().await?;
                 let body_bytes = read_body_capped(response, self.max_bytes).await?;
-                match serde_json::from_slice::<ServerJsonRpcMessage>(&body_bytes) {
-                    Ok(message) => Ok(StreamableHttpPostResponse::Json(
+                match serde_json::from_slice::<RawRxJsonRpcMessage<rmcp::RoleClient>>(&body_bytes) {
+                    Ok(message) => Ok(StreamableHttpPostResponse::RawJson(
                         message,
                         response_session_id,
                     )),
@@ -895,6 +900,38 @@ mod tests {
             "params": {}
         }))
         .expect("valid jsonrpc")
+    }
+
+    #[tokio::test]
+    async fn skills_json_response_retains_extension_fields() {
+        let server = MockServer::start().await;
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "skills": [{"uri": "skill://fixture/example/SKILL.md", "name": "example"}],
+                "nextCursor": "page-2", "ttlMs": 5000, "cacheScope": "private"
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(payload.clone()))
+            .mount(&server)
+            .await;
+        let response = build(4096)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request_with_method("skills/list"),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect("skills response");
+        let StreamableHttpPostResponse::RawJson(message, _) = response else {
+            panic!("Skills responses must retain raw extension fields: {response:?}");
+        };
+        assert_eq!(serde_json::to_value(message).unwrap(), payload);
+        assert!(BodyCappedHttpClient::preserves_raw_responses());
     }
 
     #[test]
@@ -1407,7 +1444,7 @@ mod tests {
             .await
             .expect("session-aware post succeeds");
 
-        let Resp::Json(_, session_id) = response else {
+        let Resp::RawJson(_, session_id) = response else {
             panic!("expected JSON response");
         };
         assert_eq!(session_id.as_deref(), Some("legacy-session"));

@@ -11,16 +11,22 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'EOF'
-Usage: scripts/ci/mcp-conformance.sh [--direct-proxy-only]
+Usage: scripts/ci/mcp-conformance.sh [--direct-proxy-only|--check-sdk-pin]
 
 Runs the pinned MCP conformance suite and a direct stdio proxy probe.
 --direct-proxy-only runs only the real Labby + fixture stdio server scenario.
+--check-sdk-pin validates the production SDK pin without building or running scenarios.
 Set MCP_CONFORMANCE_OUTPUT_DIR to choose the artifact directory.
 EOF
   exit 0
 fi
 
 direct_proxy_only=false
+check_sdk_pin_only=false
+if [[ "${1:-}" == "--check-sdk-pin" ]]; then
+  check_sdk_pin_only=true
+  shift
+fi
 if [[ "${1:-}" == "--direct-proxy-only" ]]; then
   direct_proxy_only=true
   shift
@@ -31,7 +37,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-0665dcac527abd6828a6bdc805821e820841e491}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-f94e8fabe0b4264db3e7f8771dd49d9ba31f4610}"
 RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.1.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
 RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
@@ -76,6 +82,10 @@ trap cleanup EXIT
 
 python3 "${repo_root}/scripts/ci/check_mcp_sdk_pin.py" \
   "${repo_root}/Cargo.toml" "$LABBY_RMCP_REPOSITORY" "$LABBY_RMCP_REVISION"
+
+if [[ "$check_sdk_pin_only" == true ]]; then
+  exit 0
+fi
 
 mkdir -p "$output_dir"
 

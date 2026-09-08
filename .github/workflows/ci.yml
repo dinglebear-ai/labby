@@ -995,6 +995,7 @@ jobs:
           cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
           cargo test -p labby-gateway --all-features --locked skills
           cargo test -p labby --all-features --locked mcp::skills
+          cargo test -p labby --all-features --locked --test skills_mcp_e2e skills_
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
