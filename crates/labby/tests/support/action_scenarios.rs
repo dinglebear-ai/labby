@@ -652,10 +652,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     }
     if surface == Surface::Mcp {
         return match key {
-            "setup:services.status" => Some((
-                "requires_configured_external_plugin_service",
-                "internal_error",
-            )),
+            // `services.status` answers `claude_cli_unavailable` on every
+            // surface. It was listed here as `internal_error` only because the
+            // MCP seam used to rewrite unrecognised kinds; it now reports the
+            // kind it declares, so the shared contract applies.
             "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
             "setup:plugin_connectivity" => {
                 Some(("requires_host_plugin_connectivity_authority", "forbidden"))
