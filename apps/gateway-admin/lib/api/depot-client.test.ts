@@ -203,6 +203,23 @@ test('preserves server error codes', async () => {
 
 const v2Page = { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [{ providerId: 'public', artifactId: 'artifact-1', id: 'artifact-1' }], providerOutcomes: [{ providerId: 'public', state: 'exhausted' }], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null }
 
+test('federated timestamp projection preserves authoredAt and nullable artifact dates', async () => {
+  const item = { ...v2Page.items[0], createdAt: null, updatedAt: '2026-09-08T00:00:00Z', currentRevision: { id: 'revision-1', authoredAt: '2026-09-07T00:00:00Z' } }
+  await withFetch(json({ ...v2Page, items: [item] }), async () => {
+    const result = await listArtifacts()
+    assert.equal(result.items[0]?.createdAt, null)
+    assert.equal(result.items[0]?.currentRevision?.authoredAt, '2026-09-07T00:00:00Z')
+  })
+})
+
+test('federated timestamps reject structured payloads and undocumented revision dates', async () => {
+  for (const extra of [{ createdAt: { secret: 'not metadata' } }, { currentRevision: { createdAt: '2026-09-08T00:00:00Z' } }]) {
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...extra }] }), async () => {
+      await assert.rejects(listArtifacts(), /incompatible discovery response/)
+    })
+  }
+})
+
 test('read-only v2 POST requests carry the authenticated browser CSRF token', async () => {
   const original = globalThis.fetch
   const csrfHeaders: Array<string | null> = []

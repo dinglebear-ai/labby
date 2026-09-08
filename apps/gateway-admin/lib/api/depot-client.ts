@@ -203,11 +203,12 @@ const federatedArtifactSchema = z.object({
   namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(),
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
   contentDigest: bounded(512).optional(),
+  createdAt: bounded(128).nullish(), updatedAt: bounded(128).nullish(),
   license: z.object({ redistribution: bounded(128).optional(), reviewState: bounded(128).optional(), takedownState: bounded(128).optional() }).strict().optional(),
   publication: z.object({ state: bounded(128).optional(), visibility: bounded(128).optional(), distribution: bounded(128).optional() }).strict().optional(),
   revisionCount: z.number().safe().int().nonnegative().optional(),
   descriptor: z.object({ id: rawId.optional(), kind: bounded(128).optional(), namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(), description: bounded(16384).optional() }).strict().optional(),
-  currentRevision: z.object({ id: bounded(512).optional(), contentDigest: bounded(512).optional() }).strict().optional(),
+  currentRevision: z.object({ id: bounded(512).optional(), contentDigest: bounded(512).optional(), authoredAt: bounded(128).nullish() }).strict().optional(),
 }).strict()
 const outcomeSchema = z.object({ providerId: bounded(64), state: z.enum(['pending', 'participating', 'exhausted', 'failed']) }).strict()
 const failureSchema = z.object({ providerId: bounded(64), kind: bounded(128) }).strict()

@@ -157,6 +157,68 @@ fn deterministic_round_robin_is_fair_and_provider_qualifies_identity() {
 }
 
 #[test]
+fn list_and_detail_preserve_bounded_real_timestamps() {
+    let raw = json!({
+        "id": "dated", "descriptor": {"id": "dated"},
+        "createdAt": "2026-09-01T00:00:00Z", "updatedAt": null,
+        "currentRevision": {
+            "id": "rev-1", "contentDigest": "sha256:exact",
+            "authoredAt": "2026-09-03T00:00:00Z", "metadata": {"private": "omit"}
+        }
+    });
+    let detail = project_detail("dated", raw.clone()).unwrap();
+    let mut pages = vec![ProviderPage::participating(
+        "alpha",
+        vec![raw],
+        None,
+        Some(1),
+    )];
+    let response = merge_page(&mut pages, 0, 1).unwrap();
+    for artifact in [&detail, &response.items[0]] {
+        assert_eq!(artifact["createdAt"], "2026-09-01T00:00:00Z");
+        assert!(artifact["updatedAt"].is_null());
+        assert_eq!(
+            artifact["currentRevision"]["authoredAt"],
+            "2026-09-03T00:00:00Z"
+        );
+    }
+    assert!(
+        response.items[0]["currentRevision"]
+            .get("metadata")
+            .is_none()
+    );
+}
+
+#[test]
+fn list_and_detail_reject_oversized_or_structured_timestamps() {
+    for field in ["createdAt", "updatedAt", "authoredAt"] {
+        for value in [
+            json!("x".repeat(129)),
+            json!({"url": "http://attacker"}),
+            json!(42),
+            json!("javascript:alert(1)"),
+            json!("2026-99-99T00:00:00Z"),
+        ] {
+            let mut raw = json!({"id": "dated", "descriptor": {"id": "dated"}});
+            if field == "authoredAt" {
+                raw["currentRevision"] = json!({"authoredAt": value});
+            } else {
+                raw[field] = value;
+            }
+            assert_eq!(
+                project_detail("dated", raw.clone()),
+                Err(DiscoveryError::InvalidProvider)
+            );
+            let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+            assert_eq!(
+                merge_page(&mut pages, 0, 1).unwrap_err(),
+                DiscoveryError::InvalidProvider
+            );
+        }
+    }
+}
+
+#[test]
 fn pending_is_deferred_while_actual_failure_is_partial() {
     let mut pending = vec![ProviderPage::pending("alpha")];
     assert_eq!(merge_page(&mut pending, 0, 50).unwrap().state, "deferred");

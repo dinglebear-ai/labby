@@ -733,6 +733,7 @@ fn project_text_fields(
 
 fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, DiscoveryError> {
     let mut projected = project_text_fields(source, DESCRIPTOR_TEXT)?;
+    project_timestamps(source, &mut projected)?;
     projected.extend(project_text_fields(
         source,
         &[("currentRevisionId", 512), ("contentDigest", 512)],
@@ -761,10 +762,11 @@ fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, Dis
                 return Err(DiscoveryError::InvalidProvider);
             }
             let nested = value.as_object().ok_or(DiscoveryError::InvalidProvider)?;
-            projected.insert(
-                field.into(),
-                Value::Object(project_text_fields(nested, fields)?),
-            );
+            let mut summary = project_text_fields(nested, fields)?;
+            if field == "currentRevision" {
+                project_timestamp(nested, &mut summary, "authoredAt")?;
+            }
+            projected.insert(field.into(), Value::Object(summary));
         }
     }
     if let Some(count) = source.get("revisionCount") {
@@ -776,6 +778,36 @@ fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, Dis
     Ok(projected)
 }
 
+fn project_timestamps(
+    source: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+) -> Result<(), DiscoveryError> {
+    for field in ["createdAt", "updatedAt"] {
+        project_timestamp(source, result, field)?;
+    }
+    Ok(())
+}
+
+fn project_timestamp(
+    source: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+    field: &str,
+) -> Result<(), DiscoveryError> {
+    if let Some(value) = source.get(field) {
+        if !bounded_timestamp(value) {
+            return Err(DiscoveryError::InvalidProvider);
+        }
+        result.insert(field.into(), value.clone());
+    }
+    Ok(())
+}
+
+fn bounded_timestamp(value: &Value) -> bool {
+    value.is_null()
+        || value
+            .as_str()
+            .is_some_and(|value| value.len() <= 64 && value.parse::<jiff::Timestamp>().is_ok())
+}
 fn bounded_value(value: &Value, depth: usize) -> bool {
     if depth > 4 {
         return false;
