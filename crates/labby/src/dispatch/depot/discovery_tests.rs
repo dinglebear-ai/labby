@@ -36,7 +36,7 @@ fn real_depot_null_display_fields_and_extra_license_metadata_are_projected() {
     assert!(item.get("description").is_none());
     assert_eq!(
         item["license"],
-        json!({"redistribution":"unknown","reviewState":"unreviewed","takedownState":"clear"})
+        json!({"redistribution":"unknown","reviewState":"unreviewed","takedownState":"clear","declared":null})
     );
     assert_eq!(
         item["publication"],
@@ -56,9 +56,11 @@ fn real_depot_null_display_fields_and_extra_license_metadata_are_projected() {
         );
         assert_eq!(
             detail["currentRevision"],
-            json!({"id":"revision-1","contentDigest":"sha256:source"})
+            json!({"id":"revision-1","contentDigest":"sha256:source","authoredAt":null})
         );
-        assert!(detail["license"].get("declared").is_none());
+        assert_eq!(detail["license"]["declared"], declared);
+        assert!(detail["license"].get("detected").is_none());
+        assert!(detail["license"].get("metadata").is_none());
         assert!(detail["publication"].get("publishedAt").is_none());
     }
 }
@@ -69,6 +71,8 @@ fn projection_rejects_wrong_known_types_and_identity_conflicts() {
         json!({"id":"artifact-1","title":42}),
         json!({"id":"artifact-1","name":null}),
         json!({"id":"artifact-1","license":{"redistribution":false}}),
+        json!({"id":"artifact-1","license":{"declared": {"text":"MIT"}}}),
+        json!({"id":"artifact-1","license":{"declared": "x".repeat(1025)}}),
         json!({"id":"artifact-1","publication":{"visibility":[]}}),
         json!({"id":"artifact-1","currentRevision":{"id":null}}),
         json!({"id":"artifact-1","revisionCount":-1}),

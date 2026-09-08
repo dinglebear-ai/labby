@@ -766,6 +766,16 @@ fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, Dis
             if field == "currentRevision" {
                 project_timestamp(nested, &mut summary, "authoredAt")?;
             }
+            if field == "license"
+                && let Some(declared) = nested.get("declared")
+            {
+                if !declared.is_null()
+                    && !declared.as_str().is_some_and(|value| value.len() <= 1024)
+                {
+                    return Err(DiscoveryError::InvalidProvider);
+                }
+                summary.insert("declared".into(), declared.clone());
+            }
             projected.insert(field.into(), Value::Object(summary));
         }
     }
