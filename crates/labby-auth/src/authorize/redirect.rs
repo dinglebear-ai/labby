@@ -1,5 +1,46 @@
 //! Redirect URI classification and configured-pattern matching.
 
+/// RFC 8252 permits an ephemeral port for HTTP loopback callbacks only.
+/// Compare the original URI text outside the port: URL normalization must not
+/// turn a different path, query, host spelling, or scheme into a match.
+pub(super) fn registered_redirect_matches(registered: &str, requested: &str) -> bool {
+    if registered == requested {
+        return true;
+    }
+    fn loopback_parts(value: &str) -> Option<(&str, &str)> {
+        let parsed = reqwest::Url::parse(value).ok()?;
+        if parsed.fragment().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return None;
+        }
+        let authority_and_path = value.strip_prefix("http://")?;
+        let end = authority_and_path
+            .find(['/', '?', '#'])
+            .unwrap_or(authority_and_path.len());
+        let authority = &authority_and_path[..end];
+        for host in ["127.0.0.1", "[::1]", "localhost"] {
+            if let Some(rest) = authority.strip_prefix(host) {
+                if rest.is_empty()
+                    || rest.strip_prefix(':').is_some_and(|port| {
+                        !port.is_empty()
+                            && port.bytes().all(|byte| byte.is_ascii_digit())
+                            && port.parse::<u16>().is_ok()
+                    })
+                {
+                    return Some((host, &authority_and_path[end..]));
+                }
+            }
+        }
+        None
+    }
+    match (loopback_parts(registered), loopback_parts(requested)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn is_loopback_redirect(url: &reqwest::Url) -> bool {
     url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
 }
@@ -108,4 +149,96 @@ pub(super) fn host_pattern_matches(pattern_host: &str, candidate_host: &str) -> 
                 *pattern == "*"
                     || (!pattern.contains('*') && pattern.eq_ignore_ascii_case(candidate))
             })
+}
+
+#[cfg(test)]
+mod registered_redirect_tests {
+    use super::registered_redirect_matches;
+
+    #[test]
+    fn loopback_port_is_the_only_permitted_difference() {
+        for (registered, requested, expected) in [
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/callback",
+                true,
+            ),
+            (
+                "http://[::1]:1234/callback",
+                "http://[::1]:56505/callback",
+                true,
+            ),
+            (
+                "http://localhost/callback",
+                "http://localhost:56505/callback",
+                true,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://localhost:56505/callback",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/callback/extra",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/a/../callback",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/%63allback",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/callback?x=1",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:56505/callback#fragment",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://user@127.0.0.1:56505/callback",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1.evil.example:56505/callback",
+                false,
+            ),
+            (
+                "https://example.com/callback",
+                "https://example.com:56505/callback",
+                false,
+            ),
+            (
+                "http://192.0.2.1/callback",
+                "http://192.0.2.1:56505/callback",
+                false,
+            ),
+            (
+                "https://127.0.0.1/callback",
+                "https://127.0.0.1:56505/callback",
+                false,
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:99999/callback",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                registered_redirect_matches(registered, requested),
+                expected,
+                "{registered} vs {requested}"
+            );
+        }
+    }
 }
