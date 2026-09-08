@@ -1,3 +1,9 @@
+---
+title: "Discover alignment"
+created: "2026-09-08"
+updated: "2026-09-08"
+---
+
 # Discover alignment
 
 Reference: [Gateway Console design](https://claude.ai/design/p/d80fe050-1bc9-44b0-aa68-6e873344c619?file=Gateway+Console.dc.html&via=share).
