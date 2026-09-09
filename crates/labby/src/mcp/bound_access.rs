@@ -267,6 +267,12 @@ impl BoundAccessContext {
             && self.route.same_publication_as(&other.route)
     }
 
+    pub(crate) fn authorizes_asset_use_of(self, discovery: &Self) -> bool {
+        self.credential_binding_fingerprint == discovery.credential_binding_fingerprint
+            && self.route.same_publication_as(&discovery.route)
+            && self.catalog.authorizes_asset_use_of(&discovery.catalog)
+    }
+
     pub(crate) fn allows_upstream_prompt_pair(&self, upstream: &str, native_name: &str) -> bool {
         let route = self.route();
         route.effective_loadout().expose_prompts
@@ -446,6 +452,18 @@ impl ProjectDiscoveryShadow<'_> {
             return None;
         };
         binding.validate_not_expired(now).ok()?;
+        if service.name == crate::dispatch::depot_publish::SERVICE {
+            // This shim is owned by the protected route, not its published
+            // builtin service catalog. Share the exception with wire discovery
+            // and peer descriptor hashing, including credential expiry.
+            let loadout = binding.core().route().effective_loadout();
+            return Some(
+                loadout.expose_tools
+                    && loadout.upstreams.iter().any(|upstream| {
+                        upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM
+                    }),
+            );
+        }
         if self.allows_builtin_service(service.name, now) != Some(true) {
             return Some(false);
         }
@@ -1249,6 +1267,50 @@ mod tests {
         .await
         .expect("second binding");
 
+        let asset_use = bind_asset_use_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(!asset_use.catalog.same_publication_as(&first.catalog));
+        assert!(
+            asset_use.authorizes_asset_use_of(&first),
+            "fresh AssetUse must authorize unchanged AssetDiscover publication"
+        );
+        let discovery_only = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !discovery_only.authorizes_asset_use_of(&first),
+            "discovery alone cannot authorize execution"
+        );
+        let mut wrong_identity = bind_asset_use_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        wrong_identity
+            .credential_binding_fingerprint
+            .push_str("different");
+        assert!(!wrong_identity.authorizes_asset_use_of(&first));
+
         assert_eq!(
             first.catalog().access().permission,
             Permission::AssetDiscover
@@ -1346,6 +1408,20 @@ mod tests {
             vec![Prompt::new("deploy-v2", Some("changed"), None)],
         )
         .await;
+        let changed_asset_use = bind_asset_use_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !changed_asset_use.authorizes_asset_use_of(&first),
+            "a new catalog publication must invalidate the original authorization"
+        );
         let changed_core = bind_access_context(
             &runtime,
             &manager,
@@ -2023,6 +2099,98 @@ mod tests {
             ),
             Err(BoundAccessContextError::Unavailable)
         ));
+
+        // Route-owned publishing must appear identically on the wire and in
+        // peer hashes, without depending on a builtin virtual-server entry.
+        let registry = crate::registry::build_default_registry();
+        let depot_service = registry.service("depot_publish").unwrap();
+        for (upstream, expose_tools, expected) in [
+            ("team-depot", true, true),
+            ("catalog-depot", true, false),
+            ("team-depot", false, false),
+        ] {
+            let mut team_config = config();
+            team_config.upstream[0].name = upstream.into();
+            team_config.loadouts[0].upstreams = vec![upstream.into()];
+            team_config.loadouts[0].expose_tools = expose_tools;
+            manager.try_seed_config(team_config).await.unwrap();
+            let core = bind_access_context(
+                &runtime,
+                &manager,
+                identity.clone(),
+                "project-route",
+                "https://mcp.example.com/project",
+                "bootstrap-default",
+            )
+            .await
+            .unwrap();
+            let current = SystemTime::now();
+            let expiry = current.duration_since(UNIX_EPOCH).unwrap().as_secs() + 600;
+            let transport = Arc::new(
+                TransportBoundAccessContext::new(
+                    core,
+                    validate_transport_credential_binding(
+                        "issuer",
+                        "team-parity",
+                        usize::try_from(expiry).unwrap(),
+                        current,
+                    )
+                    .unwrap(),
+                    current,
+                )
+                .unwrap(),
+            );
+            let shadow = ProjectDiscoveryShadow::Bound(&transport);
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(depot_service, current),
+                Some(expected)
+            );
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(
+                    depot_service,
+                    UNIX_EPOCH + std::time::Duration::from_secs(expiry),
+                ),
+                None,
+                "expired grants cannot advertise the route-owned shim"
+            );
+
+            let mut server = project_shadow_test_server();
+            server.route_scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "project-route",
+                [upstream],
+                ["fs", "setup"],
+                false,
+            );
+            let (io, _client) = tokio::io::duplex(64 * 1024);
+            let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+                server, io, None,
+            );
+            let mut context = project_shadow_context(
+                running.peer().clone(),
+                Some(ProjectAccessObservation::Bound(transport)),
+            );
+            context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap()
+                .extensions
+                .insert(identity.clone());
+            let descriptors = running
+                .service()
+                .peer_contract_for_request(&context)
+                .visible_tool_descriptors()
+                .await;
+            let wire = running
+                .service()
+                .list_tools_impl(None, context)
+                .await
+                .unwrap();
+            assert_eq!(wire.tools, descriptors, "descriptor parity for {upstream}");
+            assert_eq!(
+                wire.tools.iter().any(|tool| tool.name == "depot_publish"),
+                expected
+            );
+        }
 
         manager.try_seed_config(config()).await.unwrap();
         assert_eq!(first.route().resource(), "https://mcp.example.com/project");

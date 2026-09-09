@@ -40,6 +40,22 @@ fn team_member_auto_provision_candidate(has_oauth_delegation: bool, upstreams: &
             .any(|upstream| upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
 }
 
+fn team_admission_unavailable(stage: &'static str) -> axum::response::Response {
+    tracing::warn!(
+        surface = "mcp",
+        stage,
+        category = "unavailable",
+        "team admission failed"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "kind": "server_error", "message": "Team admission is temporarily unavailable"
+        })),
+    )
+        .into_response()
+}
+
 async fn protected_mcp_route_entry(
     state: AppState,
     mut request: Request<Body>,
@@ -105,19 +121,27 @@ async fn protected_mcp_route_entry(
                 &target.upstreams,
             ) {
                 let authorized = match state.oauth_state.as_deref() {
-                    Some(auth) => auth
-                        .is_current_identity_authorized(&identity)
-                        .await
-                        .unwrap_or(false),
+                    Some(auth) => match auth.is_current_identity_authorized(&identity).await {
+                        Ok(authorized) => authorized,
+                        Err(_) => return team_admission_unavailable("identity_lookup"),
+                    },
                     None => false,
                 };
-                if !authorized
-                    || state
-                        .access_runtime
-                        .provision_team_member(identity.clone(), project_id.to_owned())
-                        .await
-                        .is_err()
+                if !authorized {
+                    return auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+                if let Err(error) = state
+                    .access_runtime
+                    .provision_team_member(identity.clone(), project_id.to_owned())
+                    .await
                 {
+                    if error == crate::access::TeamMemberProvisionError::Unavailable {
+                        return team_admission_unavailable("member_provisioning");
+                    }
                     tracing::warn!(
                         route = %route.name,
                         project_id,
@@ -262,6 +286,22 @@ async fn protected_mcp_route_entry(
 #[cfg(test)]
 mod team_member_provisioning_tests {
     use super::team_member_auto_provision_candidate;
+
+    #[test]
+    fn admission_outages_do_not_challenge_valid_credentials() {
+        for stage in ["identity_lookup", "member_provisioning"] {
+            let response = super::team_admission_unavailable(stage);
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(axum::http::header::WWW_AUTHENTICATE)
+            );
+        }
+    }
 
     #[test]
     fn auto_provision_requires_oauth_and_the_exact_team_depot_upstream() {

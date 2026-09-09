@@ -69,6 +69,23 @@ pub(crate) enum CredentialLifecycleError {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum TeamMemberProvisionError {
+    #[error("team admission is not authorized")]
+    NotAuthorized,
+    #[error("team admission is unavailable")]
+    Unavailable,
+}
+
+impl From<AccessStoreError> for TeamMemberProvisionError {
+    fn from(error: AccessStoreError) -> Self {
+        match error {
+            AccessStoreError::NotAuthorized => Self::NotAuthorized,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
 enum RuntimeState {
     SetupRequired(AccessSetupReason),
     Prepared,
@@ -95,13 +112,17 @@ impl AccessRuntime {
         &self,
         identity: labby_auth::VerifiedIdentity,
         project_id: String,
-    ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
-        let _writer = self.acquire_bootstrap_writer().await?;
+    ) -> Result<super::TeamMemberProvisionOutcome, TeamMemberProvisionError> {
+        let _writer = self
+            .acquire_bootstrap_writer()
+            .await
+            .map_err(|_| TeamMemberProvisionError::Unavailable)?;
         self.security_store()
-            .await?
+            .await
+            .map_err(|_| TeamMemberProvisionError::Unavailable)?
             .provision_team_member(identity, project_id)
             .await
-            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+            .map_err(TeamMemberProvisionError::from)
     }
 
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
@@ -650,6 +671,25 @@ fn credential_runtime_error(error: AccessStoreError) -> CredentialLifecycleError
 mod tests {
     use super::*;
     use labby_auth::{Authenticator, VerifiedIdentity};
+
+    #[test]
+    fn team_admission_preserves_denial_vs_store_failure() {
+        assert_eq!(
+            TeamMemberProvisionError::from(AccessStoreError::NotAuthorized),
+            TeamMemberProvisionError::NotAuthorized
+        );
+        for error in [
+            AccessStoreError::Locked,
+            AccessStoreError::DiskFull,
+            AccessStoreError::ReadOnly,
+            AccessStoreError::Corrupt,
+        ] {
+            assert_eq!(
+                TeamMemberProvisionError::from(error),
+                TeamMemberProvisionError::Unavailable
+            );
+        }
+    }
 
     fn secure_test_path(directory: &tempfile::TempDir) -> PathBuf {
         #[cfg(unix)]

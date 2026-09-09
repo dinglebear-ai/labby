@@ -265,9 +265,8 @@ impl LabMcpServer {
                 #[cfg(feature = "gateway")]
                 if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
                     project_shadow_checked_tool_count += 1;
-                    if svc.name != "depot_publish"
-                        && project_shadow.allows_builtin_service_descriptor(svc, SystemTime::now())
-                            != Some(true)
+                    if project_shadow.allows_builtin_service_descriptor(svc, SystemTime::now())
+                        != Some(true)
                     {
                         project_shadow_would_suppress_tool_count += 1;
                         continue;
