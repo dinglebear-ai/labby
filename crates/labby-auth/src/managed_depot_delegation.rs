@@ -1,5 +1,5 @@
 //! Opt-in wire signer for the managed Depot protocol, separate from
-//! [`crate::depot_delegation`]'s browser/product-credential protocol.
+//! the browser/product-credential delegation protocol.
 //!
 //! Signing does not authorize a request or activate managed mode. The caller
 //! must supply freshly verified authority, bound service/target identity, exact
