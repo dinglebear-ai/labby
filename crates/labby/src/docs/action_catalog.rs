@@ -152,6 +152,7 @@ const WEB_ACTION_CLIENT_SOURCES: &[&str] = &[
     include_str!("../../../../apps/gateway-admin/lib/api/snippets-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/skill-library-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/artifact-control-client.ts"),
+    include_str!("../../../../apps/gateway-admin/lib/api/depot-membership-client.ts"),
     include_str!("../../../../apps/gateway-admin/components/skills/artifact-control-plane.tsx"),
     include_str!("../../../../apps/gateway-admin/lib/fs/client.ts"),
 ];
@@ -294,6 +295,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn discover_membership_is_bound_to_the_web_client() {
+        assert!(web_action_bound("artifacts", "artifacts.depot_membership"));
+    }
 
     #[test]
     fn cli_action_bindings_are_unique_registered_actions() {

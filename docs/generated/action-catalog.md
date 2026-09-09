@@ -11,6 +11,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `artifacts` | `artifacts.authority_status` | false | false | false |  | `connection_id: string` | `ArtifactAuthorityStatus` | mcp, api, web |
 | `artifacts` | `artifacts.create` | false | false | false |  | `name*: string`<br>`files*: array`<br>`visibility: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
 | `artifacts` | `artifacts.deactivate` | false | false | false |  | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
+| `artifacts` | `artifacts.depot_membership` | false | false | false |  | `items*: array` | `VersionedDepotMembership` | mcp, api, web |
 | `artifacts` | `artifacts.follow` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string`<br>`upstream_artifact_id: string`<br>`upstream_revision_id: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
 | `artifacts` | `artifacts.fork` | false | false | true | lab:admin | `connection_id: string`<br>`source_artifact_id*: string`<br>`revision_id: string`<br>`namespace*: string`<br>`name*: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
 | `artifacts` | `artifacts.get` | false | false | false |  | `artifact_id*: string` | `VersionedSkillLibrarySummary` | mcp, api |

@@ -451,7 +451,7 @@ fn validate_kind(value: &str) -> Result<(), ArtifactError> {
     Ok(())
 }
 
-fn validate_slug(value: &str, field: &'static str) -> Result<(), ArtifactError> {
+pub(super) fn validate_slug(value: &str, field: &'static str) -> Result<(), ArtifactError> {
     bounded_string(value, field, 128, 1)?;
     let bytes = value.as_bytes();
     if !bytes[0].is_ascii_alphanumeric() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {

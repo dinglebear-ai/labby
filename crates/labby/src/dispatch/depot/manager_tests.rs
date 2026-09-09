@@ -216,6 +216,64 @@ fn qualification_requires_exact_supported_contract_and_bounded_opaque_identity()
     }
 }
 
+#[test]
+fn new_feed_capability_requires_matching_ranking_window_and_shared_cutoff() {
+    assert!(!Identity::parse(identity()).unwrap().supports_new_feed());
+    let mut supported = identity();
+    supported["feeds"] = json!({"new": {
+        "rankingVersion": "new/v1", "windowSeconds": 604800, "acceptsAsOf": true
+    }});
+    assert!(
+        Identity::parse(supported.clone())
+            .unwrap()
+            .supports_new_feed()
+    );
+    for (field, value) in [
+        ("rankingVersion", json!("new/v2")),
+        ("windowSeconds", json!(86400)),
+        ("windowSeconds", json!("604800")),
+        ("acceptsAsOf", json!(false)),
+        ("acceptsAsOf", Value::Null),
+    ] {
+        let mut incompatible = supported.clone();
+        incompatible["feeds"]["new"][field] = value;
+        // Optional feed incompatibility must not break ordinary discovery.
+        assert!(!Identity::parse(incompatible).unwrap().supports_new_feed());
+    }
+    for field in ["rankingVersion", "windowSeconds", "acceptsAsOf"] {
+        let mut missing = supported.clone();
+        missing["feeds"]["new"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(!Identity::parse(missing).unwrap().supports_new_feed());
+    }
+}
+
+#[test]
+fn source_origin_capability_is_explicit_versioned_and_allowlisted() {
+    assert!(!Identity::parse(identity()).unwrap().supports_source_origin("ard"));
+    let mut supported = identity();
+    supported["filters"] = json!({"sourceOrigin":{"version":"source-origin/v1","values":["mcp-registry","ard"]}});
+    let parsed = Identity::parse(supported.clone()).unwrap();
+    assert!(parsed.supports_source_origin("mcp-registry"));
+    assert!(parsed.supports_source_origin("ard"));
+    assert!(!parsed.supports_source_origin("acp-registry"));
+    for capability in [
+        json!(null),
+        json!({"version":"source-origin/v2","values":["ard"]}),
+        json!({"version":"source-origin/v1","values":["ard","ard"]}),
+        json!({"version":"source-origin/v1","values":["ard", "github"]}),
+        json!({"version":"source-origin/v1","values":[42]}),
+        json!({"version":"source-origin/v1","values":"ard"}),
+        json!({"values":["ard"]}),
+    ] {
+        let mut invalid = supported.clone();
+        invalid["filters"]["sourceOrigin"] = capability;
+        assert!(!Identity::parse(invalid).unwrap().supports_source_origin("ard"));
+    }
+}
+
 #[tokio::test]
 async fn auth_failure_requires_manual_probe_and_successful_qualification_is_cached() {
     let (client, mut received) = tls_fixture(response(identity())).await;
@@ -227,6 +285,10 @@ async fn auth_failure_requires_manual_probe_and_successful_qualification_is_cach
     let admission = scheduler.admit("actor", Instant::now()).await.unwrap();
     assert_eq!(
         runtime.qualify(&admission, false).await,
+        Err(ProviderError::Failed(Failure::Unauthorized))
+    );
+    assert_eq!(
+        runtime.revalidate(&admission).await,
         Err(ProviderError::Failed(Failure::Unauthorized))
     );
     assert!(matches!(

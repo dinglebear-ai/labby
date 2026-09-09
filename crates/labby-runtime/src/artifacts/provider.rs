@@ -293,7 +293,6 @@ impl ArtifactSourceCredential {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ExactHttpRequest<'a> {
     source_id: &'a str,
     artifact_id: &'a str,
@@ -303,6 +302,7 @@ struct ExactHttpRequest<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExactHttpResponse {
+    source_id: String,
     interchange: ArtifactInterchange,
     components: Vec<ExactHttpComponent>,
 }
@@ -310,8 +310,35 @@ struct ExactHttpResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExactHttpComponent {
+    source_id: String,
     path: String,
     url: String,
+}
+
+impl ExactHttpResponse {
+    /// Match Depot's exact-export identity envelope before any component body is fetched.
+    fn validate_binding(&self, request: &ExactArtifactRequest) -> Result<(), ArtifactError> {
+        self.interchange.validate()?;
+        if self.source_id != request.source_id
+            || self
+                .components
+                .iter()
+                .any(|component| component.source_id != request.source_id)
+        {
+            return Err(ArtifactError::Conflict("provider_source_binding_mismatch"));
+        }
+        if self.interchange.descriptor.id != request.artifact_id
+            || self.interchange.revision.id != request.revision_id
+        {
+            return Err(ArtifactError::Conflict(
+                "provider_revision_binding_mismatch",
+            ));
+        }
+        if self.components.len() != self.interchange.revision.components.len() {
+            return Err(invalid("provider_manifest", "component_count_mismatch"));
+        }
+        Ok(())
+    }
 }
 
 /// Concrete guarded HTTP transport shared by Depot and repository acquisition.
@@ -459,10 +486,7 @@ impl ArtifactAcquisitionTransport for GuardedHttpTransport {
             let metadata = Self::bounded_json(metadata, validation::MAX_RECORD_JSON_BYTES).await?;
             let envelope: ExactHttpResponse = serde_json::from_slice(&metadata)
                 .map_err(|_| invalid("provider_manifest", "invalid_json"))?;
-            envelope.interchange.validate()?;
-            if envelope.components.len() != envelope.interchange.revision.components.len() {
-                return Err(invalid("provider_manifest", "component_count_mismatch"));
-            }
+            envelope.validate_binding(request)?;
             for component in &envelope.interchange.revision.components {
                 let source = envelope
                     .components
@@ -1065,6 +1089,7 @@ impl ArtifactProvider for LocalArtifactProvider {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
@@ -1275,6 +1300,130 @@ mod tests {
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         root
+    }
+
+    fn depot_exact_manifest_fixture(acquisition: &ArtifactAcquisition, source_id: &str) -> Value {
+        // Depot.Web.ExactArtifactApiTest asserts this shape for /api/artifacts/exact:
+        // snake_case POST selectors; sourceId in the envelope AND every component locator.
+        serde_json::json!({
+            "sourceId": source_id,
+            "interchange": acquisition.interchange,
+            "components": acquisition.interchange.revision.components.iter().map(|component| {
+                serde_json::json!({
+                    "sourceId": source_id,
+                    "path": component.path,
+                    "url": format!("components/{}/{}/{}/{}", source_id,
+                        acquisition.interchange.descriptor.id,
+                        acquisition.interchange.revision.id.replace(':', "%3A"), component.id),
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }
+
+    #[tokio::test]
+    async fn depot_exact_http_wire_matches_router_and_source_bound_manifest() {
+        let acquisition = remote_fixture().await;
+        let request = exact_request(&acquisition, ExactArtifactSource::Depot);
+        assert_eq!(
+            serde_json::to_value(ExactHttpRequest {
+                source_id: &request.source_id,
+                artifact_id: &request.artifact_id,
+                revision_id: &request.revision_id,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "source_id": request.source_id,
+                "artifact_id": request.artifact_id,
+                "revision_id": request.revision_id,
+            }),
+        );
+        let manifest = depot_exact_manifest_fixture(&acquisition, &request.source_id);
+        let envelope: ExactHttpResponse = serde_json::from_value(manifest).unwrap();
+        envelope.validate_binding(&request).unwrap();
+        let staging = private_staging();
+        let mut gate = ArtifactTransferGate::new(staging.path(), &request)
+            .await
+            .unwrap();
+        gate.observe_peer(*request.pinned_addresses.iter().next().unwrap())
+            .unwrap();
+        for component in &envelope.interchange.revision.components {
+            let locator = envelope
+                .components
+                .iter()
+                .find(|candidate| candidate.path == component.path)
+                .unwrap();
+            validate_component_locator(&locator.url).unwrap();
+            let url = request.endpoint.join(&locator.url).unwrap();
+            assert_eq!(url.origin(), request.endpoint.origin());
+            let payload = acquisition
+                .files
+                .iter()
+                .find(|file| file.path == component.path)
+                .unwrap();
+            gate.begin_file(&component.path, component.size, component.digest.clone())
+                .await
+                .unwrap();
+            gate.write_chunk(&payload.bytes).await.unwrap();
+            gate.finish_file().await.unwrap();
+        }
+        ArtifactAcquisition {
+            interchange: envelope.interchange,
+            files: gate.finish().await.unwrap(),
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn depot_exact_http_manifest_rejects_missing_unknown_and_wrong_source_identity() {
+        let acquisition = remote_fixture().await;
+        let request = exact_request(&acquisition, ExactArtifactSource::Depot);
+        let manifest = depot_exact_manifest_fixture(&acquisition, &request.source_id);
+        for pointer in ["/sourceId", "/components/0/sourceId"] {
+            let mut wrong = manifest.clone();
+            *wrong.pointer_mut(pointer).unwrap() = Value::String("other-source".into());
+            let envelope: ExactHttpResponse = serde_json::from_value(wrong).unwrap();
+            assert!(matches!(
+                envelope.validate_binding(&request),
+                Err(ArtifactError::Conflict("provider_source_binding_mismatch"))
+            ));
+        }
+        for pointer in ["", "/components/0"] {
+            let mut missing = manifest.clone();
+            missing
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove("sourceId");
+            assert!(serde_json::from_value::<ExactHttpResponse>(missing).is_err());
+            let mut unknown = manifest.clone();
+            unknown
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("unexpected".into(), Value::Bool(true));
+            assert!(serde_json::from_value::<ExactHttpResponse>(unknown).is_err());
+        }
+        let envelope: ExactHttpResponse = serde_json::from_value(manifest).unwrap();
+        for altered in [
+            ExactArtifactRequest {
+                artifact_id: "other-artifact".into(),
+                ..request.clone()
+            },
+            ExactArtifactRequest {
+                revision_id: format!("sha256:{}", "0".repeat(64)),
+                ..request.clone()
+            },
+        ] {
+            assert!(matches!(
+                envelope.validate_binding(&altered),
+                Err(ArtifactError::Conflict(
+                    "provider_revision_binding_mismatch"
+                ))
+            ));
+        }
     }
 
     #[test]

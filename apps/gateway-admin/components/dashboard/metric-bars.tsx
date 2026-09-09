@@ -6,12 +6,13 @@ export interface MetricBarItem {
   value: number
   /** Optional right-aligned formatted value (defaults to the number). */
   display?: string
+  tone?: keyof typeof BAR_TONE
   onSelect?: () => void
 }
 
 const BAR_TONE = {
-  accent: 'bg-aurora-accent-primary',
-  strong: 'bg-aurora-accent-strong',
+  accent: 'bg-gradient-to-r from-aurora-accent-deep to-aurora-accent-primary',
+  strong: 'bg-gradient-to-r from-aurora-accent-primary to-aurora-accent-strong',
   error: 'bg-aurora-error',
   warn: 'bg-aurora-warn',
 } as const
@@ -22,38 +23,41 @@ export function MetricBarList({
   tone = 'accent',
   mono = false,
   empty = 'No data in this window.',
+  maxValue,
 }: {
   items: MetricBarItem[]
   tone?: keyof typeof BAR_TONE
   mono?: boolean
   empty?: string
+  /** Explicit denominator for part-of-total breakdowns rather than rankings. */
+  maxValue?: number
 }) {
   if (items.length === 0) {
     return <p className="text-sm text-aurora-text-muted">{empty}</p>
   }
-  const max = Math.max(1, ...items.map((i) => i.value))
+  const max = Math.max(1, maxValue ?? Math.max(...items.map((i) => i.value)))
 
   return (
-    <ul className="flex flex-col gap-2.5">
+    <ul className="flex flex-col gap-2">
       {items.map((item) => {
-        const pct = Math.round((item.value / max) * 100)
+        const pct = Math.max(0, Math.min(100, item.value / max * 100))
         const body = (
           <>
             <div className="flex items-baseline justify-between gap-3">
               <span
                 className={cn(
                   'min-w-0 truncate text-aurora-text-primary',
-                  mono ? 'font-mono text-[13px]' : 'text-sm',
+                  mono ? 'font-mono text-[11.5px]' : 'text-[12.5px] font-semibold',
                 )}
               >
                 {item.label}
               </span>
-              <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">
+              <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">
                 {item.display ?? item.value}
               </span>
             </div>
-            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-aurora-control-surface">
-              <div className={cn('h-full rounded-full', BAR_TONE[tone])} style={{ width: `${pct}%` }} />
+            <div aria-hidden="true" className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-aurora-control-surface">
+              <div className={cn('h-full rounded-full', BAR_TONE[item.tone ?? tone])} style={{ width: `${pct}%` }} />
             </div>
           </>
         )

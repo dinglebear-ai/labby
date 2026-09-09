@@ -25,6 +25,7 @@ use super::audit::{
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum SkillLibraryAction {
     List,
+    DepotMembership,
     Search,
     Get,
     Read,
@@ -42,8 +43,9 @@ pub(crate) enum SkillLibraryAction {
 }
 
 impl SkillLibraryAction {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::List,
+        Self::DepotMembership,
         Self::Search,
         Self::Get,
         Self::Read,
@@ -63,6 +65,7 @@ impl SkillLibraryAction {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::List => "artifacts.list",
+            Self::DepotMembership => "artifacts.depot_membership",
             Self::Search => "artifacts.search",
             Self::Get => "artifacts.get",
             Self::Read => "artifacts.read",

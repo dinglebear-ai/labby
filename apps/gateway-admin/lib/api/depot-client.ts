@@ -10,6 +10,11 @@ const bounded = (max: number) => z.string().max(max)
 const optionalCatalogText = z.string().nullish().transform(value => value ?? undefined)
 const rawId = bounded(2048).refine(value => new TextEncoder().encode(value).length <= 2048, 'artifact ID exceeds 2048 UTF-8 bytes')
 const cursorSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/)
+const descriptorTags = z.array(z.string().refine(value => {
+  const bytes = new TextEncoder().encode(value).length
+  return bytes >= 1 && bytes <= 64 && !value.includes('\0')
+}, 'tag must contain 1–64 UTF-8 bytes without NUL')).max(64)
+  .refine(tags => new Set(tags).size === tags.length, 'tags must be unique')
 
 const contractSchema = z.object({
   schemaVersion: z.literal(COMPATIBILITY_SCHEMA),
@@ -95,6 +100,7 @@ export type DepotArtifact = {
     name?: string
     title?: string
     description?: string
+    tags?: string[]
   }
   currentRevision?: {
     id?: string
@@ -112,7 +118,7 @@ const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
   currentRevisionId: z.string().optional(), contentDigest: z.string().optional(),
   revisionCount: z.number().int().nonnegative().optional(),
-  descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText }).passthrough().optional(),
+  descriptor: z.object({ id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(), name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText, tags: descriptorTags.optional() }).passthrough().optional(),
   currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
   publication: z.object({ state: z.string().optional(), visibility: z.string().optional(), distribution: z.string().optional() }).passthrough().optional(),
   license: z.object({ redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
@@ -198,34 +204,94 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
   return validate(genericResultSchema, value, 'operation response') as T
 }
 
+const readmeSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('available'), kind: z.enum(['readme', 'skill']),
+    path: z.enum(['README.md', 'SKILL.md']), revisionId: bounded(512).min(1),
+    content: z.string().refine(value => !value.includes('\0') && new TextEncoder().encode(value).length <= 65_536, 'document must be at most 65536 UTF-8 bytes without NUL'),
+  }).strict(),
+  z.object({ state: z.literal('unavailable'), reason: z.enum(['absent', 'not_distributable', 'too_large', 'storage_unavailable', 'invalid_text']) }).strict(),
+])
+const sourceFormatText = z.string().refine(value => !value.includes('\0') && new TextEncoder().encode(value).length <= 128, 'source format text exceeds its UTF-8 bound or contains NUL').nullish()
+const lineageId = z.string().max(160).regex(/^[a-z0-9][a-z0-9_-]*$/)
+const lineageRevision = z.union([lineageId, z.string().regex(/^sha256:[a-f0-9]{64}$/)])
+const lineageSchema = z.object({
+  upstreamArtifactId: lineageId.nullable(), upstreamRevisionId: lineageRevision.nullable(),
+  forkedFromArtifactId: lineageId.nullable(), forkedFromRevisionId: lineageRevision.nullable(),
+  following: z.boolean(), lastObservedUpstreamRevisionId: lineageRevision.nullable(),
+}).strict().superRefine((value, context) => {
+  if (!value.upstreamArtifactId && (value.upstreamRevisionId || value.lastObservedUpstreamRevisionId)) context.addIssue({ code: 'custom', message: 'upstream revision requires an Artifact' })
+  if (!value.forkedFromArtifactId && value.forkedFromRevisionId) context.addIssue({ code: 'custom', message: 'fork revision requires an Artifact' })
+})
+
 const federatedArtifactSchema = z.object({
   providerId: bounded(64), artifactId: rawId, id: rawId.optional(), kind: bounded(128).optional(),
+  sourceOrigin: z.enum(['mcp-registry', 'acp-registry', 'ard', 'skills-sh', 'github', 'claude', 'gemini', 'agent-plugins', 'web-crawl']).nullish(),
   namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(),
+  // Optional catalog display evidence, never an authorization or trust decision.
+  publisherVerified: z.boolean().optional(),
+  metrics: z.object({ stars: z.number().safe().int().nonnegative().optional(), installs: z.number().safe().int().nonnegative().optional(), forks: z.number().safe().int().nonnegative().optional() }).strict().optional(),
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
   contentDigest: bounded(512).optional(),
   createdAt: bounded(128).nullish(), updatedAt: bounded(128).nullish(),
+  firstSeenAt: z.string().max(64).datetime({ offset: true }).optional(),
   license: z.object({ declared: bounded(1024).nullish(), redistribution: bounded(128).optional(), reviewState: bounded(128).optional(), takedownState: bounded(128).optional() }).strict().optional(),
   publication: z.object({ state: bounded(128).optional(), visibility: bounded(128).optional(), distribution: bounded(128).optional() }).strict().optional(),
   revisionCount: z.number().safe().int().nonnegative().optional(),
-  descriptor: z.object({ id: rawId.optional(), kind: bounded(128).optional(), namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(), description: bounded(16384).optional() }).strict().optional(),
+  readme: readmeSchema.optional(),
+  provenance: z.object({ originalFormat: sourceFormatText, originalVersion: sourceFormatText }).strict().optional(),
+  lineage: lineageSchema.optional(),
+  descriptor: z.object({ id: rawId.optional(), kind: bounded(128).optional(), namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(), description: bounded(16384).optional(), tags: descriptorTags.optional() }).strict().optional(),
   currentRevision: z.object({ id: bounded(512).optional(), contentDigest: bounded(512).optional(), authoredAt: bounded(128).nullish(), fileCount: z.number().int().min(0).max(2000).optional() }).strict().optional(),
 }).strict()
 const outcomeSchema = z.object({ providerId: bounded(64), state: z.enum(['pending', 'participating', 'exhausted', 'failed']) }).strict()
 const failureSchema = z.object({ providerId: bounded(64), kind: bounded(128) }).strict()
+// Optional, independently qualified rails. Missing feeds remain unavailable;
+// the UI must never derive recommendations from the current search window.
+const featuredFeedSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('ready'), items: z.array(z.object({ artifact: federatedArtifactSchema, installs: z.number().safe().int().nonnegative().optional() }).strict()).max(8) }).strict(),
+  z.object({ state: z.literal('unavailable'), message: bounded(512) }).strict(),
+])
 const discoverySchema = z.object({
   schemaVersion: z.literal(FEDERATED_SCHEMA), scope: bounded(64), scopeEpoch: bounded(128),
+  sourceOrigin: z.enum(['mcp-registry', 'acp-registry', 'ard']).optional(),
   items: z.array(federatedArtifactSchema).max(200), providerOutcomes: z.array(outcomeSchema).max(16),
   failures: z.array(failureSchema).max(16), coverageComplete: z.boolean(),
   knownTotal: z.number().safe().int().nonnegative().nullable().optional(), totalIsExact: z.boolean(),
   state: z.enum(['complete', 'partial', 'deferred', 'empty', 'all_disabled', 'all_failed']),
   nextCursor: cursorSchema.nullable().optional(),
+  feed: z.literal('new').optional(),
+  asOf: z.string().max(64).datetime({ offset: true }).optional(),
+  rankingVersion: z.literal('new/v1').optional(),
+  highlights: z.object({ popular: featuredFeedSchema, team: featuredFeedSchema, loadouts: featuredFeedSchema }).strict().optional(),
+  feedCoverage: z.array(z.object({
+    providerId: bounded(64),
+    coverage: z.object({
+      population: z.enum(['hosted', 'hosted-and-skills']),
+      complete: z.boolean(),
+      unknownFirstSeen: z.number().safe().int().nonnegative(),
+    }).strict().nullable(),
+  }).strict()).max(16).optional(),
 }).strict()
 const detailArtifactSchema = federatedArtifactSchema.omit({ providerId: true, artifactId: true }).extend({ id: rawId }).strict()
 const detailV2Schema = z.object({
   schemaVersion: z.literal(FEDERATED_SCHEMA), providerId: bounded(64), artifactId: rawId,
   artifact: detailArtifactSchema,
-}).strict()
+}).strict().superRefine((value, context) => {
+  const readme = value.artifact.readme
+  if (readme?.state !== 'available') return
+  const revision = value.artifact.currentRevision?.id
+  if (!revision || readme.revisionId !== revision || (value.artifact.currentRevisionId !== undefined && value.artifact.currentRevisionId !== revision)) {
+    context.addIssue({ code: 'custom', path: ['artifact', 'readme'], message: 'document does not match the current revision' })
+  }
+  if (readme.path !== (readme.kind === 'readme' ? 'README.md' : 'SKILL.md')) {
+    context.addIssue({ code: 'custom', path: ['artifact', 'readme'], message: 'document kind does not match its path' })
+  }
+})
+const sourceOriginsSchema = z.array(z.enum(['mcp-registry', 'acp-registry', 'ard'])).max(3)
+  .refine(values => new Set(values).size === values.length).nullish()
 const providerSchema = z.object({
+  sourceOrigins: sourceOriginsSchema,
   id: bounded(64).refine(value => value !== 'all'), name: bounded(256), endpoint: bounded(2048),
   enabled: z.boolean(), authMode: z.enum(['anonymous', 'bearer']), builtin: z.boolean(), hostManaged: z.boolean().optional(), configVersion: bounded(128), credentialConfigured: z.boolean(), health: z.object({
     state: z.enum(['unknown', 'healthy', 'unauthorized', 'incompatible', 'unavailable']),
@@ -233,7 +299,7 @@ const providerSchema = z.object({
     retryNotBefore: z.number().safe().int().nonnegative().nullable(),
   }).strict(),
 }).strict()
-const providerOptionSchema = z.object({ id: bounded(64).refine(value => value !== 'all'), name: bounded(256), enabled: z.boolean(), health: providerSchema.shape.health }).strict()
+const providerOptionSchema = z.object({ id: bounded(64).refine(value => value !== 'all'), name: bounded(256), enabled: z.boolean(), health: providerSchema.shape.health, sourceOrigins: sourceOriginsSchema }).strict()
 
 export type FederatedArtifact = z.infer<typeof federatedArtifactSchema>
 export type DiscoveryPage = z.infer<typeof discoverySchema>
@@ -288,14 +354,33 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
   }
 }
 
-export async function listArtifacts(input: { provider?: string; query?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
+export async function listArtifacts(input: { provider?: string; sourceOrigin?: string; query?: string; limit?: number; cursor?: string; feed?: 'new' } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
   const query = input.query ?? ''
   if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
   const provider = input.provider ?? 'all'
   if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
-  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
+  if (input.sourceOrigin !== undefined && !['mcp-registry', 'acp-registry', 'ard'].includes(input.sourceOrigin)) throw new Error('Invalid source origin')
+  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, sourceOrigin: input.sourceOrigin, query, limit: input.limit ?? 50, cursor: input.cursor, feed: input.feed }) }, discoverySchema, 'discovery response', 'retry-once')
+  if (page.sourceOrigin !== input.sourceOrigin) throw new Error('Depot returned the wrong source origin scope')
+  if (input.sourceOrigin && page.items.some(item => item.sourceOrigin !== input.sourceOrigin)) throw new Error('Depot returned an artifact from the wrong source origin')
+  if (page.feed !== input.feed) throw new Error('Depot returned the wrong discovery feed')
+  if (input.feed === 'new' && (!page.asOf || !page.rankingVersion || !page.feedCoverage)) throw new Error('Depot omitted New feed metadata')
+  if (input.feed === 'new' && page.items.some(item => !item.firstSeenAt)) throw new Error('Depot omitted New feed observation')
   if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
   if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
+  if (page.highlights) {
+    if (provider !== 'all' || input.sourceOrigin || input.feed || query || input.cursor) throw new Error('Depot returned featured feeds outside the discovery landing scope')
+    const participating = new Set(page.providerOutcomes.filter(outcome => outcome.state === 'participating' || outcome.state === 'exhausted').map(outcome => outcome.providerId))
+    for (const feed of Object.values(page.highlights)) {
+      if (feed.state !== 'ready') continue
+      const identities = new Set<string>()
+      for (const { artifact } of feed.items) {
+        const identity = JSON.stringify([artifact.providerId, artifact.artifactId])
+        if (!participating.has(artifact.providerId) || identities.has(identity)) throw new Error('Depot returned invalid featured artifact scope')
+        identities.add(identity)
+      }
+    }
+  }
   return page
 }
 
@@ -311,7 +396,7 @@ export async function listProviders(signal?: AbortSignal): Promise<DepotProvider
 
 export async function listProviderOptions(signal?: AbortSignal): Promise<DepotProviderOption[]> {
   const providers = await requestV2('/v1/depot/providers', { signal }, z.array(z.union([providerOptionSchema, providerSchema])).max(16), 'provider options response')
-  return providers.map(({ id, name, enabled, health }) => ({ id, name, enabled, health }))
+  return providers.map(({ id, name, enabled, health, sourceOrigins }) => ({ id, name, enabled, health, sourceOrigins }))
 }
 
 export async function upsertProvider(input: ProviderDraft, csrf: string, signal?: AbortSignal) {

@@ -8,6 +8,7 @@ pub(crate) mod client;
 pub(crate) mod depot;
 pub(crate) mod dispatch;
 pub(crate) mod import;
+pub(crate) mod membership;
 pub(crate) mod params;
 pub(crate) mod types;
 

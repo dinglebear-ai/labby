@@ -55,6 +55,7 @@ import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { gatewayActionTone } from './gateway-theme'
 import { CodeModeHeaderToggle } from './code-mode-toggle'
+import { gatewayBatchActions } from './gateway-batch-actions'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
@@ -150,6 +151,8 @@ export interface GatewayListViewProps {
   onCleanup: (gateway: Gateway, aggressive: boolean, dryRun: boolean) => void
   onClearCleanupHistory: (gateway: Gateway) => void
   onToggleEnabled: (gateway: Gateway) => void
+  onBatchSetEnabled?: (gateway: Gateway, enabled: boolean) => Promise<{ ok: true } | { ok: false; error: string }>
+  onBatchReload?: (gateway: Gateway) => Promise<{ ok: true } | { ok: false; error: string }>
   onDelete: (gateway: Gateway) => void
 }
 
@@ -159,6 +162,7 @@ export function GatewayListContent() {
     useGatewayMutations()
 
   const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
+  const batchActions = gatewayBatchActions({ enable: enableGateway, disable: disableGateway, reload: reloadGateway })
   const [lastGatewayFilters, setLastGatewayFilters] = useState<GatewayFilterState>(() =>
     buildDefaultGatewayFilters(DEFAULT_GATEWAY_LENS),
   )
@@ -630,6 +634,8 @@ export function GatewayListContent() {
         onCleanup={handleCleanup}
         onClearCleanupHistory={handleClearCleanupHistory}
         onToggleEnabled={handleToggleEnabled}
+        onBatchSetEnabled={batchActions.setEnabled}
+        onBatchReload={batchActions.reload}
         onDelete={handleDelete}
       />
 
@@ -686,6 +692,8 @@ export function GatewayListView({
   onCleanup,
   onClearCleanupHistory,
   onToggleEnabled,
+  onBatchSetEnabled,
+  onBatchReload,
   onDelete,
 }: GatewayListViewProps) {
   const [layout, setLayout] = useState<GatewayLayout>('table')
@@ -863,8 +871,8 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            <div className="flex min-w-0 items-center gap-2" data-gateway-filters="all-viewports">
-              <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start" data-gateway-filters="all-viewports">
+              <div className="min-w-0 sm:flex-1">
               <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}
@@ -885,7 +893,7 @@ export function GatewayListView({
               />
               </div>
               {!showToolsView ? (
-                <div className="inline-flex shrink-0 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-0.5" role="group" aria-label="Server view">
+                <div className="inline-flex shrink-0 self-end rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-0.5 sm:self-start lg:mt-3.5" role="group" aria-label="Server view">
                   {([
                     ['table', Table2, 'Table view'],
                     ['cards', LayoutGrid, 'Card view'],
@@ -909,10 +917,7 @@ export function GatewayListView({
               ) : null}
             </div>
 
-            {/* min-w-0: without it this grid item's min-content contribution is
-                the table's 1010px min-width, which inflates the track past the
-                available width and the page shell clips the card instead of
-                letting the table's own overflow-x scroller engage. */}
+            {/* Keep intrinsic table contents from widening the page grid. */}
             <div className="min-w-0">
               {!showToolsView && discoveredConfigs ? (
                 <McpConfigImportReviewPanel
@@ -971,6 +976,8 @@ export function GatewayListView({
                   onCleanup={onCleanup}
                   onClearCleanupHistory={onClearCleanupHistory}
                   onToggleEnabled={onToggleEnabled}
+                  onBatchSetEnabled={onBatchSetEnabled}
+                  onBatchReload={onBatchReload}
                   onDelete={onDelete}
                 />
               )}

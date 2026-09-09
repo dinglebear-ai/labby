@@ -545,7 +545,7 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     agent_label: call.actor,
     agent_kind: 'agent',
     ip: '',
-    surface: 'unknown',
+    surface: call.surface ?? 'unknown',
     outcome: call.outcome === 'ok' ? 'ok' : 'failed',
     error_kind: call.outcome === 'ok' ? null : call.outcome,
     input_tokens: 0,

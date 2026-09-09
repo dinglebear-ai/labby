@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Settings as SettingsIcon } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
 import { SettingsRail } from '@/components/settings/SettingsRail'
@@ -27,10 +28,10 @@ export default function SettingsLayout({
         maxWidth: SETTINGS_MEASURE,
       }}
     >
-      <AppHeader breadcrumbs={[{ label: 'Settings' }]} />
+      <AppHeader icon={<SettingsIcon size={18} strokeWidth={1.7} />} breadcrumbs={[{ label: 'Settings' }]} />
       <SettingsPageHeader
         title="Settings"
-        description="Gateway behavior, service credentials, and console preferences."
+        description="Gateway behavior and console preferences."
       />
       <SettingsRail />
       <main style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>

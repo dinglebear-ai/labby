@@ -1,5 +1,6 @@
 import type {
   ActorUsageEntry,
+  CallSurface,
   DashboardMetrics,
   ErrorKindCount,
   HourBucket,
@@ -64,6 +65,7 @@ export interface GatewayUsageCall {
   operation?: string
   subject_scoped?: boolean
   actor: string
+  surface?: CallSurface
   outcome: string
   elapsed_ms: number
   response_bytes?: number | null

@@ -118,6 +118,8 @@ async fn outsider_is_denied_on_all_reads_before_any_upstream_request() {
             a.clone(),
             i.clone(),
             Json(DiscoveryRequest {
+                source_origin: None,
+                feed: None,
                 provider: None,
                 query: String::new(),
                 limit: 10,
@@ -272,6 +274,8 @@ async fn cached_private_cursor_is_denied_after_revocation_and_invalid_after_regr
         Some(Extension(auth.clone())),
         Some(Extension(identity.clone())),
         Json(DiscoveryRequest {
+            source_origin: None,
+            feed: None,
             provider: None,
             query: String::new(),
             limit: 10,

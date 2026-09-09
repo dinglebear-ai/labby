@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { listProviderOptions } from './depot-client.ts'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { consumeOwnerLinkApproval, depotCall, depotOperations, depotStatus, depotPublishCapability, publishDepotSkill, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
@@ -10,6 +11,21 @@ async function withFetch(response: Response, run: () => Promise<void>) {
 }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
+
+test('Library retains bounded supplied tags without inventing missing metadata', async () => {
+  for (const tags of [undefined, [], ['review', 'rust']]) {
+    const row = { ...artifact, descriptor: { tags } }
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [row] } }), async () => {
+      const response = await depotCall<{ result: { artifacts: Array<{ descriptor?: { tags?: string[] } }> } }>('depot.artifacts.list', {})
+      assert.deepEqual(response.result.artifacts[0].descriptor?.tags, tags)
+    })
+  }
+  for (const tags of [['duplicate', 'duplicate'], [''], ['x'.repeat(65)], Array(65).fill('tag'), ['bad\0tag'], [42]]) {
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: { ...artifact, descriptor: { tags } } } }), async () => {
+      await assert.rejects(depotCall('depot.artifacts.get', {}), /incompatible artifact detail response/)
+    })
+  }
+})
 
 test('owner link confirmation sends only session CSRF and an empty body', async () => {
   const original = globalThis.fetch
@@ -203,6 +219,125 @@ test('preserves server error codes', async () => {
 
 const v2Page = { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [{ providerId: 'public', artifactId: 'artifact-1', id: 'artifact-1' }], providerOutcomes: [{ providerId: 'public', state: 'exhausted' }], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null }
 
+test('catalog display evidence preserves known zero and rejects malformed metrics or verification', async () => {
+  const evidence = { publisherVerified: true, metrics: { stars: 0, installs: 58000, forks: 1240 } }
+  await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...evidence }] }), async () => {
+    const item = (await listArtifacts()).items[0]
+    assert.equal(item.publisherVerified, true)
+    assert.deepEqual(item.metrics, evidence.metrics)
+  })
+  for (const invalid of [{ publisherVerified: 'true' }, { metrics: { stars: -1 } }, { metrics: { installs: 1.5 } }, { metrics: { forks: Number.MAX_SAFE_INTEGER + 1 } }, { metrics: { unsupported: 3 } }]) {
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...invalid }] }), async () => assert.rejects(listArtifacts()))
+  }
+  await withFetch(json(v2Page), async () => {
+    const item = (await listArtifacts()).items[0]
+    assert.equal(item.publisherVerified, undefined)
+    assert.equal(item.metrics, undefined)
+  })
+})
+
+test('featured feeds are optional, bounded, and restricted to participating landing-page sources', async () => {
+  const item = { artifact: v2Page.items[0], installs: 0 }
+  const highlights = { popular: { state: 'ready', items: [item] }, team: { state: 'ready', items: [] }, loadouts: { state: 'unavailable', message: 'Not supplied' } }
+  await withFetch(json({ ...v2Page, highlights }), async () => assert.deepEqual((await listArtifacts()).highlights, highlights))
+  await withFetch(json(v2Page), async () => assert.equal((await listArtifacts()).highlights, undefined))
+  for (const items of [Array(9).fill(item), [item, item], [{ ...item, installs: -1 }], [{ artifact: { ...item.artifact, providerId: 'unrelated' } }]]) {
+    await withFetch(json({ ...v2Page, highlights: { ...highlights, popular: { state: 'ready', items } } }), async () => assert.rejects(listArtifacts()))
+  }
+  await withFetch(json({ ...v2Page, highlights }), async () => assert.rejects(listArtifacts({ query: 'review' }), /outside the discovery landing scope/))
+  await withFetch(json({ ...v2Page, providerOutcomes: [{ providerId: 'public', state: 'failed' }], highlights }), async () => assert.rejects(listArtifacts(), /invalid featured artifact scope/))
+})
+
+const newFeedPage = { ...v2Page, feed: 'new', asOf: '2026-09-08T12:00:00Z', rankingVersion: 'new/v1',
+  items: [{ ...v2Page.items[0], firstSeenAt: '2026-09-08T11:00:00Z' }],
+  feedCoverage: [{ providerId: 'public', coverage: { population: 'hosted', complete: false, unknownFirstSeen: 12 } }],
+}
+
+test('New feed sends its selection and preserves server coverage', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).feed, 'new')
+    return json(newFeedPage)
+  }) as typeof fetch
+  try {
+    const page = await listArtifacts({ feed: 'new' })
+    assert.equal(page.asOf, newFeedPage.asOf)
+    assert.deepEqual(page.feedCoverage, newFeedPage.feedCoverage)
+  } finally { globalThis.fetch = original }
+})
+
+test('New feed rejects fallback listings and missing or malformed ranking evidence', async () => {
+  await withFetch(json(v2Page), async () => assert.rejects(listArtifacts({ feed: 'new' }), /wrong discovery feed/))
+  await withFetch(json(newFeedPage), async () => assert.rejects(listArtifacts(), /wrong discovery feed/))
+  for (const invalid of [
+    { ...newFeedPage, asOf: undefined },
+    { ...newFeedPage, rankingVersion: 'new/v2' },
+    { ...newFeedPage, feedCoverage: undefined },
+    { ...newFeedPage, items: v2Page.items },
+    { ...newFeedPage, feedCoverage: [{ providerId: 'public', coverage: { population: 'hosted', complete: false, unknownFirstSeen: -1 } }] },
+  ]) {
+    await withFetch(json(invalid), async () => assert.rejects(listArtifacts({ feed: 'new' })))
+  }
+})
+
+test('lineage preserves authorized exact identifiers and rejects malformed relationships', async () => {
+  const lineage = { upstreamArtifactId: 'parent', upstreamRevisionId: 'sha256:' + 'a'.repeat(64), forkedFromArtifactId: null, forkedFromRevisionId: null, following: false, lastObservedUpstreamRevisionId: null }
+  const envelope = (value: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', lineage: value } })
+  await withFetch(json(envelope(lineage)), async () => assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.lineage, lineage))
+  for (const value of [{ ...lineage, upstreamArtifactId: null }, { ...lineage, forkedFromRevisionId: 'revision' }, { ...lineage, following: 'yes' }, { ...lineage, metadata: {} }, { ...lineage, upstreamArtifactId: 'private/path' }, { ...lineage, upstreamRevisionId: 'sha256:' + 'A'.repeat(64) }]) {
+    await withFetch(json(envelope(value)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('source format projection preserves bounded evidence and excludes private provenance', async () => {
+  const envelope = (provenance: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', provenance } })
+  for (const provenance of [undefined, {}, { originalFormat: 'agent-skill', originalVersion: null }, { originalFormat: '', originalVersion: 'é'.repeat(64) }]) {
+    await withFetch(json(envelope(provenance)), async () => assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.provenance, provenance))
+  }
+  for (const provenance of [{ originalFormat: 'é'.repeat(65) }, { originalVersion: 'a\0b' }, { originalFormat: 42 }, { metadata: {} }, { sourceUri: 'https://example.com/private' }]) {
+    await withFetch(json(envelope(provenance)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('source origins accept only explicit catalog classifications', async () => {
+  const envelope = (sourceOrigin: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', sourceOrigin } })
+  for (const sourceOrigin of [undefined, null, 'mcp-registry', 'acp-registry', 'ard', 'skills-sh', 'github', 'claude', 'gemini', 'agent-plugins', 'web-crawl']) {
+    await withFetch(json(envelope(sourceOrigin)), async () => assert.equal((await getArtifact('public', 'artifact-1')).artifact.sourceOrigin, sourceOrigin))
+  }
+  for (const sourceOrigin of ['unclassified', '', 'https://private.invalid', {}, 42]) {
+    await withFetch(json(envelope(sourceOrigin)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('detail documents retain verified text and reject revision, path, and byte-limit mismatches', async () => {
+  const document = { state: 'available', kind: 'readme', path: 'README.md', content: '# Source README', revisionId: 'revision-1' }
+  const envelope = (readme: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', currentRevisionId: 'revision-1', currentRevision: { id: 'revision-1' }, readme } })
+  for (const readme of [document, { ...document, content: '' }, { ...document, content: 'é'.repeat(32768) }, { state: 'unavailable', reason: 'not_distributable' }]) {
+    await withFetch(json(envelope(readme)), async () => assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.readme, readme))
+  }
+  for (const readme of [{ ...document, revisionId: 'other' }, { ...document, path: '../README.md' }, { ...document, kind: 'skill' }, { ...document, content: 'é'.repeat(32769) }, { ...document, secret: 'hidden' }, { state: 'unavailable', reason: 'not_distributable', content: 'private bytes' }]) {
+    await withFetch(json(envelope(readme)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('federated details retain optional bounded source tags without normalization', async () => {
+  for (const tags of [undefined, [], ['Browser', ' browser ', 'é'.repeat(32)], Array.from({ length: 64 }, (_, index) => `tag-${index}`)]) {
+    const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', descriptor: { tags } } }
+    await withFetch(json(response), async () => {
+      assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.descriptor?.tags, tags)
+    })
+  }
+})
+
+test('federated details reject malformed, duplicate and oversized tags', async () => {
+  for (const tags of [null, 'browser', [''], ['a\0b'], ['same', 'same'], ['é'.repeat(33)], [42], Array.from({ length: 65 }, (_, index) => `tag-${index}`)]) {
+    const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', descriptor: { tags } } }
+    await withFetch(json(response), async () => {
+      await assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/)
+    })
+  }
+})
+
 test('federated details accept the declared license returned by public discovery', async () => {
   for (const declared of ['MIT', null]) {
     const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', license: { declared, redistribution: 'allowed', reviewState: 'unreviewed' } } }
@@ -233,6 +368,21 @@ test('federated timestamps reject structured payloads and undocumented revision 
   for (const extra of [{ createdAt: { secret: 'not metadata' } }, { currentRevision: { createdAt: '2026-09-08T00:00:00Z' } }]) {
     await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...extra }] }), async () => {
       await assert.rejects(listArtifacts(), /incompatible discovery response/)
+    })
+  }
+})
+
+test('federated first-seen is an optional actual timestamp, not an authored date fallback', async () => {
+  for (const firstSeenAt of [undefined, '2026-09-08T00:00:00.123456Z', null, {}, 'yesterday', '2026-99-99T00:00:00Z']) {
+    const fields = firstSeenAt === undefined ? {} : { firstSeenAt }
+    const valid = firstSeenAt === undefined || firstSeenAt === '2026-09-08T00:00:00.123456Z'
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], createdAt: '2020-01-01T00:00:00Z', ...fields }] }), async () => {
+      if (valid) assert.equal((await listArtifacts()).items[0]?.firstSeenAt, firstSeenAt)
+      else await assert.rejects(listArtifacts())
+    })
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', ...fields } }), async () => {
+      if (valid) assert.equal((await getArtifact('public', 'artifact-1')).artifact.firstSeenAt, firstSeenAt)
+      else await assert.rejects(getArtifact('public', 'artifact-1'))
     })
   }
 })
@@ -352,6 +502,31 @@ test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', asyn
   await withFetch(json({ ...v2Page, scope: 'team' }), async () => assert.rejects(listArtifacts(), /wrong discovery scope/i))
 })
 
+test('source filtering validates both response scope and each returned row', async () => {
+  const filtered = { ...v2Page, sourceOrigin: 'ard', items: [{ ...v2Page.items[0], sourceOrigin: 'ard' }] }
+  await withFetch(json(filtered), async () => assert.equal((await listArtifacts({ sourceOrigin: 'ard' })).sourceOrigin, 'ard'))
+  await withFetch(json({ ...filtered, items: [] }), async () => assert.equal((await listArtifacts({ sourceOrigin: 'ard' })).items.length, 0))
+  for (const sourceOrigin of [undefined, 'mcp-registry']) {
+    await withFetch(json({ ...filtered, sourceOrigin }), async () => assert.rejects(listArtifacts({ sourceOrigin: 'ard' }), /wrong source origin scope/))
+    await withFetch(json({ ...filtered, items: [{ ...v2Page.items[0], sourceOrigin }] }), async () => assert.rejects(listArtifacts({ sourceOrigin: 'ard' }), /wrong source origin/))
+  }
+  await withFetch(json(filtered), async () => assert.rejects(listArtifacts(), /wrong source origin scope/))
+  await assert.rejects(listArtifacts({ sourceOrigin: 'github' }), /Invalid source origin/)
+})
+
+test('source filter requests preserve independent provider and continuation scope', async () => {
+  const original = globalThis.fetch
+  let sent: unknown
+  globalThis.fetch = async (_url, init) => {
+    sent = JSON.parse(String(init?.body))
+    return json({ ...v2Page, scope: 'team', sourceOrigin: 'ard', items: [] })
+  }
+  try {
+    await listArtifacts({ provider: 'team', sourceOrigin: 'ard', query: 'review', cursor: 'continuation', limit: 12 })
+    assert.deepEqual(sent, { provider: 'team', sourceOrigin: 'ard', query: 'review', cursor: 'continuation', limit: 12 })
+  } finally { globalThis.fetch = original }
+})
+
 test('v2 list and detail preserve only bounded integer file counts', async () => {
   for (const fileCount of [undefined, 0, 1, 2000, null, -1, 1.5, '3', {}, [], 2001]) {
     const currentRevision = fileCount === undefined ? {} : { fileCount }
@@ -380,6 +555,21 @@ test('admin provider projection is strict and contains no credential material', 
   await withFetch(json([provider]), async () => assert.equal((await listProviders())[0]?.credentialConfigured, true))
   await withFetch(json([{ ...provider, endpoint: 'http://127.0.0.1:4100/', hostManaged: true }]), async () => assert.equal((await listProviders())[0]?.hostManaged, true))
   await withFetch(json([{ ...provider, hostManaged: 'true' }]), async () => assert.rejects(listProviders(), /boolean/i))
+})
+
+test('provider options preserve nullable qualified source support from ordinary and admin projections', async () => {
+  const base = { id: 'team', name: 'Team', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
+  const admin = { endpoint: 'https://depot.example', authMode: 'bearer', builtin: false, configVersion: 'v1', credentialConfigured: true }
+  for (const extra of [{}, admin]) {
+    for (const sourceOrigins of [undefined, null, [], ['ard'], ['mcp-registry', 'acp-registry', 'ard']]) {
+      await withFetch(json([{ ...base, ...extra, sourceOrigins }]), async () => {
+        assert.deepEqual((await listProviderOptions())[0]?.sourceOrigins, sourceOrigins)
+      })
+    }
+    for (const sourceOrigins of [['github'], ['ard', 'ard'], 'ard']) {
+      await withFetch(json([{ ...base, ...extra, sourceOrigins }]), async () => assert.rejects(listProviderOptions()))
+    }
+  }
 })
 
 test('provider mutations carry CSRF and preserve operation identity', async () => {

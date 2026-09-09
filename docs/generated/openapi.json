@@ -4394,6 +4394,7 @@
           "action": {
             "type": "string",
             "enum": [
+              "artifacts.depot_membership",
               "artifacts.search",
               "artifacts.list",
               "artifacts.get",
@@ -4527,6 +4528,20 @@
           },
           "idempotency_key": {
             "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsDepot_membershipParams": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

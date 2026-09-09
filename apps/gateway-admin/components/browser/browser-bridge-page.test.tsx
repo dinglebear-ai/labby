@@ -31,6 +31,34 @@ function button(label: string, root: ParentNode = document.body) {
   return found
 }
 
+test('pending pairing uses compact panel chrome and keeps the Approve label visible', async () => {
+  const window = installDom()
+  const { BrowserBridgePage } = await import('./browser-bridge-page')
+  const { createRoot } = await import('react-dom/client')
+  const original = { ...browserApi }
+  browserApi.list = async () => []
+  browserApi.sessions = async () => []
+  browserApi.pairings = async () => [{ id: 'pending', display_name: 'My browser', extension_id: 'extension', status: 'pending', expires_at: 4102444800, browser_id: null }]
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<BrowserBridgePage />))
+    const panel = document.querySelector('[aria-labelledby="pending-pairings-heading"]')!
+    assert.ok(panel)
+    const approve = button('Approve', panel)
+    assert.equal(approve.getAttribute('data-visible-label'), '1')
+    assert.ok(approve.classList.contains('h-[30px]'))
+    assert.match(panel.textContent!, /Approve only extension identities/)
+    assert.match(panel.textContent!, /My browser/)
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+    Object.assign(browserApi, original)
+    await window.happyDOM.close()
+  }
+})
+
 test('failed revocation preserves confirmation for retry; successful retry closes it', async () => {
   const window = installDom()
   const { BrowserBridgePage } = await import('./browser-bridge-page')

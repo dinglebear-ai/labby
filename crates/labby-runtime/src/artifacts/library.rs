@@ -517,7 +517,7 @@ impl LegacyLibrarySnapshot {
 impl SkillLibraryRecord {
     fn validate_metadata(&self) -> Result<(), ArtifactError> {
         validate_id(&self.artifact_id, "artifact_id")?;
-        validate_skill_name(&self.name)?;
+        super::validation::validate_slug(&self.name, "name")?;
         self.ownership.validate()?;
         if LibraryTimestamp::parse(self.created_at.0.clone())? != self.created_at
             || LibraryTimestamp::parse(self.updated_at.0.clone())? != self.updated_at
@@ -539,8 +539,10 @@ impl SkillLibraryRecord {
     fn validate(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         self.validate_metadata()?;
         let artifact = store.get(&self.artifact_id)?;
-        if artifact.descriptor.kind != "skill" {
-            return Err(ArtifactError::Conflict("library_artifact_not_skill"));
+        if artifact.descriptor.kind == "skill" {
+            validate_skill_name(&self.name)?;
+        } else if self.active_revision_id.is_some() {
+            return Err(ArtifactError::Conflict("library_non_skill_active"));
         }
         if artifact.descriptor.name != self.name {
             return Err(ArtifactError::Conflict("library_name_mismatch"));
@@ -1097,7 +1099,104 @@ impl ArtifactStore {
         idempotency: LibraryIdempotency,
         mutation: LibraryMutation,
         committed_at: LibraryTimestamp,
-        mut materialized: MaterializedSkill,
+        materialized: MaterializedSkill,
+        expected_revision_id: Option<&str>,
+        fault: impl FnMut(SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<LibraryMutationOutcome, ArtifactError> {
+        let files = materialized_skill_files(&materialized)?;
+        self.mutate_library_with_verified_files_outcome(
+            authorization,
+            target_ownership,
+            expected_version,
+            idempotency,
+            mutation,
+            committed_at,
+            VerifiedLibraryPayload {
+                interchange: materialized.interchange,
+                files,
+            },
+            expected_revision_id,
+            fault,
+        )
+    }
+
+    /// Retain an exact acquired Artifact in the library without enabling execution.
+    /// Skill imports retain their stricter canonical Skill verification.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_library_acquisition_outcome(
+        &self,
+        authorization: &LibraryAuthorization,
+        target_ownership: &LibraryOwnership,
+        expected_version: u64,
+        idempotency: LibraryIdempotency,
+        mutation: LibraryMutation,
+        committed_at: LibraryTimestamp,
+        acquisition: super::ArtifactAcquisition,
+        fault: impl FnMut(SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<LibraryMutationOutcome, ArtifactError> {
+        acquisition.validate()?;
+        match &mutation {
+            LibraryMutation::Create { record } if record.active_revision_id.is_none() => {}
+            _ => return Err(ArtifactError::Conflict("invalid_inactive_import")),
+        }
+        if acquisition.interchange.descriptor.kind == "skill" {
+            let materialized = super::materialize_acquired_skill_owned(acquisition)?;
+            return self.mutate_library_with_materialized_outcome(
+                authorization,
+                target_ownership,
+                expected_version,
+                idempotency,
+                mutation,
+                committed_at,
+                materialized,
+                None,
+                fault,
+            );
+        }
+        let files = acquisition
+            .files
+            .into_iter()
+            .map(|file| {
+                let unix_mode = acquisition
+                    .interchange
+                    .revision
+                    .components
+                    .iter()
+                    .find(|component| component.path == file.path)
+                    .and_then(|component| component.unix_mode());
+                SnapshotFile {
+                    path: file.path,
+                    bytes: file.bytes,
+                    unix_mode,
+                }
+            })
+            .collect();
+        self.mutate_library_with_verified_files_outcome(
+            authorization,
+            target_ownership,
+            expected_version,
+            idempotency,
+            mutation,
+            committed_at,
+            VerifiedLibraryPayload {
+                interchange: acquisition.interchange,
+                files,
+            },
+            None,
+            fault,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mutate_library_with_verified_files_outcome(
+        &self,
+        authorization: &LibraryAuthorization,
+        target_ownership: &LibraryOwnership,
+        expected_version: u64,
+        idempotency: LibraryIdempotency,
+        mutation: LibraryMutation,
+        committed_at: LibraryTimestamp,
+        mut materialized: VerifiedLibraryPayload,
         expected_revision_id: Option<&str>,
         mut fault: impl FnMut(SkillTransactionBoundary) -> Result<(), ArtifactError>,
     ) -> Result<LibraryMutationOutcome, ArtifactError> {
@@ -1153,6 +1252,13 @@ impl ArtifactStore {
 
         let _artifact_lock = self.lock(&artifact_id)?;
         let prior_record = self.read_record_optional(&artifact_id)?;
+        if matches!(mutation, LibraryMutation::Save { .. })
+            && prior_record
+                .as_ref()
+                .is_some_and(|record| record.descriptor.kind != "skill")
+        {
+            return Err(ArtifactError::Conflict("library_action_requires_skill"));
+        }
         match (prior_record.as_ref(), expected_revision_id) {
             (None, None) => {}
             (Some(record), Some(expected)) if record.current_revision_id == expected => {}
@@ -1164,8 +1270,8 @@ impl ArtifactStore {
             materialized.interchange.revision.parent_revision_id =
                 Some(record.current_revision_id.clone());
         }
-        let files = materialized_skill_files(&materialized)?;
         let next_record = materialized_skill_record(&materialized, prior_record.as_ref())?;
+        let files = &materialized.files;
         let mut pending = PendingSkillTransaction {
             schema_version: 2,
             scope_digest: scope_digest.clone(),
@@ -1673,8 +1779,13 @@ fn materialized_skill_files(
         .collect()
 }
 
+struct VerifiedLibraryPayload {
+    interchange: super::ArtifactInterchange,
+    files: Vec<SnapshotFile>,
+}
+
 fn materialized_skill_record(
-    materialized: &MaterializedSkill,
+    materialized: &VerifiedLibraryPayload,
     prior: Option<&ArtifactRecord>,
 ) -> Result<ArtifactRecord, ArtifactError> {
     let revision_id = materialized.interchange.revision.id.clone();
@@ -1889,7 +2000,7 @@ fn prevalidate_mutation(
             artifact_id,
             revision_id,
             ..
-        } => store.revision(artifact_id, revision_id).map(|_| ()),
+        } => require_skill_revision(store, artifact_id, revision_id),
         LibraryMutation::Save {
             artifact_id,
             revision_id,
@@ -1899,12 +2010,23 @@ fn prevalidate_mutation(
             artifact_id,
             revision_id,
             ..
-        } => store.revision(artifact_id, revision_id).map(|_| ()),
+        } => require_skill_revision(store, artifact_id, revision_id),
         LibraryMutation::SetVisibility { .. }
         | LibraryMutation::Deactivate { .. }
         | LibraryMutation::Archive { .. }
         | LibraryMutation::Refresh { .. } => Ok(()),
     }
+}
+
+fn require_skill_revision(
+    store: &ArtifactStore,
+    artifact_id: &str,
+    revision_id: &str,
+) -> Result<(), ArtifactError> {
+    if store.get(artifact_id)?.descriptor.kind != "skill" {
+        return Err(ArtifactError::Conflict("library_action_requires_skill"));
+    }
+    store.revision(artifact_id, revision_id).map(|_| ())
 }
 
 fn authorized_record<'a>(
@@ -2051,6 +2173,247 @@ mod tests {
             ));
         }
         materialize_logical_skill(name, logical, ArtifactProvenance::default()).unwrap()
+    }
+
+    fn generic_acquisition(kind: &str) -> super::super::ArtifactAcquisition {
+        let skill = materialized("generic-source", "retained exact bytes");
+        let mut interchange = skill.interchange;
+        interchange.descriptor =
+            super::super::ArtifactDescriptor::for_identity(kind, "fixture", "Tool.Config").unwrap();
+        interchange.provenance.provider = Some("depot".to_owned());
+        interchange.provenance.registry = Some("fixture-catalog".to_owned());
+        let files = skill
+            .resources
+            .into_iter()
+            .map(|(uri, bytes)| super::super::ArtifactPayloadFile {
+                path: uri
+                    .strip_prefix("skill://labby/generic-source/")
+                    .unwrap()
+                    .to_owned(),
+                bytes,
+            })
+            .collect();
+        let result = super::super::ArtifactAcquisition { interchange, files };
+        result.validate().unwrap();
+        result
+    }
+
+    fn acquisition_record(
+        acquisition: &super::super::ArtifactAcquisition,
+        owner: &LibraryOwnership,
+    ) -> SkillLibraryRecord {
+        SkillLibraryRecord {
+            artifact_id: acquisition.interchange.descriptor.id.clone(),
+            name: acquisition.interchange.descriptor.name.clone(),
+            ownership: owner.clone(),
+            visibility: SkillVisibility::Private,
+            archived: false,
+            active_revision_id: None,
+            latest_revision_id: acquisition.interchange.revision.id.clone(),
+            latest_revision_files: Vec::new(),
+            search_metadata: Vec::new(),
+            provenance_provider: None,
+            materialized: true,
+            created_at: ts("2026-09-08T00:00:00Z"),
+            updated_at: ts("2026-09-08T00:00:00Z"),
+        }
+    }
+
+    #[test]
+    fn generic_exact_import_is_inactive_durable_idempotent_and_not_executable() {
+        for kind in ["mcp", "agent", "prompt", "hook", "loadout"] {
+            let root = tempdir().unwrap();
+            let store = ArtifactStore::new(root.path()).unwrap();
+            let owner = ownership("org-a", "alice");
+            let acquisition = generic_acquisition(kind);
+            let id = acquisition.interchange.descriptor.id.clone();
+            let revision = acquisition.interchange.revision.id.clone();
+            let mutation = LibraryMutation::Create {
+                record: acquisition_record(&acquisition, &owner),
+            };
+            let run = |candidate, expected, key| {
+                store.import_library_acquisition_outcome(
+                    &owner_auth(&owner),
+                    &owner,
+                    expected,
+                    idem(key),
+                    mutation.clone(),
+                    ts("2026-09-08T00:00:00Z"),
+                    candidate,
+                    |_| Ok(()),
+                )
+            };
+            let receipt = run(acquisition.clone(), 0, "generic-import").unwrap();
+            assert!(matches!(
+                run(acquisition.clone(), 0, "generic-import").unwrap(),
+                LibraryMutationOutcome::Replayed(..)
+            ));
+            assert_eq!(receipt.receipt().committed_version, 1);
+            assert!(run(acquisition.clone(), 0, "other-key").is_err());
+            let reopened = ArtifactStore::new(root.path()).unwrap();
+            let snapshot = reopened.library_snapshot().unwrap();
+            assert_eq!(snapshot.version, 1);
+            assert!(snapshot.records[&id].active_revision_id.is_none());
+            assert_eq!(
+                reopened.get(&id).unwrap().descriptor,
+                acquisition.interchange.descriptor
+            );
+            assert_eq!(
+                reopened.get(&id).unwrap().provenance,
+                acquisition.interchange.provenance
+            );
+            assert_eq!(
+                reopened.revision(&id, &revision).unwrap(),
+                acquisition.interchange.revision
+            );
+            for file in &acquisition.files {
+                assert_eq!(
+                    reopened
+                        .read_skill_revision_file(&id, &revision, &file.path)
+                        .unwrap(),
+                    file.bytes
+                );
+            }
+            for blocked in [
+                LibraryMutation::Activate {
+                    artifact_id: id.clone(),
+                    revision_id: revision.clone(),
+                    updated_at: ts("2026-09-08T00:00:00Z"),
+                },
+                LibraryMutation::Rollback {
+                    artifact_id: id.clone(),
+                    revision_id: revision.clone(),
+                    updated_at: ts("2026-09-08T00:00:00Z"),
+                },
+            ] {
+                assert!(matches!(
+                    prevalidate_mutation(&reopened, &blocked),
+                    Err(ArtifactError::Conflict("library_action_requires_skill"))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn generic_import_rejects_corrupt_bytes_and_active_records_without_writes() {
+        let root = tempdir().unwrap();
+        let store = ArtifactStore::new(root.path()).unwrap();
+        let owner = ownership("org-a", "alice");
+        let acquisition = generic_acquisition("mcp");
+        let record = acquisition_record(&acquisition, &owner);
+        let mut corrupt = acquisition.clone();
+        corrupt.files[0].bytes.push(0);
+        assert!(
+            store
+                .import_library_acquisition_outcome(
+                    &owner_auth(&owner),
+                    &owner,
+                    0,
+                    idem("bad"),
+                    LibraryMutation::Create {
+                        record: record.clone()
+                    },
+                    ts("2026-09-08T00:00:00Z"),
+                    corrupt,
+                    |_| Ok(())
+                )
+                .is_err()
+        );
+        let mut active = record;
+        active.active_revision_id = Some(acquisition.interchange.revision.id.clone());
+        assert!(
+            store
+                .import_library_acquisition_outcome(
+                    &owner_auth(&owner),
+                    &owner,
+                    0,
+                    idem("active"),
+                    LibraryMutation::Create { record: active },
+                    ts("2026-09-08T00:00:00Z"),
+                    acquisition,
+                    |_| Ok(())
+                )
+                .is_err()
+        );
+        assert_eq!(store.library_snapshot().unwrap().version, 0);
+    }
+
+    #[test]
+    fn generic_import_crash_boundaries_recover_exact_inactive_records() {
+        for boundary in [
+            SkillTransactionBoundary::IntentWrite,
+            SkillTransactionBoundary::IntentFileSync,
+            SkillTransactionBoundary::IntentRename,
+            SkillTransactionBoundary::IntentParentSync,
+            SkillTransactionBoundary::LibraryWrite,
+            SkillTransactionBoundary::LibraryFileSync,
+            SkillTransactionBoundary::LibraryRename,
+            SkillTransactionBoundary::LibraryParentSync,
+            SkillTransactionBoundary::PromotionWrite,
+            SkillTransactionBoundary::PromotionFileSync,
+            SkillTransactionBoundary::PromotionRename,
+            SkillTransactionBoundary::PromotionParentSync,
+            SkillTransactionBoundary::AppliedWrite,
+            SkillTransactionBoundary::AppliedFileSync,
+            SkillTransactionBoundary::AppliedRename,
+            SkillTransactionBoundary::AppliedParentSync,
+        ] {
+            let root = tempdir().unwrap();
+            let store = ArtifactStore::new(root.path()).unwrap();
+            let owner = ownership("org-a", "alice");
+            let acquisition = generic_acquisition("mcp");
+            let id = acquisition.interchange.descriptor.id.clone();
+            let mutation = LibraryMutation::Create {
+                record: acquisition_record(&acquisition, &owner),
+            };
+            let result = store.import_library_acquisition_outcome(
+                &owner_auth(&owner),
+                &owner,
+                0,
+                idem("crash"),
+                mutation,
+                ts("2026-09-08T00:00:00Z"),
+                acquisition.clone(),
+                |observed| {
+                    if observed == boundary {
+                        Err(ArtifactError::Conflict("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(result.is_err(), "{boundary:?}");
+            let reopened = ArtifactStore::new(root.path()).unwrap();
+            let snapshot = reopened.library_snapshot().unwrap();
+            assert!(snapshot.version <= 1, "{boundary:?}");
+            if snapshot.version == 1 {
+                assert!(snapshot.records[&id].active_revision_id.is_none());
+                assert_eq!(
+                    reopened.get(&id).unwrap().descriptor,
+                    acquisition.interchange.descriptor
+                );
+                assert_eq!(
+                    reopened
+                        .revision(&id, &acquisition.interchange.revision.id)
+                        .unwrap(),
+                    acquisition.interchange.revision
+                );
+                for file in acquisition.files {
+                    assert_eq!(
+                        reopened
+                            .read_skill_revision_file(
+                                &id,
+                                &acquisition.interchange.revision.id,
+                                &file.path
+                            )
+                            .unwrap(),
+                        file.bytes
+                    );
+                }
+            } else {
+                assert!(!snapshot.records.contains_key(&id));
+            }
+        }
     }
 
     fn terminal_audit(

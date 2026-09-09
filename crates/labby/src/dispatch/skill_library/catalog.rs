@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 #[cfg(test)]
 pub(crate) const LOCAL_ACTION_NAMES: &[&str] = &[
+    "artifacts.depot_membership",
     "artifacts.search",
     "artifacts.list",
     "artifacts.get",
@@ -110,7 +111,20 @@ const HISTORY_PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub(crate) const LOCAL_ACTIONS: [ActionSpec; 15] = [
+pub(crate) const LOCAL_ACTIONS: [ActionSpec; 16] = [
+    spec(
+        "artifacts.depot_membership",
+        "Check current latest caller-visible nonarchived Depot revisions; never historical membership. Unknown provenance and inaccessible records are absent",
+        false,
+        false,
+        "VersionedDepotMembership",
+        &[ParamSpec {
+            name: "items",
+            ty: "array",
+            required: true,
+            description: "One to 100 tuples {connection_id, artifact_id, revision_id}; positional echoes with exact_revision_present, different_revision_present, or absent and library_version",
+        }],
+    ),
     spec(
         "artifacts.search",
         "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",

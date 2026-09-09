@@ -2,7 +2,205 @@ use super::discovery::{
     DiscoveryError, ProviderPage, merge_page, project_detail, provider_list_body,
     provider_request_limit, validate_request,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+#[test]
+fn lineage_is_strict_nullable_reference_metadata_for_details_only() {
+    let base = json!({"id":"artifact","descriptor":{"id":"artifact"}});
+    let lineage = json!({"upstreamArtifactId":"upstream","upstreamRevisionId":"revision",
+        "forkedFromArtifactId":"source","forkedFromRevisionId":null,"following":true,
+        "lastObservedUpstreamRevisionId":format!("sha256:{}","a".repeat(64))});
+    assert!(
+        project_detail("artifact", base.clone())
+            .unwrap()
+            .get("lineage")
+            .is_none()
+    );
+    let mut raw = base.clone();
+    raw["lineage"] = lineage.clone();
+    assert_eq!(
+        project_detail("artifact", raw.clone()).unwrap()["lineage"],
+        lineage
+    );
+    let mut pages = vec![ProviderPage::participating(
+        "provider",
+        vec![raw],
+        None,
+        None,
+    )];
+    assert!(
+        merge_page(&mut pages, 0, 1).unwrap().items[0]
+            .get("lineage")
+            .is_none()
+    );
+    for id in ["a".repeat(160), "0_valid-id".into()] {
+        let mut raw = base.clone();
+        raw["lineage"] = lineage.clone();
+        raw["lineage"]["upstreamArtifactId"] = json!(id);
+        assert!(project_detail("artifact", raw).is_ok());
+    }
+    let mut nullable = lineage.clone();
+    for field in [
+        "upstreamArtifactId",
+        "upstreamRevisionId",
+        "forkedFromArtifactId",
+        "forkedFromRevisionId",
+        "lastObservedUpstreamRevisionId",
+    ] {
+        nullable[field] = json!(null);
+    }
+    let mut raw = base.clone();
+    raw["lineage"] = nullable;
+    assert!(project_detail("artifact", raw).is_ok());
+    for field in [
+        "upstreamArtifactId",
+        "upstreamRevisionId",
+        "forkedFromArtifactId",
+        "forkedFromRevisionId",
+        "following",
+        "lastObservedUpstreamRevisionId",
+    ] {
+        let mut raw = base.clone();
+        raw["lineage"] = lineage.clone();
+        raw["lineage"].as_object_mut().unwrap().remove(field);
+        assert!(project_detail("artifact", raw).is_err(), "missing {field}");
+    }
+    for (field, value) in [
+        ("upstreamArtifactId", json!("")),
+        ("upstreamArtifactId", json!("a".repeat(161))),
+        ("upstreamArtifactId", json!("Upper")),
+        ("upstreamArtifactId", json!("é")),
+        ("upstreamArtifactId", json!("_start")),
+        ("upstreamArtifactId", json!(null)),
+        ("upstreamRevisionId", json!("sha256:ABC")),
+        (
+            "upstreamRevisionId",
+            json!(format!("sha256:{}", "A".repeat(64))),
+        ),
+        ("upstreamRevisionId", json!(false)),
+        ("following", json!(null)),
+        ("following", json!("true")),
+        ("source", json!("private")),
+    ] {
+        let mut raw = base.clone();
+        raw["lineage"] = lineage.clone();
+        raw["lineage"][field] = value;
+        assert!(project_detail("artifact", raw).is_err(), "invalid {field}");
+    }
+    let mut raw = base.clone();
+    raw["lineage"] = lineage.clone();
+    raw["lineage"]["upstreamArtifactId"] = json!(null);
+    raw["lineage"]["upstreamRevisionId"] = json!(null);
+    assert!(
+        project_detail("artifact", raw).is_err(),
+        "observed revision requires upstream"
+    );
+    let mut raw = base;
+    raw["lineage"] = lineage;
+    raw["lineage"]["forkedFromArtifactId"] = json!(null);
+    raw["lineage"]["forkedFromRevisionId"] = json!("revision");
+    assert!(
+        project_detail("artifact", raw).is_err(),
+        "fork revision requires source"
+    );
+}
+
+#[test]
+fn readme_detail_is_exact_revision_bound_and_never_leaks_into_listing() {
+    let base = json!({"id":"artifact", "descriptor":{"id":"artifact"},
+        "currentRevision":{"id":"revision"},"currentRevisionId":"revision"});
+    assert!(
+        project_detail("artifact", base.clone())
+            .unwrap()
+            .get("readme")
+            .is_none()
+    );
+    for (kind, path) in [("readme", "README.md"), ("skill", "SKILL.md")] {
+        for content in [String::new(), "é".repeat(32768)] {
+            let mut raw = base.clone();
+            raw["readme"] = json!({"state":"available","kind":kind,"path":path,
+                "content":content,"revisionId":"revision"});
+            assert_eq!(
+                project_detail("artifact", raw.clone()).unwrap()["readme"],
+                raw["readme"]
+            );
+            let mut pages = vec![ProviderPage::participating(
+                "provider",
+                vec![raw],
+                None,
+                None,
+            )];
+            assert!(
+                merge_page(&mut pages, 0, 1).unwrap().items[0]
+                    .get("readme")
+                    .is_none()
+            );
+        }
+    }
+    for reason in [
+        "absent",
+        "not_distributable",
+        "too_large",
+        "storage_unavailable",
+        "invalid_text",
+    ] {
+        let mut raw = base.clone();
+        raw["readme"] = json!({"state":"unavailable","reason":reason});
+        assert_eq!(
+            project_detail("artifact", raw.clone()).unwrap()["readme"],
+            raw["readme"]
+        );
+    }
+    let available = json!({"state":"available","kind":"readme","path":"README.md","content":"hello","revisionId":"revision"});
+    for (field, value) in [
+        ("kind", json!("skill")),
+        ("path", json!("../README.md")),
+        ("revisionId", json!("other")),
+        ("revisionId", json!("")),
+        ("revisionId", json!("r".repeat(513))),
+        ("content", json!("é".repeat(32769))),
+        ("content", json!("hello\0world")),
+        ("content", json!(null)),
+        ("state", json!("unknown")),
+        ("source", json!("private-source")),
+    ] {
+        let mut raw = base.clone();
+        let mut readme = available.clone();
+        readme[field] = value;
+        raw["readme"] = readme;
+        assert!(
+            project_detail("artifact", raw).is_err(),
+            "accepted invalid {field}"
+        );
+    }
+    for field in ["state", "kind", "path", "content", "revisionId"] {
+        let mut raw = base.clone();
+        let mut readme = available.clone();
+        readme.as_object_mut().unwrap().remove(field);
+        raw["readme"] = readme;
+        assert!(project_detail("artifact", raw).is_err());
+    }
+    for readme in [
+        json!(null),
+        json!([]),
+        json!({"state":"unavailable","reason":"unknown"}),
+        json!({"state":"unavailable","reason":"absent","content":"secret"}),
+    ] {
+        let mut raw = base.clone();
+        raw["readme"] = readme;
+        assert!(project_detail("artifact", raw).is_err());
+    }
+    for field in ["currentRevision", "currentRevisionId"] {
+        let mut raw = base.clone();
+        raw["readme"] = available.clone();
+        raw[field] = json!("other");
+        assert!(project_detail("artifact", raw).is_err());
+    }
+    let mut raw = base;
+    raw["readme"] = available;
+    raw.as_object_mut().unwrap().remove("currentRevision");
+    assert!(project_detail("artifact", raw).is_err());
+}
 
 #[test]
 fn unfiltered_provider_list_omits_absent_fields_but_preserves_search_and_cursor() {
@@ -52,7 +250,7 @@ fn real_depot_null_display_fields_and_extra_license_metadata_are_projected() {
         })).unwrap();
         assert_eq!(
             detail["descriptor"],
-            json!({"id":"artifact-1","name":"Team skill","description":"Description"})
+            json!({"id":"artifact-1","name":"Team skill","description":"Description","tags":[]})
         );
         assert_eq!(
             detail["currentRevision"],
@@ -182,6 +380,154 @@ fn list_and_detail_preserve_bounded_file_counts() {
 }
 
 #[test]
+fn detail_preserves_exact_optional_descriptor_tags() {
+    for tags in [
+        None,
+        Some(json!([])),
+        Some(json!(["Review", "with spaces", "é".repeat(32)])),
+        Some(json!((0..64).map(|i| i.to_string()).collect::<Vec<_>>())),
+    ] {
+        let mut raw =
+            json!({"id":"tagged", "descriptor":{"id":"tagged", "metadata":{"private":true}}});
+        if let Some(tags) = &tags {
+            raw["descriptor"]["tags"] = tags.clone();
+        }
+        let projected = project_detail("tagged", raw).unwrap();
+        assert_eq!(projected["descriptor"].get("tags"), tags.as_ref());
+        assert!(projected["descriptor"].get("metadata").is_none());
+    }
+}
+
+#[test]
+fn detail_rejects_invalid_descriptor_tags() {
+    for tags in [
+        json!(null),
+        json!("tag"),
+        json!([1]),
+        json!([""]),
+        json!(["x", "x"]),
+        json!(["nul\0tag"]),
+        json!(["é".repeat(33)]),
+        json!((0..65).map(|i| i.to_string()).collect::<Vec<_>>()),
+    ] {
+        assert!(matches!(
+            project_detail(
+                "tagged",
+                json!({"id":"tagged", "descriptor":{"id":"tagged", "tags":tags}})
+            ),
+            Err(DiscoveryError::InvalidProvider)
+        ));
+    }
+}
+
+#[test]
+fn detail_source_format_preserves_optional_values_and_strips_private_provenance() {
+    for value in [
+        None,
+        Some(json!(null)),
+        Some(json!("")),
+        Some(json!("agent-skill")),
+        Some(json!("é".repeat(64))),
+    ] {
+        let mut provenance = json!({"sourceUri":"https://private.invalid", "metadata":{"secret":"hidden"}, "integrityEvidence":{"verified":true}});
+        if let Some(value) = &value {
+            provenance["originalFormat"] = value.clone();
+            provenance["originalVersion"] = value.clone();
+        }
+        let raw = json!({"id":"format", "descriptor":{"id":"format"}, "provenance":provenance});
+        let result = project_detail("format", raw.clone()).unwrap();
+        assert_eq!(result["provenance"].get("originalFormat"), value.as_ref());
+        assert_eq!(result["provenance"].get("originalVersion"), value.as_ref());
+        assert_eq!(
+            result["provenance"].as_object().unwrap().len(),
+            if value.is_some() { 2 } else { 0 }
+        );
+        let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+        assert_eq!(
+            merge_page(&mut pages, 0, 1).unwrap().items[0].get("provenance"),
+            result.get("provenance")
+        );
+    }
+    assert!(
+        project_detail(
+            "format",
+            json!({"id":"format", "descriptor":{"id":"format"}})
+        )
+        .unwrap()
+        .get("provenance")
+        .is_none()
+    );
+}
+
+#[test]
+fn source_origin_is_allowlisted_and_preserved_in_list_and_detail() {
+    for origin in [
+        json!(null),
+        json!("mcp-registry"),
+        json!("acp-registry"),
+        json!("ard"),
+    ] {
+        let raw = json!({"id":"origin", "descriptor":{"id":"origin"}, "sourceOrigin":origin});
+        let detail = project_detail("origin", raw.clone()).unwrap();
+        assert_eq!(detail["sourceOrigin"], origin);
+        let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+        assert_eq!(
+            merge_page(&mut pages, 0, 1).unwrap().items[0]["sourceOrigin"],
+            origin
+        );
+    }
+    for origin in [
+        json!("github"),
+        json!("https://private.invalid"),
+        json!(""),
+        json!(42),
+        json!({}),
+    ] {
+        assert!(matches!(
+            project_detail(
+                "origin",
+                json!({"id":"origin", "descriptor":{"id":"origin"}, "sourceOrigin":origin})
+            ),
+            Err(DiscoveryError::InvalidProvider)
+        ));
+    }
+    assert!(
+        project_detail(
+            "origin",
+            json!({"id":"origin", "descriptor":{"id":"origin"}})
+        )
+        .unwrap()
+        .get("sourceOrigin")
+        .is_none()
+    );
+}
+
+#[test]
+fn detail_source_format_rejects_unbounded_or_nontext_values() {
+    for field in ["originalFormat", "originalVersion"] {
+        for value in [
+            json!(42),
+            json!([]),
+            json!({}),
+            json!("é".repeat(65)),
+            json!("nul\0text"),
+        ] {
+            let mut raw = json!({"id":"format", "descriptor":{"id":"format"}, "provenance":{}});
+            raw["provenance"][field] = value;
+            assert!(matches!(
+                project_detail("format", raw.clone()),
+                Err(DiscoveryError::InvalidProvider)
+            ));
+            let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+            assert_eq!(
+                merge_page(&mut pages, 0, 1).unwrap_err(),
+                DiscoveryError::InvalidProvider
+            );
+        }
+    }
+}
+
+#[test]
 fn list_and_detail_reject_invalid_file_counts() {
     for count in [
         json!(null),
@@ -210,6 +556,7 @@ fn list_and_detail_preserve_bounded_real_timestamps() {
     let raw = json!({
         "id": "dated", "descriptor": {"id": "dated"},
         "createdAt": "2026-09-01T00:00:00Z", "updatedAt": null,
+        "firstSeenAt": "2026-09-08T00:00:00Z",
         "currentRevision": {
             "id": "rev-1", "contentDigest": "sha256:exact",
             "authoredAt": "2026-09-03T00:00:00Z", "metadata": {"private": "omit"}
@@ -225,6 +572,7 @@ fn list_and_detail_preserve_bounded_real_timestamps() {
     let response = merge_page(&mut pages, 0, 1).unwrap();
     for artifact in [&detail, &response.items[0]] {
         assert_eq!(artifact["createdAt"], "2026-09-01T00:00:00Z");
+        assert_eq!(artifact["firstSeenAt"], "2026-09-08T00:00:00Z");
         assert!(artifact["updatedAt"].is_null());
         assert_eq!(
             artifact["currentRevision"]["authoredAt"],
@@ -239,8 +587,37 @@ fn list_and_detail_preserve_bounded_real_timestamps() {
 }
 
 #[test]
+fn first_seen_is_absent_when_unknown_and_rejects_explicit_null() {
+    let mut raw =
+        json!({"id": "dated", "descriptor": {"id": "dated"}, "createdAt": "2020-01-01T00:00:00Z"});
+    let detail = project_detail("dated", raw.clone()).unwrap();
+    assert!(detail.get("firstSeenAt").is_none());
+    let mut pages = vec![ProviderPage::participating(
+        "alpha",
+        vec![raw.clone()],
+        None,
+        None,
+    )];
+    assert!(
+        merge_page(&mut pages, 0, 1).unwrap().items[0]
+            .get("firstSeenAt")
+            .is_none()
+    );
+    raw["firstSeenAt"] = json!(null);
+    assert_eq!(
+        project_detail("dated", raw.clone()),
+        Err(DiscoveryError::InvalidProvider)
+    );
+    let mut pages = vec![ProviderPage::participating("alpha", vec![raw], None, None)];
+    assert_eq!(
+        merge_page(&mut pages, 0, 1).unwrap_err(),
+        DiscoveryError::InvalidProvider
+    );
+}
+
+#[test]
 fn list_and_detail_reject_oversized_or_structured_timestamps() {
-    for field in ["createdAt", "updatedAt", "authoredAt"] {
+    for field in ["createdAt", "updatedAt", "authoredAt", "firstSeenAt"] {
         for value in [
             json!("x".repeat(129)),
             json!({"url": "http://attacker"}),
@@ -300,4 +677,61 @@ fn request_and_projection_bounds_fail_closed() {
         merge_page(&mut bad, 0, 50).unwrap_err(),
         DiscoveryError::InvalidProvider
     );
+}
+#[test]
+fn source_origin_request_scope_and_reply_are_strict() {
+    use super::discovery::{DiscoveryRequest, SourceOrigin};
+    for invalid in [json!("claude"), json!("MCP-REGISTRY"), json!(1), json!([])] {
+        assert!(
+            serde_json::from_value::<DiscoveryRequest>(json!({"sourceOrigin":invalid})).is_err()
+        );
+    }
+    let unfiltered: DiscoveryRequest = serde_json::from_value(json!({})).unwrap();
+    let filtered: DiscoveryRequest = serde_json::from_value(json!({"sourceOrigin":"ard"})).unwrap();
+    assert_eq!(filtered.source_origin, Some(SourceOrigin::Ard));
+    assert_eq!(
+        super::discovery::page_contract(&unfiltered),
+        "discovery/v1:50"
+    );
+    assert_ne!(
+        super::discovery::page_contract(&unfiltered),
+        super::discovery::page_contract(&filtered)
+    );
+    let mut other = filtered.clone();
+    other.source_origin = Some(SourceOrigin::McpRegistry);
+    assert_ne!(
+        super::discovery::page_contract(&other),
+        super::discovery::page_contract(&filtered)
+    );
+
+    let identity = |capability: Value| {
+        super::provider::Identity::parse(json!({
+        "contractVersion":"depot.discovery/v1","deploymentId":"deployment","deploymentEpoch":"boot",
+        "authorityEpoch":"authority","listingEpoch":"listing","snapshotContinuations":true,"maxPageSize":200,
+        "filters":{"sourceOrigin":capability}
+    })).unwrap()
+    };
+    let capability = json!({"version":"source-origin/v1","values":["ard"]});
+    let mut reply = super::provider::Reply {
+        identity: identity(capability.clone()),
+        result: json!({"sourceOrigin":"ard","artifacts":[{"id":"a","sourceOrigin":"ard"}]}),
+    };
+    assert!(super::discovery::validate_origin_reply(&reply, filtered.source_origin).is_ok());
+    for wrong in [Value::Null, json!("mcp-registry"), json!(1)] {
+        reply.result["sourceOrigin"] = wrong.clone();
+        assert!(super::discovery::validate_origin_reply(&reply, filtered.source_origin).is_err());
+        reply.result["sourceOrigin"] = json!("ard");
+        reply.result["artifacts"][0]["sourceOrigin"] = wrong;
+        assert!(super::discovery::validate_origin_reply(&reply, filtered.source_origin).is_err());
+        reply.result["artifacts"][0]["sourceOrigin"] = json!("ard");
+    }
+    for capability in [
+        Value::Null,
+        json!({"version":"source-origin/v2","values":["ard"]}),
+        json!({"version":"source-origin/v1","values":["mcp-registry"]}),
+    ] {
+        reply.identity = identity(capability);
+        assert!(super::discovery::validate_origin_reply(&reply, filtered.source_origin).is_err());
+        assert!(super::discovery::validate_origin_reply(&reply, None).is_ok());
+    }
 }

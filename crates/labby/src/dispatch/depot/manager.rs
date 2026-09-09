@@ -124,6 +124,7 @@ pub struct ProviderStatus {
     pub name: String,
     pub enabled: bool,
     pub health: HealthView,
+    pub source_origins: Option<Vec<String>>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +140,7 @@ pub struct ProviderAdminStatus {
     pub config_version: String,
     pub credential_configured: bool,
     pub health: HealthView,
+    pub source_origins: Option<Vec<String>>,
 }
 
 pub struct Manager {
@@ -218,6 +220,7 @@ impl Manager {
                 name: provider.view.name.clone(),
                 enabled: provider.view.enabled,
                 health: provider.runtime.health.view(),
+                source_origins: provider.runtime.source_origins_snapshot(),
             })
             .collect()
     }
@@ -236,6 +239,7 @@ impl Manager {
                 config_version: config_version.to_owned(),
                 credential_configured: provider.credential_configured,
                 health: provider.runtime.health.view(),
+                source_origins: provider.runtime.source_origins_snapshot(),
             })
             .collect()
     }

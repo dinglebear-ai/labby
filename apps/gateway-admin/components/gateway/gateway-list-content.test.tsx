@@ -142,6 +142,8 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
   assert.match(markup, /aria-label="Card view"/)
   assert.match(markup, /aria-label="List view"/)
   assert.match(markup, /data-gateway-filters="all-viewports"/)
+  assert.match(markup, /flex-col items-stretch gap-2 sm:flex-row sm:items-start/)
+  assert.match(markup, /min-w-0 sm:flex-1/)
   assert.match(markup, /Search servers, commands, or endpoints/)
   assert.match(markup, /aria-label="Toggle Code Mode"/)
   assert.match(markup, /aria-label="Reload visible servers"/)

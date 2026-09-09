@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { depotCoveragePulse, exactImportConnection, mergeArtifactPages } from './depot-page-content'
+import { depotCoveragePulse, discoveryCountLabel, exactImportConnection, mergeArtifactPages } from './depot-page-content'
+
+test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
+  assert.equal(discoveryCountLabel(0, false, true), '—')
+  assert.equal(discoveryCountLabel(50, true, true), '—')
+  assert.equal(discoveryCountLabel(0, true, false), '0')
+  assert.equal(discoveryCountLabel(50, false, false), '≥ 50')
+})
 
 test('depotCoveragePulse never renders failed provider coverage as healthy', () => {
   assert.deepEqual(depotCoveragePulse('all_failed'), {

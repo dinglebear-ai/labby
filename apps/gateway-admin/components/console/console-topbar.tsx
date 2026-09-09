@@ -1,14 +1,15 @@
 'use client'
 
 import * as React from 'react'
-import { Bell, Menu, Search } from 'lucide-react'
+import { Menu, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
+import { ConsoleStatusStrip } from '@/components/console/console-status-strip'
 import { AccountMenu } from '@/components/console/console-sidebar'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
 // Measured off the rendered mock, not inferred.
-const SEARCH_WIDTH_IDLE = 'clamp(120px, 22vw, 300px)'
+const SEARCH_WIDTH_IDLE = 'clamp(150px, 26vw, 340px)'
 const SEARCH_WIDTH_HOVER = 'clamp(150px, 26vw, 340px)'
 
 function isMacOS() {
@@ -18,7 +19,7 @@ function isMacOS() {
 
 /**
  * The console's single topbar: breadcrumb rail on the left, a centre-anchored
- * search pill that widens on hover, and a right-hand action cluster. Screens
+ * search pill in the right-hand flex flow, and an action cluster. Screens
  * fill the breadcrumb and action regions through `<AppHeader />`, which portals
  * into the slots registered here.
  */
@@ -70,11 +71,13 @@ export function ConsoleTopbar() {
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 7,
-          fontSize: 13,
+          gap: 11,
+          fontSize: 12.5,
+          lineHeight: 'normal',
           minWidth: 0,
         }}
       />
+      <ConsoleStatusStrip />
 
       <div style={{ flex: 1 }} />
 
@@ -86,9 +89,8 @@ export function ConsoleTopbar() {
         onMouseEnter={() => setSearchHovered(true)}
         onMouseLeave={() => setSearchHovered(false)}
         style={{
-          position: 'absolute',
-          left: '50%',
-          transform: 'translateX(-50%)',
+          flex: '0 1 auto',
+          maxWidth: 340,
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -111,6 +113,8 @@ export function ConsoleTopbar() {
           color: searchHovered ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)',
           fontFamily: 'inherit',
           fontSize: 12.5,
+          lineHeight: 'normal',
+          marginRight: 34,
           cursor: 'pointer',
           boxShadow: searchHovered
             ? '0 0 0 3px rgba(41,182,246,0.09), 0 0 16px rgba(41,182,246,0.10), inset 0 1px 0 rgba(255,255,255,0.05)'
@@ -138,24 +142,29 @@ export function ConsoleTopbar() {
             textOverflow: 'ellipsis',
           }}
         >
-          Search — {modKey}K
+          Search
         </span>
         <span
-          data-search-notification="1"
-          title="Notifications"
+          data-search-shortcut="1"
+          className="max-[520px]:!hidden"
+          aria-hidden="true"
           style={{
-            position: 'relative',
             flexShrink: 0,
-            display: 'grid',
-            placeItems: 'center',
-            width: 24,
-            height: 24,
-            marginRight: -4,
-            borderRadius: 999,
-            color: 'var(--aurora-text-muted)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 20,
+            padding: '0 5px',
+            marginRight: -3,
+            borderRadius: 5,
+            border: '1px solid #193544',
+            background: 'rgba(7,17,26,0.38)',
+            color: '#9ab8ca',
+            fontSize: 10,
+            lineHeight: 'normal',
+            fontWeight: 650,
           }}
         >
-          <Bell size={13} strokeWidth={1.7} />
+          {modKey}K
         </span>
       </button>
 

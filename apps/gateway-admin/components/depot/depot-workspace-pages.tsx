@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import {
-  Bot, Box, CheckCircle2, CirclePlus, Clock3, ExternalLink,
+  Bot, Box, CheckCircle2, CirclePlus, ExternalLink,
   FileCode2, FileText, Grid2X2, Layers3, List,
-  Pause, Play, Search, Square, Table2, ChevronDown, ArrowUpDown, ScrollText,
+  Pause, Play, Search, Square, Table2, ChevronDown, ScrollText,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
@@ -16,9 +16,13 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ArtifactComposer } from './artifact-composer'
+import { ScheduledTasks } from './scheduled-tasks'
+import { TasksHero } from './tasks-hero'
+import { AgentsHero } from './agents-hero'
+import { AgentSessionsTable } from './agent-sessions-table'
 import { DevContainersPageContent } from './dev-containers-page-content'
 import { NewAgentSessionWizard } from './new-agent-session-wizard'
-import { AlpineMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
+import { AlpineMark, AnthropicMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -29,19 +33,22 @@ const demoArtifacts = [
   ['Snippet', 'gateway-reconcile', 'Probe disconnected servers and summarize the delta.', '#gateway'],
 ]
 
-export function LibraryTabs({ active }: { active: 'artifacts' | 'loadouts' | 'snippets' }) {
+export function LibraryTabs({ active, attached = false, counts = {} }: { active: 'artifacts' | 'loadouts' | 'snippets'; attached?: boolean; counts?: Partial<Record<'artifacts' | 'loadouts' | 'snippets', number>> }) {
   const tabs = [
     ['artifacts', '/library', 'Artifacts'],
     ['loadouts', '/loadouts', 'Loadouts'],
     ['snippets', '/snippets', 'Snippets'],
   ] as const
+  if (attached) return <nav aria-label="Library sections" className="aurora-scrollbar flex max-w-full gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-subtle bg-aurora-control-surface px-5">
+    {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}<span className={`inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums ${active === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted'}`}>{counts[id] ?? '—'}</span></a>)}
+  </nav>
   return <nav aria-label="Library sections" className="flex max-w-full gap-5 overflow-x-auto border-b border-aurora-border-subtle px-1 sm:gap-6 sm:px-3">
     {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="shrink-0 border-b-2 border-transparent px-2 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}</a>)}
   </nav>
 }
 
-function PageFrame({ children }: { children: React.ReactNode }) {
-  return <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={`${AURORA_PAGE_FRAME} space-y-4`}>{children}</div></div>
+function PageFrame({ children, compact = false }: { children: React.ReactNode; compact?: boolean }) {
+  return <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={`${AURORA_PAGE_FRAME} ${compact ? 'gap-3.5' : 'space-y-4'}`}>{children}</div></div>
 }
 
 export function LibraryPage() {
@@ -76,7 +83,7 @@ const agents = [
 export function AgentsPage() {
   const [selected, setSelected] = useState<string[] | null>(null)
   const [creating, setCreating] = useState(false)
-  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New session</Button>} stats={[{label:'Running',value:2,icon:<Play size={12}/>,tone:'var(--aurora-success)'},{label:'Completed',value:1,icon:<CheckCircle2 size={12}/>},{label:'Failed',value:1,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'},{label:'Median',value:<><span>4m 12s</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">per session</small></>,icon:<Clock3 size={12}/>} ]}/><AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
+  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame compact><AgentsHero rows={agents} onCreate={() => setCreating(true)} /><AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
     <AgentSessionSheet session={selected} onOpenChange={(open) => !open && setSelected(null)} />
     <NewAgentSessionWizard open={creating} onOpenChange={setCreating} />
   </>
@@ -127,19 +134,18 @@ export function TasksPage() {
   const [creating, setCreating] = useState(false)
   const [name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console')
   const create=()=>{if(!name.trim()||!definition.trim())return;setRows(c=>[['Armed',name.trim(),schedule,loadout,'tomorrow',definition.trim(),'pending'],...c]);setName('');setDefinition('');setCreating(false)}
-  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Team · Schedules" title="Tasks" description="Recurring agent runs. Each task carries its own loadout, container and repository, and reports back into Activity when it finishes." actions={<Button onClick={()=>setCreating(true)}><CirclePlus/>New Task</Button>} stats={[{label:'Scheduled',value:rows.length,icon:<Clock3 size={12}/>},{label:'Armed',value:rows.filter(row=>row[0]==='Armed').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},{label:'Next run',value:<><span className="text-aurora-accent-primary">02:00</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">Scope Audit</small></>,icon:<Play size={12}/>},{label:'Failures',value:<><span>1</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">last 7 days</small></>,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'}]}/><TasksCollection rows={rows} setRows={setRows} onSelect={setSelected}/></PageFrame>
+  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame compact><TasksHero rows={rows} onCreate={()=>setCreating(true)}/><TasksCollection rows={rows} setRows={setRows} onSelect={setSelected}/></PageFrame>
     <TaskDialog row={selected} onOpenChange={open=>!open&&setSelected(null)} onSave={updated=>{setRows(c=>c.map(row=>row===selected?updated:row));setSelected(updated)}}/>
     <Dialog open={creating} onOpenChange={setCreating}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>New task</DialogTitle><DialogDescription>Schedule a reusable agent run.</DialogDescription><TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/><Button onClick={create} disabled={!name.trim()||!definition.trim()}><CirclePlus/>Create task</Button></DialogContent></Dialog>
   </>
 }
 
-function SortHead({children,onClick}:{children:React.ReactNode;onClick:()=>void}){return <th className="px-3 py-2 text-left"><button type="button" onClick={onClick} className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted hover:text-aurora-text-primary">{children}<ArrowUpDown className="size-3 opacity-45"/></button></th>}
 
 function AgentsCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
   const [filter,setFilter]=useState('All'),[sort,setSort]=useState(1),[view,setView]=useState<ViewMode>('table')
   const shown=[...rows].filter(row=>filter==='All'||row[0]===filter).sort((a,b)=>a[sort].localeCompare(b[sort]))
-  return <DashboardPanel title="Sessions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','Running','Completed','Failed'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
-    {view==='table'?<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Session','Loadout','Container','Harness','Elapsed'].map((head,index)=><SortHead key={head} onClick={()=>setSort(index)}>{head}</SortHead>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} tabIndex={0} onClick={()=>onSelect(row)} onKeyDown={event=>event.key==='Enter'&&onSelect(row)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={row[0]}/></td><td className="px-3 py-3 font-semibold text-aurora-text-primary">{row[1]}</td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{row[2]}</Badge></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[3]}/>{row[3]}</span></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[4]}/>{row[4]}</span></td><td className="px-3 py-3 text-aurora-text-muted">{row[5]}</td></tr>)}</tbody></table></div>:<div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(row=><button key={row[1]} onClick={()=>onSelect(row)} className="w-full rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left"><StatusDot status={row[0]}/><strong className="mt-2 block text-aurora-text-primary">{row[1]}</strong><span className="mt-1 block text-xs text-aurora-text-muted">{row.slice(2).join(' · ')}</span></button>)}</div>}
+  return <DashboardPanel bodyClassName={view === 'table' ? '!p-0' : undefined} title="Sessions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','Running','Completed','Failed'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
+    {view==='table'?<AgentSessionsTable rows={shown} onSelect={onSelect} onSort={setSort} renderMark={kind => <ProductMark kind={kind} />} />:<div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(row=><button key={row[1]} onClick={()=>onSelect(row)} className="w-full rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left"><StatusDot status={row[0]}/><strong className="mt-2 block text-aurora-text-primary">{row[1]}</strong><span className="mt-1 block text-xs text-aurora-text-muted">{row.slice(2).join(' · ')}</span></button>)}</div>}
   </DashboardPanel>
 }
 
@@ -149,16 +155,13 @@ function ProductMark({kind}:{kind:string}){
   if(kind==='platform-base')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><UbuntuMark className="size-3.5 fill-current"/></span>
   if(kind==='rust-heavy')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><DebianMark className="size-3.5 fill-current"/></span>
   if(kind==='edge-minimal')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><AlpineMark className="size-3.5 fill-current"/></span>
-  if(kind==='Claude Code')return <span aria-label="Claude" className="grid size-5 place-items-center rounded bg-white/5 text-[10px] font-black text-aurora-text-primary">AI</span>
+  if(kind==='Claude Code')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><AnthropicMark className="size-3.5 fill-current"/></span>
   if(kind==='Codex')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><CodexMark className="size-3.5 fill-current"/></span>
   return <span aria-label="Gemini" className="grid size-5 place-items-center rounded bg-white/5 text-sm text-aurora-text-primary">✦</span>
 }
 
-function TasksCollection({rows,setRows,onSelect}:{rows:string[][];setRows:React.Dispatch<React.SetStateAction<string[][]>>;onSelect:(row:string[])=>void}){
-  const [filter,setFilter]=useState('All')
-  const shown=rows.filter(row=>filter==='All'||row[0]===filter)
-  const toggle=(target:string[])=>setRows(current=>current.map(row=>row===target?[row[0]==='Armed'?'Paused':'Armed',...row.slice(1)]:row))
-  return <DashboardPanel title="Scheduled" action={<div className="flex gap-1">{['All','Armed','Paused'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['On','Task','Schedule','Loadout','Last run','Next',''].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} className="border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-2"><button type="button" role="switch" aria-checked={row[0]==='Armed'} aria-label={`${row[0]==='Armed'?'Pause':'Arm'} ${row[1]}`} onClick={()=>toggle(row)} className="relative h-5 w-9 rounded-full border border-aurora-border-strong bg-aurora-control-surface aria-checked:border-aurora-accent-primary aria-checked:bg-aurora-accent-primary"><span className="absolute left-0.5 top-0.5 size-3.5 rounded-full bg-aurora-text-muted transition-transform [[aria-checked=true]_&]:translate-x-4 [[aria-checked=true]_&]:bg-aurora-page-bg"/></button></td><td className="px-3 py-2"><button onClick={()=>onSelect(row)} className="text-left"><strong className="block text-xs text-aurora-text-primary">{row[1]}</strong><span className="block max-w-[30rem] truncate text-[10px] text-aurora-text-muted">{row[5]}</span></button></td><td className="px-3 py-2 text-xs text-aurora-text-muted">◷ {row[2]}</td><td className="px-3 py-2"><Badge variant="outline" className="text-aurora-accent-primary">#{row[3]}</Badge></td><td className="px-3 py-2"><span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold ${row[6]==='failed'?'text-aurora-error':row[6]==='partial'?'text-aurora-warn':'text-aurora-success'}`}><span className="size-1.5 rounded-full bg-current"/>{row[6]}</span></td><td className="px-3 py-2 text-xs text-aurora-text-muted">{row[4]}</td><td className="px-3 py-2"><Button variant="ghost" size="icon-sm" aria-label={`View logs for ${row[1]}`} asChild><a href="/logs"><ScrollText className="size-4"/></a></Button></td></tr>)}</tbody></table></div></DashboardPanel>
+function TasksCollection({ rows, setRows, onSelect }: { rows: string[][]; setRows: React.Dispatch<React.SetStateAction<string[][]>>; onSelect: (row: string[]) => void }) {
+  return <ScheduledTasks rows={rows} onSelect={onSelect} onToggle={target => setRows(current => current.map(row => row === target ? [row[0] === 'Armed' ? 'Paused' : 'Armed', ...row.slice(1)] : row))} />
 }
 
 function SelectField({label,value,onChange,children}:{label:string;value:string;onChange:(value:string)=>void;children:React.ReactNode}){return <label className="text-xs text-aurora-text-muted">{label}<span className="relative mt-2 block"><select value={value} onChange={event=>onChange(event.target.value)} className="h-10 w-full appearance-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface pl-3 pr-10 text-sm text-aurora-text-primary">{children}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/></span></label>}
@@ -166,7 +169,7 @@ function TaskFields({name,setName,definition,setDefinition,schedule,setSchedule,
 
 function TaskDialog({row,onOpenChange,onSave}:{row:string[]|null;onOpenChange:(open:boolean)=>void;onSave:(row:string[])=>void}){const [editing,setEditing]=useState(false),[name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console');const begin=()=>{if(!row)return;setName(row[1]);setSchedule(row[2]);setLoadout(row[3]);setDefinition(row[5]);setEditing(true)};return <Dialog open={Boolean(row)} onOpenChange={open=>{onOpenChange(open);if(!open)setEditing(false)}}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>{editing?'Edit task':row?.[1]??'Task'}</DialogTitle><DialogDescription>{editing?'Change the task definition, schedule, or loadout.':'Workspace details and controls.'}</DialogDescription>{editing?<TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/>:<><p className="rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-3 text-sm leading-6 text-aurora-text-primary">{row?.[5]}</p><dl className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low px-4">{[['State',row?.[0]],['Schedule',row?.[2]],['Loadout',row?.[3]],['Next run',row?.[4]]].map(([label,value])=><div key={label} className="flex justify-between gap-4 py-3 text-sm"><dt className="text-aurora-text-muted">{label}</dt><dd className="font-medium text-aurora-text-primary">{value}</dd></div>)}</dl></>}<div className="flex flex-wrap justify-end gap-2">{editing?<><Button variant="outline" onClick={()=>setEditing(false)}>Cancel</Button><Button onClick={()=>{if(row)onSave([row[0],name,schedule,loadout,row[4],definition,row[6]]);setEditing(false)}}>Save changes</Button></>:<><Button variant="outline" onClick={begin}>Edit task</Button><Button variant="outline"><Pause/>Pause task</Button><Button><Play/>Run now</Button><Button variant="outline" asChild><a href="/logs"><ScrollText/>View last run logs</a></Button></>}</div></DialogContent></Dialog>}
 
-export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
+export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame compact><DevContainersPageContent /></PageFrame></> }
 
 const logRows = [
   ['Info','gateway','catalog reconciled · 2 healthy upstreams'],

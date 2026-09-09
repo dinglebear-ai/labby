@@ -2678,6 +2678,22 @@
       "requires_http_subject": false,
       "actions": [
         {
+          "name": "artifacts.depot_membership",
+          "description": "Check current latest caller-visible nonarchived Depot revisions; never historical membership. Unknown provenance and inaccessible records are absent",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "items",
+              "ty": "array",
+              "required": true,
+              "description": "One to 100 tuples {connection_id, artifact_id, revision_id}; positional echoes with exact_revision_present, different_revision_present, or absent and library_version"
+            }
+          ],
+          "returns": "VersionedDepotMembership"
+        },
+        {
           "name": "artifacts.search",
           "description": "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
           "destructive": false,

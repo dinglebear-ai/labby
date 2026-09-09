@@ -128,7 +128,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let materialized = self
             .blocking
             .run("skill_artifact_import_prepare", move || {
-                labby_runtime::artifacts::materialize_acquired_skill_owned(acquisition)
+                acquisition.validate()?;
+                Ok(acquisition)
             })
             .await
             .map_err(map_blocking)?;
@@ -208,7 +209,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             faults.as_ref(),
                             || {
                                 store
-                                    .mutate_library_with_materialized_outcome(
+                                    .import_library_acquisition_outcome(
                                         &authorization,
                                         &ownership,
                                         expected_library_version,
@@ -216,7 +217,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                                         mutation,
                                         now,
                                         materialized,
-                                        None,
                                         |boundary| transaction_fault(faults.as_ref(), boundary),
                                     )
                                     .map_err(SkillLibraryDispatchError::Artifact)
@@ -414,6 +414,17 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .ok_or(ArtifactError::NotFound("library_record"))?
                     .ownership
                     .clone();
+                if matches!(
+                    preparation_mutation,
+                    LibraryMutation::Activate { .. } | LibraryMutation::Rollback { .. }
+                ) && preparation_store
+                    .get(&preparation_artifact_id)?
+                    .descriptor
+                    .kind
+                    != "skill"
+                {
+                    return Err(ArtifactError::Conflict("library_action_requires_skill"));
+                }
                 let candidate = projection.prepare(
                     &preparation_store,
                     &snapshot,
@@ -650,6 +661,28 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
         match action {
+            "artifacts.depot_membership" => {
+                let params: super::membership::Params = parse(params)?;
+                params.validate()?;
+                let decision = authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    SkillLibraryAction::DepotMembership,
+                    &CanonicalArtifactId::parse("library")?,
+                    SkillLibraryTarget::SharedActive,
+                    correlation_id,
+                )
+                .await?;
+                let store = Arc::clone(&self.store);
+                self.blocking
+                    .run("depot_membership", move || {
+                        let snapshot = store.library_snapshot()?;
+                        super::membership::lookup(&store, &snapshot, &decision, params)
+                    })
+                    .await
+                    .map_err(map_blocking)
+            }
             "artifacts.search" => {
                 let params: SearchParams = parse(params)?;
                 let query = normalized_query(params.query).map_err(|reason| {
@@ -771,6 +804,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         Ok(VersionedSkillLibrarySummary {
                             library_version: snapshot.version,
                             item: summary(
+                                &store,
                                 visible,
                                 &decision,
                                 snapshot.version,
@@ -1036,12 +1070,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let name = self
                     .blocking
                     .run("skill_library_save_target", move || {
-                        store
-                            .library_snapshot()?
+                        let snapshot = store.library_snapshot()?;
+                        let record = snapshot
                             .records
                             .get(&artifact_id)
-                            .map(|record| record.name.clone())
-                            .ok_or(ArtifactError::NotFound("library_record"))
+                            .ok_or(ArtifactError::NotFound("library_record"))?;
+                        if store.get(&artifact_id)?.descriptor.kind != "skill" {
+                            return Err(ArtifactError::Conflict("library_action_requires_skill"));
+                        }
+                        Ok(record.name.clone())
                     })
                     .await
                     .map_err(map_target_lookup)?;
@@ -1139,9 +1176,10 @@ fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchErro
 /// preserving ordinary `not_found` errors for authorized revision and file lookups.
 fn map_target_lookup(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchError {
     match error {
-        BlockingError::Operation(ArtifactError::NotFound("library_record")) => {
-            SkillLibraryAuthorizationError::Denied.into()
-        }
+        BlockingError::Operation(
+            ArtifactError::NotFound("library_record")
+            | ArtifactError::Conflict("library_action_requires_skill"),
+        ) => SkillLibraryAuthorizationError::Denied.into(),
         error => map_blocking(error),
     }
 }
@@ -1186,6 +1224,7 @@ fn transaction_fault(
 }
 
 fn summary(
+    store: &ArtifactStore,
     record: &SkillLibraryRecord,
     decision: &super::auth::SkillLibraryAuthorizationDecision,
     current_generation: u64,
@@ -1220,7 +1259,18 @@ fn summary(
         canonical_uri: active.then(|| format!("skill://labby/{}/SKILL.md", record.name)),
         current_generation,
         published_library_version,
-        allowed_actions: item_allowed_actions(personal, active),
+        allowed_actions: if store
+            .get(&record.artifact_id)
+            .is_ok_and(|artifact| artifact.descriptor.kind == "skill")
+        {
+            item_allowed_actions(personal, active)
+        } else {
+            let mut actions = vec!["artifacts.get", "artifacts.read", "artifacts.history"];
+            if personal {
+                actions.push("artifacts.archive");
+            }
+            actions
+        },
         latest_revision_files: record
             .latest_revision_files
             .iter()
@@ -1315,6 +1365,7 @@ fn list_page_visible(
         .take(limit)
         .map(|record| {
             summary(
+                store,
                 record,
                 decision,
                 snapshot.version,

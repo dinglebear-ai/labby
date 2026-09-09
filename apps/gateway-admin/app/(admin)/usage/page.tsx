@@ -42,6 +42,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { WindowSelector } from '@/components/dashboard/window-selector'
 import { OutcomeDot, SurfaceTag } from '@/components/dashboard/recent-calls'
 import { UsageCallCards } from '@/components/dashboard/usage-call-cards'
+import { UsageCallDetail } from '@/components/dashboard/usage-call-detail'
 import { useToolCalls } from '@/lib/hooks/use-usage-drilldown'
 import {
   WINDOW_LABELS,
@@ -49,9 +50,10 @@ import {
   formatDuration,
   formatRelativeTime,
 } from '@/lib/dashboard/dashboard-metrics'
-import { METRICS_WINDOWS, type CallOutcome, type MetricsWindow } from '@/lib/types/metrics'
+import { METRICS_WINDOWS, type CallOutcome, type MetricsWindow, type ToolCallRecord } from '@/lib/types/metrics'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { cn, getErrorMessage } from '@/lib/utils'
+import { usageTraceHref } from '@/lib/observability/usage-trace-link'
 
 const PAGE_SIZE = 50
 const ALL = 'all'
@@ -114,6 +116,7 @@ function UsageExplorer() {
   const [outcome, setOutcome] = useState<string>(params.get('outcome') ?? ALL)
   const [errorKind, setErrorKind] = useState<string>(params.get('error') ?? ALL)
   const [search, setSearch] = useState(params.get('search') ?? '')
+  const [selectedCall, setSelectedCall] = useState<ToolCallRecord | null>(null)
   const [sinceMs, setSinceMs] = useState<number | undefined>(() => parseEpochMs(params.get('from')))
   const [untilMs, setUntilMs] = useState<number | undefined>(() => parseEpochMs(params.get('to')))
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
@@ -177,9 +180,8 @@ function UsageExplorer() {
   const ipOptions = data?.facets.ips ?? []
   const collected = data?.collected
   const showIps = collected?.ips ?? false
-  const showSurfaces = collected?.surfaces ?? false
   const showTokens = collected?.tokens ?? false
-  const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
+  const tableColumns = 7 + Number(showTokens)
 
   const filtered = data?.filtered ?? 0
   const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
@@ -189,6 +191,7 @@ function UsageExplorer() {
   const heroStats = [
     {
       label: 'Matched',
+      tone: 'var(--aurora-accent-strong)',
       value: data ? formatCompactNumber(data.filtered) : '—',
       icon: <Activity size={12} strokeWidth={1.8} />,
     },
@@ -199,16 +202,19 @@ function UsageExplorer() {
     },
     {
       label: 'Failed',
+      tone: 'var(--aurora-error)',
       value: data ? formatCompactNumber(data.analytics.failed) : '—',
       icon: <AlertTriangle size={12} strokeWidth={1.8} />,
     },
     {
       label: 'P95 latency',
+      tone: 'var(--aurora-warn)',
       value: data ? formatDuration(data.analytics.p95_elapsed_ms) : '—',
       icon: <Gauge size={12} strokeWidth={1.8} />,
     },
     {
       label: 'Peak / min',
+      tone: 'var(--aurora-success)',
       value: data ? formatCompactNumber(data.analytics.peak_per_min) : '—',
       icon: <Zap size={12} strokeWidth={1.8} />,
     },
@@ -219,6 +225,7 @@ function UsageExplorer() {
     },
     {
       label: 'Agents',
+      tone: 'var(--aurora-accent-pink)',
       value: data ? data.facets.agents.length : '—',
       icon: <Users size={12} strokeWidth={1.8} />,
     },
@@ -266,14 +273,16 @@ function UsageExplorer() {
 
   return (
     <>
-      <AppHeader breadcrumbs={[{ label: 'Usage' }]} />
+      <AppHeader icon={<Activity className="size-3.5" />} breadcrumbs={[{ label: 'Activity' }]} />
 
       <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
         {/* Hero — the mock's eyebrow + title + action cluster with the stat
             strip welded to the card's bottom edge, not floating cards. */}
         <ConsoleHero
           eyebrow="Observe"
+          pulse={{ color: 'var(--aurora-success)', label: 'complete-window analytics' }}
           title="Usage Explorer"
+          description="Every retained upstream call in the selected slice. Filters and chart drill-downs stay in the URL so this view can be shared or reloaded."
           actions={
             <WindowSelector
               value={window}
@@ -296,13 +305,11 @@ function UsageExplorer() {
 
         <DashboardPanel
           title="Upstream calls"
+          iconVariant="plain"
           icon={<SlidersHorizontal className="size-4" />}
           meta={`${tableMeta} · ${WINDOW_LABELS[window]}`}
         >
           <div className="space-y-3">
-            <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
-              Every retained upstream call in the selected slice. Filters and chart drill-downs stay in the URL so this view can be shared or reloaded.
-            </p>
             {hasTimeSlice ? (
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-aurora-accent-primary/25 bg-aurora-accent-primary/5 px-3 py-2 text-xs">
                 <Clock className="size-3.5 text-aurora-accent-strong" />
@@ -318,22 +325,22 @@ function UsageExplorer() {
                 </button>
               </div>
             ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_12rem_10rem_auto]">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
               <div className="relative min-w-0">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
-                <Input value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-10 pl-9" />
+                <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted" />
+                <Input name="search" aria-label="Search upstream calls" value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-[34px] pl-9 text-[12.5px]" />
               </div>
               <Select value={upstream} onValueChange={(value) => { setUpstream(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Server" /></SelectTrigger>
+                <SelectTrigger aria-label="Server" className="h-[34px] w-full text-xs"><SelectValue placeholder="Server" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All servers</SelectItem>{upstreamOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
               </Select>
               <Select value={outcome} onValueChange={(value) => { setOutcome(value); if (value !== 'failed') setErrorKind(ALL); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Outcome" /></SelectTrigger>
+                <SelectTrigger aria-label="Outcome" className="h-[34px] w-full text-xs"><SelectValue placeholder="Outcome" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
               </Select>
               <details className="group relative">
-                <summary className="flex h-10 cursor-pointer list-none items-center justify-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-muted hover:text-aurora-text-primary [&::-webkit-details-marker]:hidden">
-                  <SlidersHorizontal className="size-4" /> More filters
+                <summary className="flex h-[34px] cursor-pointer list-none items-center justify-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-xs font-medium text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden">
+                  <SlidersHorizontal className="size-3.5" /> More filters
                 </summary>
                 <div className="absolute right-0 z-30 mt-2 grid w-[min(44rem,85vw)] grid-cols-2 gap-2 rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-aurora-panel md:grid-cols-3">
                   <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
@@ -349,17 +356,17 @@ function UsageExplorer() {
           </div>
           <div className="my-3 border-t border-aurora-border-subtle" />
           <div className="md:hidden">
-            <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} />
+            <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} onSelectCall={setSelectedCall} />
           </div>
           {/* Dense desktop table. Phones get purpose-built cards above instead of horizontal scrolling. */}
-          <div className="hidden overflow-x-auto md:block" style={{ margin: '-12px -14px' }}>
-            <Table>
+          <div className="aurora-scrollbar hidden overflow-x-auto md:block" style={{ margin: '-12px -14px' }}>
+            <Table data-density="default" className="table-fixed text-xs [&_th]:h-8 [&_th]:text-[9.5px] [&_td]:h-11 [&_td]:py-[7px] [&_td]:px-[15px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[120px]">Time</TableHead>
+                  <TableHead className="w-[96px]">Time</TableHead>
                   <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
-                  {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
+                  <TableHead className="w-[80px]">Surface</TableHead>
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
                   <TableHead className="w-[90px] text-right">Response</TableHead>
@@ -395,26 +402,40 @@ function UsageExplorer() {
                   </TableRow>
                 ) : (
                   data.calls.map((call) => (
-                    <TableRow key={call.id}>
-                      <TableCell className="text-aurora-text-muted">{formatRelativeTime(call.ts)}</TableCell>
-                      <TableCell>
-                        <span className="font-mono text-[13px] text-aurora-text-primary">{call.tool}</span>
+                    <TableRow
+                      key={call.id}
+                      className="cursor-pointer"
+                      tabIndex={0}
+                      aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')}`}
+                      onClick={(event) => {
+                        if (!(event.target as HTMLElement).closest('a')) setSelectedCall(call)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedCall(call)
+                        }
+                      }}
+                    >
+                      <TableCell className="text-[11px] tabular-nums text-aurora-text-muted">{formatRelativeTime(call.ts)}</TableCell>
+                      <TableCell className="truncate" title={[call.tool, call.action].filter(Boolean).join('.')}>
+                        <Link href={usageTraceHref(call.tool)} aria-label={`View traces for ${call.tool}`} className="rounded font-mono text-[12.5px] text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{call.tool}</Link>
                         {call.action ? (
-                          <span className="font-mono text-[12px] text-aurora-text-muted">.{call.action}</span>
+                          <span className="font-mono text-[11.5px] text-aurora-text-muted">.{call.action}</span>
                         ) : null}
                         {call.capability && call.capability !== 'tools' ? (
                           <span className="ml-2 text-[11px] text-aurora-text-muted">{call.capability}</span>
                         ) : null}
                       </TableCell>
                       <TableCell>
-                        <div className="text-aurora-text-primary">
+                        <div className="truncate text-aurora-text-primary" title={call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}>
                           {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
                         </div>
                         {showIps ? (
                           <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
                         ) : null}
                       </TableCell>
-                      {showSurfaces ? <TableCell><SurfaceTag surface={call.surface} /></TableCell> : null}
+                      <TableCell><SurfaceTag surface={call.surface} /></TableCell>
                       <TableCell>
                         <span className="inline-flex items-center gap-2">
                           <OutcomeDot outcome={call.outcome} />
@@ -448,7 +469,7 @@ function UsageExplorer() {
             <Button
               variant="outline"
               size="sm"
-              className="min-h-10 flex-1 sm:flex-none"
+              className="min-h-10 flex-1 sm:h-8 sm:min-h-8 sm:flex-none"
               disabled={pageIndex === 0}
               onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
             >
@@ -458,7 +479,7 @@ function UsageExplorer() {
             <Button
               variant="outline"
               size="sm"
-              className="min-h-10 flex-1 sm:flex-none"
+              className="min-h-10 flex-1 sm:h-8 sm:min-h-8 sm:flex-none"
               disabled={!data?.next_cursor}
               onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
             >
@@ -473,6 +494,13 @@ function UsageExplorer() {
           </Button>
         </div>
       </div>
+
+      <UsageCallDetail
+        call={selectedCall}
+        onClose={() => setSelectedCall(null)}
+        tokensCollected={showTokens}
+        ipsCollected={showIps}
+      />
     </>
   )
 }

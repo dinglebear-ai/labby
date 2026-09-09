@@ -734,6 +734,70 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first["outcome"], "committed");
+        let membership = service.dispatch(
+            &runtime, caller(), "bootstrap-default", "artifacts.depot_membership",
+            json!({"items":[
+                {"connection_id":"account-1","artifact_id":depot_id,"revision_id":depot_revision},
+                {"connection_id":"account-1","artifact_id":depot_id,"revision_id":"other-revision"},
+                {"connection_id":"another-account","artifact_id":depot_id,"revision_id":depot_revision},
+                {"connection_id":"account-1","artifact_id":"missing","revision_id":depot_revision}
+            ]}),
+            &SkillLibraryCorrelationId::parse("depot-membership-1").unwrap(),
+        ).await.unwrap();
+        assert_eq!(membership["library_version"], 1);
+        assert_eq!(membership["items"][0]["status"], "exact_revision_present");
+        assert_eq!(
+            membership["items"][1]["status"],
+            "different_revision_present"
+        );
+        assert_eq!(membership["items"][2]["status"], "absent");
+        assert_eq!(membership["items"][3]["status"], "absent");
+        assert_eq!(membership["items"][0]["artifact_id"], depot_id);
+        assert_eq!(membership["items"][0]["revision_id"], depot_revision);
+        let decision = super::super::auth::authorize_at_boundary(
+            &runtime,
+            caller(),
+            "bootstrap-default",
+            super::super::auth::SkillLibraryAction::DepotMembership,
+            &super::super::audit::CanonicalArtifactId::parse("library").unwrap(),
+            super::super::auth::SkillLibraryTarget::SharedActive,
+            &SkillLibraryCorrelationId::parse("membership-privacy").unwrap(),
+        )
+        .await
+        .unwrap();
+        let selectors = || {
+            serde_json::from_value(json!({"items":[{
+                "connection_id":"account-1","artifact_id":depot_id,"revision_id":depot_revision
+            }]}))
+            .unwrap()
+        };
+        let mut archived = store.library_snapshot().unwrap();
+        archived.records.get_mut(&depot_id).unwrap().archived = true;
+        assert_eq!(
+            super::super::membership::lookup(&store, &archived, &decision, selectors()).unwrap()["items"]
+                [0]["status"],
+            "absent"
+        );
+        let mut inaccessible = store.library_snapshot().unwrap();
+        inaccessible
+            .records
+            .get_mut(&depot_id)
+            .unwrap()
+            .ownership
+            .tenant_id =
+            labby_runtime::artifacts::LibraryTenantId::from_canonical_projection("another-tenant")
+                .unwrap();
+        assert_eq!(
+            super::super::membership::lookup(&store, &inaccessible, &decision, selectors())
+                .unwrap()["items"][0]["status"],
+            "absent"
+        );
+        let mut stale = store.library_snapshot().unwrap();
+        stale.version = 0;
+        assert!(matches!(
+            super::super::membership::lookup(&store, &stale, &decision, selectors()),
+            Err(ArtifactError::Conflict("library_version_changed"))
+        ));
         let replay = coordinator
             .import(
                 &service,
@@ -940,6 +1004,121 @@ mod tests {
                 repository_calls.load(Ordering::SeqCst)
             )
         );
+
+        // Exact generic imports retain the same tenant/CAS/publication boundary,
+        // but never acquire Skill execution or editing actions.
+        for kind in ["mcp", "agent", "prompt", "hook", "loadout"] {
+            let mut generic = acquisition(
+                "generic-import",
+                "depot",
+                Some("generic-source"),
+                None,
+                "exact",
+            );
+            generic.interchange.descriptor =
+                labby_runtime::artifacts::ArtifactDescriptor::for_identity(
+                    kind,
+                    "fixture",
+                    "Generic.Tool",
+                )
+                .unwrap();
+            let id = generic.interchange.descriptor.id.clone();
+            let revision = generic.interchange.revision.id.clone();
+            let coordinator = ImportCoordinator::new(
+                Some(DepotConnection::fake(
+                    Arc::new(FakeDepot {
+                        value: generic,
+                        calls: Arc::new(AtomicUsize::new(0)),
+                    }),
+                    "generic-source",
+                )),
+                None,
+            );
+            let version = store.library_snapshot().unwrap().version;
+            let selector = SourceSelector::Depot {
+                connection_id: "generic-source".to_owned(),
+                artifact_id: id.clone(),
+                revision_id: revision.clone(),
+            };
+            let imported = coordinator
+                .import_selected(
+                    &service,
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    selector,
+                    version,
+                    format!("import-{kind}"),
+                    &SkillLibraryCorrelationId::parse("generic-import").unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(imported["artifact_id"], id);
+            assert_eq!(imported["committed_library_version"], version + 1);
+            assert!(imported["active_revision_id"].is_null());
+            let get = service
+                .dispatch(
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    "artifacts.get",
+                    json!({"artifact_id":id}),
+                    &SkillLibraryCorrelationId::parse("generic-get").unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                get["allowed_actions"],
+                json!([
+                    "artifacts.get",
+                    "artifacts.read",
+                    "artifacts.history",
+                    "artifacts.archive"
+                ])
+            );
+            let membership = service.dispatch(&runtime, caller(), "bootstrap-default", "artifacts.depot_membership", json!({"items":[{"connection_id":"generic-source","artifact_id":id,"revision_id":revision}]}), &SkillLibraryCorrelationId::parse("generic-membership").unwrap()).await.unwrap();
+            assert_eq!(membership["items"][0]["status"], "exact_revision_present");
+            let mut inaccessible = store.library_snapshot().unwrap();
+            inaccessible
+                .records
+                .get_mut(&id)
+                .unwrap()
+                .ownership
+                .tenant_id = labby_runtime::artifacts::LibraryTenantId::from_canonical_projection(
+                "another-tenant",
+            )
+            .unwrap();
+            assert_eq!(super::super::membership::lookup(&store, &inaccessible, &decision,
+                serde_json::from_value(json!({"items":[{"connection_id":"generic-source","artifact_id":id,"revision_id":revision}]})).unwrap()).unwrap()["items"][0]["status"], "absent");
+            for action in ["artifacts.activate", "artifacts.rollback", "artifacts.save"] {
+                let mut params = json!({"artifact_id":id,"expected_revision_id":revision,"expected_library_version":version+1,"idempotency_key":format!("blocked-{kind}-{action}")});
+                if action == "artifacts.save" {
+                    params["files"] = json!([{"path":"SKILL.md","content":"---\nname: generic-import\ndescription: Test\n---\nbody\n"}]);
+                }
+                assert!(
+                    service
+                        .dispatch(
+                            &runtime,
+                            caller(),
+                            "bootstrap-default",
+                            action,
+                            params,
+                            &SkillLibraryCorrelationId::parse("generic-blocked").unwrap()
+                        )
+                        .await
+                        .is_err(),
+                    "{kind} {action}"
+                );
+            }
+            assert_eq!(store.library_snapshot().unwrap().version, version + 1);
+            service.dispatch(&runtime, caller(), "bootstrap-default", "artifacts.archive",
+                json!({"artifact_id":id,"expected_library_version":version+1,"idempotency_key":format!("archive-{kind}")}),
+                &SkillLibraryCorrelationId::parse("generic-archive").unwrap()).await.unwrap();
+            let absent = service.dispatch(&runtime, caller(), "bootstrap-default", "artifacts.depot_membership",
+                json!({"items":[{"connection_id":"generic-source","artifact_id":id,"revision_id":revision}]}),
+                &SkillLibraryCorrelationId::parse("generic-archived-membership").unwrap()).await.unwrap();
+            assert_eq!(absent["items"][0]["status"], "absent");
+        }
     }
 
     #[tokio::test]

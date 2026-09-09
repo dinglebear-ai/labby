@@ -202,6 +202,33 @@
   },
   {
     "service": "artifacts",
+    "action": "artifacts.depot_membership",
+    "description": "Check current latest caller-visible nonarchived Depot revisions; never historical membership. Unknown provenance and inaccessible records are absent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "items",
+        "ty": "array",
+        "required": true,
+        "description": "One to 100 tuples {connection_id, artifact_id, revision_id}; positional echoes with exact_revision_present, different_revision_present, or absent and library_version"
+      }
+    ],
+    "returns": "VersionedDepotMembership",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
     "action": "artifacts.follow",
     "description": "Follow or unfollow an upstream Artifact while preserving revision identity",
     "destructive": false,

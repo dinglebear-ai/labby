@@ -223,7 +223,7 @@ All new page and component styling should use semantic Aurora tokens rather than
 - `--aurora-border-default: #1d3d4e`
 - `--aurora-border-strong: #24536c`
 - `--aurora-text-primary: #e6f4fb`
-- `--aurora-text-muted: #a7bcc9` — lifted from the original `#90a9b9` to clear WCAG AA (≥4.5:1) on `--aurora-panel-medium`. The lighter value is the source of truth.
+- `--aurora-text-muted: #a9c6d8` — lifted from the original `#90a9b9` to clear WCAG AA (≥4.5:1) on `--aurora-panel-medium`. The lighter value is the source of truth.
 
 ### Accent Family
 
@@ -292,6 +292,14 @@ Sanctioned use:
 These are the only place in Labby where saturated/neon color and decorative gradients are allowed. Any new use must be added to this list — do not reach for these tokens for routine status display.
 
 ### Status Guidance
+
+Artifact protocol identity uses `--aurora-protocol` (`#ff9645` dark,
+`#a8540e` light) for tints and `--aurora-protocol-strong` (`#ffb066` dark,
+`#934908` light) for foregrounds. This matches the Gateway Console reference's
+MCP/ACP orange and must not be substituted for operational warning gold.
+Artifact icon tiles use a 10% identity tint with a 30% border; foreground and
+tint tones are deliberately separate for blue capabilities and rose authored
+artifacts as well. These are identity treatments, not status indicators.
 
 Status accents must stay muted and integrated into the Aurora family.
 
@@ -584,6 +592,14 @@ When these primitives exist, ad-hoc equivalents in `app/**` are contract violati
 ### Iconography
 
 Labby uses `lucide-react` for product UI icons.
+
+Artifact kind glyphs are the reviewed paths from the approved Gateway Console
+reference, rendered through `createLucideIcon` in
+`components/depot/discover-kind-presentation.ts`. Library and Discover share
+this mapping rather than choosing separate approximate glyphs. Compact Library
+table marks use an 18px tile, 5px radius, and 13px glyph; the default artifact
+tile is 32px with a 9px radius and 16px glyph. These are deliberate
+reference-alignment exceptions to the general radius/icon scale below.
 
 Rules:
 
