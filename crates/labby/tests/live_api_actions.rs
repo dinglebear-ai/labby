@@ -401,8 +401,12 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             structured_errors, api_services,
             "every API service needs an invalid/error path"
         );
-        let required_destructive_denials =
-            BTreeSet::from(["gateway".into(), "setup".into(), "snippets".into()]);
+        let required_destructive_denials = BTreeSet::from([
+            "browser".into(),
+            "gateway".into(),
+            "setup".into(),
+            "snippets".into(),
+        ]);
         assert!(
             required_destructive_denials.is_subset(&destructive_denials),
             "mounted destructive services must deny unauthenticated dispatch"
