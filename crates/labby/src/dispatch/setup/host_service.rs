@@ -2031,6 +2031,7 @@ mod tests {
     #[allow(clippy::literal_string_with_formatting_args)]
     fn generated_watchdog_shell_executes_restart_backoff_and_exhaustion() {
         use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::CommandExt as _;
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
@@ -2067,18 +2068,42 @@ mod tests {
         let run = |succeed_at: &str, hang: bool| {
             drop(std::fs::remove_file(&log));
             drop(std::fs::remove_file(&count));
-            std::process::Command::new("sh")
+            let mut child = std::process::Command::new("sh")
                 .args(["-c", &script])
+                .process_group(0)
                 .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
                 .env("CALLS", &log)
                 .env("COUNT", &count)
                 .env("SUCCEED_AT", succeed_at)
                 .env("HANG", if hang { "1" } else { "0" })
                 .env("HUNG_PID", &hung_pid)
-                .status()
-                .unwrap()
+                .spawn()
+                .unwrap();
+            // Process launches contend with the rest of the suite. Bound each
+            // scenario independently instead of treating total scheduler time
+            // as the mocked curl timeout. The mock verifies --max-time and its
+            // child termination is asserted below.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    return status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    // The scenario owns this process group, including mock curl
+                    // timers and sleepers; settle them before failing the test.
+                    let _ = std::process::Command::new("/bin/kill")
+                        .args(["-KILL", &format!("-{}", child.id())])
+                        .status();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "watchdog scenario exceeded 10s (succeed_at={succeed_at}, hang={hang}); calls: {}",
+                        std::fs::read_to_string(&log).unwrap_or_default()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         };
-        let started = std::time::Instant::now();
         assert!(run("1", false).success());
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(!calls.contains("systemctl:restart"));
@@ -2087,7 +2112,6 @@ mod tests {
         assert!(calls.contains("systemctl:restart labby.service"));
         assert!(calls.contains("sleep:1"));
         assert!(!run("999", true).success());
-        assert!(started.elapsed() < Duration::from_secs(2));
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(calls.contains("curl:bounded-timeout"));
         let pid = std::fs::read_to_string(&hung_pid).unwrap();
