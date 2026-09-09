@@ -747,16 +747,22 @@ test('browser bridge operator flow approves pairing and grants exact page consen
   let approved = false
   let enabled = false
   const browserRow = { id: 'browser-1', display_name: 'Work Chrome', extension_id: 'a'.repeat(32), paired_at: 1_787_976_000, last_seen_at: 1_787_976_060, revoked_at: null, connected: true }
+  const catalogDigest = 'reviewed-catalog-digest'
+  const session = () => ({ id: 'session-1', browser_id: 'browser-1', tab_id: 7, document_id: 'doc-1', origin: 'https://example.com', sanitized_path: '/tools', page_title: 'Example tools', catalog_revision: 42, catalog_fingerprint: 'hash', catalog_digest: catalogDigest, tools: [{ name: 'search', description: 'Search the example catalog', input_schema: { type: 'object' }, annotations: {} }], enabled, status: 'active', last_seen_at: 1_787_976_060 })
   await page.route('**/v1/browser', async (route) => {
     const body = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
     if (body.action === 'browser.pairing.approve') approved = true
-    if (body.action === 'browser.session.enable') enabled = body.params.enabled === true
+    if (body.action === 'browser.session.enable') {
+      assert.equal(body.params.catalog_digest, catalogDigest)
+      enabled = body.params.enabled === true
+    }
     const response = body.action === 'browser.list' ? { browsers: approved ? [browserRow] : [] }
       : body.action === 'browser.pairing.list' ? { pairings: approved ? [] : [{ id: 'pair-1', display_name: 'Work Chrome', extension_id: 'a'.repeat(32), status: 'pending', expires_at: 1_887_976_000, browser_id: null }] }
-        : body.action === 'browser.sessions' ? { sessions: approved ? [{ id: 'session-1', browser_id: 'browser-1', tab_id: 7, document_id: 'doc-1', origin: 'https://example.com', sanitized_path: '/tools', page_title: 'Example tools', catalog_revision: 42, catalog_fingerprint: 'hash', tools: [{ name: 'search', description: 'Search the example catalog', input_schema: { type: 'object' }, annotations: {} }], enabled, status: 'active', last_seen_at: 1_787_976_060 }] : [] }
-          : body.action === 'browser.pairing.approve' ? browserRow
-            : body.action === 'browser.session.enable' ? { enabled }
-              : {}
+        : body.action === 'browser.sessions' ? { sessions: approved ? [{ ...session(), tools: undefined, catalog_digest: undefined, tool_count: 1 }] : [] }
+          : body.action === 'browser.session.get' ? session()
+            : body.action === 'browser.pairing.approve' ? browserRow
+              : body.action === 'browser.session.enable' ? session()
+                : {}
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) })
   })
 
