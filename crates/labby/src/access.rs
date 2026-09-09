@@ -97,13 +97,13 @@ pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
-pub(crate) use runtime::CredentialLifecycleError;
 #[allow(unused_imports)]
 pub(crate) use runtime::FileStashPrincipalResolutionError;
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
 };
+pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
 pub(crate) use team_provision::TeamMemberProvisionOutcome;

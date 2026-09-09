@@ -4877,22 +4877,25 @@ mod tests {
 
         let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
         let app = build_router_with_bearer(state, None, None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/gateways/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("Labby"));
+        for route in ["/gateways/", "/browsers", "/browsers/", "/stash", "/stash/"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(route)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "route: {route}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(text.contains("Labby"));
+        }
     }
 
     #[cfg(unix)]

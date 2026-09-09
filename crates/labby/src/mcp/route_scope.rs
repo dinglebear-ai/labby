@@ -162,10 +162,12 @@ impl McpRouteScope {
                 expose_tools,
                 ..
             } => {
-                services.contains(service)
-                    || (service == crate::dispatch::depot_publish::SERVICE
-                        && *expose_tools
-                        && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM))
+                if service == crate::dispatch::depot_publish::SERVICE {
+                    *expose_tools
+                        && upstreams.contains(crate::dispatch::depot_publish::REQUIRED_UPSTREAM)
+                } else {
+                    services.contains(service)
+                }
             }
         }
     }
@@ -268,6 +270,27 @@ mod tests {
             McpRouteScope::protected_subset("linear", ["catalog-depot"], ["skills"], false);
         assert!(allowed.allows_service("depot_publish"));
         assert!(!wrong_upstream.allows_service("depot_publish"));
+    }
+
+    #[test]
+    fn explicit_publish_service_cannot_bypass_team_route_capabilities() {
+        for (upstream, expose_tools, expected) in [
+            ("catalog-depot", true, false),
+            ("team-depot", false, false),
+            ("team-depot", true, true),
+        ] {
+            let scope = McpRouteScope::protected_subset_with_capabilities(
+                "team",
+                [upstream],
+                ["depot_publish", "skills"],
+                McpRouteCapabilityGates {
+                    expose_tools,
+                    ..McpRouteCapabilityGates::all(false)
+                },
+            );
+            assert_eq!(scope.allows_service("depot_publish"), expected);
+            assert!(scope.allows_service("skills"));
+        }
     }
 
     #[test]

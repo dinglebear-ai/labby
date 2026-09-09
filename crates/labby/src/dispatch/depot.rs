@@ -717,7 +717,9 @@ impl DepotClient {
         F: Fn() -> Fut,
         Fut: Future<Output = Result<A, DepotError>>,
     {
-        let create_authorization = authorize().await?;
+        let create_authorization = authorize()
+            .await
+            .inspect_err(|error| log_publish_failure("upload_create_authorization", error))?;
         let created = self
             .call_with_subject(
                 super::depot_publish::UPLOAD_CREATE_OPERATION,
@@ -730,19 +732,23 @@ impl DepotClient {
                 None,
                 Some((&create_authorization).into()),
             )
-            .await?;
+            .await
+            .inspect_err(|error| log_publish_failure("upload_create", error))?;
         let upload_id = created
             .pointer("/result/upload/id")
             .or_else(|| created.pointer("/upload/id"))
             .or_else(|| created.get("id"))
             .and_then(Value::as_str)
             .filter(|id| valid_upload_id(id))
-            .ok_or(DepotError::InvalidResponse)?
+            .ok_or(DepotError::InvalidResponse)
+            .inspect_err(|error| log_publish_failure("upload_create_response", error))?
             .to_owned();
         let content_length =
             u64::try_from(archive.len()).map_err(|_| DepotError::InvalidResponse)?;
 
-        let upload_authorization = authorize().await?;
+        let upload_authorization = authorize()
+            .await
+            .inspect_err(|error| log_publish_failure("upload_put_authorization", error))?;
         if upload_authorization != create_authorization {
             return Err(DepotError::DelegationUnavailable);
         }
@@ -753,14 +759,16 @@ impl DepotClient {
             "application/octet-stream",
             Some((&upload_authorization).into()),
         )
-        .await?;
-
+        .await
+        .inspect_err(|error| log_publish_failure("upload_put", error))?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("uploadId".into(), Value::String(upload_id));
         if let Some(namespace) = namespace {
             arguments.insert("namespace".into(), Value::String(namespace.to_owned()));
         }
-        let ingest_authorization = authorize().await?;
+        let ingest_authorization = authorize()
+            .await
+            .inspect_err(|error| log_publish_failure("ingest_start_authorization", error))?;
         if ingest_authorization != create_authorization {
             return Err(DepotError::DelegationUnavailable);
         }
@@ -776,6 +784,28 @@ impl DepotClient {
             Some((&ingest_authorization).into()),
         )
         .await
+        .inspect_err(|error| log_publish_failure("ingest_start", error))
+    }
+}
+
+fn log_publish_failure(stage: &'static str, error: &DepotError) {
+    // Use the shared redacted envelope, never Debug on the upstream payload.
+    let transport_failure = match error {
+        DepotError::Unavailable(failure) => Some(failure.category()),
+        _ => None,
+    };
+    tracing::warn!(surface = "dispatch", service = "depot_publish", stage,
+        transport_failure, failure = %error_body(error), "Depot publish stage failed");
+}
+
+pub fn publish_tool_error(error: DepotError) -> super::error::ToolError {
+    let safe = error_body(&error);
+    super::error::ToolError::Sdk {
+        sdk_kind: safe["error"]
+            .as_str()
+            .unwrap_or("depot_publish_failed")
+            .into(),
+        message: format!("Depot publish failed: {safe}"),
     }
 }
 
@@ -1358,6 +1388,67 @@ mod tests {
         assert_eq!(checks.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn publication_revoked_during_upload_does_not_start_ingest() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.uploads.create"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"upload-revoked"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoke_on_put = Arc::clone(&revoked);
+        Mock::given(method("PUT"))
+            .and(path("/uploads/upload-revoked"))
+            .respond_with(move |_: &Request| {
+                revoke_on_put.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(25))
+                    .set_body_json(json!({"status":"ready"}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/api/operations/depot.ingest.start"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut client = DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "read-token");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys: Arc::new(SigningKeys::load_or_create(&temp.path().join("key.der")).unwrap()),
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+        let checks = AtomicUsize::new(0);
+        let result = client
+            .publish_skill_archive_revalidated("skill.zip", b"archive".to_vec(), None, || {
+                checks.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(if revoked.load(Ordering::SeqCst) {
+                    Err(DepotError::DelegationUnavailable)
+                } else {
+                    Ok(delegation_grant())
+                })
+            })
+            .await;
+        assert!(matches!(result, Err(DepotError::DelegationUnavailable)));
+        assert_eq!(checks.load(Ordering::SeqCst), 3);
+        server.verify().await;
+    }
+
     fn test_client(base_url: Url, permits: usize, queue_timeout: Duration) -> DepotClient {
         drop(rustls::crypto::ring::default_provider().install_default());
         DepotClient {
@@ -1475,6 +1566,31 @@ mod tests {
         let body = error_body(&DepotError::Unavailable(TransportFailure::Connect)).to_string();
         assert_eq!(body, r#"{"error":"depot_unavailable"}"#);
         assert!(!body.contains("token"));
+    }
+
+    #[test]
+    fn publish_errors_preserve_safe_categories() {
+        for (error, kind) in [
+            (
+                DepotError::DelegationUnavailable,
+                "depot_delegation_unavailable",
+            ),
+            (DepotError::Unconfigured, "depot_unconfigured"),
+            (
+                DepotError::Unavailable(TransportFailure::Connect),
+                "depot_unavailable",
+            ),
+            (DepotError::QueueTimeout, "depot_busy"),
+            (DepotError::InvalidResponse, "invalid_depot_response"),
+            (
+                DepotError::Upstream(StatusCode::FORBIDDEN, json!({"token":"secret-token"})),
+                "depot_rejected",
+            ),
+        ] {
+            let error = publish_tool_error(error);
+            assert_eq!(error.kind(), kind);
+            assert!(!error.to_string().contains("secret-token"));
+        }
     }
 
     #[test]

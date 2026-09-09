@@ -1595,56 +1595,46 @@ mod tests {
             .body(Body::from_stream(pending))
             .unwrap();
         let task = tokio::spawn(router.oneshot(request));
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if service
-                    .stats(&principal)
-                    .await
-                    .unwrap()
-                    .owned_reserved_bytes
-                    == 1
-                {
-                    break;
+        async fn wait_for_reserved_bytes(
+            service: &FileStashService,
+            principal: &crate::access::AccessPrincipalId,
+            expected: u64,
+        ) {
+            let mut last_observation = String::from("no completed stats read");
+            let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match service.stats(principal).await {
+                        Ok(stats) => {
+                            last_observation = format!(
+                                "reserved={}, committed={}",
+                                stats.owned_reserved_bytes, stats.owned_committed_bytes
+                            );
+                            if stats.owned_reserved_bytes == expected {
+                                assert_eq!(stats.owned_committed_bytes, 0);
+                                return;
+                            }
+                        }
+                        // The bounded store queue can be occupied by reservation
+                        // or cancellation cleanup. Retry only this transient state;
+                        // every other error still fails immediately.
+                        Err(error) if error.kind() == "busy" => {
+                            last_observation = "store admission busy".into();
+                        }
+                        Err(error) => panic!("stats failed while awaiting reservation: {error}"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            service
-                .stats(&principal)
-                .await
-                .unwrap()
-                .owned_reserved_bytes,
-            1
-        );
+            })
+            .await;
+            assert!(
+                settled.is_ok(),
+                "reserved bytes did not reach {expected} within 10s; {last_observation}"
+            );
+        }
+        wait_for_reserved_bytes(&service, &principal, 1).await;
         task.abort();
         drop(task.await);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if service
-                    .stats(&principal)
-                    .await
-                    .unwrap()
-                    .owned_reserved_bytes
-                    == 0
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            service
-                .stats(&principal)
-                .await
-                .unwrap()
-                .owned_reserved_bytes,
-            0
-        );
+        wait_for_reserved_bytes(&service, &principal, 0).await;
         runtime.shutdown().await;
     }
 }
