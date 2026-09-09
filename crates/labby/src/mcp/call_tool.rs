@@ -23,7 +23,10 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Conte
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
-const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = 50_000_000;
+// Base64 plus the JSON-RPC envelope must fit the HTTP MCP transport's 4 MiB cap.
+// Decimal 3 MB leaves over 190 KiB for the filename, namespace, and metadata.
+const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = 3_000_000;
+const MAX_DEPOT_PUBLISH_BASE64_BYTES: usize = MAX_DEPOT_PUBLISH_ARCHIVE_BYTES.div_ceil(3) * 4;
 
 fn depot_publish_grant(
     context: &RequestContext<RoleServer>,
@@ -143,7 +146,7 @@ fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<Strin
             message: "archive_base64 is required".into(),
             param: "archive_base64".into(),
         })?;
-    if encoded.len() > 66_666_668 {
+    if encoded.len() > MAX_DEPOT_PUBLISH_BASE64_BYTES {
         return Err(ToolError::InvalidParam {
             message: "archive_base64 is too large".into(),
             param: "archive_base64".into(),
@@ -157,7 +160,9 @@ fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<Strin
         })?;
     if archive.is_empty() || archive.len() > MAX_DEPOT_PUBLISH_ARCHIVE_BYTES {
         return Err(ToolError::InvalidParam {
-            message: "archive must contain between 1 and 50000000 bytes".into(),
+            message: format!(
+                "archive must contain between 1 and {MAX_DEPOT_PUBLISH_ARCHIVE_BYTES} bytes"
+            ),
             param: "archive_base64".into(),
         });
     }
@@ -1768,10 +1773,7 @@ impl LabMcpServer {
                                 || revalidate_depot_publish(self, &context),
                             )
                             .await
-                            .map_err(|_| ToolError::Sdk {
-                                sdk_kind: "depot_publish_failed".into(),
-                                message: "Team Depot rejected the publish request".into(),
-                            }),
+                            .map_err(crate::dispatch::depot::publish_tool_error),
                         Err(error) => Err(error),
                     },
                     _ => Err(ToolError::Forbidden {
@@ -2329,7 +2331,102 @@ mod depot_publish_shim_tests {
     use rmcp::model::CallToolRequestParams;
     use serde_json::json;
 
-    use super::{depot_publish_params, is_project_depot_publish_call};
+    use super::{
+        MAX_DEPOT_PUBLISH_ARCHIVE_BYTES, MAX_DEPOT_PUBLISH_BASE64_BYTES, depot_publish_params,
+        is_project_depot_publish_call,
+    };
+
+    #[test]
+    fn archive_limit_rejects_one_extra_byte_before_decoding() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(vec![
+            0_u8;
+            MAX_DEPOT_PUBLISH_ARCHIVE_BYTES
+                + 1
+        ]);
+        assert!(encoded.len() > MAX_DEPOT_PUBLISH_BASE64_BYTES);
+        assert!(
+            depot_publish_params(&json!({
+                "filename": "skill.zip", "archive_base64": encoded,
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn maximum_archive_reaches_handler_through_default_http_body_limit() {
+        use axum::{body::Body, http::Request};
+        use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tower::ServiceExt as _;
+
+        #[derive(Clone)]
+        struct ArchiveProbe(Arc<AtomicBool>);
+        impl rmcp::ServerHandler for ArchiveProbe {
+            async fn call_tool(
+                &self,
+                request: CallToolRequestParams,
+                _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+            ) -> Result<CallToolResponse, rmcp::ErrorData> {
+                let arguments = request.arguments.expect("arguments");
+                let (_, archive, _) =
+                    depot_publish_params(&arguments["params"]).expect("maximum archive is valid");
+                assert_eq!(archive.len(), MAX_DEPOT_PUBLISH_ARCHIVE_BYTES);
+                self.0.store(true, Ordering::SeqCst);
+                Ok(CallToolResult::success(vec![ContentBlock::text("accepted")]).into())
+            }
+        }
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let probe = ArchiveProbe(Arc::clone(&reached));
+        let config = StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(true);
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(vec![0_u8; MAX_DEPOT_PUBLISH_ARCHIVE_BYTES]);
+        assert_eq!(encoded.len(), MAX_DEPOT_PUBLISH_BASE64_BYTES);
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "depot_publish", "arguments": {
+                "action": "depot.publish_skill_archive",
+                "params": {
+                    "filename": format!("{}.zip", "a".repeat(251)),
+                    "namespace": "n".repeat(128),
+                    "archive_base64": encoded,
+                },
+            }},
+        }))
+        .unwrap();
+        assert!(body.len() < config.max_request_body_bytes);
+        let service = StreamableHttpService::new(
+            move || Ok(probe.clone()),
+            Arc::new(NeverSessionManager::default()),
+            config,
+        );
+        let response = service
+            .oneshot(
+                Request::post("http://localhost/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2025-11-25")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        // Drain the response so a lazy transport cannot make this a size-only assertion.
+        axum::body::to_bytes(Body::new(response.into_body()), 8192)
+            .await
+            .unwrap();
+        assert!(reached.load(Ordering::SeqCst));
+    }
 
     #[cfg(feature = "gateway")]
     #[tokio::test]

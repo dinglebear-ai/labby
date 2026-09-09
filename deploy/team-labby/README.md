@@ -112,7 +112,9 @@ An admitted ordinary member needs the `lab` OAuth scope in addition to the
 route's baseline `lab:read` scope. On the protected `/mcp/linear` route,
 `tools/list` must then include the route-owned `depot_publish` tool. Publishing
 uses only the `depot.publish_skill_archive` action and accepts a bounded,
-base64-encoded skill archive:
+base64-encoded skill archive of at most 3,000,000 bytes (before base64 encoding).
+This leaves room for the JSON-RPC envelope within the HTTP MCP transport's
+4 MiB request limit; larger archives are rejected, not streamed by this tool:
 
 ```json
 {
