@@ -422,7 +422,7 @@ jobs:
             exit 0
           fi
           if [ "$(id -u)" = "0" ]; then
-            apt-get update
+            apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               libasound2t64 \
               libatk-bridge2.0-0t64 \
@@ -447,7 +447,7 @@ jobs:
               libxrandr2
 
           else
-            sudo apt-get update
+            sudo apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               libasound2t64 \
               libatk-bridge2.0-0t64 \
@@ -1456,7 +1456,12 @@ jobs:
         # if this step ever fails to find it, the runner image is too old for a
         # Tauri build and failing here is the correct outcome.
         run: |
-          sudo apt-get update
+          # Refreshing indexes is best effort: `apt-get update` exits 100 when
+          # any configured index fails, including third-party lists the runner
+          # image ships that none of these packages come from. The install
+          # below stays fatal, so a runner image too old to serve webkit2gtk
+          # 4.1 still fails here, which is the intended outcome above.
+          sudo apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
       - run: cargo test --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --locked
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
