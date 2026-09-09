@@ -364,7 +364,11 @@ mod tests {
                         return capture(pid, deadline);
                     }
                     capture_stages.lock().unwrap().push("capture_entered");
-                    let ready_deadline = deadline.min(Instant::now() + Duration::from_secs(3));
+                    // Listener startup belongs to the fixture's existing absolute
+                    // readiness budget. A second three-second cap races a cold
+                    // daemon under concurrent feature-slice CI before we can
+                    // inject the identity failure this test intends to cover.
+                    let ready_deadline = deadline;
                     loop {
                         if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20))
                             .is_ok()

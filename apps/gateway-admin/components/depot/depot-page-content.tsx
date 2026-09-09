@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Loader2, Search, SlidersHorizontal } from 'lucide-react'
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getArtifact, listArtifacts, listProviderOptions, type DepotArtifact, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { artifactKey } from '@/lib/depot/provider-model'
 import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
 import { RequestLanes } from './request-lanes'
@@ -53,6 +54,11 @@ export function exactImportConnection(providerId: string, connections: Array<{ i
 }
 
 export function DepotPageContent() {
+  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
+  return <SessionDepotPage key={sessionEpoch} />
+}
+
+function SessionDepotPage() {
   const router = useRouter(), pathname = usePathname(), searchParams = useSearchParams()
   const selectedId = searchParams.get('artifact') ?? undefined, selectedArtifactProvider = searchParams.get('artifactProvider') ?? undefined
   const selectedProvider = searchParams.get('provider') ?? 'all', initialQuery = searchParams.get('q')?.trim() ?? ''
@@ -62,6 +68,7 @@ export function DepotPageContent() {
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<View>('cards')
   const [importing,setImporting] = useState(false)
+  const importPending = useRef(false)
   const [density, setDensity] = useState<DiscoveryDensity>('default')
   const [now, setNow] = useState<number>()
   const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
@@ -79,36 +86,42 @@ export function DepotPageContent() {
     const key = JSON.stringify([selectedProvider,searchQuery,cursor??null])
     if(inFlight.current===key)return
     const generation = lanes.current.begin('list')
+    const epoch = getBrowserSessionEpoch()
+    const isCurrent = () => epoch === getBrowserSessionEpoch() && lanes.current.isCurrent('list', generation) && !signal?.aborted
     inFlight.current=key
     setState(c=>({...c,loading:true,error:undefined,window:cursor?c.window:createDiscoveryWindow(),cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
     try {
       const listing = await listArtifacts({provider:selectedProvider,query:searchQuery,limit:50,cursor},signal)
-      if(!lanes.current.isCurrent('list',generation)||signal?.aborted)return
+      if(!isCurrent())return
       setState(c=>({loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch}))
-    } catch(error) { if(lanes.current.isCurrent('list',generation)&&!signal?.aborted)setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
+    } catch(error) { if(isCurrent())setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
     finally { if(inFlight.current===key)inFlight.current=undefined }
   },[selectedProvider])
 
-  useEffect(()=>{const controller=new AbortController();void listProviderOptions(controller.signal).then(setProviders).catch(()=>{});return()=>controller.abort()},[])
+  useEffect(()=>{const controller=new AbortController();const epoch=getBrowserSessionEpoch();void listProviderOptions(controller.signal).then(value=>{if(!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setProviders(value)}).catch(()=>{});return()=>controller.abort()},[])
   useEffect(()=>()=>paginationControllerRef.current?.abort(),[])
 
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
-  useEffect(()=>{const generation=lanes.current.begin('detail');if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation))setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
+  useEffect(()=>{const generation=lanes.current.begin('detail');const epoch=getBrowserSessionEpoch();if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
   useEffect(()=>{const target=loadMoreRef.current;if(!target||!state.cursor||state.loading||state.error)return;const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){observer.disconnect();const controller=new AbortController();paginationControllerRef.current=controller;void load(activeQuery,state.cursor,controller.signal)}},{rootMargin:'600px 0px'});observer.observe(target);return()=>observer.disconnect()},[activeQuery,load,state.cursor,state.error,state.loading])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,pathname,selectedProvider])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
   const exportArtifact=useCallback((artifact:FederatedArtifact)=>{const label=artifact.name??artifact.descriptor?.name??artifact.kind??'artifact';const blob=new Blob([`${JSON.stringify(artifact,null,2)}\n`],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download=`${label.toLowerCase().replace(/[^a-z0-9._-]+/g,'-')}.depot.json`;anchor.click();URL.revokeObjectURL(url);toast.success('Artifact metadata exported')},[])
   const importArtifact=useCallback(async(artifact:FederatedArtifact)=>{
+    if(importPending.current)return
+    const epoch=getBrowserSessionEpoch()
     const artifactId=artifact.artifactId||artifact.id
     const revisionId=artifact.currentRevisionId||artifact.currentRevision?.id
     if(!artifactId||!revisionId)throw new Error('Depot did not provide an exact Artifact and revision identity.')
+    importPending.current=true
     setImporting(true)
     try{
       const [connectionResult,libraryResult]=await Promise.all([
         controlPlaneAction<{connections?:Array<{id:string}>}>('artifacts','artifacts.list_connections'),
         controlPlaneAction<{library_version?:number}>('artifacts','artifacts.list',{limit:1}),
       ])
+      if(epoch!==getBrowserSessionEpoch())return
       const connectionId=exactImportConnection(artifact.providerId,connectionResult.connections??[])
       if(!Number.isSafeInteger(libraryResult.library_version)||Number(libraryResult.library_version)<0)throw new Error('Labby did not return a valid current library version.')
       await controlPlaneAction('artifacts','artifacts.import',{
@@ -116,9 +129,9 @@ export function DepotPageContent() {
         expected_library_version:libraryResult.library_version,
         idempotency_key:`depot-import-${crypto.randomUUID()}`,
       })
-      toast.success('Exact Artifact imported into Labby')
-    }catch(error){toast.error(error instanceof Error?error.message:String(error))}
-    finally{setImporting(false)}
+      if(epoch===getBrowserSessionEpoch())toast.success('Exact Artifact imported into Labby')
+    }catch(error){if(epoch===getBrowserSessionEpoch())toast.error(error instanceof Error?error.message:String(error))}
+    finally{importPending.current=false;setImporting(false)}
   },[])
   const visible = visibleArtifacts(state.window)
   const [kind, setKind] = useState('all')
