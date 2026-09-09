@@ -603,6 +603,15 @@ fn dispatch_resource_family(service: &str) -> Option<&'static str> {
 }
 
 fn authority_metadata(service: &str, action: &str, requires_admin: bool) -> AuthorityMetadata {
+    if service == crate::dispatch::depot_publish::SERVICE
+        && action == crate::dispatch::depot_publish::ACTION
+    {
+        return AuthorityMetadata {
+            boundary: "project_artifact_publish",
+            capability: None,
+            resource_family: Some("artifact_library"),
+        };
+    }
     let capability =
         dispatch_required_capability(service, action).map(|capability| capability.as_wire());
     if let Some(capability) = capability {

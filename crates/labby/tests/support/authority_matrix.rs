@@ -54,6 +54,7 @@ const GATEWAY_OWNED: &[OwnerKind] = &[
 const INSTALLATION_GATEWAY: &[OwnerKind] = &[OwnerKind::Installation];
 /// Managed Projects are Team-owned in the v1 matrix (`resourceFamilies.project`).
 const TEAM_OWNED: &[OwnerKind] = &[OwnerKind::Team];
+const PROJECT_OWNED: &[OwnerKind] = &[OwnerKind::Project];
 
 /// Identity of one registered action: the `service:action` pair that the
 /// generated catalog, the intent fixtures, and the authority expectations
@@ -121,6 +122,7 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
         }
         "access" => (ResourceFamily::Project, USER_OWNED, false),
         "agents" => (ResourceFamily::Agent, USER_OWNED, false),
+        "depot_publish" => (ResourceFamily::Library, PROJECT_OWNED, true),
         "artifacts" | "bundles" | "sources" | "uploads" => {
             (ResourceFamily::Library, USER_OWNED, true)
         }
@@ -150,6 +152,7 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
             // the store, so the evaluator gate is a read.
             "caller_membership_projection" | "team_project_membership" => OperationClass::Read,
             // Transport-ceiling services (not yet on the capability evaluator).
+            "project_artifact_publish" => OperationClass::Operate,
             "transport_admin" => OperationClass::Administer,
             "transport" => OperationClass::Read,
             _ => return None,

@@ -35,6 +35,7 @@
     "project": {"ownerScopes": ["team"]}
   },
   "serviceClassifications": [
+    {"service": "depot_publish", "resourceFamily": "artifact_library", "readCapability": "scope.read", "operateCapability": "scope.operate", "manageCapability": "scope.manage", "authorizationBoundary": "project_artifact_publish", "requiredProjectPermission": "ArtifactPublish"},
     {"service": "artifacts", "resourceFamily": "artifact_library", "readCapability": "scope.read", "operateCapability": "scope.operate", "manageCapability": "scope.manage"},
     {"service": "access", "resourceFamily": "access_control", "readCapability": "scope.read", "operateCapability": "scope.operate", "manageCapability": "membership.manage"},
     {"service": "agents", "resourceFamily": "agent", "readCapability": "scope.read", "operateCapability": "scope.operate", "manageCapability": "scope.manage"},
