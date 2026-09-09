@@ -52,6 +52,9 @@ struct LiveConnection {
 
 struct PendingCall {
     browser_id: String,
+    tab_id: i64,
+    document_id: String,
+    catalog_digest: String,
     generation: Uuid,
     reply: oneshot::Sender<Result<Value>>,
 }
@@ -243,7 +246,7 @@ impl BrowserBridge {
             .connections
             .insert(browser.id.clone(), LiveConnection { generation, sender })
         {
-            finish_generation(&mut state, replaced.generation);
+            finish_generation(&mut state, &replaced);
         }
         let connection = BrowserConnection {
             browser_id: browser.id,
@@ -263,7 +266,7 @@ impl BrowserBridge {
             .get(browser_id)
             .is_some_and(|connection| connection.generation.to_string() == connection_id);
         if owns_current && let Some(connection) = state.connections.remove(browser_id) {
-            finish_generation(&mut state, connection.generation);
+            finish_generation(&mut state, &connection);
         }
         Ok(())
     }
@@ -277,6 +280,16 @@ impl BrowserBridge {
     ) -> Result<()> {
         let _authority = self.authority.lock().await;
         self.ensure_current(browser_id, connection_id)?;
+        let catalog = serde_json::to_string(&observation.tools)?;
+        let digest = crate::store::digest_catalog(
+            observation.catalog_revision,
+            &observation.origin,
+            &observation.catalog_fingerprint,
+            &catalog,
+        );
+        self.cancel_document_calls(browser_id, observation.tab_id, |call| {
+            call.document_id != observation.document_id || call.catalog_digest != digest
+        })?;
         self.store.observe(browser_id, observation).await
     }
 
@@ -290,6 +303,7 @@ impl BrowserBridge {
     ) -> Result<()> {
         let _authority = self.authority.lock().await;
         self.ensure_current(browser_id, connection_id)?;
+        self.cancel_document_calls(browser_id, tab_id, |call| call.document_id == document_id)?;
         self.store
             .close_document(browser_id, tab_id, document_id)
             .await
@@ -343,6 +357,7 @@ impl BrowserBridge {
         tab_id: i64,
         document_id: String,
         catalog_revision: i64,
+        catalog_digest: String,
         tool_name: String,
         arguments: Value,
         timeout: Option<Duration>,
@@ -359,6 +374,7 @@ impl BrowserBridge {
                     tab_id,
                     &document_id,
                     catalog_revision,
+                    &catalog_digest,
                     &tool_name,
                 )
                 .await?;
@@ -376,6 +392,9 @@ impl BrowserBridge {
                 call_id.clone(),
                 PendingCall {
                     browser_id: browser_id.to_string(),
+                    tab_id,
+                    document_id: document_id.clone(),
+                    catalog_digest: catalog_digest.clone(),
                     generation,
                     reply,
                 },
@@ -424,9 +443,35 @@ impl BrowserBridge {
             )
             .await?;
         guard.set_audit_id(audit_id.clone());
-        if sender.send(event).await.is_err() {
+        let send_result = {
+            let _authority = self.authority.lock().await;
+            self.store
+                .validate_call(
+                    browser_id,
+                    tab_id,
+                    &document_id,
+                    catalog_revision,
+                    &catalog_digest,
+                    &tool_name,
+                )
+                .await?;
+            // Observation or disconnect may have cancelled admission while audit IO ran.
+            if !self
+                .lock_state()?
+                .pending
+                .get(&call_id)
+                .is_some_and(|call| call.generation == generation)
+            {
+                return Err(BrowserError::StaleDocument);
+            }
+            sender.try_send(event)
+        };
+        if let Err(error) = send_result {
             self.remove_pending(&call_id, generation)?;
-            let result = Err(BrowserError::BrowserOffline);
+            let result = Err(match error {
+                mpsc::error::TrySendError::Full(_) => BrowserError::ServerBusy,
+                mpsc::error::TrySendError::Closed(_) => BrowserError::BrowserOffline,
+            });
             self.finish_audit(&audit_id, &result, started).await;
             guard.disarm();
             return result;
@@ -474,7 +519,7 @@ impl BrowserBridge {
         let browser = self.store.revoke_browser(browser_id).await?;
         let mut state = self.lock_state()?;
         if let Some(connection) = state.connections.remove(browser_id) {
-            finish_generation(&mut state, connection.generation);
+            finish_generation(&mut state, &connection);
         }
         Ok(browser)
     }
@@ -500,10 +545,51 @@ impl BrowserBridge {
         let mut state = self.lock_state()?;
         for browser_id in superseded {
             if let Some(connection) = state.connections.remove(&browser_id) {
-                finish_generation(&mut state, connection.generation);
+                finish_generation(&mut state, &connection);
             }
         }
         Ok(browser)
+    }
+
+    fn cancel_document_calls(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        stale: impl Fn(&PendingCall) -> bool,
+    ) -> Result<()> {
+        let mut state = self.lock_state()?;
+        let ids: Vec<_> = state
+            .pending
+            .iter()
+            .filter(|(_, call)| {
+                call.browser_id == browser_id && call.tab_id == tab_id && stale(call)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let Some(call) = state.pending.remove(&id) else {
+                continue;
+            };
+            if let Some(connection) = state.connections.get(browser_id)
+                && connection.generation == call.generation
+                && connection
+                    .sender
+                    .try_send(BrowserEvent(BrowserEnvelope::new(
+                        None,
+                        BrowserMessage::ToolCancel {
+                            call_id: id.clone(),
+                        },
+                    )))
+                    .is_err()
+            {
+                tracing::warn!(
+                    call_id = id,
+                    "browser stale-document cancellation delivery failed"
+                );
+            }
+            drop(call.reply.send(Err(BrowserError::StaleDocument)));
+        }
+        Ok(())
     }
 
     fn cancel_pending(&self, call_id: &str, generation: Uuid) -> Result<()> {
@@ -580,14 +666,31 @@ impl BrowserBridge {
     }
 }
 
-fn finish_generation(state: &mut HubState, generation: Uuid) {
+fn finish_generation(state: &mut HubState, connection: &LiveConnection) {
     let call_ids: Vec<_> = state
         .pending
         .iter()
-        .filter_map(|(id, pending)| (pending.generation == generation).then(|| id.clone()))
+        .filter_map(|(id, pending)| {
+            (pending.generation == connection.generation).then(|| id.clone())
+        })
         .collect();
     for call_id in call_ids {
         if let Some(pending) = state.pending.remove(&call_id) {
+            if connection
+                .sender
+                .try_send(BrowserEvent(BrowserEnvelope::new(
+                    None,
+                    BrowserMessage::ToolCancel {
+                        call_id: call_id.clone(),
+                    },
+                )))
+                .is_err()
+            {
+                tracing::debug!(
+                    call_id,
+                    "closing browser generation could not receive cancellation"
+                );
+            }
             drop(pending.reply.send(Err(BrowserError::BrowserOffline)));
         }
     }
@@ -634,6 +737,7 @@ mod tests {
                     1,
                     "doc".into(),
                     1,
+                    current_digest(&task_bridge).await,
                     "slow".into(),
                     Value::Null,
                     None,
@@ -741,7 +845,16 @@ mod tests {
             .remove(0);
         bridge
             .store()
-            .set_session_enabled(&session.id, true)
+            .set_session_enabled(
+                &session.id,
+                true,
+                &bridge
+                    .store()
+                    .session(&session.id)
+                    .await
+                    .unwrap()
+                    .catalog_digest,
+            )
             .await
             .unwrap();
     }
@@ -762,6 +875,7 @@ mod tests {
                     7,
                     "doc".into(),
                     3,
+                    current_digest(&task_bridge).await,
                     "search".into(),
                     serde_json::json!({"q":"rust"}),
                     Some(Duration::from_secs(1)),
@@ -803,6 +917,7 @@ mod tests {
                     1,
                     "doc".into(),
                     1,
+                    current_digest(&task_bridge).await,
                     "slow".into(),
                     Value::Null,
                     Some(Duration::from_millis(10)),
@@ -845,6 +960,7 @@ mod tests {
                     1,
                     "doc".into(),
                     1,
+                    current_digest(&task_bridge).await,
                     "slow".into(),
                     Value::Null,
                     Some(Duration::from_secs(1)),
@@ -864,7 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_audit_cleanup_backlog_is_bounded() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::store::private_test_directory();
         let database = directory.path().join("browser.sqlite3");
         let bridge = BrowserBridge::open(&database).await.unwrap();
         let mut audit_ids = Vec::new();
@@ -938,6 +1054,9 @@ mod tests {
             "call".into(),
             PendingCall {
                 browser_id: "browser".into(),
+                tab_id: 1,
+                document_id: "doc".into(),
+                catalog_digest: "digest".into(),
                 generation,
                 reply,
             },
@@ -1018,6 +1137,7 @@ mod tests {
                     4,
                     "doc".into(),
                     1,
+                    current_digest(&task_bridge).await,
                     "search".into(),
                     Value::Null,
                     Some(Duration::from_secs(1)),
@@ -1093,5 +1213,99 @@ mod tests {
             bridge.authenticate(&challenge_id, &signature).await,
             Err(BrowserError::AuthenticationFailed)
         ));
+    }
+    #[tokio::test]
+    async fn schema_replacement_and_document_close_cancel_pending_calls() {
+        for close_document in [false, true] {
+            let bridge = BrowserBridge::memory().await.unwrap();
+            let mut connection = pair_and_authenticate(&bridge).await;
+            let browser_id = connection.browser_id.clone();
+            let connection_id = connection.connection_id.clone();
+            enable_tool(&bridge, &browser_id, &connection_id, 7, 3, "search").await;
+            let task_bridge = bridge.clone();
+            let task_browser = browser_id.clone();
+            let task = tokio::spawn(async move {
+                task_bridge
+                    .call(
+                        &task_browser,
+                        7,
+                        "doc".into(),
+                        3,
+                        current_digest(&task_bridge).await,
+                        "search".into(),
+                        Value::Null,
+                        Some(Duration::from_secs(2)),
+                    )
+                    .await
+            });
+            let event = connection.receiver.recv().await.unwrap().0;
+            let call_id = match event.message {
+                BrowserMessage::ToolCall { call_id, .. } => Some(call_id),
+                _ => None,
+            }
+            .expect("expected admitted page call");
+            if close_document {
+                bridge
+                    .close_document(&browser_id, &connection_id, 7, "doc")
+                    .await
+                    .unwrap();
+            } else {
+                let listing = bridge.store().sessions(None, None).await.unwrap();
+                let detail = bridge
+                    .store()
+                    .session(&listing.sessions[0].id)
+                    .await
+                    .unwrap();
+                let mut tools = detail.tools;
+                tools[0].input_schema = serde_json::json!({"type":"object", "required":["new"]});
+                bridge
+                    .observe(
+                        &browser_id,
+                        &connection_id,
+                        &CatalogObservation {
+                            tab_id: 7,
+                            document_id: "doc".into(),
+                            origin: detail.origin,
+                            sanitized_path: detail.sanitized_path,
+                            page_title: detail.page_title,
+                            catalog_revision: 3,
+                            catalog_fingerprint: detail.catalog_fingerprint,
+                            tools,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let cancellation = connection.receiver.recv().await.unwrap().0;
+            assert!(
+                matches!(cancellation.message, BrowserMessage::ToolCancel { call_id: cancelled } if cancelled == call_id)
+            );
+            assert!(matches!(
+                task.await.unwrap(),
+                Err(BrowserError::StaleDocument)
+            ));
+            assert!(
+                !bridge
+                    .complete(
+                        &browser_id,
+                        &connection_id,
+                        BrowserMessage::ToolResult {
+                            call_id,
+                            result: serde_json::json!({"late":true}),
+                        }
+                    )
+                    .unwrap()
+            );
+        }
+    }
+
+    async fn current_digest(bridge: &BrowserBridge) -> String {
+        let listing = bridge.store().sessions(None, None).await.unwrap();
+        bridge
+            .store()
+            .session(&listing.sessions[0].id)
+            .await
+            .unwrap()
+            .catalog_digest
     }
 }

@@ -700,7 +700,7 @@ mod tests {
         ("doctor", false, false, true, true),
         ("depot_publish", false, false, false, true),
         ("artifacts", false, true, false, true),
-        ("browser", false, false, false, true),
+        ("browser", false, true, false, true),
         ("bundles", false, true, false, true),
         ("fs", true, false, true, false),
         ("gateway", false, true, false, true),
@@ -973,8 +973,8 @@ mod tests {
         let services = crate::registry::build_docs_registry();
 
         // Reachable by a caller with `can_execute() == false` at hop 2.
+        // Arbitrary browser callbacks require execute permission at downstream hops.
         let expected_callable = [
-            "browser",
             "depot_publish",
             "doctor",
             "fs",

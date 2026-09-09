@@ -7,10 +7,16 @@ use base64::Engine as _;
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::error::{BrowserError, Result};
 use crate::protocol::CatalogObservation;
+
+mod storage;
+#[cfg(test)]
+mod storage_tests;
+pub use storage::BrowserStorageLock;
 
 const PAIRING_TTL_SECONDS: i64 = 300;
 const CHALLENGE_TTL_SECONDS: i64 = 60;
@@ -51,6 +57,8 @@ pub struct DocumentSession {
     pub page_title: String,
     pub catalog_revision: i64,
     pub catalog_fingerprint: String,
+    /// Server-computed binding to the reviewed catalog contents.
+    pub catalog_digest: String,
     pub tools: Vec<crate::protocol::ToolDescriptor>,
     pub enabled: bool,
     pub status: String,
@@ -139,6 +147,8 @@ pub struct Store {
 struct BlockingStore {
     path: PathBuf,
     connection: Mutex<Connection>,
+    // Declared after SQLite so the connection closes before ownership releases.
+    _ownership: Option<storage::Ownership>,
 }
 
 impl Store {
@@ -317,9 +327,15 @@ impl Store {
         let id = id.to_owned();
         self.call(move |s| s.session(&id)).await
     }
-    pub async fn set_session_enabled(&self, id: &str, enabled: bool) -> Result<DocumentSession> {
+    pub async fn set_session_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+        catalog_digest: &str,
+    ) -> Result<DocumentSession> {
         let id = id.to_owned();
-        self.call(move |s| s.set_session_enabled(&id, enabled))
+        let catalog_digest = catalog_digest.to_owned();
+        self.call(move |s| s.set_session_enabled(&id, enabled, &catalog_digest))
             .await
     }
     pub async fn close_document(
@@ -339,13 +355,24 @@ impl Store {
         tab_id: i64,
         document_id: &str,
         revision: i64,
+        catalog_digest: &str,
         tool_name: &str,
     ) -> Result<String> {
         let browser_id = browser_id.to_owned();
         let document_id = document_id.to_owned();
+        let catalog_digest = catalog_digest.to_owned();
         let tool_name = tool_name.to_owned();
-        self.call(move |s| s.validate_call(&browser_id, tab_id, &document_id, revision, &tool_name))
-            .await
+        self.call(move |s| {
+            s.validate_call(
+                &browser_id,
+                tab_id,
+                &document_id,
+                revision,
+                &catalog_digest,
+                &tool_name,
+            )
+        })
+        .await
     }
     pub(crate) async fn begin_invocation(
         &self,
@@ -388,13 +415,7 @@ impl Store {
 
 impl BlockingStore {
     fn open(path: PathBuf) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                BrowserError::InvalidRequest(format!(
-                    "cannot create browser data directory: {error}"
-                ))
-            })?;
-        }
+        let (path, ownership) = storage::prepare(&path)?;
         let connection = Connection::open(&path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -403,6 +424,7 @@ impl BlockingStore {
         Ok(Self {
             path,
             connection: Mutex::new(connection),
+            _ownership: Some(ownership),
         })
     }
 
@@ -414,6 +436,7 @@ impl BlockingStore {
         Ok(Self {
             path: PathBuf::from(":memory:"),
             connection: Mutex::new(connection),
+            _ownership: None,
         })
     }
 
@@ -623,7 +646,7 @@ impl BlockingStore {
         let now = now_seconds()?;
         let catalog = serde_json::to_string(&observation.tools)?;
         self.lock()?.execute(
-            "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'active',?11,?11) ON CONFLICT(browser_id,tab_id,document_id) DO UPDATE SET origin=excluded.origin,sanitized_path=excluded.sanitized_path,page_title=excluded.page_title,enabled=CASE WHEN document_sessions.catalog_revision=excluded.catalog_revision AND document_sessions.catalog_fingerprint=excluded.catalog_fingerprint THEN document_sessions.enabled ELSE 0 END,catalog_revision=excluded.catalog_revision,catalog_fingerprint=excluded.catalog_fingerprint,catalog_json=excluded.catalog_json,status='active',last_seen_at=excluded.last_seen_at",
+            "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'active',?11,?11) ON CONFLICT(browser_id,tab_id,document_id) DO UPDATE SET origin=excluded.origin,sanitized_path=excluded.sanitized_path,page_title=excluded.page_title,enabled=CASE WHEN document_sessions.catalog_revision=excluded.catalog_revision AND document_sessions.catalog_fingerprint=excluded.catalog_fingerprint AND document_sessions.catalog_json=excluded.catalog_json AND document_sessions.origin=excluded.origin THEN document_sessions.enabled ELSE 0 END,catalog_revision=excluded.catalog_revision,catalog_fingerprint=excluded.catalog_fingerprint,catalog_json=excluded.catalog_json,status='active',last_seen_at=excluded.last_seen_at",
             params![Uuid::new_v4().to_string(), browser_id, observation.tab_id, observation.document_id, observation.origin, observation.sanitized_path, observation.page_title, observation.catalog_revision, observation.catalog_fingerprint, catalog, now],
         )?;
         self.lock()?.execute(
@@ -682,8 +705,20 @@ impl BlockingStore {
     }
 
     /// Explicitly enable or disable calls for one immutable document session.
-    fn set_session_enabled(&self, session_id: &str, enabled: bool) -> Result<DocumentSession> {
+    fn set_session_enabled(
+        &self,
+        session_id: &str,
+        enabled: bool,
+        catalog_digest: &str,
+    ) -> Result<DocumentSession> {
         let connection = self.lock()?;
+        let session = connection.query_row(
+            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,enabled,status,last_seen_at FROM document_sessions WHERE id=?1",
+            [session_id], map_session,
+        ).optional()?.ok_or(BrowserError::NotFound)?;
+        if enabled && session.catalog_digest != catalog_digest {
+            return Err(BrowserError::StaleDocument);
+        }
         let changed = connection.execute(
             "UPDATE document_sessions SET enabled=?1 WHERE id=?2 AND status='active'",
             params![enabled, session_id],
@@ -716,6 +751,7 @@ impl BlockingStore {
         tab_id: i64,
         document_id: &str,
         catalog_revision: i64,
+        catalog_digest: &str,
         tool_name: &str,
     ) -> Result<String> {
         let session = self.lock()?.query_row(
@@ -726,6 +762,7 @@ impl BlockingStore {
         if !session.enabled
             || session.status != "active"
             || session.catalog_revision != catalog_revision
+            || session.catalog_digest != catalog_digest
         {
             return Err(BrowserError::StaleDocument);
         }
@@ -907,8 +944,27 @@ fn map_browser(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserRecord> {
     })
 }
 
+pub(crate) fn digest_catalog(
+    revision: i64,
+    origin: &str,
+    fingerprint: &str,
+    catalog: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(revision.to_le_bytes());
+    for field in [origin, fingerprint, catalog] {
+        digest.update((field.len() as u64).to_le_bytes());
+        digest.update(field.as_bytes());
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
 fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSession> {
     let catalog: String = row.get(9)?;
+    let origin: String = row.get(4)?;
+    let revision: i64 = row.get(7)?;
+    let fingerprint: String = row.get(8)?;
+    let catalog_digest = digest_catalog(revision, &origin, &fingerprint, &catalog);
     let tools = serde_json::from_str(&catalog).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
     })?;
@@ -922,6 +978,7 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSession> {
         page_title: row.get(6)?,
         catalog_revision: row.get(7)?,
         catalog_fingerprint: row.get(8)?,
+        catalog_digest,
         tools,
         enabled: row.get(10)?,
         status: row.get(11)?,
@@ -1083,6 +1140,19 @@ pub(crate) fn decode_public_key(value: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+pub(crate) fn private_test_directory() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    storage::protect_new_windows_directory(directory.path()).unwrap();
+    directory
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1167,7 +1237,13 @@ mod tests {
             )
             .unwrap();
         let session = store.sessions(None, None).unwrap().sessions.remove(0);
-        store.set_session_enabled(&session.id, true).unwrap();
+        store
+            .set_session_enabled(
+                &session.id,
+                true,
+                &store.session(&session.id).unwrap().catalog_digest,
+            )
+            .unwrap();
 
         let revoked = store.revoke_browser(&browser.id).unwrap();
         assert!(revoked.revoked_at.is_some());
@@ -1200,7 +1276,13 @@ mod tests {
         };
         store.observe(&browser.id, &observation).unwrap();
         let session = store.sessions(None, None).unwrap().sessions.remove(0);
-        store.set_session_enabled(&session.id, true).unwrap();
+        store
+            .set_session_enabled(
+                &session.id,
+                true,
+                &store.session(&session.id).unwrap().catalog_digest,
+            )
+            .unwrap();
         observation.catalog_revision = 2;
         observation.catalog_fingerprint = "two".into();
         store.observe(&browser.id, &observation).unwrap();
@@ -1208,16 +1290,47 @@ mod tests {
         assert!(!changed.enabled);
         assert_eq!(
             store
-                .validate_call(&browser.id, 1, "doc", 2, "search")
+                .validate_call(&browser.id, 1, "doc", 2, "old-digest", "search")
                 .unwrap_err()
                 .kind(),
             "stale_document"
         );
+        let reviewed = store.session(&changed.id).unwrap();
+        store
+            .set_session_enabled(&reviewed.id, true, &reviewed.catalog_digest)
+            .unwrap();
+        observation.tools[0].input_schema =
+            serde_json::json!({"type":"object", "required":["new"]});
+        store.observe(&browser.id, &observation).unwrap();
+        let replacement = store.session(&reviewed.id).unwrap();
+        assert!(!replacement.enabled);
+        assert_ne!(replacement.catalog_digest, reviewed.catalog_digest);
+        assert!(matches!(
+            store.set_session_enabled(&reviewed.id, true, &reviewed.catalog_digest),
+            Err(BrowserError::StaleDocument)
+        ));
+        store
+            .set_session_enabled(&replacement.id, true, &replacement.catalog_digest)
+            .unwrap();
+        assert!(matches!(
+            store.validate_call(&browser.id, 1, "doc", 2, &reviewed.catalog_digest, "search"),
+            Err(BrowserError::StaleDocument)
+        ));
+        store
+            .validate_call(
+                &browser.id,
+                1,
+                "doc",
+                2,
+                &replacement.catalog_digest,
+                "search",
+            )
+            .unwrap();
     }
 
     #[test]
     fn durable_identity_and_revocation_survive_reopen() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_test_directory();
         let path = directory.path().join("browser.sqlite3");
         let browser_id = {
             let store = BlockingStore::open(path.clone()).unwrap();
@@ -1276,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_future_schema_without_changing_marker() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_test_directory();
         let path = directory.path().join("browser.sqlite3");
         let connection = Connection::open(&path).unwrap();
         connection
@@ -1303,7 +1416,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrates_version_one_fixture_transactionally() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_test_directory();
         let path = directory.path().join("browser.sqlite3");
         drop(Store::open(&path).await.unwrap());
         let connection = Connection::open(&path).unwrap();

@@ -34,6 +34,7 @@ export interface BrowserSession {
   page_title: string
   catalog_revision: number
   catalog_fingerprint: string
+  catalog_digest: string
   tools: BrowserToolDescriptor[]
   enabled: boolean
   status: 'active' | 'replaced' | 'closed'
@@ -48,4 +49,5 @@ export interface BrowserStatusResponse {
 
 export interface BrowserListResponse { browsers: BrowserIdentity[] }
 export interface BrowserPairingListResponse { pairings: BrowserPairing[] }
-export interface BrowserSessionListResponse { sessions: BrowserSession[] }
+export interface BrowserSessionSummary extends Omit<BrowserSession, 'tools' | 'catalog_digest'> { tool_count: number }
+export interface BrowserSessionListResponse { sessions: BrowserSessionSummary[]; next_cursor?: string | null }

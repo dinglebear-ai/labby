@@ -101,6 +101,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Observed document session id",
             },
             ParamSpec {
+                name: "catalog_digest",
+                ty: "string",
+                required: true,
+                description: "Server-computed catalog digest returned by browser.session.get",
+            },
+            ParamSpec {
                 name: "enabled",
                 ty: "boolean",
                 required: true,
@@ -111,7 +117,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "browser.call",
         description: "Invoke one WebMCP tool on an exact browser document and catalog revision",
-        destructive: false,
+        // Page callbacks may delete durable data regardless of peer-provided annotations.
+        destructive: true,
         requires_admin: true,
         returns: "PageToolResult",
         params: &[
@@ -138,6 +145,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "integer",
                 required: true,
                 description: "Observed catalog revision",
+            },
+            ParamSpec {
+                name: "catalog_digest",
+                ty: "string",
+                required: true,
+                description: "Server-computed catalog digest returned by browser.session.get",
             },
             ParamSpec {
                 name: "tool_name",

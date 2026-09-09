@@ -68,6 +68,9 @@ pub fn export_bundle(destination: &Path) -> Result<DurableStateManifest> {
     let paths = InstallationPaths::resolve()?;
     ensure_bundle_outside_installation_root(destination, &paths)?;
     let _lock = InstallationLifecycleLock::acquire_offline(&paths)?;
+    let _browser_lock = labby_browser::BrowserStorageLock::acquire_existing(
+        paths.root().join("browser/browser.db"),
+    )?;
     recover_interrupted_restore(&paths)?;
     ensure!(!destination.exists(), "backup destination already exists");
     private_dir(destination)?;
@@ -129,6 +132,9 @@ pub fn verify_bundle(bundle: &Path) -> Result<DurableStateManifest> {
     let paths = InstallationPaths::resolve()?;
     ensure_bundle_outside_installation_root(bundle, &paths)?;
     let _lock = InstallationLifecycleLock::acquire_offline(&paths)?;
+    let _browser_lock = labby_browser::BrowserStorageLock::acquire_existing(
+        paths.root().join("browser/browser.db"),
+    )?;
     recover_interrupted_restore(&paths)?;
     verify_bundle_authentication(bundle, &paths)?;
     verify_bundle_locked(bundle, None)
@@ -211,6 +217,9 @@ pub fn restore_bundle(bundle: &Path) -> Result<DurableStateRestore> {
     let paths = InstallationPaths::resolve()?;
     ensure_bundle_outside_installation_root(bundle, &paths)?;
     let _lock = InstallationLifecycleLock::acquire_offline(&paths)?;
+    let _browser_lock = labby_browser::BrowserStorageLock::acquire_existing(
+        paths.root().join("browser/browser.db"),
+    )?;
     recover_interrupted_restore(&paths)?;
     verify_bundle_authentication(bundle, &paths)?;
     restore_bundle_locked(&paths, bundle)
@@ -467,6 +476,10 @@ fn recover_interrupted_restore(paths: &InstallationPaths) -> Result<()> {
             entry.target.starts_with(paths.root()) || external.contains(&entry.target),
             "restore journal contains an untrusted destination"
         );
+        ensure!(
+            entry.target != paths.root().join("browser/browser.db.lock"),
+            "restore journal targets browser ownership lock"
+        );
         if entry.target.starts_with(paths.root()) {
             reject_symlinks_below(paths.root(), &entry.target)?;
         } else {
@@ -646,7 +659,7 @@ fn trusted_restore_destinations(
         let destination =
             if let Ok(relative) = entry.source.strip_prefix(&manifest.installation_root) {
                 ensure!(
-                    safe_relative(relative),
+                    safe_relative(relative) && relative != Path::new("browser/browser.db.lock"),
                     "unsafe installation-relative restore path"
                 );
                 paths.root().join(relative)
@@ -690,6 +703,7 @@ fn collect_files(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<()>
             validate_regular_source(&path)?;
             let relative = path.strip_prefix(root)?;
             if relative != Path::new("lifecycle.lock")
+                && relative != Path::new("browser/browser.db.lock")
                 && relative != Path::new("restore.journal.json")
             {
                 out.push(path);
@@ -996,6 +1010,33 @@ mod tests {
         symlink(&root, &alias).unwrap();
         assert!(ensure_bundle_outside_installation_root(&alias.join("backup"), &paths).is_err());
         ensure_bundle_outside_installation_root(&temp.path().join("backup"), &paths).unwrap();
+    }
+
+    #[test]
+    fn browser_ownership_lock_is_neither_exported_nor_restorable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("installation");
+        private_dir(&root).unwrap();
+        private_dir(&root.join("browser")).unwrap();
+        let lock = root.join("browser/browser.db.lock");
+        write_private(&lock, b"owner").unwrap();
+        let mut files = Vec::new();
+        collect_files(&root, &root, &mut files).unwrap();
+        assert!(!files.contains(&lock));
+        let paths = InstallationPaths::from_root(&root).unwrap();
+        let manifest = DurableStateManifest {
+            manifest_version: MANIFEST_VERSION,
+            labby_version: env!("CARGO_PKG_VERSION").to_string(),
+            installation_root: root.clone(),
+            entries: vec![DurableStateEntry {
+                source: lock,
+                payload: PathBuf::from("payload/lock"),
+                size: 5,
+                sha256: String::new(),
+                mode: 0o600,
+            }],
+        };
+        assert!(trusted_restore_destinations(&paths, &manifest, &[]).is_err());
     }
 
     #[test]

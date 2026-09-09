@@ -32,6 +32,9 @@ pub enum BrowserError {
     /// The browser document or catalog revision changed.
     #[error("the browser document changed before the tool call completed")]
     StaleDocument,
+    /// Protected browser storage could not be opened or owned.
+    #[error("browser storage protection failed: {0}")]
+    StorageIo(#[from] std::io::Error),
     /// SQLite persistence failed.
     #[error("browser bridge persistence failed: {0}")]
     Store(#[from] rusqlite::Error),
@@ -56,7 +59,7 @@ impl BrowserError {
             Self::ToolTimeout => "tool_timeout",
             Self::Cancelled => "cancelled",
             Self::StaleDocument => "stale_document",
-            Self::Store(_) | Self::Json(_) => "internal_error",
+            Self::StorageIo(_) | Self::Store(_) | Self::Json(_) => "internal_error",
         }
     }
 }

@@ -261,7 +261,7 @@ run_shard() {
   shard="$1"; log="$run_root/$shard.log"
   case "$shard" in
     contracts) cargo test -p labby --all-features --test action_matrix_completeness --locked >"$log" 2>&1;;
-    live-http-cli-api*) cargo test -p labby --all-features --test live_http_routes --test live_cli_actions --test live_api_actions --locked -- --test-threads=1 >"$log" 2>&1;;
+    live-http-cli-api*) cargo test -p labby --all-features --test live_http_routes --test live_cli_actions --test live_api_actions --test live_browser_bridge --locked -- --test-threads=1 >"$log" 2>&1;;
     live-http-observability) cargo test -p labby --all-features --test live_http_observability --locked -- --test-threads=1 >"$log" 2>&1;;
     live-http-ipv6) cargo test -p labby --all-features --test live_http_ipv6 --locked -- --test-threads=1 >"$log" 2>&1;;
     live-mcp-parity) cargo test -p labby --all-features --test live_mcp_actions --test live_surface_parity --locked -- --test-threads=1 >"$log" 2>&1;;

@@ -270,12 +270,32 @@ pub fn set_created_owner(path: &Path, original: &File, directory: bool) -> io::R
 /// Verify the protected, non-inheriting current-user-only DACL without imposing
 /// an owner policy. Existing-object hardening never changes ownership.
 pub fn verify_current_user_only_dacl(file: &File) -> io::Result<()> {
-    verify_acl_policy(file, false, false)
+    verify_acl_policy(file, false, false, false)
 }
 
 /// Atomically replace only the DACL, never ownership, on a pinned regular file
 /// or directory. An optional original handle binds the mutation to its full ID.
 pub fn harden_current_user_dacl(path: &Path, original: Option<&File>) -> io::Result<()> {
+    harden_current_user_dacl_with_inheritance(path, original, false)
+}
+
+/// Protect a directory and ensure newly-created children inherit only current-user access.
+pub fn harden_private_directory_dacl(path: &Path, original: &File) -> io::Result<()> {
+    identity(original, true)?;
+    harden_current_user_dacl_with_inheritance(path, Some(original), true)
+}
+
+/// Verify a private directory also passes its current-user-only policy to children.
+pub fn verify_private_directory_dacl(file: &File) -> io::Result<()> {
+    identity(file, true)?;
+    verify_acl_policy(file, false, true, true)
+}
+
+fn harden_current_user_dacl_with_inheritance(
+    path: &Path,
+    original: Option<&File>,
+    inherit: bool,
+) -> io::Result<()> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
         EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
@@ -306,7 +326,7 @@ pub fn harden_current_user_dacl(path: &Path, original: Option<&File>) -> io::Res
         let rule = EXPLICIT_ACCESS_W {
             grfAccessPermissions: FILE_ALL_ACCESS,
             grfAccessMode: SET_ACCESS,
-            grfInheritance: 0,
+            grfInheritance: if inherit { 0x3 } else { 0 }, // OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
             Trustee: TRUSTEE_W {
                 pMultipleTrustee: std::ptr::null_mut(),
                 MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
@@ -351,15 +371,24 @@ pub fn harden_current_user_dacl(path: &Path, original: Option<&File>) -> io::Res
         if status != 0 {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
-        verify_current_user_only_dacl(&file)
+        if inherit {
+            verify_acl_policy(&file, false, false, true)
+        } else {
+            verify_current_user_only_dacl(&file)
+        }
     })
 }
 
 fn verify_acl(file: &File, directory: bool) -> io::Result<()> {
-    verify_acl_policy(file, directory, true)
+    verify_acl_policy(file, directory, true, false)
 }
 
-fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::Result<()> {
+fn verify_acl_policy(
+    file: &File,
+    directory: bool,
+    require_owner: bool,
+    require_inheritance: bool,
+) -> io::Result<()> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
@@ -462,6 +491,11 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 let header = ace
                     .cast::<windows_sys::Win32::Security::ACE_HEADER>()
                     .read_unaligned(); // lgtm[rust/access-invalid-pointer]
+                if require_inheritance
+                    && (header.AceFlags & 0x3 != 0x3 || header.AceFlags & 0x0c != 0)
+                {
+                    return Err(denied());
+                }
                 if directory && header.AceType == 1 {
                     continue;
                 } // deny cannot grant foreign access
@@ -473,7 +507,7 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 if !directory && header.AceFlags & 0x18 != 0 {
                     return Err(denied());
                 } // INHERIT_ONLY / INHERITED
-                if !require_owner && header.AceFlags != 0 {
+                if !require_owner && !require_inheritance && header.AceFlags != 0 {
                     return Err(denied());
                 }
                 if directory && header.AceFlags & 0x08 != 0 {
@@ -551,6 +585,19 @@ mod tests {
             LocalFree(descriptor);
             bytes
         }
+    }
+
+    #[test]
+    fn private_directory_policy_requires_child_inheritance() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = open_directory(temp.path()).unwrap();
+        set_created_owner(temp.path(), &directory, true).unwrap();
+        let owner = owner_sid(&directory);
+        harden_current_user_dacl(temp.path(), Some(&directory)).unwrap();
+        assert!(verify_private_directory_dacl(&directory).is_err());
+        harden_private_directory_dacl(temp.path(), &directory).unwrap();
+        verify_private_directory_dacl(&directory).unwrap();
+        assert_eq!(owner_sid(&directory), owner);
     }
 
     #[test]

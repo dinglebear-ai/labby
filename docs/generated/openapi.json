@@ -5187,6 +5187,7 @@
           "tab_id",
           "document_id",
           "catalog_revision",
+          "catalog_digest",
           "tool_name"
         ],
         "properties": {
@@ -5194,6 +5195,9 @@
             "type": "object"
           },
           "browser_id": {
+            "type": "string"
+          },
+          "catalog_digest": {
             "type": "string"
           },
           "catalog_revision": {
@@ -5239,9 +5243,13 @@
         "type": "object",
         "required": [
           "session_id",
+          "catalog_digest",
           "enabled"
         ],
         "properties": {
+          "catalog_digest": {
+            "type": "string"
+          },
           "enabled": {
             "type": "boolean"
           },
