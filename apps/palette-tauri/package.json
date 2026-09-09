@@ -31,7 +31,7 @@
     "shadcn": "^4.11.0",
     "typescript": "^5.9.3",
     "vite": "^8.1.4",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.0"
   },
   "name": "labby-palette-tauri",
   "packageManager": "pnpm@9.15.9",
