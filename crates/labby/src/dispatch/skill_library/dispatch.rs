@@ -2405,8 +2405,22 @@ mod tests {
             PublicationHealth::Ready { library_version: 1 }
         );
 
+        // The 40 ms budget above forces the first commit to time out. Replay
+        // exercises the recovered store and publication with a normal budget,
+        // rather than accidentally injecting a second timeout on loaded hosts.
+        let replay_service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(
+                1,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap(),
+            Arc::clone(&publication),
+            Arc::clone(&projection),
+        );
         let replay = acceptance_dispatch(
-            &service,
+            &replay_service,
             &runtime,
             &identity,
             "artifacts.create",
