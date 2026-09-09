@@ -168,7 +168,6 @@ pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionAuthoritySnapshot};
-pub(crate) use runtime::CredentialLifecycleError;
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
