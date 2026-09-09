@@ -12,6 +12,22 @@ use super::network::Operation;
 use super::provider::ProviderError;
 use futures::future::join_all;
 
+pub const SUPPORTED_KINDS: &[&str] = &[
+    "skill",
+    "prompt",
+    "agent-definition",
+    "agent-runtime",
+    "mcp-server",
+    "mcp-config",
+    "agent-plugin",
+    "apm-package",
+    "package",
+    "agent",
+    "mcp",
+    "repository",
+    "command",
+    "hook",
+];
 const MAX_PAGE: u16 = 200;
 const MAX_RESPONSE: usize = 1024 * 1024;
 const MAX_FIELD: usize = 16 * 1024;
@@ -20,6 +36,8 @@ const MAX_FIELD: usize = 16 * 1024;
 pub enum DiscoveryError {
     #[error("query must be empty or contain 3 to 200 characters")]
     InvalidQuery,
+    #[error("unsupported Artifact kind")]
+    InvalidKind,
     #[error("page limit must be from 1 to 200")]
     InvalidLimit,
     #[error("Depot provider returned an incompatible discovery result")]
@@ -41,6 +59,8 @@ pub struct DiscoveryRequest {
     pub provider: Option<String>,
     #[serde(default)]
     pub query: String,
+    #[serde(default)]
+    pub kind: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]
@@ -69,6 +89,13 @@ pub(crate) async fn discover_with_access_epoch(
     access_epoch: Option<&str>,
 ) -> Result<DiscoveryResponse, DiscoveryError> {
     validate_request(&request.query, request.limit)?;
+    if request
+        .kind
+        .as_deref()
+        .is_some_and(|kind| !SUPPORTED_KINDS.contains(&kind))
+    {
+        return Err(DiscoveryError::InvalidKind);
+    }
     let topology = manager.snapshot();
     let selected: Vec<_> = topology
         .providers
@@ -105,7 +132,7 @@ pub(crate) async fn discover_with_access_epoch(
         "lab:read",
         scope.clone(),
         request.query.clone(),
-        format!("discovery/v1:{}", request.limit),
+        request_shape(request),
         registry_epoch.clone(),
         current,
     )
@@ -132,7 +159,9 @@ pub(crate) async fn discover_with_access_epoch(
             start: 0,
             providers: qualified
                 .into_iter()
-                .map(|(provider, identity)| provider_state(provider, identity))
+                .map(|(provider, identity)| {
+                    provider_state(provider, require_kind(identity, request.kind.as_deref()))
+                })
                 .collect(),
         };
         federation.providers.sort_by(|a, b| a.id.cmp(&b.id));
@@ -152,7 +181,7 @@ pub(crate) async fn discover_with_access_epoch(
             "lab:read",
             scope,
             request.query.clone(),
-            format!("discovery/v1:{}", request.limit),
+            request_shape(request),
             registry_epoch,
             providers,
         )
@@ -216,6 +245,26 @@ pub(crate) async fn discover_with_access_epoch(
     Ok(response)
 }
 
+fn request_shape(request: &DiscoveryRequest) -> String {
+    request.kind.as_ref().map_or_else(
+        || format!("discovery/v1:{}", request.limit),
+        |kind| format!("discovery/v2:{}:{kind}", request.limit),
+    )
+}
+
+fn require_kind(
+    identity: Result<super::provider::Identity, ProviderError>,
+    kind: Option<&str>,
+) -> Result<super::provider::Identity, ProviderError> {
+    identity.and_then(|identity| {
+        if kind.is_some_and(|kind| !identity.supported_kinds.iter().any(|value| value == kind)) {
+            Err(ProviderError::UnsupportedKind)
+        } else {
+            Ok(identity)
+        }
+    })
+}
+
 fn provider_state(
     provider: &super::manager::Provider,
     identity: Result<super::provider::Identity, ProviderError>,
@@ -269,12 +318,16 @@ async fn fetch_pages(
             let needed = quota.saturating_sub(state.page.items.len());
             (needed > 0 && matches!(state.page.outcome.as_str(), "participating" | "pending"))
                 .then_some(async move {
-                    let result = match provider.runtime.qualify(admission, false).await {
+                    let result = match require_kind(
+                        provider.runtime.qualify(admission, false).await,
+                        request.kind.as_deref(),
+                    ) {
                         Ok(identity) => {
                             let limit =
                                 provider_request_limit(needed, Some(identity.max_page_size));
                             let body = provider_list_body(
                                 &request.query,
+                                request.kind.as_deref(),
                                 limit,
                                 state.upstream_cursor.as_deref(),
                             );
@@ -289,15 +342,27 @@ async fn fetch_pages(
                 })
         });
     for (index, result) in join_all(calls).await {
-        apply_reply(&mut federation.providers[index], result);
+        apply_reply(
+            &mut federation.providers[index],
+            result,
+            request.kind.as_deref(),
+        );
     }
 }
 
-pub(super) fn provider_list_body(query: &str, limit: usize, cursor: Option<&str>) -> Value {
+pub(super) fn provider_list_body(
+    query: &str,
+    kind: Option<&str>,
+    limit: usize,
+    cursor: Option<&str>,
+) -> Value {
     let mut body = serde_json::json!({"limit": limit});
     // Depot treats an omitted query as an unfiltered listing, but rejects "".
     if !query.trim().is_empty() {
         body["query"] = Value::String(query.to_owned());
+    }
+    if let Some(kind) = kind {
+        body["kind"] = Value::String(kind.to_owned());
     }
     if let Some(cursor) = cursor {
         body["cursor"] = Value::String(cursor.to_owned());
@@ -312,6 +377,7 @@ pub(super) fn provider_request_limit(requested: usize, advertised: Option<u16>) 
 fn apply_reply(
     state: &mut FederatedProvider,
     reply: Result<super::provider::Reply, ProviderError>,
+    kind: Option<&str>,
 ) {
     match reply {
         Ok(reply)
@@ -319,13 +385,26 @@ fn apply_reply(
                 || String::from(reply.identity.listing_epoch.clone()) == state.listing_epoch =>
         {
             let Some(result) = reply.result.as_object() else {
-                state.page = ProviderPage::failed(&state.id, "incompatible");
+                fail_provider(state, "incompatible");
                 return;
             };
             let Some(items) = result.get("artifacts").and_then(Value::as_array) else {
-                state.page = ProviderPage::failed(&state.id, "incompatible");
+                fail_provider(state, "incompatible");
                 return;
             };
+            if kind.is_some_and(|kind| {
+                !reply
+                    .identity
+                    .supported_kinds
+                    .iter()
+                    .any(|value| value == kind)
+                    || items
+                        .iter()
+                        .any(|item| item.get("kind").and_then(Value::as_str) != Some(kind))
+            }) {
+                fail_provider(state, "incompatible");
+                return;
+            }
             state.listing_epoch = reply.identity.listing_epoch.into();
             state.max_page_size = Some(reply.identity.max_page_size);
             state.upstream_cursor = result
@@ -344,14 +423,20 @@ fn apply_reply(
             }
             .into();
         }
-        Ok(_) => state.page = ProviderPage::failed(&state.id, "catalog_changed"),
+        Ok(_) => fail_provider(state, "catalog_changed"),
         Err(ProviderError::Pending) => state.page.outcome = "pending".into(),
-        Err(error) => state.page = ProviderPage::failed(&state.id, failure_kind(error)),
+        Err(error) => fail_provider(state, failure_kind(error)),
     }
+}
+
+fn fail_provider(state: &mut FederatedProvider, kind: &str) {
+    state.upstream_cursor = None;
+    state.page = ProviderPage::failed(&state.id, kind);
 }
 
 fn failure_kind(error: ProviderError) -> &'static str {
     match error {
+        ProviderError::UnsupportedKind => "unsupported_kind",
         ProviderError::Pending => "pending",
         ProviderError::Stale => "catalog_changed",
         ProviderError::Disabled => "disabled",

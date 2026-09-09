@@ -18,6 +18,8 @@ pub enum ProviderError {
     Stale,
     #[error("Depot provider is disabled")]
     Disabled,
+    #[error("Depot provider does not support the requested kind filter")]
+    UnsupportedKind,
     #[error("Depot provider request failed")]
     Failed(Failure),
 }
@@ -32,6 +34,8 @@ pub struct Identity {
     pub listing_epoch: OpaqueEpoch,
     snapshot_continuations: bool,
     pub max_page_size: u16,
+    #[serde(default)]
+    pub supported_kinds: Vec<String>,
 }
 
 impl Identity {
@@ -41,6 +45,11 @@ impl Identity {
         if parsed.contract_version != "depot.discovery/v1"
             || !parsed.snapshot_continuations
             || !(1..=200).contains(&parsed.max_page_size)
+            || parsed.supported_kinds.len() > 64
+            || parsed
+                .supported_kinds
+                .iter()
+                .any(|kind| kind.is_empty() || kind.len() > 64)
         {
             return Err(ProviderError::Failed(Failure::Incompatible));
         }
@@ -58,6 +67,7 @@ struct RuntimeKey {
     provider_id: String,
     host_managed: bool,
     read_project_id: Option<String>,
+    expected_deployment_id: Option<OpaqueEpoch>,
     endpoint: String,
     enabled: bool,
     auth: AuthMode,
@@ -71,6 +81,7 @@ impl RuntimeKey {
             provider_id: view.id.clone(),
             host_managed: view.host_managed,
             read_project_id: view.read_project_id.clone(),
+            expected_deployment_id: view.expected_deployment_id.clone(),
             endpoint: crate::config::depot::canonical_endpoint(&view.endpoint)
                 .map_or_else(|_| view.endpoint.clone(), |url| url.to_string()),
             enabled: view.enabled,
@@ -182,7 +193,19 @@ impl ProviderRuntime {
                 }
                 other => other,
             })
-            .and_then(Identity::parse);
+            .and_then(Identity::parse)
+            .and_then(|identity| {
+                if self
+                    .key
+                    .expected_deployment_id
+                    .as_ref()
+                    .is_some_and(|expected| expected != &identity.deployment_id)
+                {
+                    Err(ProviderError::Failed(Failure::Configuration))
+                } else {
+                    Ok(identity)
+                }
+            });
         self.observe(&result, provenance)?;
         if let Ok(qualified) = &result {
             *identity = Some(qualified.clone());
@@ -302,4 +325,34 @@ fn network_failure(error: NetworkError) -> ProviderError {
         | NetworkError::Status(400..=499) => Failure::Incompatible,
         _ => Failure::Transient,
     })
+}
+
+#[cfg(test)]
+mod public_binding_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn qualified_deployment_must_match_the_host_binding() {
+        use super::super::{network_tests::tls_fixture, scheduler::Scheduler};
+        for expected in ["catalog", "wrong-catalog"] {
+            let body = serde_json::json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"read","listingEpoch":"1","snapshotContinuations":true,"maxPageSize":200}).to_string();
+            let (client, _) = tls_fixture(format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ))
+            .await;
+            let mut runtime = ProviderRuntime::from_test_client(client);
+            runtime.key.expected_deployment_id = Some(expected.to_owned().try_into().unwrap());
+            let scheduler = Scheduler::default();
+            let admission = scheduler
+                .admit("verified-actor", tokio::time::Instant::now())
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime.qualify(&admission, false).await.is_ok(),
+                expected == "catalog"
+            );
+        }
+    }
 }

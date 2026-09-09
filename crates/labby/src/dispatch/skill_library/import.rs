@@ -11,8 +11,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::access::AccessRuntime;
 
-use super::audit::SkillLibraryCorrelationId;
-use super::auth::SkillLibraryCaller;
+use super::audit::{CanonicalArtifactId, SkillLibraryCorrelationId};
+use super::auth::{
+    SkillLibraryAction, SkillLibraryCaller, SkillLibraryTarget, authorize_at_boundary,
+};
 use super::depot::{DepotConnection, RequestHeaders};
 use super::dispatch::{SkillLibraryDispatchError, SkillLibraryService};
 use super::params::SourceSelector;
@@ -108,10 +110,49 @@ pub(crate) enum ImportAdapterError {
 /// Optional adapters plus bounded acquisition policy. Absence is local-only mode, not fallback.
 pub(crate) struct ImportCoordinator {
     depot: BTreeMap<String, DepotConnection>,
+    catalog_project: Option<String>,
     repository: BTreeMap<String, Arc<dyn RepositoryConnection>>,
 }
 
 impl ImportCoordinator {
+    pub(crate) fn from_host_config(
+        config: &crate::config::LabConfig,
+        staging_root: &Path,
+    ) -> Result<Self, ArtifactError> {
+        config
+            .depot
+            .validate_public_acquisition(&config.artifacts)
+            .map_err(ArtifactError::Conflict)?;
+        let mut imports = Self::from_config(&config.artifacts, staging_root)?;
+        if let Some(binding) = &config.depot.public_read_binding {
+            imports.catalog_project = Some(
+                config
+                    .depot
+                    .read_project_id
+                    .clone()
+                    .ok_or(ArtifactError::Conflict("public_read_project_required"))?,
+            );
+            let source = config
+                .artifacts
+                .sources
+                .iter()
+                .find(|source| source.id == "public")
+                .ok_or(ArtifactError::Conflict(
+                    "public_acquisition_connection_required",
+                ))?;
+            let token = std::env::var(&binding.bearer_token_env)
+                .map_err(|_| ArtifactError::Conflict("public_acquisition_credential_required"))?;
+            imports
+                .depot
+                .get_mut("public")
+                .ok_or(ArtifactError::Conflict(
+                    "public_acquisition_connection_required",
+                ))?
+                .bind_catalog(binding, &source.endpoint, &token)?;
+        }
+        Ok(imports)
+    }
+
     pub(crate) fn from_config(
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
@@ -179,7 +220,11 @@ impl ImportCoordinator {
                 }
             }
         }
-        Ok(Self { depot, repository })
+        Ok(Self {
+            depot,
+            repository,
+            catalog_project: None,
+        })
     }
 
     #[cfg(test)]
@@ -195,7 +240,72 @@ impl ImportCoordinator {
             .into_iter()
             .map(|connection| ("repo-1".to_owned(), connection))
             .collect();
-        Self { depot, repository }
+        Self {
+            depot,
+            repository,
+            catalog_project: None,
+        }
+    }
+
+    // A host-bound catalog has one authorization project. Its bearer must never be
+    // usable through an unrelated destination project, even for a known exact ID.
+    async fn authorize_catalog_source(
+        &self,
+        runtime: &AccessRuntime,
+        caller: &SkillLibraryCaller,
+        project_id: &str,
+        source: &ImportSource,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<(), ImportAdapterError> {
+        let (
+            Some(catalog_project),
+            ImportSource::Depot {
+                connection_id,
+                artifact_id,
+                ..
+            },
+        ) = (&self.catalog_project, source)
+        else {
+            return Ok(());
+        };
+        if connection_id != "public" {
+            return Ok(());
+        }
+        if catalog_project != project_id {
+            return Err(SkillLibraryDispatchError::Authorization(
+                super::auth::SkillLibraryAuthorizationError::Denied,
+            )
+            .into());
+        }
+        authorize_at_boundary(
+            runtime,
+            caller.clone(),
+            project_id,
+            SkillLibraryAction::Import,
+            &CanonicalArtifactId::parse(artifact_id.clone())?,
+            SkillLibraryTarget::CreateForCaller,
+            correlation_id,
+        )
+        .await
+        .map_err(SkillLibraryDispatchError::Authorization)?;
+        Ok(())
+    }
+
+    async fn acquire_authorized(
+        &self,
+        runtime: &AccessRuntime,
+        caller: &SkillLibraryCaller,
+        project_id: &str,
+        source: ImportSource,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<ArtifactAcquisition, ImportAdapterError> {
+        self.authorize_catalog_source(runtime, caller, project_id, &source, correlation_id)
+            .await?;
+        let headers = delegated_read_headers(runtime, caller, project_id, &source).await?;
+        let acquisition = self.acquire(source.clone(), headers).await?;
+        self.authorize_catalog_source(runtime, caller, project_id, &source, correlation_id)
+            .await?;
+        Ok(acquisition)
     }
 
     async fn acquire(
@@ -255,8 +365,9 @@ impl ImportCoordinator {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, ImportAdapterError> {
-        let headers = delegated_read_headers(runtime, &caller, project_id, &source).await?;
-        let acquisition = self.acquire(source, headers).await?;
+        let acquisition = self
+            .acquire_authorized(runtime, &caller, project_id, source, correlation_id)
+            .await?;
         service
             .import_acquired(
                 runtime,
@@ -363,14 +474,10 @@ impl ImportCoordinator {
             // per-item byte limit, so retaining the whole batch would multiply peak memory by 100.
             let acquisition = match self.resolve_selector(source) {
                 Ok(source) => {
-                    let headers =
-                        match delegated_read_headers(runtime, &caller, project_id, &source).await {
-                            Ok(headers) => headers,
-                            Err(error) => {
-                                return Ok(batch_partial_receipt(items, version, index, &error));
-                            }
-                        };
-                    match self.acquire(source, headers).await {
+                    match self
+                        .acquire_authorized(runtime, &caller, project_id, source, correlation_id)
+                        .await
+                    {
                         Ok(acquisition) => acquisition,
                         Err(error) => {
                             return Ok(batch_partial_receipt(items, version, index, &error));
@@ -648,6 +755,156 @@ mod tests {
         ) -> RepositoryFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move { self.value.clone().map_err(ArtifactError::Conflict) })
+        }
+    }
+
+    #[tokio::test]
+    async fn bound_catalog_imports_check_project_before_fetch_and_revocation_before_commit() {
+        struct RevokingDepot {
+            value: ArtifactAcquisition,
+            access: Arc<AccessStore>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl DepotExactProvider for RevokingDepot {
+            fn acquire(&self, _: String, _: String, _: RequestHeaders) -> DepotFuture<'_> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    self.access.execute_test_statement(
+                        "UPDATE project_memberships SET status='suspended' WHERE membership_id='member-membership'"
+                    ).await.unwrap();
+                    Ok(self.value.clone())
+                })
+            }
+        }
+        for batch in [false, true] {
+            for mode in ["other-project", "viewer", "revoked", "allowed"] {
+                let root = tempfile::tempdir().unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+                let access_path = root.path().join("access.db");
+                let access = AccessStore::open(access_path.clone()).await.unwrap();
+                let owner = VerifiedIdentity::external(
+                    Authenticator::BrowserSession,
+                    "https://accounts.google.com",
+                    "owner-subject",
+                )
+                .unwrap();
+                access
+                    .bootstrap_owner(BootstrapOwnerInput::new(owner, "Local", "Default").unwrap())
+                    .await
+                    .unwrap();
+                access.seed_loadout_roles_for_test().await.unwrap();
+                let access = Arc::new(access);
+                let runtime = AccessRuntime::initialize(access_path).await;
+                let (credential, project, catalog_project) = if mode == "viewer" {
+                    ("static-bearer:viewer", "viewer-project", "viewer-project")
+                } else if mode == "other-project" {
+                    // This caller can use the destination, but is not a member of the catalog.
+                    ("static-bearer:member", "member-project", "admin-project")
+                } else {
+                    ("static-bearer:member", "member-project", "member-project")
+                };
+                let caller = SkillLibraryCaller::new(
+                    VerifiedIdentity::local_credential(Authenticator::StaticBearer, credential)
+                        .unwrap(),
+                    ["lab".to_owned()],
+                    SkillLibraryTransport::bearer(
+                        super::super::auth::SkillLibrarySurface::ApiBearer,
+                        true,
+                    ),
+                );
+                let store = Arc::new(
+                    labby_runtime::artifacts::ArtifactStore::new(root.path().join("artifacts"))
+                        .unwrap(),
+                );
+                let projection: Arc<
+                    dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+                > = Arc::new(ArtifactFirstPartyProjection);
+                let initial = projection
+                    .prepare(&store, &store.library_snapshot().unwrap(), None)
+                    .unwrap();
+                let service = SkillLibraryService::new(
+                    Arc::clone(&store),
+                    BoundedBlockingExecutor::new(
+                        2,
+                        Duration::from_secs(1),
+                        Duration::from_secs(10),
+                    )
+                    .unwrap(),
+                    Arc::new(ActivationCoordinator::new(initial, 0)),
+                    projection,
+                );
+                let value = acquisition("private-catalog", "depot", Some("public"), None, "exact");
+                let selector = SourceSelector::Depot {
+                    connection_id: "public".into(),
+                    artifact_id: value.interchange.descriptor.id.clone(),
+                    revision_id: value.interchange.revision.id.clone(),
+                };
+                let calls = Arc::new(AtomicUsize::new(0));
+                let provider: Arc<dyn DepotExactProvider> = if mode == "revoked" {
+                    Arc::new(RevokingDepot {
+                        value,
+                        access,
+                        calls: calls.clone(),
+                    })
+                } else {
+                    Arc::new(FakeDepot {
+                        value,
+                        calls: calls.clone(),
+                    })
+                };
+                let mut coordinator =
+                    ImportCoordinator::new(Some(DepotConnection::fake(provider, "public")), None);
+                coordinator.catalog_project = Some(catalog_project.into());
+                let correlation = SkillLibraryCorrelationId::parse("protected-import").unwrap();
+                let result = if batch {
+                    coordinator
+                        .import_batch_selected(
+                            &service,
+                            &runtime,
+                            caller,
+                            project,
+                            vec![selector],
+                            0,
+                            "catalog-batch".into(),
+                            &correlation,
+                        )
+                        .await
+                } else {
+                    coordinator
+                        .import_selected(
+                            &service,
+                            &runtime,
+                            caller,
+                            project,
+                            selector,
+                            0,
+                            "catalog-single".into(),
+                            &correlation,
+                        )
+                        .await
+                };
+                let allowed = mode == "allowed";
+                if batch {
+                    assert_eq!(result.unwrap()["imported"], usize::from(allowed), "{mode}");
+                } else {
+                    assert_eq!(result.is_ok(), allowed, "{mode}: {result:?}");
+                }
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    usize::from(allowed || mode == "revoked"),
+                    "{mode}"
+                );
+                assert_eq!(
+                    store.library_snapshot().unwrap().version,
+                    u64::from(allowed),
+                    "{mode}"
+                );
+            }
         }
     }
 

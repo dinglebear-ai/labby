@@ -43,10 +43,10 @@ pub fn build_upsert(
         "LABBY_DEPOT_PROVIDER_{}_TOKEN",
         mutation.id.replace('-', "_").to_ascii_uppercase()
     );
-    if host_preferences
-        .local_providers
-        .iter()
-        .any(|local| local.id == mutation.id || local.bearer_token_env == proposed_env)
+    if mutation.id != "public"
+        && host_preferences
+            .host_read_bindings()
+            .any(|(id, _, key)| id == mutation.id || key == proposed_env)
     {
         return Err(AdminError::Invalid);
     }
@@ -66,6 +66,12 @@ pub fn build_upsert(
         let mut preferences = parse_preferences(config)?;
         preferences.public_enabled = mutation.enabled;
         replace_depot_table(&mut document, &preferences)?;
+        let view = preferences
+            .resolve(&Default::default())
+            .providers
+            .into_iter()
+            .find(|view| view.id == "public")
+            .ok_or(AdminError::Invalid)?;
         return Ok(BuiltMutation {
             pair: Pair {
                 config: document.to_string(),
@@ -73,16 +79,7 @@ pub fn build_upsert(
             },
             preferences,
             secrets: SecretSnapshot::from_values(parse_environment(environment)?),
-            view: ProviderView {
-                id: "public".into(),
-                name: "Public Depot".into(),
-                endpoint: crate::config::depot::PUBLIC_ENDPOINT.into(),
-                enabled: mutation.enabled,
-                auth_mode: AuthMode::Anonymous,
-                bearer_token_env: None,
-                host_managed: false,
-                read_project_id: None,
-            },
+            view,
             needs_fresh_proof: false,
         });
     }
@@ -197,9 +194,8 @@ pub fn build_remove(
         .try_into::<ProviderConfig>()
         .map_err(|_| AdminError::Invalid)?;
     if preferences
-        .local_providers
-        .iter()
-        .any(|local| Some(&local.bearer_token_env) == removed.bearer_token_env.as_ref())
+        .host_read_bindings()
+        .any(|(_, _, key)| Some(key) == removed.bearer_token_env.as_deref())
     {
         return Err(AdminError::Invalid);
     }

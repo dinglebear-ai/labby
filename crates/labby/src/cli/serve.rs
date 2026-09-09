@@ -222,8 +222,8 @@ fn configure_skill_library_imports(
     config: &LabConfig,
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
-    crate::dispatch::skill_library::import::ImportCoordinator::from_config(
-        &config.artifacts,
+    crate::dispatch::skill_library::import::ImportCoordinator::from_host_config(
+        config,
         &artifacts_root.join("acquisition"),
     )
     .map(Arc::new)
@@ -658,6 +658,10 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         web_assets_dir.is_none() && crate::api::web::embedded_web_assets_available();
 
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
+    config
+        .depot
+        .validate_public_acquisition(&config.artifacts)
+        .map_err(anyhow::Error::msg)?;
     let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
     depot_secrets
         .validate_local_credentials(&config.depot)

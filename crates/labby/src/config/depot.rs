@@ -62,6 +62,8 @@ pub struct DepotPreferences {
     pub read_project_id: Option<String>,
     /// Host-file-only loopback services. Never writable through provider APIs.
     pub local_providers: Vec<LocalProviderConfig>,
+    /// Host-file-only authenticated catalog binding for the reserved public ID.
+    pub public_read_binding: Option<PublicReadBinding>,
     /// Explicit server-owned browser publishing target; never selected by a request.
     pub publish: Option<DepotPublishTarget>,
     pub public_enabled: bool,
@@ -105,6 +107,7 @@ impl Default for DepotPreferences {
             managed_authority_kill_switch: false,
             read_project_id: None,
             local_providers: Vec::new(),
+            public_read_binding: None,
             publish: None,
             public_enabled: true,
             providers: Vec::new(),
@@ -135,6 +138,14 @@ pub struct LocalProviderConfig {
     pub name: String,
     pub endpoint: String,
     pub bearer_token_env: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicReadBinding {
+    pub endpoint: String,
+    pub bearer_token_env: String,
+    pub deployment_id: OpaqueEpoch,
 }
 
 impl std::fmt::Debug for DepotPreferences {
@@ -202,6 +213,8 @@ pub struct ProviderView {
     pub host_managed: bool,
     #[serde(skip)]
     pub read_project_id: Option<String>,
+    #[serde(skip)]
+    pub expected_deployment_id: Option<OpaqueEpoch>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -295,6 +308,7 @@ impl DepotPreferences {
                 bearer_token_env: None,
                 host_managed: false,
                 read_project_id: None,
+                expected_deployment_id: None,
             }],
             diagnostics: Vec::new(),
         };
@@ -307,6 +321,15 @@ impl DepotPreferences {
             });
             return result;
         }
+        if let Some(binding) = &self.public_read_binding {
+            let public = &mut result.providers[0];
+            public.endpoint = binding.endpoint.clone();
+            public.auth_mode = AuthMode::Bearer;
+            public.bearer_token_env = Some(binding.bearer_token_env.clone());
+            public.host_managed = true;
+            public.read_project_id = self.read_project_id.clone();
+            public.expected_deployment_id = Some(binding.deployment_id.clone());
+        }
         result
             .providers
             .extend(self.local_providers.iter().map(|p| ProviderView {
@@ -318,6 +341,7 @@ impl DepotPreferences {
                 bearer_token_env: Some(p.bearer_token_env.clone()),
                 host_managed: true,
                 read_project_id: self.read_project_id.clone(),
+                expected_deployment_id: None,
             }));
         if self.tombstones.len() > MAX_TOMBSTONES {
             result.diagnostics.push(ConfigDiagnostic {
@@ -404,7 +428,7 @@ impl DepotPreferences {
     }
 
     pub fn validate_local_providers(&self) -> Result<(), &'static str> {
-        if self.local_providers.is_empty() {
+        if self.local_providers.is_empty() && self.public_read_binding.is_none() {
             return Ok(());
         }
         if self
@@ -417,6 +441,19 @@ impl DepotPreferences {
         }
         let mut ids = BTreeSet::new();
         let mut references = BTreeSet::new();
+        if let Some(binding) = &self.public_read_binding {
+            if canonical_local_endpoint(&binding.endpoint).is_err()
+                || !allowed_secret_reference(&binding.bearer_token_env)
+                || binding.bearer_token_env == "LABBY_DEPOT_TOKEN"
+                || self.providers.iter().any(|raw| {
+                    raw.get("bearer_token_env").and_then(toml::Value::as_str)
+                        == Some(&binding.bearer_token_env)
+                })
+            {
+                return Err("invalid Public Depot read binding");
+            }
+            references.insert(&binding.bearer_token_env);
+        }
         for local in &self.local_providers {
             if !valid_provider_id(&local.id)
                 || matches!(local.id.as_str(), PUBLIC_ID | LEGACY_ID)
@@ -434,6 +471,65 @@ impl DepotPreferences {
                 })
             {
                 return Err("invalid local Depot provider binding");
+            }
+        }
+        Ok(())
+    }
+    pub fn host_read_bindings(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.local_providers
+            .iter()
+            .map(|p| {
+                (
+                    p.id.as_str(),
+                    p.endpoint.as_str(),
+                    p.bearer_token_env.as_str(),
+                )
+            })
+            .chain(
+                self.public_read_binding
+                    .iter()
+                    .map(|p| (PUBLIC_ID, p.endpoint.as_str(), p.bearer_token_env.as_str())),
+            )
+    }
+
+    pub fn validate_public_acquisition(
+        &self,
+        artifacts: &super::ArtifactPreferences,
+    ) -> Result<(), &'static str> {
+        self.validate_local_providers()?;
+        let Some(binding) = &self.public_read_binding else {
+            return Ok(());
+        };
+        if artifacts.sources.iter().any(|source| {
+            source.id != PUBLIC_ID
+                && source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
+        }) {
+            return Err("Public Depot credential cannot be reused by another acquisition source");
+        }
+        let mut sources = artifacts
+            .sources
+            .iter()
+            .filter(|source| source.id == PUBLIC_ID);
+        let source = sources
+            .next()
+            .ok_or("Public Depot exact acquisition connection required")?;
+        if sources.next().is_some()
+            || source.kind != super::ArtifactSourceKind::Depot
+            || source.bearer_token_env.as_deref() != Some(&binding.bearer_token_env)
+        {
+            return Err("Public Depot acquisition credential binding mismatch");
+        }
+        let endpoint = canonical_endpoint(&source.endpoint)
+            .map_err(|_| "invalid Public Depot acquisition endpoint")?;
+        if !url::Url::parse(&source.endpoint).is_ok_and(|url| url.path() == "/api/artifacts/exact")
+        {
+            return Err("Public Depot exact acquisition endpoint required");
+        }
+        if let Some(control) = &source.control_plane_url {
+            let control =
+                canonical_endpoint(control).map_err(|_| "invalid Public Depot control origin")?;
+            if control.origin() != endpoint.origin() || control.path() != "/" {
+                return Err("Public Depot control origin mismatch");
             }
         }
         Ok(())
@@ -469,6 +565,7 @@ impl From<ProviderConfig> for ProviderView {
             bearer_token_env: p.bearer_token_env,
             host_managed: false,
             read_project_id: None,
+            expected_deployment_id: None,
         }
     }
 }

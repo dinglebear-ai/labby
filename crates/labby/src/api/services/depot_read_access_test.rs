@@ -118,6 +118,7 @@ async fn outsider_is_denied_on_all_reads_before_any_upstream_request() {
             a.clone(),
             i.clone(),
             Json(DiscoveryRequest {
+                kind: None,
                 provider: None,
                 query: String::new(),
                 limit: 10,
@@ -272,6 +273,7 @@ async fn cached_private_cursor_is_denied_after_revocation_and_invalid_after_regr
         Some(Extension(auth.clone())),
         Some(Extension(identity.clone())),
         Json(DiscoveryRequest {
+            kind: None,
             provider: None,
             query: String::new(),
             limit: 10,
@@ -320,4 +322,280 @@ async fn unset_read_project_preserves_existing_instance_read_behavior() {
         .await
         .unwrap();
     assert!(access.epoch().is_none());
+}
+
+#[tokio::test]
+async fn bound_public_search_and_detail_use_project_gate_and_protected_credential() {
+    use wiremock::matchers::{header, path};
+    let (_directory, mut state, store, authority, auth, identity) = fixture().await;
+    let upstream = MockServer::start().await;
+    let preferences: crate::config::depot::DepotPreferences = toml::from_str(&format!(
+        r#"
+read_project_id = "bootstrap-default"
+[public_read_binding]
+endpoint = "{}"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog"
+"#,
+        upstream.uri()
+    ))
+    .unwrap();
+    Arc::make_mut(&mut state.config).depot = preferences.clone();
+    state.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+        &preferences,
+        crate::dispatch::depot::manager::SecretSnapshot::from_values(
+            std::collections::BTreeMap::from([(
+                "LABBY_DEPOT_CATALOG_READ_TOKEN".into(),
+                "protected-read".into(),
+            )]),
+        ),
+        Default::default(),
+    ));
+    let metadata = json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"private-read","listingEpoch":"1","snapshotContinuations":true,"maxPageSize":200});
+    Mock::given(path("/api/discovery"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(metadata.clone()))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut listing = metadata.clone();
+    listing["result"] = json!({"artifacts":[{"id":"private-skill","kind":"skill","name":"Python","currentRevisionId":"revision-exact"}],"total":1});
+    Mock::given(path("/api/discovery/list"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(listing))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut artifact = metadata;
+    artifact["result"] = json!({"artifact":{"descriptor":{"id":"private-skill","kind":"skill","name":"Python"},"currentRevisionId":"revision-exact","currentRevision":{"id":"revision-exact","contentDigest":"sha256:known"}}});
+    Mock::given(path("/api/discovery/get"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(artifact))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let request = || {
+        serde_json::from_value(json!({"provider":"public","query":"python","limit":20})).unwrap()
+    };
+    assert!(
+        discover(
+            State(state.clone()),
+            Extension(authority.clone()),
+            None,
+            None,
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    let result = discover(
+        State(state.clone()),
+        Extension(authority.clone()),
+        Some(Extension(auth.clone())),
+        Some(Extension(identity.clone())),
+        Json(request()),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(result["items"][0]["providerId"], "public");
+    assert_eq!(result["items"][0]["currentRevisionId"], "revision-exact");
+    assert!(!result.to_string().contains("protected-read"));
+    let result = detail(
+        State(state.clone()),
+        Extension(authority.clone()),
+        Some(Extension(auth.clone())),
+        Some(Extension(identity.clone())),
+        Json(DetailRequest {
+            provider_id: "public".into(),
+            artifact_id: "private-skill".into(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(result["artifact"]["currentRevisionId"], "revision-exact");
+    store
+        .execute_test_statement("UPDATE project_memberships SET status='disabled'")
+        .await
+        .unwrap();
+    assert!(
+        discover(
+            State(state.clone()),
+            Extension(authority.clone()),
+            Some(Extension(auth)),
+            Some(Extension(identity)),
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    Arc::make_mut(&mut state.config).depot.read_project_id = None;
+    assert!(
+        discover(
+            State(state),
+            Extension(authority),
+            None,
+            None,
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn kind_filter_requires_capability_and_binds_federated_cursors() {
+    use wiremock::matchers::{body_partial_json, path};
+    let (_directory, mut state, _store, authority, auth, identity) = fixture().await;
+    let catalog = MockServer::start().await;
+    let legacy = MockServer::start().await;
+    let preferences: crate::config::depot::DepotPreferences = toml::from_str(&format!(
+        r#"
+read_project_id = "bootstrap-default"
+[[local_providers]]
+id = "team"
+name = "Legacy Team"
+endpoint = "{}"
+bearer_token_env = "LABBY_DEPOT_TEAM_READ_TOKEN"
+[public_read_binding]
+endpoint = "{}"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog"
+"#,
+        legacy.uri(),
+        catalog.uri()
+    ))
+    .unwrap();
+    Arc::make_mut(&mut state.config).depot = preferences.clone();
+    state.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+        &preferences,
+        crate::dispatch::depot::manager::SecretSnapshot::from_values(
+            std::collections::BTreeMap::from([
+                (
+                    "LABBY_DEPOT_CATALOG_READ_TOKEN".into(),
+                    "catalog-read".into(),
+                ),
+                ("LABBY_DEPOT_TEAM_READ_TOKEN".into(), "team-read".into()),
+            ]),
+        ),
+        Default::default(),
+    ));
+    let metadata = json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"private-read","listingEpoch":"1","snapshotContinuations":true,"maxPageSize":200,"supportedKinds":["skill","prompt"]});
+    Mock::given(path("/api/discovery"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(metadata.clone()))
+        .mount(&catalog)
+        .await;
+    let mut legacy_metadata = metadata.clone();
+    legacy_metadata
+        .as_object_mut()
+        .unwrap()
+        .remove("supportedKinds");
+    Mock::given(path("/api/discovery"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(legacy_metadata))
+        .mount(&legacy)
+        .await;
+    Mock::given(path("/api/discovery/list"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&legacy)
+        .await;
+    let failure_mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let responding_mode = failure_mode.clone();
+    let page_metadata = metadata.clone();
+    Mock::given(path("/api/discovery/list"))
+        .and(body_partial_json(json!({"kind":"skill","query":"python"})))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let next = body.get("cursor").is_some();
+            let mut page = page_metadata.clone();
+            let failure = responding_mode.load(std::sync::atomic::Ordering::SeqCst);
+            if failure > 0 {
+                page["result"] = json!({"artifacts":[{"id":"bad","kind": if failure == 1 {"mcp"} else {"skill"}}],"total":4});
+                if failure == 2 { page.as_object_mut().unwrap().remove("supportedKinds"); }
+                return ResponseTemplate::new(200).set_body_json(page);
+            }
+
+            page["result"] = json!({"artifacts": if next {
+                vec![json!({"id":"skill-3","kind":"skill"}),json!({"id":"skill-4","kind":"skill"})]
+            } else {
+                vec![json!({"id":"skill-1","kind":"skill"}),json!({"id":"skill-2","kind":"skill"})]
+            }, "total":4});
+            if !next {
+                page["result"]["nextCursor"] = json!("native-2");
+            }
+            ResponseTemplate::new(200).set_body_json(page)
+        })
+        .mount(&catalog)
+        .await;
+    let read = |request: Value| {
+        discover(
+            State(state.clone()),
+            Extension(authority.clone()),
+            Some(Extension(auth.clone())),
+            Some(Extension(identity.clone())),
+            Json(serde_json::from_value(request).unwrap()),
+        )
+    };
+    let first = read(json!({"provider":"public","query":"python","kind":"skill","limit":2}))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(first["knownTotal"], 4);
+    assert_eq!(first["totalIsExact"], true);
+    assert_eq!(first["items"][0]["id"], "skill-1");
+    let cursor = first["nextCursor"].clone();
+    assert!(cursor.is_string());
+    for kind in [json!("prompt"), json!(null)] {
+        assert!(
+            read(
+                json!({"provider":"public","query":"python","kind":kind,"limit":2,"cursor":cursor})
+            )
+            .await
+            .is_err()
+        );
+    }
+    let second = read(
+        json!({"provider":"public","query":"python","kind":"skill","limit":2,"cursor":cursor}),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(second["items"][0]["id"], "skill-3");
+    assert_eq!(second["knownTotal"], 4);
+    assert!(second["nextCursor"].is_null());
+    let mixed = read(json!({"query":"python","kind":"skill","limit":4}))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(mixed["coverageComplete"], false);
+    assert_eq!(mixed["totalIsExact"], false);
+    assert_eq!(mixed["knownTotal"], 4);
+    assert_eq!(mixed["failures"][0]["kind"], "unsupported_kind");
+    assert_eq!(
+        read(json!({"kind":"unknown-kind"})).await.unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    // A terminal second-page failure must discard the old native continuation.
+    for failure in [1, 2] {
+        let first = read(json!({"provider":"public","query":"python","kind":"skill","limit":2}))
+            .await
+            .unwrap()
+            .0;
+        let cursor = first["nextCursor"].clone();
+        assert!(cursor.is_string());
+        failure_mode.store(failure, std::sync::atomic::Ordering::SeqCst);
+        let invalid = read(
+            json!({"provider":"public","query":"python","kind":"skill","limit":2,"cursor":cursor}),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(invalid["items"].as_array().unwrap().is_empty());
+        assert_eq!(invalid["coverageComplete"], false);
+        assert_eq!(invalid["failures"][0]["kind"], "incompatible");
+        assert!(invalid["nextCursor"].is_null());
+        failure_mode.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
 }

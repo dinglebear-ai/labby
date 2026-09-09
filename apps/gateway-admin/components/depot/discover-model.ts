@@ -27,9 +27,9 @@ export function revisionAge(timestamp: string, now?: number): string {
 
 /** Presentation ordering is limited to retained results, never a global ranking. */
 export function selectDiscoveryResults(
-  artifacts: FederatedArtifact[], kind: string, sort: DiscoverySort,
+  artifacts: FederatedArtifact[], sort: DiscoverySort,
 ): FederatedArtifact[] {
-  const selected = artifacts.filter(artifact => kind === 'all' || artifactKind(artifact) === kind)
+  const selected = [...artifacts]
   if (sort === 'name') selected.sort((a, b) => artifactTitle(a).localeCompare(artifactTitle(b)))
   if (sort === 'newest') selected.sort((a, b) => revisionTime(b) - revisionTime(a))
   return selected

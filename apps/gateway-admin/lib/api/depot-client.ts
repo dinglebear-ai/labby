@@ -1,3 +1,4 @@
+import { DISCOVERY_KINDS } from '../depot/provider-model.ts'
 import { z } from 'zod'
 
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
@@ -294,14 +295,17 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
   }
 }
 
-export async function listArtifacts(input: { provider?: string; query?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
+export async function listArtifacts(input: { provider?: string; query?: string; kind?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
   const query = input.query ?? ''
   if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
+  const kind = input.kind === 'all' ? undefined : input.kind
+  if (kind !== undefined && !DISCOVERY_KINDS.some(value => value === kind)) throw new Error('Unsupported Artifact kind')
   const provider = input.provider ?? 'all'
   if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
-  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
+  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, kind, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
   if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
   if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
+  if (kind && page.items.some(item => (item.kind ?? item.descriptor?.kind) !== kind)) throw new Error('Depot returned an artifact of the wrong kind')
   return page
 }
 

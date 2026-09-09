@@ -299,3 +299,62 @@ async fn missing_contract_route_is_incompatible_not_a_healthy_missing_artifact()
     received.await.unwrap();
     assert_eq!(runtime.health.view().state, HealthState::Incompatible);
 }
+
+#[test]
+fn public_read_credentials_fail_closed_and_authority_changes_replace_runtime() {
+    let mut config: DepotPreferences = toml::from_str(
+        r#"
+read_project_id = "catalog-project"
+[public_read_binding]
+endpoint = "http://127.0.0.1:4101"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog"
+"#,
+    )
+    .unwrap();
+    assert!(
+        SecretSnapshot::default()
+            .validate_local_credentials(&config)
+            .is_err()
+    );
+    let secrets = |token: &str| {
+        SecretSnapshot::from_values(BTreeMap::from([(
+            "LABBY_DEPOT_CATALOG_READ_TOKEN".into(),
+            token.into(),
+        )]))
+    };
+    assert!(secrets("\n").validate_local_credentials(&config).is_err());
+    assert!(
+        secrets("read-token")
+            .validate_local_credentials(&config)
+            .is_ok()
+    );
+    let manager = Manager::new(&config, secrets("read-token"), NetworkPolicy::default());
+    for change in 0..4 {
+        let old = manager.snapshot().providers["public"].runtime.clone();
+        match change {
+            0 => {
+                config.public_read_binding.as_mut().unwrap().endpoint =
+                    "http://127.0.0.1:4201".into()
+            }
+            1 => config.read_project_id = Some("new-project".into()),
+            2 => {
+                config.public_read_binding.as_mut().unwrap().deployment_id =
+                    "other-catalog".to_owned().try_into().unwrap()
+            }
+            _ => {}
+        }
+        manager
+            .publish(manager.prepare(
+                &config,
+                secrets(if change == 3 { "rotated" } else { "read-token" }),
+                NetworkPolicy::default(),
+            ))
+            .unwrap();
+        assert!(old.cancelled());
+        assert_ne!(
+            old.incarnation(),
+            manager.snapshot().providers["public"].runtime.incarnation()
+        );
+    }
+}

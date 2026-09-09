@@ -846,7 +846,7 @@ test('Discover cards preserve source filters and centered inspection on desktop 
       observeInitial()
       await initialPending
     }
-    const items = fixtures.filter(item => (!request.provider || item.providerId === request.provider) && (!request.query || item.title.toLowerCase().includes(request.query.toLowerCase())))
+    const items = fixtures.filter(item => (!request.provider || item.providerId === request.provider) && (!request.kind || item.kind === request.kind) && (!request.query || item.title.toLowerCase().includes(request.query.toLowerCase())))
     await route.fulfill({ json: { schemaVersion: 'labby.depot-compatibility/v2', scope: request.provider ?? 'all', scopeEpoch: 'test', items, providerOutcomes: [], failures: [], coverageComplete: true, knownTotal: items.length, totalIsExact: true, state: items.length ? 'complete' : 'empty', nextCursor: null } })
   })
   await page.goto(`${baseUrl}/depot/`, { waitUntil: 'domcontentloaded' })
@@ -917,4 +917,148 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   await filters.waitFor({ state: 'hidden' })
   await page.getByRole('heading', { name: 'Release reviewer', exact: true }).waitFor()
   assert.deepEqual(errors, [])
+})
+
+test('Discover kind searches reject stale pagination and restore query context from history', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.addInitScript(() => {
+    // Keep pagination under explicit user control so the response race is deterministic.
+    window.IntersectionObserver = class {
+      observe() {} unobserve() {} disconnect() {} takeRecords() { return [] }
+    } as unknown as typeof IntersectionObserver
+  })
+  const requests: Array<{ provider?: string; query: string; kind?: string; cursor?: string }> = []
+  let releasePage!: () => void
+  let pageRequested!: () => void
+  const pagePending = new Promise<void>(resolve => { releasePage = resolve })
+  const awaitingPage = new Promise<void>(resolve => { pageRequested = resolve })
+  let unavailable = true
+  await page.route('**/v1/depot/providers', route => route.fulfill({ json: ['public', 'team'].map(id => ({ id, name: id === 'public' ? 'Public Depot' : 'Team Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } })) }))
+  await page.route('**/v1/depot/discover', async route => {
+    const request = route.request().postDataJSON() as typeof requests[number]
+    requests.push(request)
+    if (request.cursor) { pageRequested(); await pagePending }
+    const failed = request.query === 'waiting' && unavailable
+    const partial = request.query === 'partial'
+    const title = request.cursor ? 'Stale pagination must stay hidden' : request.kind === 'skill' ? `Skill ${request.query || 'beyond-first-pages'}` : 'First page MCP'
+    const items = failed ? [] : [{ providerId: request.provider ?? 'public', artifactId: title, id: title, kind: request.kind ?? 'mcp', title, currentRevisionId: 'exact-revision' }]
+    await route.fulfill({ json: {
+      schemaVersion: 'labby.depot-compatibility/v2', scope: request.provider ?? 'all', scopeEpoch: 'epoch', items,
+      providerOutcomes: [{ providerId: 'public', state: failed ? 'failed' : 'exhausted' }],
+      failures: failed ? [{ providerId: 'public', kind: 'unavailable' }] : partial ? [{ providerId: 'team', kind: 'unsupported_kind' }] : [],
+      coverageComplete: !failed && !partial, knownTotal: failed ? null : 120, totalIsExact: !failed && !partial,
+      state: failed ? 'all_failed' : partial ? 'partial' : 'complete',
+      nextCursor: !request.kind && !request.cursor && !request.query ? 'a'.repeat(43) : null,
+    } }).catch(() => undefined)
+  })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'First page MCP', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Load more', exact: true }).click()
+  await awaitingPage
+  const input = page.getByRole('textbox', { name: 'Search Depot artifacts' })
+  await input.fill('py')
+  releasePage()
+  await page.getByText('Enter at least 3 characters to search.', { exact: true }).waitFor()
+  await page.waitForTimeout(400)
+  assert.equal(await page.getByRole('heading', { name: 'Stale pagination must stay hidden', exact: true }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: 'Load more', exact: true }).count(), 0)
+  assert.equal(requests.some(request => request.query === 'py'), false)
+  await input.fill('python')
+  await page.getByRole('group', { name: 'Artifact kind', exact: true }).getByRole('button', { name: 'skill', exact: true }).click()
+  await page.getByRole('heading', { name: 'Skill python', exact: true }).waitFor()
+  assert.equal(new URL(page.url()).searchParams.get('kind'), 'skill')
+  assert.equal(requests.at(-1)?.kind, 'skill')
+  assert.equal(requests.at(-1)?.cursor, undefined)
+  await page.evaluate(() => history.pushState(null, '', '/depot/?q=frontend&kind=skill'))
+  await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
+  assert.equal(await input.inputValue(), 'frontend')
+  await page.goBack()
+  await page.getByRole('heading', { name: 'Skill python', exact: true }).waitFor()
+  assert.equal(await input.inputValue(), 'python')
+  await page.goForward()
+  await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Team Depot', exact: true }).click()
+  await page.waitForFunction(() => new URL(location.href).searchParams.get('provider') === 'team')
+  await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
+  assert.equal(requests.at(-1)?.provider, 'team')
+  assert.equal(requests.at(-1)?.kind, 'skill')
+  await input.fill('waiting')
+  await page.getByText('Search results are not complete yet.', { exact: true }).waitFor()
+  assert.equal(await page.getByText('No artifacts match this search.', { exact: true }).count(), 0)
+  await page.getByText('Total unavailable', { exact: true }).waitFor()
+  unavailable = false
+  await page.getByRole('button', { name: 'Retry search', exact: true }).click()
+  await page.getByRole('heading', { name: 'Skill waiting', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'All sources', exact: true }).click()
+  await input.fill('partial')
+  await page.getByText('Some sources do not support this kind filter. Results cover the supported sources only.', { exact: true }).waitFor()
+  await page.getByRole('heading', { name: 'Skill partial', exact: true }).waitFor()
+  if (process.env.DISCOVER_SCREENSHOTS) await page.screenshot({ path: `${process.env.DISCOVER_SCREENSHOTS}/discover-kind-partial.png`, fullPage: true })
+  assert.deepEqual(errors, [])
+})
+
+test('Discover discards delayed detail and import preparation after inspection closes', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  // Detail responses carry provider identity in the envelope, so the artifact body omits it.
+  const detailArtifact = (query: string) => ({ id: `skill-${query}`, kind: 'skill', title: `Skill ${query}`, currentRevisionId: 'exact-revision' })
+  const row = (query: string) => ({ providerId: 'public', artifactId: `skill-${query}`, ...detailArtifact(query) })
+  let releaseDetail!: () => void, observeDetail!: () => void
+  const detailPending = new Promise<void>(resolve => { releaseDetail = resolve })
+  const detailRequested = new Promise<void>(resolve => { observeDetail = resolve })
+  let releaseImport!: () => void, observeImport!: () => void
+  const importPending = new Promise<void>(resolve => { releaseImport = resolve })
+  const importRequested = new Promise<void>(resolve => { observeImport = resolve })
+  let detailCount = 0, imports = 0
+  await page.route('**/v1/depot/providers', route => route.fulfill({ json: [{ id: 'public', name: 'Public Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }] }))
+  await page.route('**/v1/depot/discover', route => {
+    const request = route.request().postDataJSON()
+    return route.fulfill({ json: { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [row(request.query || 'initial')], providerOutcomes: [], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null } })
+  })
+  await page.route('**/v1/depot/artifacts/detail', async route => {
+    const request = route.request().postDataJSON()
+    if (detailCount++ === 0) { observeDetail(); await detailPending }
+    const artifact = detailArtifact(String(request.artifactId).replace('skill-', ''))
+    await route.fulfill({ json: { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: artifact.id, artifact } }).catch(() => undefined)
+  })
+  await page.route('**/v1/artifacts', async route => {
+    const request = route.request().postDataJSON()
+    if (request.action === 'artifacts.list_connections') {
+      observeImport(); await importPending
+      await route.fulfill({ json: { connections: [{ id: 'public' }] } })
+    } else if (request.action === 'artifacts.list') {
+      await route.fulfill({ json: { library_version: 0, artifacts: [] } })
+    } else {
+      if (request.action === 'artifacts.import') imports++
+      await route.fulfill({ json: { committed_library_version: 1 } })
+    }
+  })
+  await page.goto(`${baseUrl}/depot/?kind=skill`, { waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'Skill initial', exact: true }).click()
+  await detailRequested
+  await page.keyboard.press('Escape')
+  const input = page.getByRole('textbox', { name: 'Search Depot artifacts' })
+  await input.fill('python')
+  releaseDetail()
+  await page.getByRole('heading', { name: 'Skill python', exact: true }).waitFor()
+  assert.equal(await page.getByRole('dialog').count(), 0)
+  assert.equal(await page.getByRole('heading', { name: 'Skill initial', exact: true }).count(), 0)
+  await page.getByRole('heading', { name: 'Skill python', exact: true }).click()
+  await page.getByRole('button', { name: 'Send to Labby', exact: true }).click()
+  await importRequested
+  await page.keyboard.press('Escape')
+  await input.fill('frontend')
+  const releasedResponse = page.waitForResponse(response => response.url().endsWith('/v1/artifacts') && response.request().postDataJSON().action === 'artifacts.list_connections')
+  releaseImport()
+  await releasedResponse
+  await page.getByRole('heading', { name: 'Skill frontend', exact: true }).waitFor()
+  assert.equal(imports, 0)
+  assert.equal(await page.getByText('Exact Artifact imported into Labby', { exact: true }).count(), 0)
 })

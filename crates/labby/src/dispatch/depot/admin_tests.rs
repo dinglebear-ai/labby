@@ -14,6 +14,7 @@ fn provider(endpoint: &str, auth_mode: AuthMode, enabled: bool) -> ProviderView 
             .then(|| "LABBY_DEPOT_PROVIDER_TEAM_TOKEN".into()),
         host_managed: false,
         read_project_id: None,
+        expected_deployment_id: None,
     }
 }
 
@@ -188,4 +189,46 @@ fn removal_tombstones_id_and_deletes_only_its_active_secret() {
     assert!(!built.pair.config.contains("id = \"team\""));
     assert!(built.preferences.tombstones.contains("team"));
     assert_eq!(built.pair.environment, "OTHER=keep\n");
+}
+
+#[test]
+fn browser_cannot_overwrite_public_binding_credentials_and_toggle_preserves_binding() {
+    let config = r#"
+[depot]
+read_project_id = "catalog-project"
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_COLLISION_TOKEN"
+deployment_id = "catalog"
+"#;
+    let mut mutation = Mutation {
+        id: "collision".into(),
+        name: "Bad".into(),
+        endpoint: "https://example.com".into(),
+        enabled: true,
+        auth_mode: AuthMode::Bearer,
+        credential: CredentialChange::Replace("replacement".into()),
+    };
+    assert!(matches!(
+        build_upsert(config, "", &mutation),
+        Err(AdminError::Invalid)
+    ));
+    mutation.id = "public".into();
+    mutation.name = "Public Depot".into();
+    mutation.endpoint = crate::config::depot::PUBLIC_ENDPOINT.into();
+    mutation.auth_mode = AuthMode::Anonymous;
+    mutation.credential = CredentialChange::Retain;
+    mutation.enabled = false;
+    let result = build_upsert(config, "", &mutation).unwrap();
+    assert!(result.preferences.public_read_binding.is_some());
+    assert!(result.view.host_managed);
+    assert!(!result.view.enabled);
+    assert!(
+        build_upsert(
+            &config.replace("COLLISION_TOKEN", "PUBLIC_TOKEN"),
+            "",
+            &mutation
+        )
+        .is_ok()
+    );
 }
