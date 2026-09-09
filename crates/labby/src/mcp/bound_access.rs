@@ -1426,7 +1426,7 @@ mod tests {
         .await
         .expect("second binding");
 
-        let asset_use = bind_artifact_publish_access_context(
+        let publish = bind_artifact_publish_access_context(
             &runtime,
             &manager,
             identity.clone(),
@@ -1436,9 +1436,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!asset_use.catalog.same_publication_as(&first.catalog));
+        assert!(!publish.catalog.same_publication_as(&first.catalog));
         assert!(
-            asset_use.authorizes_publish_from(&first),
+            publish.authorizes_publish_from(&first),
             "fresh ArtifactPublish must authorize unchanged AssetDiscover publication"
         );
         let discovery_only = bind_access_context(
@@ -1567,7 +1567,7 @@ mod tests {
             vec![Prompt::new("deploy-v2", Some("changed"), None)],
         )
         .await;
-        let changed_asset_use = bind_artifact_publish_access_context(
+        let changed_publish = bind_artifact_publish_access_context(
             &runtime,
             &manager,
             identity.clone(),
@@ -1578,7 +1578,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            !changed_asset_use.authorizes_publish_from(&first),
+            !changed_publish.authorizes_publish_from(&first),
             "a new catalog publication must invalidate the original authorization"
         );
         let changed_core = bind_access_context(

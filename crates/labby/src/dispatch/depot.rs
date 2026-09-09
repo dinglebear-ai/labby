@@ -794,7 +794,7 @@ fn log_publish_failure(stage: &'static str, error: &DepotError) {
         DepotError::Unavailable(failure) => Some(failure.category()),
         _ => None,
     };
-    tracing::warn!(surface = "mcp", service = "depot_publish", stage,
+    tracing::warn!(surface = "dispatch", service = "depot_publish", stage,
         transport_failure, failure = %error_body(error), "Depot publish stage failed");
 }
 
