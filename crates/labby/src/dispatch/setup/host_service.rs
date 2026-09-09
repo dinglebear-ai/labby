@@ -2091,11 +2091,13 @@ mod tests {
                 if std::time::Instant::now() >= deadline {
                     // The scenario owns this process group, including mock curl
                     // timers and sleepers; settle them before failing the test.
-                    let _ = std::process::Command::new("/bin/kill")
-                        .args(["-KILL", &format!("-{}", child.id())])
-                        .status();
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    drop(
+                        std::process::Command::new("/bin/kill")
+                            .args(["-KILL", &format!("-{}", child.id())])
+                            .status(),
+                    );
+                    drop(child.kill());
+                    drop(child.wait());
                     panic!(
                         "watchdog scenario exceeded 10s (succeed_at={succeed_at}, hang={hang}); calls: {}",
                         std::fs::read_to_string(&log).unwrap_or_default()
