@@ -426,7 +426,7 @@ impl LiveIdentity {
         &self,
         token: &str,
     ) -> Result<StatusCode, String> {
-        let mut response = self
+        let response = self
             .client
             .post(format!("{}/operator", self.base()))
             .header(header::HOST, "mcp.example.test")
@@ -440,32 +440,7 @@ impl LiveIdentity {
             .send()
             .await
             .map_err(|e| e.to_string())?;
-        let status = response.status();
-        if status.is_server_error() {
-            // Keep the first failure observable: retrying initialize could
-            // conceal a real route-mount or backend regression. Only bounded,
-            // classified response diagnostics are safe in assertion output.
-            let mut body = Vec::new();
-            let read = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-                    if body.len() + chunk.len() > 16 * 1024 {
-                        return Err(());
-                    }
-                    body.extend_from_slice(&chunk);
-                }
-                Ok::<_, ()>(())
-            })
-            .await;
-            let diagnostic = if matches!(read, Ok(Ok(()))) {
-                protected_mcp_failure_class(&body)
-            } else {
-                "response body unavailable or exceeded diagnostic budget"
-            };
-            return Err(format!(
-                "protected MCP initialize returned {status}: {diagnostic}"
-            ));
-        }
-        Ok(status)
+        checked_identity_response(response, "protected MCP initialize").await
     }
 
     pub(crate) async fn introspect_token(&self, token: &str) -> Result<StatusCode, String> {
@@ -581,7 +556,7 @@ impl LiveIdentity {
     }
 
     pub(crate) async fn revoke_id(&self, credential_id: &str) -> Result<StatusCode, String> {
-        Ok(self
+        let response = self
             .client
             .delete(format!(
                 "{}/v1/access/credentials/{}",
@@ -591,8 +566,8 @@ impl LiveIdentity {
             .bearer_auth(&self.credential)
             .send()
             .await
-            .map_err(|e| e.to_string())?
-            .status())
+            .map_err(|e| e.to_string())?;
+        checked_identity_response(response, "credential revocation").await
     }
 
     /// Issue a real client-generated equal-or-narrower credential through the
@@ -735,7 +710,36 @@ impl LiveIdentity {
     }
 }
 
-fn protected_mcp_failure_class(body: &[u8]) -> &'static str {
+async fn checked_identity_response(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<StatusCode, String> {
+    let status = response.status();
+    if status.is_server_error() {
+        // Keep the first failure observable without retrying. Only bounded,
+        // classified response diagnostics are safe in assertion output.
+        let mut body = Vec::new();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+                if body.len() + chunk.len() > 16 * 1024 {
+                    return Err(());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok::<_, ()>(())
+        })
+        .await;
+        let diagnostic = if matches!(read, Ok(Ok(()))) {
+            identity_failure_class(&body)
+        } else {
+            "response body unavailable or exceeded diagnostic budget"
+        };
+        return Err(format!("{operation} returned {status}: {diagnostic}"));
+    }
+    Ok(status)
+}
+
+fn identity_failure_class(body: &[u8]) -> &'static str {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         return "non-JSON backend failure";
     };
@@ -743,7 +747,11 @@ fn protected_mcp_failure_class(body: &[u8]) -> &'static str {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if message.contains("scoped") && message.contains("not mounted")
+    if message.contains("product credential verification is unavailable") {
+        "product credential verification unavailable"
+    } else if message.contains("project session authorization is unavailable") {
+        "project session authorization unavailable"
+    } else if message.contains("scoped") && message.contains("not mounted")
         || message.contains("gateway subset service is not mounted")
     {
         "gateway subset router not mounted"
@@ -967,11 +975,19 @@ fn synchronous_cleanup_request(base: &str, proof: &str, prepare_id: &str) -> Res
 
 #[cfg(test)]
 mod diagnostic_tests {
-    use super::protected_mcp_failure_class;
+    use super::identity_failure_class;
 
     #[test]
     fn backend_diagnostics_classify_without_reflecting_server_secrets() {
         for (body, expected) in [
+            (
+                br#"{"message":"server error: product credential verification is unavailable; secret fixture material"}"#.as_slice(),
+                "product credential verification unavailable",
+            ),
+            (
+                br#"{"message":"server error: project session authorization is unavailable; secret fixture material"}"#.as_slice(),
+                "project session authorization unavailable",
+            ),
             (
                 br#"{"message":"protected MCP gateway subset service is not mounted"}"#.as_slice(),
                 "gateway subset router not mounted",
@@ -991,7 +1007,7 @@ mod diagnostic_tests {
                 "non-JSON backend failure",
             ),
         ] {
-            assert_eq!(protected_mcp_failure_class(body), expected);
+            assert_eq!(identity_failure_class(body), expected);
         }
     }
 }

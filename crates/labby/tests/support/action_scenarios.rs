@@ -712,6 +712,34 @@ mod dedicated_contract_tests {
     };
 
     #[test]
+    fn browser_state_transition_evidence_survives_generic_fixture_denial_in_either_order() {
+        let transition = serde_json::json!({
+            "case_id": "action::Api::browser:browser.call",
+            "achieved_evidence": "LiveStateTransition",
+            "outcome_kind": "consented_socket_callback_persisted_page_state",
+        });
+        let denial = serde_json::json!({
+            "case_id": "action::Api::browser:browser.call",
+            "achieved_evidence": "LiveErrorPath",
+            "outcome_kind": "dedicated_contract:requires_live_consented_browser_document:stale_document",
+        });
+        for observations in [[&transition, &denial], [&denial, &transition]] {
+            let directory = tempfile::tempdir().unwrap();
+            for observation in observations {
+                super::write_case_event(directory.path().as_os_str(), observation);
+            }
+            let files = std::fs::read_dir(directory.path())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(files.len(), 1, "one event per action and surface");
+            let retained: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+            assert_eq!(retained, transition);
+        }
+    }
+
+    #[test]
     fn stash_mcp_accepts_both_missing_authority_layers() {
         for kind in ["forbidden", "upstream_connect_error", "service_unavailable"] {
             assert!(dedicated_contract_accepts_for(

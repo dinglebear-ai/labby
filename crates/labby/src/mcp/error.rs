@@ -256,6 +256,14 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
         "route_scope_denied" => "route_scope_denied",
         "restart_required" => "restart_required",
         "stale_suggestion" => "stale_suggestion",
+        // Preserve the browser bridge's typed failures across the anyhow
+        // dispatch boundary so callers can recover without guessing messages.
+        "invalid_request" => "invalid_request",
+        "browser_offline" => "browser_offline",
+        "server_busy" => "server_busy",
+        "tool_timeout" => "tool_timeout",
+        "cancelled" => "cancelled",
+        "stale_document" => "stale_document",
         _ => "internal_error",
     }
 }
@@ -264,6 +272,37 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
 mod tests {
     use super::canonical_kind;
     use crate::dispatch::error::ToolError;
+
+    #[test]
+    fn browser_error_kinds_survive_the_mcp_dispatch_boundary() {
+        use labby_browser::BrowserError;
+        let errors = [
+            BrowserError::InvalidRequest("bad document".into()),
+            BrowserError::NotFound,
+            BrowserError::AuthenticationFailed,
+            BrowserError::BrowserOffline,
+            BrowserError::ConnectionClosed,
+            BrowserError::ServerBusy,
+            BrowserError::ToolTimeout,
+            BrowserError::Cancelled,
+            BrowserError::StaleDocument,
+            BrowserError::StorageIo(std::io::Error::other("storage unavailable")),
+        ];
+        for error in errors {
+            let expected = error.kind();
+            let dispatch = super::DispatchError::from(ToolError::Sdk {
+                sdk_kind: expected.into(),
+                message: error.to_string(),
+            });
+            let erased = anyhow::Error::new(dispatch);
+            assert_eq!(
+                erased.downcast_ref::<super::DispatchError>().unwrap().kind,
+                expected,
+                "browser error must retain its recovery contract"
+            );
+        }
+        assert_eq!(canonical_kind("unrecognized_peer_kind"), "internal_error");
+    }
 
     #[test]
     fn canonical_kind_round_trips_all_tool_error_kinds() {
