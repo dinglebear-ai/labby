@@ -788,11 +788,7 @@ mod tests {
         let tools = vec![
             make(None),
             make(Some(rmcp::model::ToolAnnotations::new().destructive(false))),
-            make(Some(
-                rmcp::model::ToolAnnotations::new()
-                    .read_only(true)
-                    .destructive(false),
-            )),
+            make(Some(rmcp::model::ToolAnnotations::new().read_only(true))),
         ];
 
         let read_only_scope = ToolScope::default().read_only();
@@ -811,11 +807,7 @@ mod tests {
             "Query data",
             Arc::new(serde_json::Map::new()),
         );
-        tool.annotations = Some(
-            rmcp::model::ToolAnnotations::new()
-                .read_only(true)
-                .destructive(false),
-        );
+        tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
         let tool = UpstreamTool {
             tool,
             input_schema: None,
