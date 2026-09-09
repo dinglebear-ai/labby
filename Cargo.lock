@@ -2133,6 +2133,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
