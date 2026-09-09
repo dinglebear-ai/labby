@@ -5,12 +5,17 @@
 //! operation strings supplied by a caller.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
+use serde_json::Value;
 
 use crate::core::{ApiError, HttpClient};
 
 const MAX_CONTROL_PLANE_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Depot's frozen public operation catalog, captured from the paired Depot
+/// worktree. Tests pin every curated operation's schema and fingerprint to it.
+#[cfg(test)]
+const DEPOT_OPERATIONS_GOLDEN: &str =
+    include_str!("../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json");
 
 /// Curated remote operations needed by Labby's public control-plane actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +58,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    const fn provider_name(self) -> &'static str {
+    pub const fn provider_name(self) -> &'static str {
         match self {
             Self::ArtifactsList => "depot.artifacts.list",
             Self::ArtifactsGet => "depot.artifacts.get",
@@ -93,101 +98,135 @@ impl Operation {
         }
     }
 
+    /// Every curated operation, in declaration order.
+    pub const ALL: &[Self] = &[
+        Self::ArtifactsList,
+        Self::ArtifactsGet,
+        Self::ArtifactsSearch,
+        Self::CandidatesList,
+        Self::CandidatesIntake,
+        Self::ArtifactsFollow,
+        Self::ArtifactsFork,
+        Self::ArtifactsSetPublication,
+        Self::ArtifactsSetLicense,
+        Self::SearchSkillsSh,
+        Self::SearchArd,
+        Self::SearchMarketplace,
+        Self::McpRegistryList,
+        Self::AcpRegistryList,
+        Self::AuthorityStatus,
+        Self::SourcesList,
+        Self::SourcesConfigure,
+        Self::SourcesDelete,
+        Self::SourcesRefresh,
+        Self::JobsStart,
+        Self::JobsList,
+        Self::JobsGet,
+        Self::JobsCancel,
+        Self::JobsRetry,
+        Self::UploadsCreate,
+        Self::UploadsGet,
+        Self::UploadsDelete,
+        Self::BundlesList,
+        Self::BundlesGet,
+        Self::BundlesCreate,
+        Self::BundlesAddArtifact,
+        Self::BundlesRemoveArtifact,
+        Self::BundlesSetVisibility,
+        Self::BundlesPublish,
+        Self::BundlesDelete,
+    ];
+
+    /// The exact `inputSchema` Depot serves for this operation, from the golden
+    /// catalog fixture. Tests assert it hashes to [`Self::expected_schema_fingerprint`].
+    #[cfg(test)]
     fn expected_input_schema(self) -> Value {
-        let properties = match self {
-            Self::ArtifactsList => json!({"cursor":{"type":"string"},"limit":{"type":"integer"}}),
-            Self::ArtifactsGet => json!({"artifactId":{"type":"string"}}),
-            Self::ArtifactsSearch | Self::SearchSkillsSh => {
-                json!({"query":{"type":"string"},"limit":{"type":"integer"}})
-            }
-            Self::CandidatesList => json!({"cursor":{"type":"string"},"limit":{"type":"integer"}}),
-            Self::CandidatesIntake => json!({"candidate":{"type":"object"}}),
-            Self::ArtifactsFollow => {
-                json!({"artifactId":{"type":"string"},"upstreamArtifactId":{"type":"string"},"upstreamRevisionId":{"type":"string"},"following":{"type":"boolean"}})
-            }
-            Self::ArtifactsFork => {
-                json!({"sourceArtifactId":{"type":"string"},"revisionId":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"following":{"type":"boolean"}})
-            }
-            Self::ArtifactsSetPublication => {
-                json!({"artifactId":{"type":"string"},"state":{"type":"string"},"visibility":{"type":"string"},"distribution":{"type":"string"}})
-            }
-            Self::ArtifactsSetLicense => {
-                json!({"artifactId":{"type":"string"},"declared":{},"detected":{"type":"array"},"notices":{"type":"array"},"redistribution":{"type":"string"},"reviewState":{"type":"string"},"takedownState":{"type":"string"},"evidenceAt":{"type":"string"},"metadata":{"type":"object"}})
-            }
-            Self::SearchArd => {
-                json!({"registry":{"type":"string"},"query":{"type":"string"},"pageToken":{"type":"string"}})
-            }
-            Self::SearchMarketplace => {
-                json!({"source":{"type":"string"},"ref":{"type":"string"},"only":{"type":"array"}})
-            }
-            Self::McpRegistryList => {
-                json!({"query":{"type":"string"},"category":{"type":"string"},"tag":{"type":"string"},"version":{"type":"string"},"updatedSince":{"type":"string"},"includeDeleted":{"type":"boolean"},"cursor":{"type":"string"},"limit":{"type":"integer"}})
-            }
+        let catalog: Value =
+            serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).expect("golden catalog parses");
+        catalog["operations"]
+            .as_array()
+            .expect("operations array")
+            .iter()
+            .find(|definition| definition["name"] == self.provider_name())
+            .expect("every curated operation is present in the golden catalog")["inputSchema"]
+            .clone()
+    }
+
+    const fn expected_schema_fingerprint(self) -> &'static str {
+        match self {
             Self::AcpRegistryList
             | Self::AuthorityStatus
             | Self::SourcesList
-            | Self::BundlesList => json!({}),
-            Self::SourcesConfigure => {
-                json!({"sourceId":{"type":"string"},"enabled":{"type":"boolean"},"intervalSeconds":{"type":"integer"}})
+            | Self::BundlesList => {
+                "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f"
             }
-            Self::SourcesDelete | Self::SourcesRefresh => json!({"sourceId":{"type":"string"}}),
-            Self::JobsStart => {
-                json!({"kind":{"type":"string"},"arguments":{"type":"object"},"idempotencyKey":{"type":"string"}})
+            Self::ArtifactsFollow => {
+                "95eacd7404183d82b5cec2ba9580920412a3fe86a9335f2138bcfbe8f2620146"
             }
-            Self::JobsList => json!({"limit":{"type":"integer"}}),
-            Self::JobsGet | Self::JobsCancel | Self::JobsRetry => {
-                json!({"jobId":{"type":"string"}})
+            Self::ArtifactsFork => {
+                "43ca2e18ca6b00803a5ec78d4cfd75d0cdd04db7560f81199383141153fb6c36"
             }
-            Self::UploadsCreate => json!({"filename":{"type":"string"}}),
-            Self::UploadsGet | Self::UploadsDelete => json!({"uploadId":{"type":"string"}}),
-            Self::BundlesGet | Self::BundlesPublish | Self::BundlesDelete => {
-                json!({"slug":{"type":"string"}})
+            Self::ArtifactsGet => {
+                "b42f3f0ce0afc95cb8fbcb7c96907f9b88643bafc51efc602c1b21dba82c148d"
+            }
+            Self::CandidatesIntake => {
+                "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909"
+            }
+            Self::ArtifactsList => {
+                "ae219779387114fe51269259a5a15c433fbc89135ee89a00a4e1340486f829c5"
+            }
+            Self::CandidatesList => {
+                "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142"
+            }
+            Self::ArtifactsSetLicense => {
+                "0faaf5e02f9ffbc63815216e02737628c82de4b707e0647a67dbe5d76ce91018"
+            }
+            Self::ArtifactsSetPublication => {
+                "e9ea567f18a713da54460bffd66fbd001c974fcde4c9596bc67b708ef7fbad0a"
+            }
+            Self::BundlesAddArtifact | Self::BundlesRemoveArtifact => {
+                "0d78c3e334861b262e00e14859b58f668705182efe6d58e4579e98bafe123667"
             }
             Self::BundlesCreate => {
-                json!({"slug":{"type":"string"},"description":{"type":"string"},"visibility":{"type":"string"}})
+                "1e17f3565ca13065470821a627efa315041c47824810102a63f7a1fce8b64872"
             }
-            Self::BundlesAddArtifact | Self::BundlesRemoveArtifact => {
-                json!({"slug":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"}})
+            Self::BundlesDelete | Self::BundlesGet | Self::BundlesPublish => {
+                "f1e10caa02e84b19379ff3dd72305297bdec7db6ccf8c7690832f29b98669126"
             }
             Self::BundlesSetVisibility => {
-                json!({"slug":{"type":"string"},"visibility":{"type":"string"}})
+                "68fc8ba08ee71a0c59de90590e7fb404c6052c70d463f688c54aab6678ee863e"
             }
-        };
-        let required = match self {
-            Self::ArtifactsGet
-            | Self::ArtifactsFollow
-            | Self::ArtifactsSetPublication
-            | Self::ArtifactsSetLicense => json!(["artifactId"]),
-            Self::ArtifactsSearch | Self::SearchSkillsSh => json!(["query"]),
-            Self::CandidatesIntake => json!(["candidate"]),
-            Self::ArtifactsFork => json!(["sourceArtifactId", "namespace", "name"]),
-            Self::SearchArd => json!(["registry", "query"]),
-            Self::SearchMarketplace => json!(["source"]),
-            Self::SourcesConfigure | Self::SourcesDelete | Self::SourcesRefresh => {
-                json!(["sourceId"])
+            Self::JobsCancel | Self::JobsGet | Self::JobsRetry => {
+                "1bd036f81ee6548a36d3981c6262f6285203325c7ecef94967e5b480ec4bf227"
             }
-            Self::JobsStart => json!(["kind", "arguments"]),
-            Self::JobsGet | Self::JobsCancel | Self::JobsRetry => json!(["jobId"]),
-            Self::UploadsCreate => json!(["filename"]),
-            Self::UploadsGet | Self::UploadsDelete => json!(["uploadId"]),
-            Self::BundlesGet | Self::BundlesPublish | Self::BundlesDelete => json!(["slug"]),
-            Self::BundlesCreate => json!(["slug"]),
-            Self::BundlesSetVisibility => json!(["slug", "visibility"]),
-            Self::BundlesAddArtifact | Self::BundlesRemoveArtifact => {
-                json!(["slug", "namespace", "name"])
+            Self::JobsList => "58b36a607269af9547505db30cf7b936ea7b192c5eb8c241a36aa3d528089f92",
+            Self::JobsStart => "bfb8b4a43a3942c3beb867e5daa21f8660ac872404c8de7332269c10d37ebdc7",
+            Self::McpRegistryList => {
+                "08d503577793cd5f35fd6c549b388ef3038d7357114c7d9cb7e6812406770d8b"
             }
-            _ => json!([]),
-        };
-        json!({
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": false
-        })
-    }
-
-    fn expected_schema_fingerprint(self) -> String {
-        schema_fingerprint(&self.expected_input_schema())
+            Self::ArtifactsSearch => {
+                "964f29b4c9d7e241eb40b1e008bf38f07c3959aae1f785f9d4b6210fc1bd0925"
+            }
+            Self::SearchArd => "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
+            Self::SearchMarketplace => {
+                "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7"
+            }
+            Self::SearchSkillsSh => {
+                "cfb8b3b48d34ff9dbdd5f871c924a2d8de67aa4a352e5e43a3839b5cd39a554c"
+            }
+            Self::SourcesConfigure => {
+                "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4"
+            }
+            Self::SourcesDelete | Self::SourcesRefresh => {
+                "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724"
+            }
+            Self::UploadsCreate => {
+                "0494e00291f11c25b559db7e25a50761791f3d3d13bd411694cd304cbaf6d3e9"
+            }
+            Self::UploadsDelete | Self::UploadsGet => {
+                "81207c6d9931f2b06f5216d259e7657cf2235049ee95041e8e1a5ba827efe720"
+            }
+        }
     }
 }
 
@@ -222,19 +261,32 @@ impl ArtifactControlClient {
     /// Returns the shared API error taxonomy for transport, authorization,
     /// upstream status, or malformed envelopes.
     pub async fn execute(&self, operation: Operation, params: &Value) -> Result<Value, ApiError> {
+        self.execute_with_headers(operation, params, reqwest::header::HeaderMap::new())
+            .await
+    }
+
+    /// Execute one curated operation with exact request-local delegation headers.
+    pub async fn execute_with_headers(
+        &self,
+        operation: Operation,
+        params: &Value,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Value, ApiError> {
         let catalog: OperationCatalog = self
             .http
             .get_json_bounded("/api/operations", MAX_CONTROL_PLANE_RESPONSE_BYTES)
             .await?;
         let compatible = catalog.operations.iter().any(|definition| {
-            let input_schema = definition.get("inputSchema");
             let declared_fingerprint = definition.get("schemaFingerprint").and_then(Value::as_str);
-            let expected_fingerprint = operation.expected_schema_fingerprint();
+            // Three-way agreement: the fingerprint Depot declares, the
+            // fingerprint of the schema Depot actually serves, and the
+            // constant this client was built against must all match.
+            let served_fingerprint = definition.get("inputSchema").and_then(schema_fingerprint);
             definition.get("name").and_then(Value::as_str) == Some(operation.provider_name())
                 && definition.get("contractVersion").and_then(Value::as_u64)
                     == Some(OPERATION_CONTRACT_VERSION)
-                && declared_fingerprint == input_schema.map(schema_fingerprint).as_deref()
-                && declared_fingerprint == Some(expected_fingerprint.as_str())
+                && declared_fingerprint == Some(operation.expected_schema_fingerprint())
+                && served_fingerprint.as_deref() == declared_fingerprint
                 && definition
                     .pointer("/inputSchema/type")
                     .and_then(Value::as_str)
@@ -255,7 +307,12 @@ impl ArtifactControlClient {
         );
         let response: OperationEnvelope = self
             .http
-            .post_json_bounded(&path, params, MAX_CONTROL_PLANE_RESPONSE_BYTES)
+            .post_json_bounded_with_headers(
+                &path,
+                params,
+                headers,
+                MAX_CONTROL_PLANE_RESPONSE_BYTES,
+            )
             .await?;
         Ok(response.result)
     }
@@ -268,29 +325,45 @@ impl ArtifactControlClient {
         content_length: Option<u64>,
         content_type: &str,
     ) -> Result<Value, ApiError> {
+        self.upload_with_headers(
+            upload_id,
+            body,
+            content_length,
+            content_type,
+            reqwest::header::HeaderMap::new(),
+        )
+        .await
+    }
+
+    /// Upload opaque bytes with exact request-local delegation headers.
+    pub async fn upload_with_headers(
+        &self,
+        upload_id: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Value, ApiError> {
         let path = format!("/uploads/{}", HttpClient::encode_path_segment(upload_id));
         self.http
-            .put_body_bounded(
+            .put_body_bounded_with_headers(
                 &path,
                 body,
                 content_length,
                 content_type,
+                headers,
                 MAX_CONTROL_PLANE_RESPONSE_BYTES,
             )
             .await
     }
 }
 
-fn schema_fingerprint(schema: &Value) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(schema.to_string().as_bytes());
-    let digest = hasher.finalize();
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    encoded
+/// Depot's `schemaFingerprint`: lowercase SHA-256 hex of the canonical JSON
+/// (sorted keys, compact, integers only) of `inputSchema` alone. `None` when
+/// the served schema has no canonical form, which is treated as incompatible.
+#[must_use]
+pub fn schema_fingerprint(schema: &Value) -> Option<String> {
+    labby_primitives::canonical_json::fingerprint_hex(schema).ok()
 }
 
 #[cfg(test)]
@@ -307,7 +380,7 @@ mod tests {
         json!({
             "name": operation.provider_name(),
             "contractVersion": 1,
-            "schemaFingerprint": schema_fingerprint(&input_schema),
+            "schemaFingerprint": operation.expected_schema_fingerprint(),
             "inputSchema": input_schema,
             "outputSchema": {"type":"object"}
         })
@@ -408,7 +481,7 @@ mod tests {
             json!({
                 "name": "depot.system.status",
                 "contractVersion": 2,
-                "schemaFingerprint": valid_fingerprint.clone(),
+                "schemaFingerprint": valid_fingerprint,
                 "inputSchema": Operation::AuthorityStatus.expected_input_schema(),
                 "outputSchema": {"type":"object"}
             }),
@@ -469,7 +542,7 @@ mod tests {
         let definition = json!({
             "name": Operation::AuthorityStatus.provider_name(),
             "contractVersion": 1,
-            "schemaFingerprint": schema_fingerprint(&incompatible_schema),
+            "schemaFingerprint": schema_fingerprint(&incompatible_schema).unwrap(),
             "inputSchema": incompatible_schema,
             "outputSchema": {"type":"object"}
         });
@@ -490,46 +563,76 @@ mod tests {
 
     #[test]
     fn seals_every_product_operation_to_an_explicit_provider_operation() {
-        let operations = [
-            Operation::ArtifactsList,
-            Operation::ArtifactsGet,
-            Operation::ArtifactsSearch,
-            Operation::CandidatesList,
-            Operation::CandidatesIntake,
-            Operation::ArtifactsFollow,
-            Operation::ArtifactsFork,
-            Operation::ArtifactsSetPublication,
-            Operation::ArtifactsSetLicense,
-            Operation::SearchSkillsSh,
-            Operation::SearchArd,
-            Operation::SearchMarketplace,
-            Operation::McpRegistryList,
-            Operation::AcpRegistryList,
-            Operation::AuthorityStatus,
-            Operation::SourcesList,
-            Operation::SourcesConfigure,
-            Operation::SourcesDelete,
-            Operation::SourcesRefresh,
-            Operation::JobsStart,
-            Operation::JobsList,
-            Operation::JobsGet,
-            Operation::JobsCancel,
-            Operation::JobsRetry,
-            Operation::UploadsCreate,
-            Operation::UploadsGet,
-            Operation::UploadsDelete,
-            Operation::BundlesList,
-            Operation::BundlesGet,
-            Operation::BundlesCreate,
-            Operation::BundlesAddArtifact,
-            Operation::BundlesRemoveArtifact,
-            Operation::BundlesSetVisibility,
-            Operation::BundlesPublish,
-            Operation::BundlesDelete,
-        ];
-        let names = operations.map(Operation::provider_name);
-        let unique = names.into_iter().collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(unique.len(), operations.len());
+        let names = Operation::ALL
+            .iter()
+            .map(|operation| operation.provider_name())
+            .collect::<Vec<_>>();
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), Operation::ALL.len());
         assert!(unique.iter().all(|name| name.starts_with("depot.")));
+    }
+
+    #[test]
+    fn every_curated_operation_matches_the_depot_golden_catalog() {
+        let catalog: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        assert_eq!(catalog["contractVersion"], OPERATION_CONTRACT_VERSION);
+        assert_eq!(catalog["fingerprint"]["binds"], json!(["inputSchema"]));
+        let served = catalog["operations"].as_array().unwrap();
+        for operation in Operation::ALL {
+            let definition = served
+                .iter()
+                .find(|definition| definition["name"] == operation.provider_name())
+                .expect("every curated operation is present in the golden catalog");
+            let expected = operation.expected_schema_fingerprint();
+            assert_eq!(
+                definition["schemaFingerprint"].as_str(),
+                Some(expected),
+                "declared fingerprint drifted for {}",
+                operation.provider_name()
+            );
+            assert_eq!(
+                schema_fingerprint(&operation.expected_input_schema()).as_deref(),
+                Some(expected),
+                "expected schema does not hash to the pinned fingerprint for {}",
+                operation.provider_name()
+            );
+            assert_eq!(definition["contractVersion"], OPERATION_CONTRACT_VERSION);
+        }
+    }
+
+    #[test]
+    fn schema_fingerprint_is_canonical_and_rejects_floats() {
+        let schema = json!({"type":"object","properties":{"limit":{"type":"integer","maximum":200,"minimum":1}},"required":[],"additionalProperties":false});
+        let reordered = json!({"additionalProperties":false,"required":[],"properties":{"limit":{"minimum":1,"maximum":200,"type":"integer"}},"type":"object"});
+        assert_eq!(schema_fingerprint(&schema), schema_fingerprint(&reordered));
+        assert_eq!(schema_fingerprint(&schema).unwrap().len(), 64);
+        assert!(schema_fingerprint(&json!({"maximum": 1.5})).is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_served_schema_that_disagrees_with_its_declared_fingerprint() {
+        let server = MockServer::start().await;
+        // The declared fingerprint is the pinned constant, but the served
+        // schema is not the one it was computed from.
+        let definition = json!({
+            "name": Operation::AuthorityStatus.provider_name(),
+            "contractVersion": 1,
+            "schemaFingerprint": Operation::AuthorityStatus.expected_schema_fingerprint(),
+            "inputSchema": {"type":"object","properties":{"extra":{"type":"string"}},"required":[],"additionalProperties":false},
+            "outputSchema": {"type":"object"}
+        });
+        Mock::given(method("GET"))
+            .and(path("/api/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "operations": [definition]
+            })))
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), Auth::None).unwrap();
+        let error = ArtifactControlClient::new(http)
+            .execute(Operation::AuthorityStatus, &json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("schema-incompatible"));
     }
 }

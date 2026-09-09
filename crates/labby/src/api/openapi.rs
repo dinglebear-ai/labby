@@ -700,13 +700,15 @@ pub fn build_health_paths() -> Vec<(String, PathItem)> {
 
 /// Build `OpenAPI` paths for all service endpoints.
 ///
-/// Each service gets `POST /v1/{service}` with the `ActionRequest` body schema.
+/// Each service gets a `POST` dispatch path with the `ActionRequest` body
+/// schema. The path comes from the router's mount map
+/// (`api::router::service_dispatch_path`), never from the service name alone.
 #[must_use]
 pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> {
     let paths = service_names
         .iter()
         .map(|svc| {
-            let path = format!("/v1/{svc}");
+            let path = crate::api::router::service_dispatch_path(svc);
             let operation = OperationBuilder::new()
                 .tag(svc)
                 .summary(Some(format!("Dispatch action to {svc}")))
@@ -1655,9 +1657,17 @@ pub fn build_openapi_spec(
         .filter(|service| super::route_registry::service_has_http_surface(service.name))
         .cloned()
         .collect();
+    // Dedicated GET surfaces such as fs must not acquire fictitious POST routes.
+    let mounted: std::collections::BTreeSet<String> =
+        crate::api::route_registry::build_route_descriptors()
+            .into_iter()
+            .filter(|route| route.method == "POST")
+            .map(|route| route.path)
+            .collect();
     let service_names: Vec<String> = http_services
         .iter()
         .map(|service| service.name.to_string())
+        .filter(|name| mounted.contains(&crate::api::router::service_dispatch_path(name)))
         .collect();
 
     let injector = ActionSchemaInjector::new(&http_services);
@@ -1994,6 +2004,57 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].0, "/v1/gateway-alpha");
         assert_eq!(paths[1].0, "/v1/gateway-beta");
+        let mounted = build_service_paths(&[
+            "access".to_string(),
+            "dev_containers".to_string(),
+            "projects".to_string(),
+        ]);
+        assert_eq!(mounted[0].0, "/v1/access/admin");
+        assert_eq!(mounted[1].0, "/v1/dev-containers");
+        assert_eq!(mounted[2].0, "/v1/projects");
+    }
+
+    /// Every documented path must be a route the router actually mounts
+    /// (compared against the generated route inventory, with `{param}`
+    /// segments normalized). Documenting `/v1/access` while mounting
+    /// `/v1/access/admin` is the drift this guards.
+    #[test]
+    fn openapi_paths_are_a_subset_of_the_route_inventory() {
+        fn normalize(path: &str) -> String {
+            path.split('/')
+                .map(|segment| {
+                    if segment.starts_with('{') && segment.ends_with('}') {
+                        "{}"
+                    } else {
+                        segment
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        }
+        let registry = crate::registry::build_docs_registry();
+        let spec = build_openapi_spec(registry.services()).unwrap();
+        let spec: serde_json::Value = serde_json::from_str(&spec).unwrap();
+        let documented = spec["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|path| normalize(path))
+            .collect::<std::collections::BTreeSet<_>>();
+        let inventory = crate::api::route_registry::build_route_descriptors()
+            .into_iter()
+            .chain(crate::api::route_registry::build_integrated_trusted_host_route_descriptors())
+            .flat_map(|route| std::iter::once(route.path.clone()).chain(route.aliases.clone()))
+            .map(|path| normalize(&path))
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = documented
+            .difference(&inventory)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "OpenAPI documents paths the router does not mount: {missing:?}"
+        );
     }
 
     #[test]

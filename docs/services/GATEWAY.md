@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-07"
 ---
 
 # Gateway Management
@@ -127,6 +127,8 @@ Typical patch payloads:
 ## Agent Skills and Loadouts
 
 Agent Skills over MCP and reusable protected-route Loadouts are first-class Gateway control-plane surfaces. See [Agent Skills and Loadouts](../guides/SKILLS_AND_LOADOUTS.md) for the trust model, exposure semantics, CLI/API actions, route projection rules, graceful degradation, observability, WebUI behavior, and verification commands.
+
+Team-scoped `gateway.loadout.*` and `gateway.protected_route.*` actions act inside one explicitly selected Team: the HTTP API reads the `x-labby-team-id` header, MCP reads `params.team_id`, and the CLI sends its global `--team-id` flag as that header. See [Selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context) for the full per-surface list and validation rules.
 
 ## Gateway Code Mode
 

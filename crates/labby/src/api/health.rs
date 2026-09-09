@@ -56,6 +56,18 @@ pub struct HealthResponse {
     /// Private provider protocol accepted by the integrated profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_protocol: Option<&'static str>,
+    /// Whether the managed Depot authority projection is ready. Present only
+    /// when managed mode is configured. These probes are public, so the
+    /// structured readiness detail (lag, gap, watermark, key generation,
+    /// pending reason) is served on the authenticated `GET /v1/depot/status`
+    /// route instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authority_projection_ready: Option<bool>,
+}
+
+fn authority_projection_ready() -> Option<bool> {
+    crate::dispatch::depot::authority_projection::projection_readiness()
+        .map(|readiness| readiness.ready)
 }
 
 /// Liveness probe. Returns 200 as long as the process is running.
@@ -78,6 +90,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
             "standalone-gateway-v1"
         }),
         provider_protocol: integrated.then_some("1.0"),
+        authority_projection_ready: authority_projection_ready(),
     })
 }
 
@@ -94,6 +107,12 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     // feature-flag misconfiguration.
     if state.registry.services().is_empty() {
         pending.push("no services registered in tool registry".to_string());
+    }
+
+    if let Some(reason) =
+        crate::dispatch::depot::authority_projection::managed_projection_readiness_pending()
+    {
+        pending.push(reason);
     }
 
     // Predicate 2: when a gateway manager is wired, the pool must be present.
@@ -135,6 +154,7 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
                 pending: None,
                 capability_profile: None,
                 provider_protocol: None,
+                authority_projection_ready: authority_projection_ready(),
             }),
         )
     } else {
@@ -148,6 +168,7 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
                 pending: Some(pending),
                 capability_profile: None,
                 provider_protocol: None,
+                authority_projection_ready: authority_projection_ready(),
             }),
         )
     }
@@ -170,6 +191,22 @@ mod tests {
             Some("unraid-core-integrated-v1")
         );
         assert_eq!(response.0.provider_protocol, Some("1.0"));
+    }
+
+    /// The public probes never carry projection detail; a non-managed process
+    /// omits the field entirely rather than advertising internal state.
+    #[tokio::test]
+    async fn public_probes_expose_only_a_readiness_boolean() {
+        let response = health(State(AppState::new())).await;
+        let body = serde_json::to_value(&response.0).unwrap();
+        assert!(body.get("authority_projection").is_none());
+        assert!(
+            body.get("authority_projection_ready")
+                .is_none_or(serde_json::Value::is_boolean)
+        );
+        for key in ["watermark", "key_generation", "lag", "gap", "pending"] {
+            assert!(body.get(key).is_none(), "{key} leaked on /health");
+        }
     }
 
     /// Default `AppState` has no gateway manager wired and a populated registry

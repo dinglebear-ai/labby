@@ -56,6 +56,7 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     let mut registry = ToolRegistry::new();
     registry.register(service.clone());
     LabMcpServer {
+        installation_id: None,
         registry: Arc::new(registry),
         // Delegated built-in peers are protocol adapters, not access-policy
         // decision points or process lifecycle owners. Give them an explicit,

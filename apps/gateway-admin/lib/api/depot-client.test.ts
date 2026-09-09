@@ -161,6 +161,31 @@ test('sends destructive intent only when explicitly supplied', async () => {
   ])
 })
 
+test('accepts the optional contractVersion and schemaFingerprint operation fields and rejects malformed ones', async () => {
+  const fingerprint = 'a'.repeat(64)
+  const base = { name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object' as const, properties: {}, required: [], additionalProperties: false } }
+  await withFetch(json({ operations: [{ ...base, contractVersion: 1, schemaFingerprint: fingerprint }] }), async () => {
+    const [operation] = await depotOperations()
+    assert.equal(operation?.contractVersion, 1)
+    assert.equal(operation?.schemaFingerprint, fingerprint)
+  })
+  await withFetch(json({ operations: [base] }), async () => {
+    const [operation] = await depotOperations()
+    assert.equal(operation?.contractVersion, undefined)
+    assert.equal(operation?.schemaFingerprint, undefined)
+  })
+  for (const broken of [
+    { contractVersion: 0 },
+    { contractVersion: 1.5 },
+    { contractVersion: '1' },
+    { schemaFingerprint: 'A'.repeat(64) },
+    { schemaFingerprint: 'a'.repeat(63) },
+    { schemaFingerprint: 'sha256:' + 'a'.repeat(64) },
+  ]) {
+    await withFetch(json({ operations: [{ ...base, ...broken }] }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  }
+})
+
 test('accepts the full operation catalog contract bound', async () => {
   const operation = { name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object' as const } }
   await withFetch(json({ operations: Array.from({ length: 1000 }, (_, index) => ({ ...operation, name: `depot.operation.${index}` })) }), async () => {

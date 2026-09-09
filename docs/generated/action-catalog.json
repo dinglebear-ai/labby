@@ -1,11 +1,1018 @@
 [
   {
+    "service": "access",
+    "action": "access.gateway_credential.bind",
+    "description": "Bind a host-custodied credential to a Team upstream",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "upstream_name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "binding_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.gateway_credential.list",
+    "description": "List redacted Team Gateway credential bindings",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.gateway_credential.revoke",
+    "description": "Revoke a Team Gateway credential binding",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "upstream_name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.platform_admin.grant",
+    "description": "Grant platform administrator authority",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.platform_admin.revoke",
+    "description": "Revoke platform administrator authority",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.project.effective.list",
+    "description": "List effective project roles",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "caller_membership_projection",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.activate",
+    "description": "Activate a team",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.create",
+    "description": "Create a team",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.list",
+    "description": "List the caller's teams",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "caller_membership_projection",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.add",
+    "description": "Add a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.remove",
+    "description": "Remove a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.role.set",
+    "description": "Change a team member role",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.suspend",
+    "description": "Suspend a team member",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team.suspend",
+    "description": "Suspend a team",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.accept",
+    "description": "Accept a team invitation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "token",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.create",
+    "description": "Create a team invitation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "principal_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "token",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "ttl_seconds",
+        "ty": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_project.assign",
+    "description": "Assign a team to a project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "role",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "access",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "agents",
+    "action": "agents.create",
+    "description": "Create an Agent definition",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "content_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "repository_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "image_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "harness_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "loadout_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "catalog_generation",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.delete",
+    "description": "Delete an Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.delete",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.get",
+    "description": "Get a caller-visible Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.list",
+    "description": "List caller-visible Agents",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.run",
+    "description": "Start a pinned Agent session",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.status",
+    "description": "Read Agent session status",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.suspend",
+    "description": "Suspend an Agent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "agents.update",
+    "description": "Create the next immutable Agent revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "agents",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "artifacts",
     "action": "artifacts.activate",
     "description": "Activate an exact stored revision as a new generation",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -51,6 +1058,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -90,6 +1100,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -117,6 +1130,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -168,6 +1184,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -209,6 +1228,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -262,6 +1284,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -319,6 +1344,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -346,6 +1374,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -379,6 +1410,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -418,6 +1452,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "source",
@@ -457,6 +1494,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "sources",
@@ -498,6 +1538,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -531,6 +1574,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "cursor",
@@ -564,6 +1610,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -593,6 +1642,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -632,6 +1684,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "ArtifactAuthorityConnectionPage",
     "surface_availability": {
@@ -652,6 +1707,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -727,6 +1785,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -766,6 +1827,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -805,6 +1869,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "expected_library_version",
@@ -838,6 +1905,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -883,6 +1953,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "artifact_id",
@@ -934,6 +2007,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "query",
@@ -973,6 +2049,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1018,6 +2097,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1063,6 +2145,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1102,6 +2187,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1143,6 +2231,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1226,6 +2317,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1277,6 +2371,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -1310,6 +2407,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -1330,6 +2430,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -1359,6 +2462,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "browser_id",
@@ -1430,6 +2536,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "BrowserList",
     "surface_availability": {
@@ -1452,6 +2561,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "pairing_id",
@@ -1481,6 +2593,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "BrowserPairingList",
     "surface_availability": {
@@ -1503,6 +2618,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "browser_id",
@@ -1532,6 +2650,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "session_id",
@@ -1573,6 +2694,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "session_id",
@@ -1602,6 +2726,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "cursor",
@@ -1635,6 +2762,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "BrowserBridgeStatus",
     "surface_availability": {
@@ -1655,6 +2785,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -1675,6 +2808,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -1704,6 +2840,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1751,6 +2890,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1798,6 +2940,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1831,6 +2976,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1864,6 +3012,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1893,6 +3044,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1928,6 +3082,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -1975,6 +3132,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -2014,6 +3174,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -2034,6 +3197,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -2061,6 +3227,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "project_artifact_publish",
+    "required_capability": null,
+    "resource_family": "artifact_library",
     "params": [
       {
         "name": "filename",
@@ -2100,6 +3269,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -2120,6 +3292,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -2141,12 +3316,278 @@
     "builtin": true
   },
   {
+    "service": "dev_containers",
+    "action": "dev_containers.create",
+    "description": "Create from an approved template",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      },
+      {
+        "name": "template_id",
+        "ty": "string",
+        "required": true,
+        "description": "Administrator-approved template identifier"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "installation|team|project|personal",
+        "required": true,
+        "description": "Single durable owner scope"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner identifier resolved against caller authority"
+      },
+      {
+        "name": "secret_references",
+        "ty": "string[]",
+        "required": false,
+        "description": "Opaque secret references; secret material is never accepted"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.destroy",
+    "description": "Permanently destroy a Dev Container",
+    "destructive": true,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.delete",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.list",
+    "description": "List Dev Containers visible to the caller",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Exclusive instance identifier cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "string",
+        "required": false,
+        "description": "Page size from 1 through 100"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.reconcile",
+    "description": "Reconcile durable intent with the runtime",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.start",
+    "description": "Request a stopped Dev Container start",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.stop",
+    "description": "Request a Dev Container stop",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "dev_container",
+    "params": [
+      {
+        "name": "instance_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque Dev Container identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "dev_containers",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "dev_containers",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "doctor",
     "action": "access.check",
     "description": "Inspect access-control store readiness and safety without modifying it",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
@@ -2167,6 +3608,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "stream<Finding>",
     "surface_availability": {
@@ -2187,6 +3631,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "live",
@@ -2214,6 +3661,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -2236,6 +3686,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "probe_targets",
@@ -2263,6 +3716,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "app_url",
@@ -2308,6 +3764,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
@@ -2328,6 +3787,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -2355,6 +3817,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
@@ -2375,6 +3840,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "path",
@@ -2402,6 +3870,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "path",
@@ -2435,6 +3906,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -2455,6 +3929,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -2484,6 +3961,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "spec",
@@ -2519,6 +3999,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2548,6 +4031,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "GatewayClientView[]",
     "surface_availability": {
@@ -2570,6 +4056,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "CodeModeConfig",
     "surface_availability": {
@@ -2592,6 +4081,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "enabled",
@@ -2681,6 +4173,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "clients",
@@ -2716,6 +4211,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2745,6 +4243,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2774,6 +4275,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2803,6 +4307,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -2844,6 +4351,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstreams",
@@ -2897,6 +4407,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2926,6 +4439,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "all",
@@ -2967,6 +4483,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -2996,6 +4515,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "PendingImportView[]",
     "surface_availability": {
@@ -3018,6 +4540,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3047,6 +4572,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3100,6 +4628,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "ImportTombstoneView[]",
     "surface_availability": {
@@ -3122,6 +4653,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3175,6 +4709,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "ServerView[]",
     "surface_availability": {
@@ -3193,10 +4730,11 @@
     "action": "gateway.loadout.add",
     "description": "Add a reusable gateway loadout that narrows upstreams, services, Tools, Resources, Prompts, Skills, and Code Mode",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "loadout",
@@ -3213,7 +4751,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3222,10 +4760,11 @@
     "action": "gateway.loadout.get",
     "description": "Get one reusable gateway capability loadout",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3242,7 +4781,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3251,10 +4790,11 @@
     "action": "gateway.loadout.list",
     "description": "List reusable gateway capability loadouts, including Skills-over-MCP exposure policy",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [],
     "returns": "GatewayLoadoutConfig[]",
     "surface_availability": {
@@ -3264,7 +4804,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3273,10 +4813,11 @@
     "action": "gateway.loadout.list_state",
     "description": "List desired Loadouts with pending restart state compared with this process's mounted projections",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [],
     "returns": "GatewayLoadoutState[]",
     "surface_availability": {
@@ -3286,7 +4827,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3295,10 +4836,11 @@
     "action": "gateway.loadout.patch",
     "description": "Patch selected fields on a reusable gateway loadout without resetting unspecified capability gates or selections",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3321,7 +4863,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3330,10 +4872,11 @@
     "action": "gateway.loadout.remove",
     "description": "Remove an unreferenced reusable gateway loadout",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3350,7 +4893,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3359,10 +4902,11 @@
     "action": "gateway.loadout.stage_patch",
     "description": "Patch a mounted Loadout in durable config for the next Labby restart",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3385,7 +4929,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3394,10 +4938,11 @@
     "action": "gateway.loadout.stage_remove",
     "description": "Remove a Loadout from desired config after its protected-route references have also been staged away",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3414,7 +4959,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3423,10 +4968,11 @@
     "action": "gateway.loadout.stage_update",
     "description": "Persist a mounted Loadout replacement for the next Labby restart without changing the running route projection",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3449,7 +4995,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3458,10 +5004,11 @@
     "action": "gateway.loadout.update",
     "description": "Replace a reusable gateway loadout; active protected routes may require restart before changes can take effect",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3484,7 +5031,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3497,6 +5044,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3538,6 +5088,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3579,6 +5132,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3608,6 +5164,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3637,6 +5196,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -3672,6 +5234,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -3701,6 +5266,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -3736,6 +5304,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "url",
@@ -3765,6 +5336,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "resource",
@@ -3812,6 +5386,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -3841,6 +5418,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -3876,6 +5456,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -3905,6 +5488,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -3934,6 +5520,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -3965,10 +5554,11 @@
     "action": "gateway.protected_route.add",
     "description": "Add a Gateway-managed protected MCP route",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "route",
@@ -3985,7 +5575,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3994,10 +5584,11 @@
     "action": "gateway.protected_route.get",
     "description": "Get one Gateway-managed protected MCP route",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4014,7 +5605,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4023,10 +5614,11 @@
     "action": "gateway.protected_route.list",
     "description": "List Gateway-managed public MCP routes protected by Lab OAuth",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [],
     "returns": "ProtectedMcpRouteConfig[]",
     "surface_availability": {
@@ -4036,7 +5628,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4045,10 +5637,11 @@
     "action": "gateway.protected_route.list_state",
     "description": "List desired protected-route config with pending restart state compared with the routes mounted by this process",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "gateway",
     "params": [],
     "returns": "ProtectedMcpRouteState[]",
     "surface_availability": {
@@ -4058,7 +5651,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4067,10 +5660,11 @@
     "action": "gateway.protected_route.remove",
     "description": "Remove a Gateway-managed protected MCP route",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4087,7 +5681,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4096,10 +5690,11 @@
     "action": "gateway.protected_route.stage_add",
     "description": "Persist a gateway_subset protected route for the next Labby restart without pretending it is hot-mounted",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "route",
@@ -4116,7 +5711,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4125,10 +5720,11 @@
     "action": "gateway.protected_route.stage_remove",
     "description": "Persist removal of a gateway_subset protected route for the next Labby restart",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4145,7 +5741,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4154,10 +5750,11 @@
     "action": "gateway.protected_route.stage_update",
     "description": "Persist a protected-route update involving a gateway_subset for the next Labby restart",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4180,7 +5777,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4189,10 +5786,11 @@
     "action": "gateway.protected_route.test",
     "description": "Validate a proposed protected MCP route without saving it",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "route",
@@ -4209,7 +5807,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4218,10 +5816,11 @@
     "action": "gateway.protected_route.update",
     "description": "Replace a Gateway-managed protected MCP route",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4244,7 +5843,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4257,6 +5856,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}",
     "surface_availability": {
@@ -4279,6 +5881,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "GatewayCatalogDiff",
     "surface_availability": {
@@ -4301,6 +5906,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4328,6 +5936,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -4357,6 +5968,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -4386,6 +6000,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "GatewayServersDoc",
     "surface_availability": {
@@ -4408,6 +6025,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "service",
@@ -4437,6 +6057,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "service",
@@ -4466,6 +6089,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "service",
@@ -4501,6 +6127,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "upstream",
@@ -4530,6 +6159,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4559,6 +6191,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "SupportedServiceView[]",
     "surface_availability": {
@@ -4581,6 +6216,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4616,6 +6254,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "name",
@@ -4657,6 +6298,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "since_unix",
@@ -4758,6 +6402,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "since_unix",
@@ -4865,6 +6512,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -4894,6 +6544,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -4923,6 +6576,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -4952,6 +6608,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [],
     "returns": "ServerView[]",
     "surface_availability": {
@@ -4974,6 +6633,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -5003,6 +6665,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -5032,6 +6697,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -5067,6 +6735,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.manage",
+    "resource_family": "gateway",
     "params": [
       {
         "name": "id",
@@ -5106,6 +6777,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -5126,6 +6800,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -5153,6 +6830,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -5175,6 +6855,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -5210,6 +6893,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -5245,6 +6931,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -5280,6 +6969,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -5315,6 +7007,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -5360,6 +7055,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -5387,6 +7085,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -5407,6 +7108,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "services",
@@ -5434,6 +7138,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -5455,12 +7162,283 @@
     "builtin": false
   },
   {
+    "service": "projects",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "projects",
+    "action": "projects.activate",
+    "description": "Reactivate an archived Team-owned Project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "projects.archive",
+    "description": "Archive a Team-owned Project (reversible with projects.activate)",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "projects.create",
+    "description": "Create a Project owned by a Team the caller manages",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Human-readable Project name"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "projects.get",
+    "description": "Get one Team-owned Project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "projects.list",
+    "description": "List Projects visible to the caller through Team membership",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "team_project_membership",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "projects.update",
+    "description": "Rename a Team-owned Project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "project",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owning Team identifier"
+      },
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Project identifier"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Human-readable Project name"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "projects",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "server_logs",
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -5481,6 +7459,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -5510,6 +7491,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "limit",
@@ -5599,6 +7583,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "BootstrapOutcome",
     "surface_availability": {
@@ -5619,6 +7606,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SetupReport",
     "surface_availability": {
@@ -5641,6 +7631,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "force",
@@ -5670,6 +7663,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "DraftDiscardOutcome",
     "surface_availability": {
@@ -5692,6 +7688,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "DraftEntry[]",
     "surface_availability": {
@@ -5714,6 +7713,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "entries",
@@ -5749,6 +7751,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "force",
@@ -5776,6 +7781,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -5798,6 +7806,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "service",
@@ -5827,6 +7838,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "force",
@@ -5856,6 +7870,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "service",
@@ -5885,6 +7902,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "service",
@@ -5914,6 +7934,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "server_url",
@@ -5943,6 +7966,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "PluginExportOutcome",
     "surface_availability": {
@@ -5965,6 +7991,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "repair",
@@ -5994,6 +8023,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "PluginSyncOutcome",
     "surface_availability": {
@@ -6016,6 +8048,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "force",
@@ -6045,6 +8080,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "preferences",
@@ -6086,6 +8124,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SetupReport",
     "surface_availability": {
@@ -6106,6 +8147,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -6133,6 +8177,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "services",
@@ -6162,6 +8209,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "ServiceStatus[]",
     "surface_availability": {
@@ -6184,6 +8234,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "ServiceStatus[]",
     "surface_availability": {
@@ -6206,6 +8259,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SettingsState",
     "surface_availability": {
@@ -6228,6 +8284,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "entries",
@@ -6257,6 +8316,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "entries",
@@ -6284,6 +8346,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "EnvSettingSpec[]",
     "surface_availability": {
@@ -6304,6 +8369,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SettingsSchema",
     "surface_availability": {
@@ -6326,6 +8394,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "section",
@@ -6355,6 +8426,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "services.built_in_upstream_apis_enabled",
@@ -6384,6 +8458,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SetupSnapshot",
     "surface_availability": {
@@ -6406,6 +8483,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "service",
@@ -6433,6 +8513,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -6453,6 +8536,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -6482,6 +8568,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6529,6 +8618,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6564,6 +8656,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6591,6 +8686,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "SnippetList",
     "surface_availability": {
@@ -6613,6 +8711,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "execution_id",
@@ -6666,6 +8767,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6695,6 +8799,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6736,6 +8843,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "name",
@@ -6769,6 +8879,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -6789,6 +8902,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -6818,6 +8934,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -6865,6 +8984,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -6898,6 +9020,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -6927,6 +9052,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -6960,6 +9088,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -6980,6 +9111,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -7007,12 +9141,27 @@
     "destructive": true,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.delete",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
         "ty": "string",
         "required": true,
         "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "Deleted",
@@ -7034,6 +9183,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
@@ -7046,6 +9198,18 @@
         "ty": "string",
         "required": true,
         "description": "AccessStore-resolved durable PrincipalId"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "StashGrant",
@@ -7067,6 +9231,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
@@ -7085,6 +9252,18 @@
         "ty": "integer",
         "required": false,
         "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "GrantPage",
@@ -7106,6 +9285,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
@@ -7118,6 +9300,18 @@
         "ty": "string",
         "required": true,
         "description": "Opaque grant ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "Revoked",
@@ -7139,6 +9333,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
     "params": [
       {
         "name": "cursor",
@@ -7151,6 +9348,18 @@
         "ty": "integer",
         "required": false,
         "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "FilePage",
@@ -7172,12 +9381,27 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
         "ty": "string",
         "required": true,
         "description": "Opaque immutable file ID"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "StashFile",
@@ -7199,6 +9423,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "stash",
     "params": [
       {
         "name": "file_id",
@@ -7211,6 +9438,18 @@
         "ty": "string",
         "required": true,
         "description": "New display filename"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "StashFile",
@@ -7232,6 +9471,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
     "params": [
       {
         "name": "query",
@@ -7250,6 +9492,18 @@
         "ty": "integer",
         "required": false,
         "description": "Page size from 1 to the configured maximum"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
       }
     ],
     "returns": "FilePage",
@@ -7271,7 +9525,23 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
-    "params": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
     "returns": "StashStats",
     "surface_availability": {
       "cli": false,
@@ -7285,12 +9555,284 @@
     "builtin": false
   },
   {
+    "service": "tasks",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "tasks",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.cancel",
+    "description": "Cancel an Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.create",
+    "description": "Create an immutable Agent Task intent",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input_digest",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.get",
+    "description": "Get a caller-visible Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.list",
+    "description": "List caller-visible Agent Tasks",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.queue",
+    "description": "Queue an Agent Task",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.result",
+    "description": "Read an Agent Task result",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "task",
+    "params": [
+      {
+        "name": "task_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
     "service": "uploads",
     "action": "help",
     "description": "Show service actions",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -7311,6 +9853,9 @@
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "action",
@@ -7340,6 +9885,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -7375,6 +9923,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",
@@ -7410,6 +9961,9 @@
     "required_scopes": [
       "lab:admin"
     ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
     "params": [
       {
         "name": "connection_id",

@@ -25,11 +25,13 @@ pub(crate) enum FileStashBlockedReason {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FileStashStatus {
+    Recovering,
     Ready,
     Blocked(FileStashBlockedReason),
     Shutdown,
 }
 enum State {
+    Recovering(FileStashStore),
     Ready(FileStashStore),
     Blocked(FileStashBlockedReason),
     Shutdown,
@@ -111,43 +113,31 @@ impl FileStashRuntime {
                 Ok((store, handle, tmp, blob_dir)) => {
                     let blob_store =
                         BlobStore::new(tmp, blob_dir, store.clone(), preferences.clone());
-                    if let Err(error) = blob_store.recover_pending().await {
-                        tracing::warn!(?error, "file stash recovery blocked initialization");
-                        return Self {
-                            root: Arc::new(root),
-                            _root_handle: Some(Arc::new(handle)),
-                            state: Arc::new(Mutex::new(State::Blocked(map_store_error(error)))),
-                            blobs: None,
-                            janitor_admission: Arc::new(Semaphore::new(1)),
-                            janitor_cancel: tokio_util::sync::CancellationToken::new(),
-                            janitor_task: Mutex::new(None),
-                            page_limit,
-                            max_query_bytes,
-                        };
-                    }
-                    let task = spawn_janitor(
+                    let state = Arc::new(Mutex::new(State::Recovering(store.clone())));
+                    let task = spawn_recovery_and_janitor(
                         blob_store.clone(),
+                        Arc::clone(&state),
                         Arc::clone(&admission),
                         cancel.clone(),
                         std::time::Duration::from_secs(preferences.janitor_interval_seconds),
                         std::time::Duration::from_secs(preferences.janitor_backoff_max_seconds),
                     );
-                    (
-                        State::Ready(store),
-                        Some(Arc::new(handle)),
-                        Some(blob_store),
-                        Some(task),
-                    )
+                    (state, Some(Arc::new(handle)), Some(blob_store), Some(task))
                 }
                 Err(reason) => {
                     tracing::warn!(?reason, "file stash runtime initialization blocked");
-                    (State::Blocked(reason), None, None, None)
+                    (
+                        Arc::new(Mutex::new(State::Blocked(reason))),
+                        None,
+                        None,
+                        None,
+                    )
                 }
             };
             Self {
                 root: Arc::new(root),
                 _root_handle: root_handle,
-                state: Arc::new(Mutex::new(state)),
+                state,
                 blobs,
                 janitor_admission: admission,
                 janitor_cancel: cancel,
@@ -165,24 +155,53 @@ impl FileStashRuntime {
     }
     pub(crate) async fn status(&self) -> FileStashStatus {
         match &*self.state.lock().await {
+            State::Recovering(_) => FileStashStatus::Recovering,
             State::Ready(_) => FileStashStatus::Ready,
             State::Blocked(reason) => FileStashStatus::Blocked(*reason),
             State::Shutdown => FileStashStatus::Shutdown,
         }
     }
+    #[cfg(test)]
+    pub(crate) async fn wait_for_recovery(&self) -> FileStashStatus {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = self.status().await;
+                if status != FileStashStatus::Recovering {
+                    return status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("File Stash recovery did not settle")
+    }
     pub(crate) async fn store(&self) -> Result<FileStashStore, FileStashBlockedReason> {
-        match &*self.state.lock().await {
-            State::Ready(store) => Ok(store.clone()),
-            State::Blocked(reason) => Err(*reason),
-            State::Shutdown => Err(FileStashBlockedReason::Unavailable),
+        #[cfg(test)]
+        if self.status().await == FileStashStatus::Recovering {
+            self.wait_for_recovery().await;
         }
+        resolve_store(&*self.state.lock().await)
+    }
+
+    /// Production resolution without any recovery wait: a store that is still
+    /// recovering is unavailable to callers, never handed out early.
+    #[cfg(test)]
+    pub(crate) async fn store_without_waiting(
+        &self,
+    ) -> Result<FileStashStore, FileStashBlockedReason> {
+        resolve_store(&*self.state.lock().await)
     }
     pub(crate) async fn blob_store(&self) -> Result<BlobStore, FileStashBlockedReason> {
+        #[cfg(test)]
+        if self.status().await == FileStashStatus::Recovering {
+            self.wait_for_recovery().await;
+        }
         match self.status().await {
             FileStashStatus::Ready => self
                 .blobs
                 .clone()
                 .ok_or(FileStashBlockedReason::Unavailable),
+            FileStashStatus::Recovering => Err(FileStashBlockedReason::Unavailable),
             FileStashStatus::Blocked(reason) => Err(reason),
             FileStashStatus::Shutdown => Err(FileStashBlockedReason::Unavailable),
         }
@@ -196,7 +215,7 @@ impl FileStashRuntime {
     }
     pub(crate) async fn shutdown(&self) {
         let store = match &*self.state.lock().await {
-            State::Ready(store) => Some(store.clone()),
+            State::Recovering(store) | State::Ready(store) => Some(store.clone()),
             State::Blocked(_) | State::Shutdown => None,
         };
         self.janitor_admission.close();
@@ -217,7 +236,7 @@ impl FileStashRuntime {
             }
         }
         if let Some(store) = match &*self.state.lock().await {
-            State::Ready(store) => Some(store.clone()),
+            State::Recovering(store) | State::Ready(store) => Some(store.clone()),
             State::Blocked(_) | State::Shutdown => None,
         } {
             store.close();
@@ -229,14 +248,39 @@ impl FileStashRuntime {
     }
 }
 
-fn spawn_janitor(
+fn spawn_recovery_and_janitor(
     blobs: BlobStore,
+    state: Arc<Mutex<State>>,
     admission: Arc<Semaphore>,
     cancel: tokio_util::sync::CancellationToken,
     interval: std::time::Duration,
     max_backoff: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let recovery = tokio::select! {
+            () = cancel.cancelled() => return,
+            result = blobs.recover() => result,
+        };
+        match recovery {
+            Ok(()) => {
+                let mut current = state.lock().await;
+                if let State::Recovering(store) = &*current {
+                    *current = State::Ready(store.clone());
+                } else {
+                    return;
+                }
+                drop(current);
+            }
+            Err(error) => {
+                tracing::warn!(?error, "file stash recovery blocked initialization");
+                blobs.close_store();
+                let mut current = state.lock().await;
+                if matches!(&*current, State::Recovering(_)) {
+                    *current = State::Blocked(map_store_error(error));
+                }
+                return;
+            }
+        }
         if let Err(error) = blobs.scrub_integrity(cancel.clone()).await {
             tracing::warn!(?error, "file stash background integrity scrub failed");
         }
@@ -247,7 +291,12 @@ fn spawn_janitor(
                 () = tokio::time::sleep(delay) => {
                     let Ok(_permit) = Arc::clone(&admission).try_acquire_owned() else { continue };
                     match blobs.cleanup_expired().await {
-                        Ok(_) => delay = interval,
+                        Ok(_) => {
+                            if let Err(error) = blobs.scrub_integrity(cancel.clone()).await {
+                                tracing::warn!(?error, "file stash background hygiene pass failed");
+                            }
+                            delay = interval;
+                        }
                         Err(error) => {
                             tracing::warn!(?error, "file stash janitor pass failed");
                             delay = next_janitor_delay(delay, interval, max_backoff);
@@ -257,6 +306,16 @@ fn spawn_janitor(
             }
         }
     })
+}
+
+/// Non-blocking state resolution shared by the production `store()` path.
+fn resolve_store(state: &State) -> Result<FileStashStore, FileStashBlockedReason> {
+    match state {
+        State::Ready(store) => Ok(store.clone()),
+        State::Recovering(_) => Err(FileStashBlockedReason::Unavailable),
+        State::Blocked(reason) => Err(*reason),
+        State::Shutdown => Err(FileStashBlockedReason::Unavailable),
+    }
 }
 
 fn next_janitor_delay(
@@ -613,13 +672,13 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let root = root(&temp, "stash");
         let runtime = FileStashRuntime::initialize(root.clone()).await;
-        assert_eq!(runtime.status().await, FileStashStatus::Ready);
+        assert_eq!(runtime.wait_for_recovery().await, FileStashStatus::Ready);
         runtime.shutdown().await;
         assert_eq!(runtime.status().await, FileStashStatus::Shutdown);
         assert_eq!(
             FileStashRuntime::initialize(root.clone())
                 .await
-                .status()
+                .wait_for_recovery()
                 .await,
             FileStashStatus::Ready
         );
@@ -627,6 +686,92 @@ mod tests {
         assert_eq!(
             FileStashRuntime::initialize(root).await.status().await,
             FileStashStatus::Blocked(FileStashBlockedReason::BackupMismatch)
+        );
+    }
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn background_recovery_is_observable_and_fails_closed_until_complete() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = root(&temp, "stash");
+        let initial = FileStashRuntime::initialize(root.clone()).await;
+        assert_eq!(initial.wait_for_recovery().await, FileStashStatus::Ready);
+        initial.shutdown().await;
+        std::fs::write(root.join("tmp/recovery.pause"), b"pause").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            root.join("tmp/recovery.pause"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let restarted = FileStashRuntime::initialize(root).await;
+        assert_eq!(restarted.status().await, FileStashStatus::Recovering);
+        assert!(matches!(
+            &*restarted.state.lock().await,
+            State::Recovering(_)
+        ));
+        // The production resolution never waits: while recovery is in
+        // progress every caller is refused with Unavailable.
+        assert!(matches!(
+            restarted.store_without_waiting().await,
+            Err(FileStashBlockedReason::Unavailable)
+        ));
+
+        super::super::blob::TEST_RECOVERY_RESUME.notify_one();
+        assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);
+        assert!(restarted.store().await.is_ok());
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn ready_precedes_bounded_orphan_hygiene_and_shutdown_cancels_future_passes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = root(&temp, "stash");
+        let initial = FileStashRuntime::initialize(root.clone()).await;
+        assert_eq!(initial.wait_for_recovery().await, FileStashStatus::Ready);
+        initial.shutdown().await;
+
+        let first_orphan = root.join("blobs/01J00000000000000000000000");
+        std::fs::write(&first_orphan, b"orphan").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&first_orphan, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let restarted = FileStashRuntime::initialize_with_interval(
+            root.clone(),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        // Readiness is published by the recovery pass itself. Exhaustive
+        // hygiene runs behind it, so the transition must not wait for a
+        // janitor tick. Timing the transition proves that without racing the
+        // scrub, which may legitimately finish before the next statement.
+        let ready_at = std::time::Instant::now();
+        assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);
+        assert!(
+            ready_at.elapsed() < std::time::Duration::from_millis(500),
+            "exhaustive orphan hygiene must not delay the Ready transition"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while first_orphan.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("bounded janitor cadence did not remove orphan");
+
+        // `shutdown` cancels the token and joins the janitor before it
+        // returns, so an orphan created afterwards can only survive if no
+        // further hygiene pass runs.
+        restarted.shutdown().await;
+        assert_eq!(restarted.status().await, FileStashStatus::Shutdown);
+        let cancelled_orphan = root.join("blobs/01J00000000000000000000001");
+        std::fs::write(&cancelled_orphan, b"keep after shutdown").unwrap();
+        std::fs::set_permissions(&cancelled_orphan, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+        assert!(
+            cancelled_orphan.exists(),
+            "shutdown must cancel later hygiene passes"
         );
     }
     #[tokio::test]
@@ -684,7 +829,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let stash_root = root(&temp, "stash");
         let runtime = FileStashRuntime::initialize(stash_root.clone()).await;
-        assert_eq!(runtime.status().await, FileStashStatus::Ready);
+        assert_eq!(runtime.wait_for_recovery().await, FileStashStatus::Ready);
         runtime.shutdown().await;
         std::fs::remove_file(stash_root.join("metadata.sqlite3")).unwrap();
         let target = temp.path().join("victim");
@@ -790,7 +935,10 @@ mod tests {
         let runtime = FileStashRuntime::initialize(root.clone()).await;
         runtime.shutdown().await;
         let connection = rusqlite::Connection::open(root.join("metadata.sqlite3")).unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
+        let future = super::super::schema::SCHEMA_VERSION + 1;
+        connection
+            .pragma_update(None, "user_version", future)
+            .unwrap();
         drop(connection);
         assert_eq!(
             FileStashRuntime::initialize(root.clone())
@@ -804,7 +952,7 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            2
+            future
         );
     }
 

@@ -836,7 +836,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn store_accepts_private_root_below_verified_macos_var_alias() {
-        let data = tempdir().unwrap();
+        // Exercise the system alias even when the test runner selects a
+        // different TMPDIR for its ordinary fixtures.
+        let data = tempfile::tempdir_in("/var/tmp").unwrap();
         let store = ArtifactStore::new(data.path().join("store")).unwrap();
 
         assert!(store.root().starts_with("/private/var"));

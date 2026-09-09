@@ -38,6 +38,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 
@@ -72,6 +75,9 @@ Options:
       --host <HOST>
           Bind host for the HTTP transport
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --port <PORT>
           Bind port for the HTTP transport
 
@@ -101,6 +107,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -141,6 +150,9 @@ Options:
       --log-level <LOG_LEVEL>
           Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -169,6 +181,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -193,6 +208,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -216,6 +234,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -247,6 +268,9 @@ Options:
       --route <ROUTE>
           Protected MCP public route path, e.g. /telemetry
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --backend-url <BACKEND_URL>
           Optional private backend origin for backend-leak probe, e.g. `http://mcp-backend:3100`
 
@@ -270,6 +294,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -309,6 +336,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -330,6 +360,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -350,6 +383,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -384,6 +420,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -415,6 +454,9 @@ Options:
 
       --container <CONTAINER>
           Explicit Incus container name. Auto-detects a running Labby container otherwise
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -465,6 +507,9 @@ Options:
       --dry-run
           Print the default Incus/provisioning plan and do not mutate anything
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -y, --yes
           Confirm provisioning without prompting
 
@@ -504,6 +549,9 @@ Options:
       --no-browser
           Do not attempt to open the browser
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --smoke
           Smoke-test mode: print the state machine snapshot as JSON and exit
 
@@ -532,6 +580,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -558,6 +609,9 @@ Options:
 
       --dry-run
           Print what would be dispatched without executing
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -600,6 +654,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -629,6 +686,9 @@ Options:
 
       --organization-name <ORGANIZATION_NAME>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --project-name <PROJECT_NAME>
 
@@ -675,6 +735,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -698,6 +761,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -729,6 +795,9 @@ Options:
       --revoke
 
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -752,6 +821,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -789,6 +861,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -819,6 +894,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -839,6 +917,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -867,6 +948,9 @@ Options:
   -y, --yes
           Confirm installation and service start
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -887,6 +971,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -915,6 +1002,9 @@ Options:
   -y, --yes
           Confirm service restart
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -939,6 +1029,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -962,6 +1055,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -999,6 +1095,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1019,6 +1118,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1043,6 +1145,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1071,6 +1176,9 @@ Options:
       --dry-run
           Print what would be dispatched without executing
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1091,6 +1199,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1116,6 +1227,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1137,6 +1251,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1157,6 +1274,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1191,6 +1311,9 @@ Options:
 
       --path <PATH>
           MCP HTTP path to persist
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --port <PORT>
           External Tailscale port, or `random`
@@ -1248,6 +1371,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1273,6 +1399,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1305,6 +1434,9 @@ Options:
 
       --dry-run
           Print the changes without mutating Incus
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -y, --yes
           Confirm applying the backup policy without prompting
@@ -1347,6 +1479,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1380,6 +1515,9 @@ Options:
 
       --ssh-config <SSH_CONFIG>
           Host SSH config to read
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --key-path <KEY_PATH>
           Private key path inside the container
@@ -1447,6 +1585,9 @@ Options:
       --ssh-config <SSH_CONFIG>
           Host SSH config to read
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --key-path <KEY_PATH>
           Private key path inside the container
 
@@ -1506,6 +1647,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1537,6 +1681,9 @@ Options:
       --dry-run
           Print what would be dispatched without executing
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1567,6 +1714,9 @@ Options:
 
       --dry-run
           Print what would be dispatched without executing
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1606,6 +1756,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1635,6 +1788,9 @@ Options:
 
       --profile-name <PROFILE_NAME>
           Incus profile name (default: labby-gateway)
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --backup-config <BACKUP_CONFIG>
           Incus snapshot policy YAML path; defaults to the embedded policy
@@ -1707,6 +1863,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --web-assets-dir <WEB_ASSETS_DIR>
           Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out
 
@@ -1772,6 +1931,9 @@ Options:
       --no-incus-sync
           Do not sync the updated binary into an Incus container
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --no-web-assets
           Do not update or clear the Incus filesystem web asset directory
 
@@ -1817,6 +1979,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1840,6 +2005,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1865,6 +2033,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1888,6 +2059,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1927,6 +2101,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -1972,6 +2149,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -1992,6 +2172,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2018,6 +2201,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2041,6 +2227,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2071,6 +2260,9 @@ Options:
 
       --command <COMMAND>
           Stdio command to launch for a local MCP server (mutually exclusive with --url)
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --arg <ARGS>
           Additional arguments passed to the stdio command (repeat for multiple)
@@ -2127,6 +2319,9 @@ Options:
       --clear-url
           Clear the HTTP(S) URL from this gateway
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --command <COMMAND>
           New stdio command for a local MCP server
 
@@ -2181,6 +2376,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2207,6 +2405,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2227,6 +2428,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2252,6 +2456,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2295,6 +2502,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2315,6 +2525,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2340,6 +2553,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2370,6 +2586,9 @@ Options:
 
       --public-host <PUBLIC_HOST>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --public-path <PUBLIC_PATH>
 
@@ -2441,6 +2660,9 @@ Options:
       --public-host <PUBLIC_HOST>
 
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --public-path <PUBLIC_PATH>
 
 
@@ -2508,6 +2730,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2537,6 +2762,9 @@ Options:
 
       --public-host <PUBLIC_HOST>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --public-path <PUBLIC_PATH>
 
@@ -2615,6 +2843,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2635,6 +2866,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2660,6 +2894,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2694,6 +2931,9 @@ Options:
 
       --service <SERVICES>
           Built-in Lab services selected by this Loadout. Repeat or comma-separate
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --no-tools
           Hide direct MCP Tools on this Loadout
@@ -2743,6 +2983,9 @@ Options:
 
       --clear-description
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --upstream <UPSTREAMS>
           Replace upstream selection. Repeat or comma-separate
@@ -2802,6 +3045,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2835,6 +3081,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2865,6 +3114,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -2893,6 +3145,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -2924,6 +3179,9 @@ Options:
 
       --wait
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -2959,6 +3217,9 @@ Options:
       --wait
 
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
 
@@ -2992,6 +3253,9 @@ Options:
 
       --wait
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -3027,6 +3291,9 @@ Options:
       --wait
 
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
 
@@ -3057,6 +3324,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3091,6 +3361,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3121,6 +3394,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3153,6 +3429,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3180,6 +3459,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3211,6 +3493,9 @@ Options:
 
       --dry-run
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3249,6 +3534,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3269,6 +3557,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3309,6 +3600,9 @@ Options:
       --include-existing
           Also show servers already present in the gateway config
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3338,6 +3632,9 @@ Options:
 
       --clients <CLIENTS>
           Limit discovery to specific client kinds (comma-separated)
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -y, --yes
           Skip confirmation for the destructive config import
@@ -3369,6 +3666,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3389,6 +3689,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3421,6 +3724,9 @@ Options:
       --dry-run
           Print what would be done without executing
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3451,6 +3757,9 @@ Options:
 
       --dry-run
           Print what would be done without executing
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3485,6 +3794,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3514,6 +3826,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3534,6 +3849,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3556,6 +3874,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3576,6 +3897,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3604,6 +3928,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3624,6 +3951,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3646,6 +3976,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3666,6 +3999,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3705,6 +4041,9 @@ Options:
 
       --file <FILE>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3749,6 +4088,9 @@ Options:
       --all
 
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --provider <PROVIDER>
           [default: deterministic]
           [possible values: deterministic, claude, codex]
@@ -3789,6 +4131,9 @@ Options:
 
       --metadata-hash <METADATA_HASH>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -y, --yes
 
@@ -3834,6 +4179,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3857,6 +4205,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3886,6 +4237,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3910,6 +4264,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -3939,6 +4296,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -3963,6 +4323,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4002,6 +4365,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4028,6 +4394,9 @@ Options:
 
       --until-unix <UNTIL_UNIX>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --upstream <UPSTREAM>
 
@@ -4093,6 +4462,9 @@ Options:
 
       --until-unix <UNTIL_UNIX>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --upstream <UPSTREAM>
 
@@ -4187,6 +4559,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4207,6 +4582,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4232,6 +4610,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4260,6 +4641,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4295,6 +4679,9 @@ Options:
       --description <DESCRIPTION>
           Human-readable snippet description for generated frontmatter
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -f, --force
           Overwrite an existing user snippet
 
@@ -4328,6 +4715,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4363,6 +4753,9 @@ Options:
       --dry-run
           Show what would be removed without deleting it
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4393,6 +4786,9 @@ Options:
 
       --param <KEY=VALUE>
           Input values passed to the snippet as key=value pairs
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4434,6 +4830,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -4460,6 +4859,9 @@ Options:
 
       --limit <LIMIT>
           Maximum number of entries to return
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4492,6 +4894,9 @@ Options:
       --limit <LIMIT>
           Maximum number of matches to return
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4517,6 +4922,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4541,6 +4949,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4580,6 +4991,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4609,6 +5023,9 @@ Options:
 
       --port <PORT>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4640,6 +5057,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4660,6 +5080,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4690,6 +5113,9 @@ Options:
   -y, --yes
           Skip confirmation for this destructive action
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -4719,6 +5145,9 @@ Options:
 
       --description <DESCRIPTION>
 
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --disabled
 
@@ -4752,6 +5181,9 @@ Options:
   -y, --yes
           Skip confirmation for this destructive action
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -4776,6 +5208,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
@@ -4799,6 +5234,9 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -4861,6 +5299,9 @@ Options:
           One-run static bearer token; implies bearer auth
 
           [env: LABBY_PROXY_BEARER_TOKEN]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --bearer-token-stdin
           Read a one-run static bearer token from stdin; implies bearer auth

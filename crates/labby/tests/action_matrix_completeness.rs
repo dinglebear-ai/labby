@@ -12,11 +12,237 @@ use support::action_matrix::{
     PersistenceClass, ScenarioKind, ScenarioOwner, Surface, catalog_map, intent_map,
     intent_map_from, intents, validate_intent_shape,
 };
+use support::authority_matrix::{
+    DEPOT_OPERATIONS, OperationClass, OwnerKind, ResourceFamily, classify_labby,
+    depot_fixture_operation_names, depot_snapshot_operation_names, duplicate_depot_operations,
+};
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
+const AUTHORITY_MATRIX: &str =
+    include_str!("../../../docs/access-control/authority-matrix-v1.json");
+const AUTHORITY_EXPECTATIONS: &str = include_str!("fixtures/authority_action_expectations.json");
 
 fn catalog() -> Vec<CatalogAction> {
     serde_json::from_str(ACTION_CATALOG).expect("generated action catalog must parse")
+}
+
+/// Owner scope names published by `docs/access-control/authority-matrix-v1.json`.
+fn owner_scope(owner: OwnerKind) -> &'static str {
+    match owner {
+        OwnerKind::Installation => "installation",
+        OwnerKind::Team => "team",
+        OwnerKind::Project => "project",
+        OwnerKind::Personal => "personal",
+    }
+}
+
+/// Owner scopes the published v1 authority matrix allows for each service,
+/// resolved through `serviceClassifications[].resourceFamily` ->
+/// `resourceFamilies[].ownerScopes`. This is a hand-maintained product
+/// document, independent of the test-side `classify_labby` table.
+fn published_owner_scopes() -> BTreeMap<String, BTreeSet<String>> {
+    let matrix: Value = serde_json::from_str(AUTHORITY_MATRIX).expect("authority matrix parses");
+    let families = matrix["resourceFamilies"]
+        .as_object()
+        .expect("resource families");
+    matrix["serviceClassifications"]
+        .as_array()
+        .expect("service classifications")
+        .iter()
+        .map(|entry| {
+            let service = entry["service"].as_str().expect("service").to_owned();
+            let family = entry["resourceFamily"].as_str().expect("family");
+            let scopes = families[family]["ownerScopes"]
+                .as_array()
+                .expect("owner scopes")
+                .iter()
+                .map(|scope| scope.as_str().expect("scope").to_owned())
+                .collect();
+            (service, scopes)
+        })
+        .collect()
+}
+
+/// Per-principal allow/deny expectations, keyed by `service:action`, from the
+/// reviewed fixture `fixtures/authority_action_expectations.json`.
+fn expected_team_member_decisions() -> BTreeMap<String, bool> {
+    let fixture: Value =
+        serde_json::from_str(AUTHORITY_EXPECTATIONS).expect("authority expectations parse");
+    fixture["actions"]
+        .as_object()
+        .expect("actions object")
+        .iter()
+        .map(|(key, row)| {
+            (
+                key.clone(),
+                row["team_member"].as_str().expect("team_member decision") == "allow",
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn every_registered_action_has_an_authority_classification() {
+    let catalog = catalog();
+    let unclassified = catalog
+        .iter()
+        .filter(|action| classify_labby(action).is_none())
+        .map(CatalogAction::key)
+        .collect::<Vec<_>>();
+    assert!(
+        unclassified.is_empty(),
+        "registered actions lack authority classification: {unclassified:#?}"
+    );
+
+    let published_scopes = published_owner_scopes();
+    let team_member_allowed = expected_team_member_decisions();
+    for action in &catalog {
+        let classification = classify_labby(action).expect("checked above");
+        assert!(
+            !classification.owners.is_empty(),
+            "{} has no owner kind",
+            action.key()
+        );
+
+        // Owner kinds are checked against the published v1 authority matrix
+        // (an independent product document) instead of the previous
+        // self-referential rule "non-platform families always carry
+        // Team/Project/Personal", which merely restated how the test table
+        // was written.
+        let published = published_scopes.get(&action.service).unwrap_or_else(|| {
+            panic!("{} has no published authority classification", action.key())
+        });
+        for owner in classification.owners {
+            assert!(
+                published.contains(owner_scope(*owner)),
+                "{}: owner {owner:?} is not a published owner scope for service {}",
+                action.key(),
+                action.service
+            );
+        }
+        if classification.resource == ResourceFamily::Platform {
+            assert_eq!(classification.owners, [OwnerKind::Installation]);
+            assert!(!classification.delegated);
+        }
+
+        // The operation class is derived from the catalog's
+        // `required_capability` column. The previous assertion
+        // `destructive => Delete` compared the class against the very flag it
+        // had been derived from. It is replaced by two cross-column checks:
+        // (1) for evaluator-backed actions, the `destructive` flag (declared on
+        // the ActionSpec) must agree with a capability class that can lose
+        // state, and (2) `requires_admin` (surface policy) must be true exactly
+        // when the evaluator demands a platform-scoped capability.
+        if action.authorization_boundary == "resource_capability" {
+            if action.destructive {
+                assert!(
+                    matches!(
+                        classification.operation,
+                        OperationClass::Delete | OperationClass::Administer
+                    ),
+                    "{}: destructive action must demand a manage/delete capability, got {:?} from {:?}",
+                    action.key(),
+                    classification.operation,
+                    action.required_capability
+                );
+            }
+            assert_eq!(
+                action.requires_admin,
+                action.required_capability.as_deref() == Some("platform.manage"),
+                "{}: requires_admin must track the platform.manage capability",
+                action.key()
+            );
+        }
+
+        // The `final_boundary_reauthorization` flag used to be asserted equal
+        // to `!builtin`, which is how the table computes it. Instead check the
+        // observable consequence against the catalog's independently emitted
+        // `authorization_boundary` column: an action that reauthorizes must
+        // name a real boundary, and builtin probes may only be transport-bound.
+        if classification.final_boundary_reauthorization {
+            assert!(
+                !action.authorization_boundary.is_empty(),
+                "{}: reauthorizing action has no authorization boundary",
+                action.key()
+            );
+        } else {
+            assert!(
+                action.builtin,
+                "{}: only builtin probes skip reauthorization",
+                action.key()
+            );
+            assert_eq!(
+                action.authorization_boundary,
+                "transport",
+                "{}",
+                action.key()
+            );
+        }
+
+        // The reviewed per-principal expectations fixture is a third source:
+        // a Team member must be allowed exactly the read/operate classes.
+        if let Some(allowed) = team_member_allowed.get(&action.key()) {
+            let member_class = matches!(
+                classification.operation,
+                OperationClass::Discover | OperationClass::Read | OperationClass::Operate
+            );
+            assert_eq!(
+                *allowed,
+                member_class,
+                "{}: operation class {:?} disagrees with the reviewed team_member expectation",
+                action.key(),
+                classification.operation
+            );
+        }
+    }
+}
+
+#[test]
+fn depot_operation_authority_snapshot_matches_the_golden_fixture() {
+    // D-I3: the hand-maintained snapshot must name exactly the operations
+    // published by docs/contracts/fixtures/depot-control-plane/operations-v1.json.
+    let golden = depot_fixture_operation_names();
+    let snapshot = depot_snapshot_operation_names();
+    let missing = golden.difference(&snapshot).collect::<Vec<_>>();
+    let stale = snapshot.difference(&golden).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "DEPOT_OPERATIONS drifted from the golden fixture\nmissing: {missing:#?}\nstale: {stale:#?}"
+    );
+    assert_eq!(DEPOT_OPERATIONS.len(), golden.len());
+    assert!(duplicate_depot_operations().is_empty());
+}
+
+#[test]
+fn depot_operation_authority_snapshot_is_well_formed() {
+    for operation in DEPOT_OPERATIONS {
+        assert!(operation.name.starts_with("depot."));
+        assert!(
+            !operation.owners.is_empty(),
+            "{} has no owner kind",
+            operation.name
+        );
+        if operation.resource == ResourceFamily::Platform {
+            assert_eq!(operation.owners, [OwnerKind::Installation]);
+            assert!(
+                !operation.delegated,
+                "{} leaks platform authority",
+                operation.name
+            );
+        } else {
+            assert_eq!(
+                operation.owners,
+                [OwnerKind::Team, OwnerKind::Project, OwnerKind::Personal]
+            );
+        }
+        if operation.operation == OperationClass::Delete {
+            assert!(
+                operation.resource == ResourceFamily::Platform || operation.delegated,
+                "{} has no authorized execution path",
+                operation.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -249,21 +475,37 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
-    let base = BTreeSet::from(["depot_publish", "doctor", "server_logs", "setup", "stash"]);
+    let base = BTreeSet::from([
+        "access",
+        "agents",
+        "dev_containers",
+        "depot_publish",
+        "projects",
+        "doctor",
+        "server_logs",
+        "setup",
+        "stash",
+        "tasks",
+    ]);
     let gateway = BTreeSet::from([
         "artifacts",
+        "access",
+        "agents",
         "browser",
         "bundles",
         "depot_publish",
         "doctor",
+        "dev_containers",
         "gateway",
         "jobs",
+        "projects",
         "server_logs",
         "setup",
         "snippets",
         "sources",
         "stash",
         "uploads",
+        "tasks",
     ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
@@ -274,49 +516,68 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         (
             "fs",
             BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
                 "depot_publish",
                 "doctor",
                 "fs",
+                "projects",
                 "server_logs",
                 "setup",
                 "stash",
+                "tasks",
             ]),
         ),
         (
             "skills",
             BTreeSet::from([
                 "artifacts",
+                "access",
+                "agents",
                 "bundles",
                 "depot_publish",
                 "doctor",
+                "dev_containers",
                 "jobs",
+                "projects",
                 "server_logs",
                 "setup",
                 "sources",
                 "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
         (
             "lab-admin",
             BTreeSet::from([
+                "access",
+                "agents",
+                "dev_containers",
                 "depot_publish",
                 "doctor",
                 "lab_admin",
+                "projects",
                 "server_logs",
                 "setup",
                 "stash",
+                "tasks",
             ]),
         ),
         (
             "all",
             BTreeSet::from([
                 "browser",
+                "access",
+                "agents",
                 "depot_publish",
                 "doctor",
+                "dev_containers",
                 "fs",
                 "gateway",
                 "lab_admin",
+                "projects",
                 "server_logs",
                 "setup",
                 "artifacts",
@@ -326,6 +587,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "sources",
                 "stash",
                 "uploads",
+                "tasks",
             ]),
         ),
     ]);

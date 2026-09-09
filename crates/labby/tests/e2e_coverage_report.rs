@@ -97,6 +97,22 @@ fn evidence_rank(value: &str) -> Option<u8> {
     })
 }
 
+/// The per-case bar a single surface must clear for a declared minimum.
+///
+/// A per-case sweep records what one surface did, so the two levels above
+/// `LiveStateTransition` cannot be a per-case rank: `LiveRestartPersistence`
+/// is proven by the restart journey and `CrossSurfaceParity` by agreement
+/// between surfaces. Both still require each surface to reach live state on
+/// its own; the level's extra meaning is checked separately below. Without
+/// this floor those declarations would be unsatisfiable, and every action
+/// carrying one would fail no matter how the product behaved. A surface that
+/// legitimately cannot reach live state in this sweep still answers its
+/// declared dedicated contract, exactly as at the lower levels.
+fn per_surface_floor(minimum: action_matrix::EvidenceLevel) -> u8 {
+    let rank = minimum as u8;
+    rank.min(action_matrix::EvidenceLevel::LiveStateTransition as u8)
+}
+
 fn action_surface_shard(surface: action_matrix::Surface) -> Option<&'static str> {
     match surface {
         action_matrix::Surface::Mcp => Some("live-mcp-parity"),
@@ -217,7 +233,8 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
                         let dedicated_contract =
                             is_accepted_dedicated_contract(&key, *surface, &event);
                         assert!(
-                            achieved >= intent.minimum_evidence as u8 || dedicated_contract,
+                            achieved >= per_surface_floor(intent.minimum_evidence)
+                                || dedicated_contract,
                             "{} evidence {} is below {:?}",
                             event.case_id,
                             event.achieved_evidence,
@@ -225,7 +242,7 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
                         );
                         event
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             };
             ActionRow {
                 key,

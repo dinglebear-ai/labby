@@ -4,11 +4,16 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::time::Instant;
 
+use crate::access::{
+    AccessBlockedReason, AccessRuntimeError, AccessRuntimeStatus, AccessStoreError,
+    SessionAuthoritySnapshot,
+};
 use crate::api::ToolError;
 use crate::api::auth_helpers::{log_auth_dispatch, log_auth_dispatch_start, request_id};
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
+use crate::dispatch::access_errors::{map_runtime_error, map_store_error};
 
 use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::reauth::ProofError;
@@ -94,13 +99,19 @@ async fn load_browser_session(
     }
 }
 
-fn internal_error_response(message: &'static str) -> Response {
-    let mut response = ApiError::new(ToolError::internal_message(message)).into_response();
+/// Map a typed product error through the shared HTTP envelope with the
+/// session cache posture. The `ToolError` structure is preserved until here.
+fn tool_error_response(error: ToolError) -> Response {
+    let mut response = ApiError::new(error).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("private, no-store"),
     );
     response
+}
+
+fn internal_error_response(message: &'static str) -> Response {
+    tool_error_response(ToolError::internal_message(message))
 }
 
 fn invalid_csrf_response() -> Response {
@@ -210,70 +221,332 @@ pub async fn reauth_return() -> Response {
         .into_response()
 }
 
+/// Session-authority resolution outcome for an authenticated identity.
+enum SessionAuthority {
+    /// The identity is linked to a durable principal; the snapshot is the
+    /// projected authority for this request.
+    Ready(SessionAuthoritySnapshot),
+    /// The identity authenticated but has no active principal link yet. The
+    /// caller is logged in; nothing in the access store grants it authority.
+    Unprovisioned,
+    /// No durable authority store exists on this process yet (owner
+    /// bootstrap has not run, or this state container is not the lifecycle
+    /// owner). Authority is projected from the transport credential alone so
+    /// bootstrap and local-operator flows stay reachable; nothing durable is
+    /// claimed.
+    Transport { is_admin: bool },
+}
+
+const UNPROVISIONED_REMEDIATION: &str = "This identity is authenticated but has no access authority yet. \
+     Ask an administrator to add this identity to a team, or complete owner bootstrap.";
+const TRANSPORT_REMEDIATION: &str = "Durable access authority is not initialized on this process; \
+     authority is projected from the transport credential only. Complete owner bootstrap to enable \
+     multi-user authority.";
+
+fn session_authority_denied() -> ToolError {
+    ToolError::Forbidden {
+        message: "session authority is unavailable for this identity".to_owned(),
+        required_scopes: Vec::new(),
+    }
+}
+
+/// Resolve the durable session authority for a verified identity without
+/// collapsing the typed store cause.
+///
+/// - A `Ready` runtime answers from the store. `IdentityUnavailable` /
+///   `NotAuthorized` mean "no principal link yet" and are a legitimate
+///   authenticated-but-unprovisioned state, not a failure; every other store
+///   failure maps through the shared access error map so the surface agrees
+///   with the dispatchers on `service_unavailable`.
+/// - A runtime that has no durable store yet (`SetupRequired`, or the
+///   non-owner `Blocked(Unavailable)` sentinel) projects transport authority
+///   so owner bootstrap and local-operator sessions keep working.
+/// - Every other blocked runtime (corrupt, locked, insecure, newer schema,
+///   read-only) is a real outage and answers 503.
+async fn resolve_session_authority(
+    state: &AppState,
+    identity: labby_auth::VerifiedIdentity,
+    transport_admin: bool,
+) -> Result<SessionAuthority, ToolError> {
+    match state.access_runtime.status().await {
+        AccessRuntimeStatus::Ready => {}
+        AccessRuntimeStatus::SetupRequired(reason) => {
+            tracing::info!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                reason = ?reason,
+                "durable access authority not initialized; projecting transport authority"
+            );
+            return Ok(SessionAuthority::Transport {
+                is_admin: transport_admin,
+            });
+        }
+        AccessRuntimeStatus::Blocked(AccessBlockedReason::Unavailable) => {
+            tracing::info!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                "access runtime is not wired on this process; projecting transport authority"
+            );
+            return Ok(SessionAuthority::Transport {
+                is_admin: transport_admin,
+            });
+        }
+        AccessRuntimeStatus::Blocked(reason) => {
+            return Err(map_runtime_error(
+                "auth",
+                AccessRuntimeError::Blocked(reason),
+            ));
+        }
+    }
+    // `AccessRuntime::session_authority` erases every store failure into
+    // `AccessRuntimeError::LifecycleUnavailable`, which cannot distinguish an
+    // unprovisioned identity (200 + `authority_state: "unprovisioned"`) from a
+    // store outage (503). This handler therefore goes through the Ready-only
+    // `store()` handle and consumes the store's typed `AccessStoreError`.
+    let store = state
+        .access_runtime
+        .store()
+        .await
+        .map_err(|error| map_runtime_error("auth", error))?;
+    match store.session_authority(identity).await {
+        Ok(snapshot) => Ok(SessionAuthority::Ready(snapshot)),
+        Err(AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized) => {
+            Ok(SessionAuthority::Unprovisioned)
+        }
+        Err(error) => Err(map_store_error("auth", error, session_authority_denied)),
+    }
+}
+
+fn scopes_grant_admin(scopes: &[String]) -> bool {
+    scopes.iter().any(|scope| scope == "lab:admin")
+}
+
+/// Identity for an OAuth-backed browser session row.
+///
+/// Must stay identical to the derivation in `labby_auth::middleware` for the
+/// browser-session cookie path so the same human maps to the same principal
+/// whether the request reached this handler through the auth layer or
+/// through the anonymous cookie fallback.
+fn oauth_browser_session_identity(
+    auth_state: &labby_auth::state::AuthState,
+    session: &labby_auth::types::BrowserSessionRow,
+) -> Result<labby_auth::VerifiedIdentity, ToolError> {
+    labby_auth::VerifiedIdentity::external(
+        labby_auth::Authenticator::BrowserSession,
+        &auth_state.inbound_provider_binding().identity_issuer,
+        session.subject.clone(),
+    )
+    .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))
+}
+
+/// Identity for a project-bound browser session.
+///
+/// Must stay identical to the project-session derivation in
+/// `labby_auth::middleware` (`BrowserSession` authenticator, binding issuer,
+/// source credential id).
+fn project_session_identity(
+    binding: &labby_auth::types::ProjectSessionBinding,
+) -> Result<labby_auth::VerifiedIdentity, ToolError> {
+    labby_auth::VerifiedIdentity::local_credential_with_issuer(
+        labby_auth::Authenticator::BrowserSession,
+        binding.issuer.clone(),
+        binding.source_credential_id.clone(),
+    )
+    .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))
+}
+
+/// Look up Labby's project-bound browser session from the request cookies.
+async fn load_project_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<labby_auth::types::BrowserSessionRow>, ToolError> {
+    let Some(session_state) = state.project_session_state.as_ref() else {
+        return Ok(None);
+    };
+    let Some(session_id) = labby_auth::session::read_cookie(headers, &session_state.cookie_name)
+    else {
+        return Ok(None);
+    };
+    session_state
+        .store
+        .find_browser_session(&session_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(error = %error, "failed to load project browser session");
+            ToolError::internal_message("failed to load browser session")
+        })
+}
+
+/// Derive the verified identity from the browser cookies when the auth layer
+/// authenticated the request via a session but did not attach the identity
+/// extension. Uses the same helpers as the anonymous branches so both paths
+/// map one human to one principal.
+async fn fallback_session_identity(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<labby_auth::VerifiedIdentity>, ToolError> {
+    if let Some(session) = load_project_session(state, headers).await?
+        && let Some(binding) = session.project_binding.as_ref()
+    {
+        return project_session_identity(binding).map(Some);
+    }
+    let Some(auth_state) = oauth_state(state) else {
+        return Ok(None);
+    };
+    match load_browser_session(auth_state, headers).await {
+        Ok(Some(session)) => oauth_browser_session_identity(auth_state, &session).map(Some),
+        Ok(None) => Ok(None),
+        Err(_) => Err(ToolError::internal_message(
+            "failed to load browser session",
+        )),
+    }
+}
+
+fn wire_roles<'a>(
+    teams: impl Iterator<Item = &'a (String, crate::access::TeamRole, u64, u64)>,
+) -> Vec<serde_json::Value> {
+    teams
+        .map(|(id, role, membership_epoch, policy_epoch)| {
+            serde_json::json!({
+                "id": id,
+                "role": role.as_wire(),
+                "membership_epoch": membership_epoch,
+                "policy_epoch": policy_epoch,
+            })
+        })
+        .collect()
+}
+
+/// Build the authenticated `/auth/session` body.
+///
+/// The `user`, `csrf_token`, and `expires_at` fields are emitted in both the
+/// ready and unprovisioned states so the UI can fail closed on authority
+/// while still holding a usable session.
+fn authenticated_session_body(
+    login_available: bool,
+    user: serde_json::Value,
+    project_id: Option<&str>,
+    expires_at: serde_json::Value,
+    csrf_token: &str,
+    authority: &SessionAuthority,
+) -> serde_json::Value {
+    match authority {
+        SessionAuthority::Ready(authority) => serde_json::json!({
+            "authenticated": true,
+            "login_available": login_available,
+            "authority_state": "ready",
+            "authority": {
+                "principal_id": authority.principal_id,
+                "organization_id": authority.organization_id,
+                "authority_generation": authority.authority_generation,
+            },
+            // OAuth scopes are only a transport ceiling. Domain administration
+            // is projected from durable access authority, never inferred here.
+            "is_admin": authority.capabilities.iter().any(|capability| capability.as_wire() == "platform.manage"),
+            "user": user,
+            "project_id": project_id,
+            "owner": { "kind": "personal", "id": authority.principal_id },
+            "organization_id": authority.organization_id,
+            "teams": wire_roles(authority.teams.iter()),
+            "projects": authority.projects.iter().map(|(id, role)| serde_json::json!({"id":id,"role":role.as_wire()})).collect::<Vec<_>>(),
+            "project": project_id,
+            "capabilities": authority.capabilities.iter().map(|capability| capability.as_wire()).collect::<Vec<_>>(),
+            "authority_generation": authority.authority_generation,
+            "expires_at": expires_at,
+            "csrf_token": csrf_token,
+        }),
+        SessionAuthority::Transport { is_admin } => serde_json::json!({
+            "authenticated": true,
+            "login_available": login_available,
+            "authority_state": "transport",
+            "authority": serde_json::Value::Null,
+            "remediation": TRANSPORT_REMEDIATION,
+            "is_admin": is_admin,
+            "user": user,
+            "project_id": project_id,
+            "owner": serde_json::Value::Null,
+            "organization_id": serde_json::Value::Null,
+            "teams": Vec::<serde_json::Value>::new(),
+            "projects": Vec::<serde_json::Value>::new(),
+            "project": project_id,
+            "capabilities": Vec::<serde_json::Value>::new(),
+            "authority_generation": serde_json::Value::Null,
+            "expires_at": expires_at,
+            "csrf_token": csrf_token,
+        }),
+        SessionAuthority::Unprovisioned => serde_json::json!({
+            "authenticated": true,
+            "login_available": login_available,
+            "authority_state": "unprovisioned",
+            "authority": serde_json::Value::Null,
+            "remediation": UNPROVISIONED_REMEDIATION,
+            "is_admin": false,
+            "user": user,
+            "project_id": project_id,
+            "owner": serde_json::Value::Null,
+            "organization_id": serde_json::Value::Null,
+            "teams": Vec::<serde_json::Value>::new(),
+            "projects": Vec::<serde_json::Value>::new(),
+            "project": project_id,
+            "capabilities": Vec::<serde_json::Value>::new(),
+            "authority_generation": serde_json::Value::Null,
+            "expires_at": expires_at,
+            "csrf_token": csrf_token,
+        }),
+    }
+}
+
+/// Finish a `session.get` dispatch. Success and unprovisioned outcomes log
+/// the dispatch event without a `kind`; failures log the typed error kind
+/// and map through the shared HTTP error envelope.
+fn finish_session_get(
+    request_id: Option<&str>,
+    start: Instant,
+    actor_key: Option<&str>,
+    outcome: Result<serde_json::Value, ToolError>,
+) -> Response {
+    match outcome {
+        Ok(body) => {
+            let authority_state = body
+                .get("authority_state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("bypass");
+            tracing::info!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                request_id,
+                authority_state,
+                "auth session authority projected"
+            );
+            log_auth_dispatch("session.get", request_id, start, None, actor_key);
+            no_store_json(body)
+        }
+        Err(error) => {
+            let kind = error.kind().to_owned();
+            log_auth_dispatch("session.get", request_id, start, Some(&kind), actor_key);
+            tool_error_response(error)
+        }
+    }
+}
+
 pub async fn auth_session(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<labby_auth::VerifiedIdentity>>,
 ) -> impl IntoResponse {
     let start = Instant::now();
     let request_id = request_id(&headers).map(ToOwned::to_owned);
     log_auth_dispatch_start("session.get", request_id.as_deref());
+    let login_available = state.oauth_state.is_some();
 
     if let Some(Extension(context)) = auth {
-        let is_admin = context.scopes.iter().any(|scope| scope == "lab:admin");
-        let mut project_id = None;
-        let mut expires_at = DEV_SESSION_EXPIRES_AT;
-        if context.via_session
-            && let Some(session_state) = state.project_session_state.as_ref()
-            && let Some(session_id) =
-                labby_auth::session::read_cookie(&headers, &session_state.cookie_name)
-        {
-            match session_state.store.find_browser_session(&session_id).await {
-                Ok(Some(session)) => {
-                    project_id = session
-                        .project_binding
-                        .as_ref()
-                        .map(|binding| binding.project_id.clone());
-                    expires_at =
-                        u64::try_from(session.expires_at).unwrap_or(DEV_SESSION_EXPIRES_AT);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::error!(
-                        error = %error,
-                        "failed to load authenticated project session"
-                    );
-                    log_auth_dispatch(
-                        "session.get",
-                        request_id.as_deref(),
-                        start,
-                        Some("internal_error"),
-                        context.actor_key.as_deref(),
-                    );
-                    return internal_error_response("failed to load browser session");
-                }
-            }
-        }
-        let response = no_store_json(serde_json::json!({
-            "authenticated": true,
-            "login_available": false,
-            "is_admin": is_admin,
-            "user": {
-                "sub": context.sub,
-                "email": context.email,
-            },
-            "project_id": project_id,
-            "expires_at": expires_at,
-            "csrf_token": context.csrf_token.unwrap_or_default(),
-        }));
-        log_auth_dispatch(
-            "session.get",
-            request_id.as_deref(),
-            start,
-            None,
-            context.actor_key.as_deref(),
-        );
-        return response;
+        let actor_key = context.actor_key.clone();
+        let outcome = authenticated_context_session(&state, &headers, context, identity).await;
+        return finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome);
     }
 
     // This route intentionally remains outside the auth middleware so an
@@ -281,67 +554,54 @@ pub async fn auth_session(
     // project-bound cookie explicitly before the development UI fallback;
     // otherwise bearer-only deployments render an authenticated-but-unbound
     // shell even though the browser holds a valid project session.
-    if let Some(session_state) = state.project_session_state.as_ref()
-        && let Some(session_id) =
-            labby_auth::session::read_cookie(&headers, &session_state.cookie_name)
-    {
-        match session_state.store.find_browser_session(&session_id).await {
-            Ok(Some(session)) if session.project_binding.is_some() => {
-                let actor_key = actor_key_for_session(&state, &session);
-                let binding = session.project_binding.as_ref().expect("guarded above");
-                let is_admin = binding.scopes.iter().any(|scope| scope == "lab:admin");
-                let response = no_store_json(serde_json::json!({
-                    "authenticated": true,
-                    "login_available": state.oauth_state.is_some(),
-                    "is_admin": is_admin,
-                    "user": {
-                        "sub": binding.principal_id,
-                        "email": session.email,
-                    },
-                    "project_id": binding.project_id,
-                    "expires_at": session.expires_at,
-                    "csrf_token": session.csrf_token,
-                }));
-                log_auth_dispatch(
-                    "session.get",
-                    request_id.as_deref(),
-                    start,
-                    None,
-                    actor_key.as_deref(),
-                );
-                return response;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::error!(error = %error, "failed to load project browser session");
-                log_auth_dispatch(
-                    "session.get",
-                    request_id.as_deref(),
-                    start,
-                    Some("internal_error"),
-                    None,
-                );
-                return internal_error_response("failed to load browser session");
-            }
+    match load_project_session(&state, &headers).await {
+        Ok(Some(session)) if session.project_binding.is_some() => {
+            let actor_key = actor_key_for_session(&state, &session);
+            let binding = session.project_binding.as_ref().expect("guarded above");
+            let outcome = match project_session_identity(binding) {
+                Ok(identity) => {
+                    resolve_session_authority(&state, identity, scopes_grant_admin(&binding.scopes))
+                        .await
+                        .map(|authority| {
+                            authenticated_session_body(
+                                login_available,
+                                serde_json::json!({
+                                    "sub": binding.principal_id,
+                                    "email": session.email,
+                                }),
+                                Some(binding.project_id.as_str()),
+                                serde_json::json!(session.expires_at),
+                                &session.csrf_token,
+                                &authority,
+                            )
+                        })
+                }
+                Err(error) => Err(error),
+            };
+            return finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return finish_session_get(request_id.as_deref(), start, None, Err(error));
         }
     }
 
     if state.web_ui_auth_disabled {
         // Dev mode bypasses auth entirely — treat the synthetic dev user as admin
         // so admin UI is reachable in local development without real credentials.
-        let response = no_store_json(serde_json::json!({
+        let body = serde_json::json!({
             "authenticated": true,
             "login_available": false,
             "is_admin": true,
+            "dev_authority_bypass": true,
             "user": {
                 "sub": "labby-dev",
                 "email": serde_json::Value::Null,
             },
             "expires_at": DEV_SESSION_EXPIRES_AT,
             "csrf_token": "",
-        }));
-        log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
-        return response;
+        });
+        return finish_session_get(request_id.as_deref(), start, None, Ok(body));
     }
 
     // If a valid static bearer token is presented, treat the caller as a
@@ -355,83 +615,145 @@ pub async fn auth_session(
             .and_then(labby_auth::parse_bearer_token)
         && labby_auth::tokens_equal(&token, expected.as_ref())
     {
-        let response = no_store_json(serde_json::json!({
-            "authenticated": true,
-            "login_available": state.oauth_state.is_some(),
-            "is_admin": true,
-            "user": {
-                "sub": "static-bearer",
-                "email": serde_json::Value::Null,
-            },
-            "expires_at": DEV_SESSION_EXPIRES_AT,
-            "csrf_token": "",
-        }));
-        log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
-        return response;
+        let outcome = match labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        ) {
+            // The static bearer is the local operator credential.
+            Ok(identity) => {
+                resolve_session_authority(&state, identity, true)
+                    .await
+                    .map(|authority| {
+                        authenticated_session_body(
+                            login_available,
+                            serde_json::json!({
+                                "sub": "static-bearer",
+                                "email": serde_json::Value::Null,
+                            }),
+                            None,
+                            serde_json::json!(DEV_SESSION_EXPIRES_AT),
+                            "",
+                            &authority,
+                        )
+                    })
+            }
+            Err(_) => Err(ToolError::internal_message(
+                "authenticated identity is invalid",
+            )),
+        };
+        return finish_session_get(request_id.as_deref(), start, None, outcome);
     }
 
-    let login_available = state.oauth_state.is_some();
     let Some(auth_state) = oauth_state(&state) else {
         let response = unauthenticated_session_response(false);
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;
     };
 
-    let admin_email = state
-        .auth_config
-        .as_ref()
-        .map(|cfg| cfg.admin_email.as_str())
-        .unwrap_or("");
-
-    match load_browser_session(&auth_state, &headers).await {
+    match load_browser_session(auth_state, &headers).await {
         Ok(Some(session)) => {
             let actor_key = actor_key_for_session(&state, &session);
-            let project_id = session
-                .project_binding
-                .as_ref()
-                .map(|binding| binding.project_id.as_str());
-            let is_admin = session
-                .email
-                .as_deref()
-                .is_some_and(|e| e.eq_ignore_ascii_case(admin_email) && !admin_email.is_empty());
-            let body = serde_json::json!({
-                "authenticated": true,
-                "login_available": login_available,
-                "is_admin": is_admin,
-                "user": {
-                    "sub": session.subject,
-                    "email": session.email,
-                },
-                "project_id": project_id,
-                "expires_at": session.expires_at,
-                "csrf_token": session.csrf_token,
-            });
-            log_auth_dispatch(
-                "session.get",
-                request_id.as_deref(),
-                start,
-                None,
-                actor_key.as_deref(),
-            );
-            return no_store_json(body);
+            let outcome = match oauth_browser_session_identity(auth_state, &session) {
+                Ok(identity) => {
+                    // An OAuth cookie alone never carries transport admin.
+                    resolve_session_authority(&state, identity, false)
+                        .await
+                        .map(|authority| {
+                            let project_id = session
+                                .project_binding
+                                .as_ref()
+                                .map(|binding| binding.project_id.as_str());
+                            authenticated_session_body(
+                                login_available,
+                                serde_json::json!({
+                                    "sub": session.subject,
+                                    "email": session.email,
+                                }),
+                                project_id,
+                                serde_json::json!(session.expires_at),
+                                &session.csrf_token,
+                                &authority,
+                            )
+                        })
+                }
+                Err(error) => Err(error),
+            };
+            finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome)
         }
         Ok(None) => {
             let response = unauthenticated_session_response(login_available);
             log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
-            return response;
+            response
         }
         Err(error) => {
             tracing::error!(error = %error, "failed to load browser session for auth session");
-            log_auth_dispatch(
-                "session.get",
+            finish_session_get(
                 request_id.as_deref(),
                 start,
-                Some("internal_error"),
                 None,
-            );
-            return internal_error_response("failed to load browser session");
+                Err(ToolError::internal_message(
+                    "failed to load browser session",
+                )),
+            )
         }
     }
+}
+
+/// Authenticated branch: the auth layer already verified the caller. Project
+/// the durable authority for the attached identity, falling back to the
+/// cookie-derived identity when the extension is missing so a session user
+/// maps to the same principal as the anonymous cookie path.
+async fn authenticated_context_session(
+    state: &AppState,
+    headers: &HeaderMap,
+    context: AuthContext,
+    identity: Option<Extension<labby_auth::VerifiedIdentity>>,
+) -> Result<serde_json::Value, ToolError> {
+    let project_session = if context.via_session {
+        load_project_session(state, headers).await?
+    } else {
+        None
+    };
+    let (project_id, expires_at) = match project_session {
+        Some(session) => (
+            session
+                .project_binding
+                .as_ref()
+                .map(|binding| binding.project_id.clone()),
+            u64::try_from(session.expires_at).unwrap_or(DEV_SESSION_EXPIRES_AT),
+        ),
+        None => (None, DEV_SESSION_EXPIRES_AT),
+    };
+    let identity = match identity {
+        Some(Extension(identity)) => identity,
+        None => {
+            let fallback = if context.via_session {
+                fallback_session_identity(state, headers).await?
+            } else {
+                None
+            };
+            fallback.ok_or_else(|| {
+                tracing::error!(
+                    via_session = context.via_session,
+                    "authenticated request reached /auth/session without a verified identity"
+                );
+                ToolError::internal_message("authenticated identity is unavailable")
+            })?
+        }
+    };
+    let authority =
+        resolve_session_authority(state, identity, scopes_grant_admin(&context.scopes)).await?;
+    Ok(authenticated_session_body(
+        false,
+        serde_json::json!({
+            "sub": context.sub,
+            "email": context.email,
+        }),
+        project_id.as_deref(),
+        serde_json::json!(expires_at),
+        context.csrf_token.as_deref().unwrap_or_default(),
+        &authority,
+    ))
 }
 
 pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -731,7 +1053,10 @@ mod tests {
             email: None,
         };
 
-        let response = auth_session(State(state.clone()), headers.clone(), None)
+        // The default state container has no durable authority store, so the
+        // session projects transport authority (never a 500) and still
+        // preserves the project binding and expiry from the cookie.
+        let response = auth_session(State(state.clone()), headers.clone(), None, None)
             .await
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -739,17 +1064,106 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["authenticated"], true);
+        assert_eq!(json["authority_state"], "transport");
+        assert_eq!(json["authority"], serde_json::Value::Null);
+        assert_eq!(json["is_admin"], false, "lab:read binding is not admin");
         assert_eq!(json["project_id"], "project-42");
         assert_eq!(json["expires_at"], expires_at);
         assert_eq!(json["csrf_token"], "csrf-token");
 
-        let response = auth_session(State(state), headers, Some(Extension(auth)))
+        let response = auth_session(State(state), headers, Some(Extension(auth)), None)
             .await
             .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["authority_state"], "transport");
         assert_eq!(json["project_id"], "project-42");
+        assert_eq!(json["expires_at"], expires_at);
+    }
+
+    /// B-I7: an authenticated identity with no principal link is a 200
+    /// `unprovisioned` projection with a remediation hint, never a 500; a
+    /// provisioned owner projects durable authority; a blocked store is 503.
+    #[tokio::test]
+    async fn session_authority_states_are_explicit() {
+        let directory = tempfile::Builder::new()
+            .prefix("labby-session-authority-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let owner = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap();
+        let runtime = std::sync::Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        let state = AppState::new().with_access_runtime(runtime);
+
+        let ready = resolve_session_authority(&state, owner, false)
+            .await
+            .unwrap();
+        assert!(matches!(ready, SessionAuthority::Ready(_)));
+        let body = authenticated_session_body(
+            false,
+            serde_json::json!({"sub": "owner"}),
+            None,
+            serde_json::json!(1),
+            "",
+            &ready,
+        );
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(body["is_admin"], true);
+
+        let stranger = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "stranger",
+        )
+        .unwrap();
+        let unprovisioned = resolve_session_authority(&state, stranger, true)
+            .await
+            .unwrap();
+        assert!(matches!(unprovisioned, SessionAuthority::Unprovisioned));
+        let body = authenticated_session_body(
+            false,
+            serde_json::json!({"sub": "stranger"}),
+            None,
+            serde_json::json!(1),
+            "",
+            &unprovisioned,
+        );
+        assert_eq!(body["authority_state"], "unprovisioned");
+        assert_eq!(
+            body["is_admin"], false,
+            "transport scope never grants durable admin"
+        );
+        assert!(body["remediation"].as_str().unwrap().contains("bootstrap"));
+
+        // A blocked store that is not the non-owner sentinel is a typed outage.
+        assert_eq!(
+            map_runtime_error(
+                "auth",
+                AccessRuntimeError::Blocked(AccessBlockedReason::Corrupt)
+            )
+            .kind(),
+            "service_unavailable"
+        );
     }
 }

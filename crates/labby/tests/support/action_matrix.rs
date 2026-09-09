@@ -3,14 +3,15 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-pub(crate) const EXPECTED_ACTIONS: usize = 227;
+pub(crate) const EXPECTED_ACTIONS: usize = 280;
 pub(crate) const EXPECTED_CLI_ACTIONS: usize = 76;
-pub(crate) const EXPECTED_MCP_ACTIONS: usize = 226;
-pub(crate) const EXPECTED_API_ACTIONS: usize = 221;
+pub(crate) const EXPECTED_MCP_ACTIONS: usize = 279;
+pub(crate) const EXPECTED_API_ACTIONS: usize = 274;
 pub(crate) const EXPECTED_WEB_ACTIONS: usize = 122;
 pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 76;
 
 const INTENT_JSON: &str = include_str!("../fixtures/action_cases.json");
+const MULTI_USER_INTENT_JSON: &str = include_str!("../fixtures/multi_user_action_cases.json");
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +24,8 @@ pub(crate) struct CaseIntent {
     pub(crate) scenario_kind: ScenarioKind,
     pub(crate) scenario_id: String,
     pub(crate) minimum_evidence: EvidenceLevel,
+    #[serde(default)]
+    pub(crate) api_minimum: Option<EvidenceLevel>,
     pub(crate) persistence_class: PersistenceClass,
     pub(crate) scenario_owner: ScenarioOwner,
     pub(crate) setup_ref: String,
@@ -104,6 +107,14 @@ pub(crate) struct CatalogAction {
     pub(crate) destructive: bool,
     pub(crate) requires_admin: bool,
     pub(crate) required_scopes: Vec<String>,
+    /// Exact capability the shared authority evaluator demands, or `None` for
+    /// builtin help/schema probes and caller-membership projections.
+    #[serde(default)]
+    pub(crate) required_capability: Option<String>,
+    /// Which boundary authorizes the action (`resource_capability`,
+    /// `transport`, `transport_admin`, `caller_membership_projection`, ...).
+    #[serde(default)]
+    pub(crate) authorization_boundary: String,
     pub(crate) surface_availability: SurfaceAvailability,
     pub(crate) requires_http_subject: bool,
     pub(crate) auth_posture: String,
@@ -151,7 +162,13 @@ pub(crate) struct SurfaceAvailability {
 pub(crate) fn intents() -> &'static [CaseIntent] {
     static INTENTS: OnceLock<Vec<CaseIntent>> = OnceLock::new();
     INTENTS.get_or_init(|| {
-        serde_json::from_str(INTENT_JSON).expect("action_cases.json must be valid CaseIntent JSON")
+        let mut intents: Vec<CaseIntent> = serde_json::from_str(INTENT_JSON)
+            .expect("action_cases.json must be valid CaseIntent JSON");
+        intents.extend(
+            serde_json::from_str::<Vec<CaseIntent>>(MULTI_USER_INTENT_JSON)
+                .expect("multi_user_action_cases.json must be valid CaseIntent JSON"),
+        );
+        intents
     })
 }
 
@@ -270,6 +287,16 @@ pub(crate) fn validate_intent_shape(intent: &CaseIntent) -> Vec<String> {
     if intent.applicable_features.is_empty() {
         errors.push(format!("{key}: applicable_features is empty"));
     }
+    if let Some(api_minimum) = intent.api_minimum {
+        if !intent.applicable_surfaces.contains(&Surface::Api) {
+            errors.push(format!("{key}: api_minimum requires the API surface"));
+        }
+        if api_minimum > intent.minimum_evidence {
+            errors.push(format!(
+                "{key}: api_minimum cannot exceed the aggregate minimum"
+            ));
+        }
+    }
     if intent.required
         && matches!(
             intent.scenario_kind,
@@ -383,19 +410,24 @@ fn approved_fixture(name: &str) -> bool {
     matches!(
         service,
         "artifacts"
+            | "access"
+            | "agents"
             | "browser"
             | "bundles"
             | "doctor"
+            | "dev_containers"
             | "fs"
             | "gateway"
             | "jobs"
             | "lab_admin"
+            | "projects"
             | "server_logs"
             | "setup"
             | "skills"
             | "snippets"
             | "sources"
             | "stash"
+            | "tasks"
             | "uploads"
     ) && matches!(purpose, "readonly" | "workflow" | "destructive")
 }

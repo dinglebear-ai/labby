@@ -1,6 +1,8 @@
 import { gatewayRequestInit } from './gateway-request.ts'
+import { authorityIdentity } from '../auth/authority.ts'
 import {
   getBrowserSessionState,
+  getSessionAuthority,
   getSessionCsrfToken,
   loadBrowserSession,
   type BrowserSessionState,
@@ -98,7 +100,12 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
 
+  // Every attempt captures the authority it was issued under and rejects its
+  // own response if that authority changed while it was in flight. "No
+  // projection" is itself an identity, so a session that gains or loses its
+  // authority mid-request is also treated as a change.
   const request = async () => {
+    const issuedUnder = authorityIdentity(getSessionAuthority())
     let response: Response
     try {
       const init = gatewayRequestInit(action, params, undefined, signal)
@@ -118,7 +125,11 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       )
     }
 
-    return parseActionResponse<T, TError>(response, createError)
+    const result = await parseActionResponse<T, TError>(response, createError)
+    if (issuedUnder !== authorityIdentity(getSessionAuthority())) {
+      throw new DOMException('Authority context changed', 'AbortError')
+    }
+    return result
   }
 
   try {

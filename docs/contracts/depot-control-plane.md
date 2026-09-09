@@ -2,7 +2,7 @@
 title: Depot control-plane compatibility contract
 status: active
 created: 2026-09-03
-updated: 2026-09-06
+updated: 2026-09-07
 ---
 
 # Depot control-plane compatibility contract
@@ -12,12 +12,52 @@ relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.
 
+Multi-user authority is governed by
+[`../access-control/MULTI_USER_AUTHORITY.md`](../access-control/MULTI_USER_AUTHORITY.md).
+Labby is the command authority for identity, Teams, memberships, Projects, and
+role templates in a managed pair; Depot remains the enforcing authority for
+its resource rows. This split never permits one side to trust caller-supplied
+scope fields.
+
+## Authority modes
+
+Depot advertises exactly one mode. In `standalone`, it owns local principals,
+Teams, policy, and recovery and rejects Labby delegated assertions. In
+`labby_managed`, local Team mutations are disabled and Depot accepts only its
+explicitly paired Labby issuer. Labby configuration and documentation spell the
+managed mode `labby_managed`; Depot's `DEPOT_OPERATING_MODE` environment value
+uses a hyphen (`labby-managed`), and Depot accepts both spellings. Pair, unpair,
+and local recovery are physical
+or loopback operator ceremonies with generation changes and audit evidence;
+they do not create two simultaneous command authorities.
+
+Managed Depot consumes a signed ordered projection using a transactional Labby
+outbox and durable Depot inbox. v1 projection is snapshot-only: every pending
+authority change is delivered as a complete signed snapshot of the
+Organization bound to Depot's watermark, and an idle Organization is kept live
+by a signed `heartbeat` envelope at least every 60 seconds (no records,
+sequence pinned to the acknowledged watermark, chained to the last accepted
+digest). Depot acknowledges only a contiguous sequence and updates freshness
+on heartbeats. Duplicates are idempotent; gaps, tombstone loss, schema
+incompatibility, signature failure, and tenant mismatch block Team operations
+until snapshot resynchronization succeeds. Envelopes are signed over the
+canonical JSON of every field except `signature` (sorted keys, compact,
+integers only); see the authority contract for the profile.
+
 The release denominator is the joint pair of checked manifests:
 [`compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
 defines the authenticated exact-import and Administration contract, while
 [`compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
 defines federated discovery. Both must pass `just docs-check`. A UI action is available only when its required
-operation and contract fingerprint are present. Administration renders Depot's
+operation and contract fingerprint are present. Every public operation carries
+`contractVersion` (integer `1`) and `schemaFingerprint`: 64 lowercase hex
+characters, the SHA-256 of the canonical JSON of that operation's
+`inputSchema` alone (sorted keys, no insignificant whitespace, UTF-8 without
+ASCII escaping). Labby checks three-way agreement before executing: the
+declared fingerprint, the fingerprint it recomputes from the served
+`inputSchema`, and the constant it was built against
+(`docs/contracts/fixtures/depot-control-plane/operations-v1.json` is the
+golden catalog). Administration renders Depot's
 published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
 cardinality limits, authority states, fingerprint binding, and fail-closed
 `incompatible` behavior are machine-readable in compatibility-v1. Missing, oversized, or unknown required contracts
@@ -36,13 +76,49 @@ render `incompatible`; Labby never invents an unadvertised operation.
 - Effective permission is the intersection of current Labby permission,
   configured connection ACL, Depot delegated scope, and Depot resource policy.
 
-## Authority epoch
+## Authority epoch and lease
 
 Labby issues an opaque epoch covering its browser-session generation, the
 configured Depot connection generation, Depot deployment/account/tenant/team
 and principal, the Depot operation fingerprint, and the selected local
 destination generation. Cursors, jobs, uploads, intents, confirmations, cache
 entries, and receipts are invalid outside that epoch.
+
+The opaque value represents the relevant vector rather than one wall-clock
+timestamp: authority schema, installation, Organization, Principal, Team and
+Project membership/policy, resource policy, catalog, projection watermark,
+credential, connection, destination, and session generations. Execution uses
+a short-lived action/method/resource/intent-bound AuthorityLease and
+reauthorizes at the final Depot resource boundary.
+
+## Delegated request profile
+
+The delegated assertion is signed and pins issuer, audience, subject Principal,
+typed owner context, method, normalized operation, exact resource or creation
+intent, authority vector, issue/expiry times, key ID, and unique assertion ID.
+Depot pins its algorithm/key profile, rejects key-location indirection and
+unknown required semantics, and supports bounded overlapping key rotation.
+
+Mutation assertions carry a durable intent key. Depot atomically records
+consumption and the result, returns the same result for an identical retry, and
+rejects a changed replay. An ambiguous result remains `indeterminate` until
+reconciled by intent. Read retry is allowed only while the entire authority
+vector remains current.
+
+Body binding for `POST /api/operations/{op}`: `content_digest` is
+`sha256:` plus the lowercase hex SHA-256 of the exact request body bytes and
+`content_length` is their byte count; Labby sends exactly those bytes, and the
+two claims are always present together (uploads bind the same way).
+
+Exact-artifact reads (`/api/artifacts/exact`, `/api/artifacts/acquire`,
+`/api/artifacts/components/{...}`) carry a delegated read assertion per
+request: `method` is the HTTP method Labby actually sends for that route,
+`resource` is the request path without its query string, `operation` is the
+name Depot's route enforces (`depot.artifacts.exact`,
+`depot.artifacts.acquire`, `depot.artifacts.component`), and `intent_id` is a
+fresh `idempotency-key` header value. Read assertions carry no content
+claims. The runtime acquisition transport reports method and path to a
+host-supplied header provider and never signs anything itself.
 
 ## Operational surface
 
@@ -91,3 +167,22 @@ Release evidence records the Labby commit and binary digest, frontend export
 manifest digest, Depot commit and signed image digest, this manifest digest,
 operation fingerprint, auth/actor mode, and durable schema generation. Source
 checkout combinations are not authoritative release evidence.
+
+## Compatibility rollout and rollback
+
+Depot has exactly one authority mode. `standalone` retains explicit local
+platform authority and cannot accept Labby Team delegation. `labby_managed`
+disables ordinary local Team mutation and requires a healthy signed projection
+plus delegated assertion protocol v1. Missing readiness, a stale watermark, an
+unknown protocol version, or the managed-authority kill switch makes Team
+mutation unavailable; none of these conditions falls back to standalone.
+
+Rollout order is Depot accept-capable, Labby producer, verified watermark,
+then managed enforcement. Mixed versions remain read-compatible, but Team
+writes remain disabled until both peers advertise protocol v1 readiness.
+Rollback before ownership transfer disables the producer and returns Depot to
+explicit standalone mode. After audited ownership transfer, rollback first
+enables the kill switch, drains/reconciles outstanding intents, exports the
+authority snapshot, and performs an audited transfer back to local platform
+authority. Operators must never toggle directly from a degraded managed state
+to standalone while Labby remains a command authority.

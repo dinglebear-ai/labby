@@ -1,13 +1,13 @@
 ---
 title: "File Stash"
 created: "2026-09-05"
-updated: "2026-09-06"
+updated: "2026-09-07"
 ---
 
 # File Stash
 
-File Stash is Labby's built-in service for principal-scoped arbitrary
-files owned by an authenticated principal. Labby will own the local metadata and
+File Stash is Labby's built-in service for personal- or Team-scoped arbitrary
+files owned by an authenticated principal or one explicitly selected Team. Labby owns the local metadata and
 blob lifecycle, so this capability meets the built-in-service exception. Depot
 is not a dependency and an explicitly configured remote target never falls back
 to File Stash.
@@ -43,6 +43,19 @@ ambiguous, inactive, or unavailable resolution fails closed before any filename,
 object, grant, quota, or recipient lookup. Observability actor keys are not
 authorization identities.
 
+Personal is the compatibility default and retains the historical durable
+principal key. Team operations require explicit `owner_kind=team` plus an
+opaque Team ID (HTTP uses the corresponding `X-Labby-Owner-*` headers; browser
+downloads use same-origin query parameters because links cannot attach
+headers). Labby resolves current Team capability before lookup, and mutations
+and opened downloads re-observe authority at their final boundary. Team members
+may read Team files; Team administrators may manage them according to the fixed
+role templates. Removing membership blocks new opens without affecting the
+caller's personal files. Durable Team keys are type-prefixed, so no principal
+or Team identifier can alias another owner's quota or objects. The
+per-surface selector list, including the MCP `_meta` owner selection, is in
+[Selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context).
+
 Grant recipients are selected by a validated opaque AccessStore `PrincipalId`
 from an authoritative, non-enumerating identity-selection surface, never by
 email or display name. The owner and grantee IDs are in the same AccessStore
@@ -65,6 +78,13 @@ authorizes the resolved caller as its owner or an active grantee. The exact same
 URI therefore works for owner and grantee. It stays bound to that one object
 until deletion; rename, deletion, and a later upload never reuse or retarget it.
 Owner and shared files with equal display names remain unambiguous.
+
+MCP clients select a Team-owned resource view per request with the
+`ai.dinglebear.labby/stashOwner` request `_meta` object, for example
+`{"kind":"team","id":"team-id"}`. Omitting it (or selecting
+`{"kind":"personal"}`) uses the caller's Personal Stash. This is only a
+scope selector: Labby resolves the verified identity and rechecks current Team
+membership and read capability before listing or opening any resource.
 
 The client filename is display metadata only and never becomes a storage path.
 For multipart input, take only the final path component after splitting the raw
@@ -167,6 +187,22 @@ After readiness, a cancellation-aware background scrub checks committed blobs an
 removes unreferenced temp/blob files in bounded batches. Reads independently verify
 the selected blob before opening it, so a database/blob mismatch remains an
 `integrity_error`, never an empty or missing file, while the scrub is in progress.
+
+Startup opens and validates the root and database, then performs crash-critical
+pending-upload reconciliation in a background lifecycle task. Readiness and
+every Stash operation fail closed with a recovering/unavailable state until
+that pass finishes. Its cursor is durably checkpointed after each bounded batch,
+so an interrupted process resumes without replaying completed entries. Once the
+runtime becomes ready, committed-blob verification and orphan hygiene continue
+as non-critical background work; opened blobs still verify their expected size.
+Synchronous descriptor-relative filesystem batches run on the blocking pool.
+A recovery error changes the runtime to a blocked state and prevents the janitor
+from starting.
+
+SQLite mutations retain one serialized transactional writer. Query-only work is
+distributed across a bounded four-connection read pool, with shared queue and
+deadline admission, so unrelated reads can overlap without weakening write
+ordering or overload behavior.
 
 File content is untrusted and plaintext at rest in v1. Operators must include
 both database and blob directories in a consistent backup and restrict host

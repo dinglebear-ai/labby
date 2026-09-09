@@ -214,6 +214,9 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         "stash" => (false, derived_destructive, false, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
+        "access" | "agents" | "tasks" | "dev_containers" | "projects" => {
+            (false, derived_destructive, false, false)
+        }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
         | "sources" | "uploads" | "depot_publish" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
@@ -697,6 +700,11 @@ mod tests {
     /// `every_registry_service_has_a_reviewed_hint_row` turns into a CI failure
     /// rather than a silent conservative default.
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
+        ("access", false, false, false, false),
+        ("agents", false, false, false, false),
+        ("tasks", false, false, false, false),
+        ("dev_containers", false, true, false, false),
+        ("projects", false, false, false, false),
         ("doctor", false, false, true, true),
         ("depot_publish", false, false, false, true),
         ("artifacts", false, true, false, true),
@@ -975,13 +983,20 @@ mod tests {
         // Reachable by a caller with `can_execute() == false` at hop 2.
         // Arbitrary browser callbacks require execute permission at downstream hops.
         let expected_callable = [
+            "access",
+            "agents",
             "depot_publish",
             "doctor",
             "fs",
             "jobs",
             "lab_admin",
             "mcp_app",
+            // Projects is caller-bound with no destructive or platform-admin
+            // action, so a non-execute caller may reach it and the durable
+            // Team role decides, exactly as for `access` and `tasks`.
+            "projects",
             "sources",
+            "tasks",
             "uploads",
             "gateway_status",
             CODE_MODE_READ_TOOL_NAME,

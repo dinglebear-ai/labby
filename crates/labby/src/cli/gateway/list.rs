@@ -56,6 +56,7 @@ async fn fetch_servers(
     config: &LabConfig,
 ) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
     if let Some(live) = remote::detect(config, "cli").await? {
+        let live = live.with_team_id(manager.team_id().map(str::to_owned));
         let value = live
             .dispatch_action("gateway.list", serde_json::json!({}))
             .await?;

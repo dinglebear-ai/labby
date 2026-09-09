@@ -209,6 +209,7 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
         }
         for action in service_actions {
             let action_surfaces = action_surfaces(service.name, action.name, &surfaces);
+            let authority = authority_metadata(service.name, action.name, action.requires_admin);
             actions.push(ActionDoc {
                 service: service.name.to_string(),
                 action: action.name.to_string(),
@@ -220,6 +221,9 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                 } else {
                     Vec::new()
                 },
+                authorization_boundary: authority.boundary.to_string(),
+                required_capability: authority.capability.map(str::to_string),
+                resource_family: authority.resource_family.map(str::to_string),
                 params: action
                     .params
                     .iter()
@@ -396,6 +400,132 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn action_catalog_exposes_structured_resource_authority_when_dispatch_has_it() {
+        let registry = crate::registry::build_docs_registry();
+        let actions = build_action_catalog(registry.services());
+        for (service, action, capability, family) in [
+            (
+                "access",
+                "access.team.create",
+                "platform.manage",
+                "platform",
+            ),
+            (
+                "access",
+                "access.team.member.add",
+                "membership.manage",
+                "platform",
+            ),
+            ("projects", "projects.get", "scope.read", "project"),
+            ("agents", "agents.delete", "scope.delete", "agent"),
+            ("tasks", "tasks.result", "scope.read", "task"),
+            (
+                "dev_containers",
+                "dev_containers.reconcile",
+                "scope.operate",
+                "dev_container",
+            ),
+        ] {
+            let projected = actions
+                .iter()
+                .find(|item| item.service == service && item.action == action)
+                .unwrap_or_else(|| panic!("missing {service}.{action}"));
+            assert_eq!(projected.authorization_boundary, "resource_capability");
+            assert_eq!(projected.required_capability.as_deref(), Some(capability));
+            assert_eq!(projected.resource_family.as_deref(), Some(family));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ownership_authority_is_not_misreported_as_transport_admin() {
+        let registry = crate::registry::build_docs_registry();
+        let actions = build_action_catalog(registry.services());
+        let stash = actions
+            .iter()
+            .find(|item| item.service == "stash" && item.action == "stash.metadata")
+            .expect("stash.metadata action");
+        assert_eq!(stash.authorization_boundary, "resource_capability");
+        assert_eq!(stash.required_capability.as_deref(), Some("scope.read"));
+        assert_eq!(stash.resource_family.as_deref(), Some("stash"));
+        assert!(!stash.requires_admin);
+    }
+
+    /// `requires_admin` is exactly the platform-capability axis for every
+    /// service that has a capability table; the catalog never hand-maintains
+    /// a fourth copy of that decision.
+    #[test]
+    fn requires_admin_equals_platform_capability_across_all_services() {
+        let registry = crate::registry::build_docs_registry();
+        let mut checked = 0;
+        for service in registry.services() {
+            for action in canonical_actions_for_service(service) {
+                let Some(capability) = dispatch_required_capability(service.name, action.name)
+                else {
+                    continue;
+                };
+                checked += 1;
+                assert_eq!(
+                    action.requires_admin,
+                    capability.is_platform(),
+                    "{}:{} requires_admin disagrees with {}",
+                    service.name,
+                    action.name,
+                    capability.as_wire()
+                );
+            }
+        }
+        assert!(checked > 0);
+        let actions = build_action_catalog(registry.services());
+        let create = actions
+            .iter()
+            .find(|item| item.service == "access" && item.action == "access.team.create")
+            .expect("access.team.create");
+        assert_eq!(
+            create.required_capability.as_deref(),
+            Some("platform.manage")
+        );
+        assert!(create.requires_admin);
+        assert_eq!(create.authorization_boundary, "resource_capability");
+        #[cfg(feature = "gateway")]
+        {
+            let loadout = actions
+                .iter()
+                .find(|item| item.service == "gateway" && item.action == "gateway.loadout.add")
+                .expect("gateway.loadout.add");
+            assert_eq!(loadout.required_capability.as_deref(), Some("scope.manage"));
+            assert!(!loadout.requires_admin);
+            let add = actions
+                .iter()
+                .find(|item| item.service == "gateway" && item.action == "gateway.add")
+                .expect("gateway.add");
+            assert_eq!(add.required_capability.as_deref(), Some("platform.manage"));
+            assert!(add.requires_admin);
+        }
+        let projects = actions
+            .iter()
+            .find(|item| item.service == "projects" && item.action == "projects.archive")
+            .expect("projects.archive");
+        assert_eq!(
+            projects.required_capability.as_deref(),
+            Some("scope.manage")
+        );
+        assert!(
+            !projects.destructive,
+            "archive is reversible through projects.activate"
+        );
+        let activate = actions
+            .iter()
+            .find(|item| item.service == "projects" && item.action == "projects.activate")
+            .expect("projects.activate");
+        assert_eq!(
+            activate.required_capability.as_deref(),
+            Some("scope.manage")
+        );
+        assert!(!activate.destructive);
+    }
 }
 
 fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
@@ -405,6 +535,106 @@ fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
         "requires lab:admin in addition to the selected transport authentication".to_string()
     } else {
         "uses the selected transport auth and gateway visibility policy".to_string()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AuthorityMetadata {
+    boundary: &'static str,
+    capability: Option<&'static str>,
+    resource_family: Option<&'static str>,
+}
+
+/// Exact capability a dispatch table demands for `service:action`, read from
+/// the same `required_capability` tables the dispatchers evaluate. This is not
+/// a second catalog: a service without such a table reports `None`.
+pub(crate) fn dispatch_required_capability(
+    service: &str,
+    action: &str,
+) -> Option<labby_primitives::access::Capability> {
+    match service {
+        "access" => crate::dispatch::access::required_capability(action),
+        "agents" => crate::dispatch::agents::required_capability(action),
+        "tasks" => crate::dispatch::tasks::required_capability(action),
+        "projects" => crate::dispatch::projects::required_capability(action),
+        "dev_containers" => crate::dispatch::dev_containers::required_capability(
+            action,
+            labby_primitives::access::OwnerKind::Personal,
+        ),
+        "stash" => crate::dispatch::file_stash::required_capability(action),
+        #[cfg(feature = "gateway")]
+        "gateway" => {
+            let bare = action.strip_prefix("gateway.").unwrap_or(action);
+            if matches!(bare, "help" | "schema") || !action.starts_with("gateway.") {
+                None
+            } else if crate::access::gateway_transport_requires_admin(action) {
+                Some(labby_primitives::access::Capability::PlatformManage)
+            } else if matches!(
+                action,
+                "gateway.loadout.list"
+                    | "gateway.loadout.list_state"
+                    | "gateway.loadout.get"
+                    | "gateway.protected_route.list"
+                    | "gateway.protected_route.list_state"
+                    | "gateway.protected_route.get"
+            ) {
+                Some(labby_primitives::access::Capability::ScopeRead)
+            } else {
+                Some(labby_primitives::access::Capability::ScopeManage)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resource family the dispatch table authorizes against; `None` for services
+/// without a capability model.
+fn dispatch_resource_family(service: &str) -> Option<&'static str> {
+    Some(match service {
+        "access" => "platform",
+        "agents" => "agent",
+        "tasks" => "task",
+        "projects" => "project",
+        "dev_containers" => "dev_container",
+        "stash" => "stash",
+        "gateway" => "gateway",
+        _ => return None,
+    })
+}
+
+fn authority_metadata(service: &str, action: &str, requires_admin: bool) -> AuthorityMetadata {
+    if service == crate::dispatch::depot_publish::SERVICE
+        && action == crate::dispatch::depot_publish::ACTION
+    {
+        return AuthorityMetadata {
+            boundary: "project_artifact_publish",
+            capability: None,
+            resource_family: Some("artifact_library"),
+        };
+    }
+    let capability =
+        dispatch_required_capability(service, action).map(|capability| capability.as_wire());
+    if let Some(capability) = capability {
+        return AuthorityMetadata {
+            boundary: "resource_capability",
+            capability: Some(capability),
+            resource_family: dispatch_resource_family(service),
+        };
+    }
+    AuthorityMetadata {
+        boundary: if requires_admin {
+            "transport_admin"
+        } else if service == "access"
+            && matches!(action, "access.team.list" | "access.project.effective.list")
+        {
+            "caller_membership_projection"
+        } else if service == "projects" && action == "projects.list" {
+            "team_project_membership"
+        } else {
+            "transport"
+        },
+        capability: None,
+        resource_family: None,
     }
 }
 
@@ -434,6 +664,9 @@ fn builtin_action(
         destructive: false,
         requires_admin: false,
         required_scopes: Vec::new(),
+        authorization_boundary: "transport".to_string(),
+        required_capability: None,
+        resource_family: None,
         params,
         returns: if action == "schema" {
             "ActionSpec".to_string()

@@ -3,3 +3,11 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# These cases repeatedly launch the path-classifier interpreter. On Windows,
+# overlapping them with live gateway startup exhausted the readiness budget.
+# Reserve this runner's test slots while each classifier case executes.
+[[profile.ci.overrides]]
+platform = 'cfg(windows)'
+filter = 'binary(=ci_changed_paths)'
+threads-required = 'num-test-threads'

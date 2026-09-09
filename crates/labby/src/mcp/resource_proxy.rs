@@ -74,7 +74,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "unavailable",
+                    kind: "unavailable".into(),
                 },
             )
             .await;
@@ -87,8 +87,12 @@ impl LabMcpServer {
         let auth = auth_context_from_extensions(&context.extensions);
         let scope = crate::dispatch::gateway::GatewayEnrichmentScope {
             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-            oauth_subject: oauth_upstream_subject_for_request(auth, self.request_subject(context))
-                .map(|subject| subject.into_owned()),
+            oauth_subject: self
+                .route_oauth_subject(oauth_upstream_subject_for_request(
+                    auth,
+                    self.request_subject(context),
+                ))
+                .map(std::borrow::Cow::into_owned),
         };
         let json = if uri == "lab://gateway/servers" {
             manager.gateway_servers_doc_scoped(&scope).await.map(Some)
@@ -131,7 +135,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error",
+                        kind: "upstream_error".into(),
                     },
                 )
                 .await;
@@ -201,7 +205,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;
@@ -323,7 +327,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Error,
-                        kind: "internal_error",
+                        kind: "internal_error".into(),
                     },
                 )
                 .await;
@@ -352,7 +356,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;
@@ -381,7 +385,10 @@ impl LabMcpServer {
     ) -> Result<ReadResourceResponse, ErrorData> {
         let uri = request.uri.clone();
         let auth = auth_context_from_extensions(&context.extensions);
-        let oauth_subject = oauth_upstream_subject_for_request(auth, self.request_subject(context));
+        let oauth_subject = self.route_oauth_subject(oauth_upstream_subject_for_request(
+            auth,
+            self.request_subject(context),
+        ));
         if let Some(oauth_subject) = oauth_subject.as_ref() {
             let configs = self.route_scoped_oauth_upstream_configs().await;
             match pool
@@ -435,7 +442,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Warning,
-                            kind: "subject_scoped_ui_unavailable",
+                            kind: "subject_scoped_ui_unavailable".into(),
                         },
                     )
                     .await;
@@ -492,7 +499,7 @@ impl LabMcpServer {
                 (
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Error,
-                        kind: "internal_error",
+                        kind: "internal_error".into(),
                     },
                     Err(ErrorData::internal_error(message, None)),
                 )
@@ -510,7 +517,7 @@ impl LabMcpServer {
                 (
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                     Err(ErrorData::resource_not_found(
                         format!("unknown UI resource: {uri}"),
@@ -611,7 +618,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error",
+                        kind: "upstream_error".into(),
                     },
                 )
                 .await;

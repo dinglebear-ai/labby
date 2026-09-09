@@ -285,11 +285,22 @@ impl BlobStore {
         sync_directory(&self.blobs)
     }
 
-    pub(crate) async fn recover_pending(&self) -> Result<()> {
+    /// Reconcile every pending upload left behind by an interrupted process.
+    /// Progress is checkpointed through the durable recovery cursor so a
+    /// crash mid-recovery resumes where it stopped instead of restarting.
+    pub(crate) async fn recover(&self) -> Result<()> {
+        #[cfg(all(test, target_os = "linux"))]
+        if regular_size(&self.tmp, "recovery.pause")?.is_some() {
+            TEST_RECOVERY_RESUME.notified().await;
+            remove_regular_if_exists(&self.tmp, "recovery.pause")?;
+        }
         let page_size = self.limits.janitor_batch_size;
-        let mut after = String::new();
+        let mut after = self.store.begin_recovery().await?;
         loop {
-            let page = self.store.pending_for_recovery(after, page_size).await?;
+            let page = self
+                .store
+                .pending_for_recovery(after.clone(), page_size)
+                .await?;
             if page.is_empty() {
                 break;
             }
@@ -300,8 +311,10 @@ impl BlobStore {
             for pending in page {
                 self.reconcile_pending(pending).await?;
             }
+            self.store.checkpoint_recovery(after.clone()).await?;
+            tokio::task::yield_now().await;
         }
-        Ok(())
+        self.store.complete_recovery().await
     }
 
     pub(crate) async fn scrub_integrity(&self, cancel: CancellationToken) -> Result<()> {
@@ -357,6 +370,10 @@ impl BlobStore {
             self.rollback_pending(pending).await?;
         }
         Ok(expired.len())
+    }
+
+    pub(super) fn close_store(&self) {
+        self.store.close();
     }
 
     async fn reconcile_pending(&self, pending: PendingRecovery) -> Result<()> {
@@ -519,14 +536,24 @@ fn stream_directory_names(
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     tokio::task::spawn_blocking(move || {
         let produce = || -> Result<()> {
-            let entries = rustix::fs::Dir::read_from(&directory)
-                .map_err(|_| FileStashStoreError::Unavailable)?;
+            // The typed error surface stays `Unavailable`; the OS error kind is
+            // retained in the debug log so an EIO/ENOTDIR is diagnosable.
+            let io_unavailable = |error: rustix::io::Errno| {
+                tracing::debug!(
+                    surface = "file_stash",
+                    operation = "stream_directory_names",
+                    errno = ?error,
+                    "directory streaming failed"
+                );
+                FileStashStoreError::Unavailable
+            };
+            let entries = rustix::fs::Dir::read_from(&directory).map_err(io_unavailable)?;
             let mut batch = Vec::with_capacity(batch_size);
             for entry in entries {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
-                let entry = entry.map_err(|_| FileStashStoreError::Unavailable)?;
+                let entry = entry.map_err(io_unavailable)?;
                 let name = entry.file_name().to_string_lossy();
                 if name == "." || name == ".." {
                     continue;
@@ -822,6 +849,9 @@ fn remove_regular_if_exists(directory: &File, name: &str) -> Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 static FAIL_UNLINK_NAME: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) static TEST_RECOVERY_RESUME: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 #[cfg(target_os = "linux")]
 async fn remove_unreferenced_tmp(
@@ -1442,7 +1472,7 @@ mod tests {
             super::super::FileStashRuntime::initialize_with_preferences(stash_root, preferences())
                 .await;
         assert_eq!(
-            restarted.status().await,
+            restarted.wait_for_recovery().await,
             super::super::FileStashStatus::Ready
         );
         let usage = restarted
@@ -1509,7 +1539,7 @@ mod tests {
         assert_eq!(
             super::super::FileStashRuntime::initialize_with_preferences(stash_root, preferences())
                 .await
-                .status()
+                .wait_for_recovery()
                 .await,
             super::super::FileStashStatus::Blocked(super::super::FileStashBlockedReason::Corrupt)
         );

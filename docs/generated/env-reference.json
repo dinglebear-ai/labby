@@ -385,5 +385,32 @@
     "description": "Override the Tailscale CLI executable used by proxy publication and preflight",
     "example": "tailscale",
     "default_port": null
+  },
+  {
+    "service": "setup",
+    "env_var": "LABBY_ACCESS_MIGRATION_EVIDENCE",
+    "required": false,
+    "secret": false,
+    "description": "Path to the source/checkpoint-bound approval evidence for an access-store schema migration",
+    "example": "/run/labby/access-migration-v7.json",
+    "default_port": null
+  },
+  {
+    "service": "setup",
+    "env_var": "LABBY_DEPOT_AUTHORITY_SIGNING_KEY",
+    "required": false,
+    "secret": true,
+    "description": "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes and delegated assertions (default variable for depot.authority_signing_key_env)",
+    "example": "<labby_depot_authority_signing_key>",
+    "default_port": null
+  },
+  {
+    "service": "setup",
+    "env_var": "LABBY_DEPOT_AUTHORITY_TOKEN",
+    "required": false,
+    "secret": true,
+    "description": "Bearer token presented to Depot's managed authority inbox (default variable for depot.authority_bearer_token_env)",
+    "example": "<labby_depot_authority_token>",
+    "default_port": null
   }
 ]

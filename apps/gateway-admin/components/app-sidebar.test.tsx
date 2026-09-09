@@ -39,7 +39,7 @@ test('snippets is a high-level primary navigation item', () => {
   assert.equal(primarySidebarNavigation.indexOf(snippets), 2)
 })
 
-test('BrowserSignOutButton surfaces a failed server revocation and keeps the session signed in', async () => {
+test('BrowserSignOutButton signs out locally and surfaces a failed server revocation separately', async () => {
   installTestDom()
   const originalFetch = globalThis.fetch
   __setBrowserSessionStateForTests({
@@ -58,10 +58,18 @@ test('BrowserSignOutButton surfaces a failed server revocation and keeps the ses
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    assert.match(view.container.textContent ?? '', /Sign out failed\. Your session is still active\./)
-    assert.equal(getBrowserSessionState().status, 'authenticated')
+    // Local authority state is cleared even though the server did not confirm
+    // the revocation; the failure is reported so the operator knows the server
+    // session may linger.
+    const alert = view.container.querySelector('[role="alert"]')
+    assert.ok(alert)
+    assert.match(alert.textContent ?? '', /did not confirm sign-out \(HTTP 500\)/)
+    assert.match(alert.textContent ?? '', /server session may remain active/)
+    assert.doesNotMatch(alert.textContent ?? '', /still active\./)
+    assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   }
 })

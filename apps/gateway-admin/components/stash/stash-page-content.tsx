@@ -9,7 +9,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import * as api from '@/lib/stash/client'
-import { StashError } from '@/lib/stash/client'
+import { STASH_WORKSPACE_UNSUPPORTED, StashError } from '@/lib/stash/client'
 import type { StashFile, StashGrant, StashStats } from '@/lib/stash/types'
 import { acceptGeneration, acceptGrantPage, acceptRecipientSearch, copyUri, mergeFiles, mergeGrants, selectedRecipientId } from '@/lib/stash/view-state'
 
@@ -31,10 +31,25 @@ function bytes(value: number): string {
 
 function errorCopy(error: unknown): { title: string; detail: string } {
   if (!(error instanceof StashError)) return { title: 'Stash is offline', detail: 'The service did not respond. Check the Labby connection and retry.' }
+  if (error.kind === STASH_WORKSPACE_UNSUPPORTED) return { title: 'Stash is not available in this workspace', detail: error.message }
   if (error.kind === 'quota_exceeded' || error.status === 413) return { title: 'Storage quota reached', detail: 'Remove files or ask an administrator to increase your File Stash quota.' }
   if (error.kind === 'busy' || error.status === 429) return { title: 'Stash is busy', detail: 'Another file operation is in progress. Wait a moment and retry.' }
   if (error.kind === 'conflict' || error.status === 409) return { title: 'That name is already used', detail: 'Rename the existing file or choose a different filename.' }
   return { title: 'File operation failed', detail: error.message }
+}
+
+/** Hand the browser an already-fetched blob as a named attachment. */
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  // Revoke after the click has been dispatched so the navigation can start.
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 function fileIcon(name: string) {
@@ -65,6 +80,7 @@ export function StashPageContent() {
   const generation = useRef(0)
   const loadAbort = useRef<AbortController | null>(null)
   const uploadControllers = useRef(new Map<string, AbortController>())
+  const downloadControllers = useRef(new Set<AbortController>())
   const uploadSequence = useRef(0)
   const mounted = useRef(true)
   const uploadBatchDirty = useRef(false)
@@ -98,10 +114,13 @@ export function StashPageContent() {
   useEffect(() => {
     mounted.current = true
     const controllers = uploadControllers.current
+    const downloads = downloadControllers.current
     return () => {
       mounted.current = false
       for (const controller of controllers.values()) controller.abort()
       controllers.clear()
+      for (const controller of downloads) controller.abort()
+      downloads.clear()
     }
   }, [])
 
@@ -169,6 +188,22 @@ export function StashPageContent() {
     if (input.current) input.current.value = ''
   }, [uploads])
 
+  const download = useCallback(async (file: StashFile) => {
+    const controller = new AbortController()
+    downloadControllers.current.add(controller)
+    try {
+      const blob = await api.downloadFile(file.file_id, controller.signal)
+      if (!mounted.current) return
+      saveBlob(blob, file.display_name)
+      setAnnouncement(`${file.display_name} download started.`)
+    } catch (reason) {
+      if (!mounted.current || (reason instanceof DOMException && reason.name === 'AbortError')) return
+      setError(reason)
+    } finally {
+      downloadControllers.current.delete(controller)
+    }
+  }, [])
+
   const remove = async () => {
     if (!deleteTarget) return
     setBusyDelete(true); setError(undefined)
@@ -195,7 +230,7 @@ export function StashPageContent() {
     {failure ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-aurora-2 border border-aurora-error/35 bg-aurora-error/5 p-4"><div><strong className="text-sm text-aurora-error">{failure.title}</strong><p className="mt-1 text-xs text-aurora-text-muted">{failure.detail}</p></div><Button variant="outline" onClick={() => void load(query.trim())}><RefreshCw/>Retry</Button></div> : null}
     <DashboardPanel title="Files" action={<div className="flex items-center gap-2"><label className="relative hidden sm:block"><span className="sr-only">Search current files</span><Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-8 w-44 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface pl-8 pr-2 text-xs text-aurora-text-primary"/></label><ViewToggle value={view} onChange={setView}/></div>}>
       <label className="relative sm:hidden"><span className="sr-only">Search current files</span><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search files…" className="h-9 w-full rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface pl-9 pr-3 text-sm"/></label>
-      {loading ? <div role="status" className="py-10 text-center text-sm text-aurora-text-muted">Loading your files…</div> : files.length === 0 ? <><div className="py-10 text-center"><Inbox className="mx-auto size-8 text-aurora-text-muted"/><strong className="mt-3 block text-aurora-text-primary">{query ? 'No matches on this page' : 'Your Stash is empty'}</strong><p className="mt-1 text-sm text-aurora-text-muted">{query ? (nextCursor ? 'More files are available to search.' : 'Try another filename.') : 'Upload a file to make it available to your agents.'}</p></div>{nextCursor ? <Button className="mx-auto mt-3" variant="outline" disabled={loadingMore} onClick={() => void load(query.trim(), nextCursor)}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}</> : <><div className={view === 'grid' ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle'}>{files.map(file => <FileRow key={file.file_id} file={file} grid={view === 'grid'} onDelete={() => setDeleteTarget(file)} onManage={() => setManageTarget(file)} onCopy={async () => { const result = await copyUri(value => navigator.clipboard.writeText(value), file.uri); if (result.ok) setAnnouncement(result.announcement); else setError(result.error) }}/>)}</div>{nextCursor ? <Button className="mx-auto mt-3" variant="outline" disabled={loadingMore} onClick={() => void load(query.trim(), nextCursor)}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}</>}
+      {loading ? <div role="status" className="py-10 text-center text-sm text-aurora-text-muted">Loading your files…</div> : files.length === 0 ? <><div className="py-10 text-center"><Inbox className="mx-auto size-8 text-aurora-text-muted"/><strong className="mt-3 block text-aurora-text-primary">{query ? 'No matches on this page' : 'Your Stash is empty'}</strong><p className="mt-1 text-sm text-aurora-text-muted">{query ? (nextCursor ? 'More files are available to search.' : 'Try another filename.') : 'Upload a file to make it available to your agents.'}</p></div>{nextCursor ? <Button className="mx-auto mt-3" variant="outline" disabled={loadingMore} onClick={() => void load(query.trim(), nextCursor)}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}</> : <><div className={view === 'grid' ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle'}>{files.map(file => <FileRow key={file.file_id} file={file} grid={view === 'grid'} onDelete={() => setDeleteTarget(file)} onManage={() => setManageTarget(file)} onDownload={() => download(file)} onCopy={async () => { const result = await copyUri(value => navigator.clipboard.writeText(value), file.uri); if (result.ok) setAnnouncement(result.announcement); else setError(result.error) }}/>)}</div>{nextCursor ? <Button className="mx-auto mt-3" variant="outline" disabled={loadingMore} onClick={() => void load(query.trim(), nextCursor)}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}</>}
     </DashboardPanel>
     <ActionConfirmationDialog open={Boolean(deleteTarget)} onOpenChange={open => { if (!open) { setDeleteTarget(undefined); setDeleteError(undefined) } }} title="Delete this file?" description={`This permanently deletes ${deleteTarget?.display_name || 'the file'} and revokes all of its grants. This cannot be undone.`} confirmLabel="Delete file" busy={busyDelete} error={deleteError ? errorCopy(deleteError) : undefined} onConfirm={() => void remove()}/>
     <ManageDialog file={manageTarget} onClose={() => setManageTarget(undefined)} onChanged={async message => { setAnnouncement(message); await load(query.trim(), undefined, true) }} onError={setError}/>
@@ -206,8 +241,8 @@ function ViewToggle({ value, onChange }: { value: ViewMode; onChange: (value: Vi
   return <div className="flex rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5" role="group" aria-label="File layout"><Button type="button" variant="ghost" size="icon-sm" aria-label="List view" aria-pressed={value === 'list'} onClick={() => onChange('list')}><List/></Button><Button type="button" variant="ghost" size="icon-sm" aria-label="Grid view" aria-pressed={value === 'grid'} onClick={() => onChange('grid')}><Grid2X2/></Button></div>
 }
 
-function FileRow({ file, grid, onDelete, onManage, onCopy }: { file: StashFile; grid: boolean; onDelete: () => void; onManage: () => void; onCopy: () => Promise<void> }) {
-  return <article className={grid ? 'rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4' : 'grid grid-cols-[34px_minmax(0,1fr)] items-center gap-3 px-2 py-3 sm:grid-cols-[34px_minmax(0,1fr)_100px_auto]'}><span className="grid size-8 place-items-center rounded-aurora-1 bg-aurora-accent-primary/10 text-aurora-accent-primary">{fileIcon(file.display_name)}</span><div className={grid ? 'mt-3 min-w-0' : 'min-w-0'}><strong className="block truncate text-sm text-aurora-text-primary">{file.display_name}</strong><button type="button" aria-label={`Copy URI for ${file.display_name}`} onClick={() => void onCopy()} title="Copy canonical URI" className="flex max-w-full items-center gap-1 text-left text-xs text-aurora-text-muted hover:text-aurora-accent-primary"><code className="truncate">{file.uri}</code><Copy className="size-3 shrink-0"/></button>{!file.owned ? <span className="mt-1 inline-block text-[10px] font-semibold text-aurora-success">Shared with you</span> : null}</div><span className={`${grid ? 'mt-3 block' : 'hidden sm:block'} text-xs text-aurora-text-muted`}>{bytes(file.size_bytes)}</span><div className={`${grid ? 'mt-3' : 'col-span-2 sm:col-span-1'} flex items-center justify-end gap-1`}><Button size="icon-sm" variant="ghost" aria-label={`Download ${file.display_name}`} asChild><a href={api.downloadUrl(file.file_id)} download><Download/></a></Button>{file.owned ? <><Button size="icon-sm" variant="ghost" aria-label={`Rename or share ${file.display_name}`} onClick={onManage}><Pencil/></Button><Button size="icon-sm" variant="ghost" aria-label={`Delete ${file.display_name}`} onClick={onDelete}><Trash2/></Button></> : null}</div></article>
+function FileRow({ file, grid, onDelete, onManage, onDownload, onCopy }: { file: StashFile; grid: boolean; onDelete: () => void; onManage: () => void; onDownload: () => Promise<void>; onCopy: () => Promise<void> }) {
+  return <article className={grid ? 'rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4' : 'grid grid-cols-[34px_minmax(0,1fr)] items-center gap-3 px-2 py-3 sm:grid-cols-[34px_minmax(0,1fr)_100px_auto]'}><span className="grid size-8 place-items-center rounded-aurora-1 bg-aurora-accent-primary/10 text-aurora-accent-primary">{fileIcon(file.display_name)}</span><div className={grid ? 'mt-3 min-w-0' : 'min-w-0'}><strong className="block truncate text-sm text-aurora-text-primary">{file.display_name}</strong><button type="button" aria-label={`Copy URI for ${file.display_name}`} onClick={() => void onCopy()} title="Copy canonical URI" className="flex max-w-full items-center gap-1 text-left text-xs text-aurora-text-muted hover:text-aurora-accent-primary"><code className="truncate">{file.uri}</code><Copy className="size-3 shrink-0"/></button>{!file.owned ? <span className="mt-1 inline-block text-[10px] font-semibold text-aurora-success">Shared with you</span> : null}</div><span className={`${grid ? 'mt-3 block' : 'hidden sm:block'} text-xs text-aurora-text-muted`}>{bytes(file.size_bytes)}</span><div className={`${grid ? 'mt-3' : 'col-span-2 sm:col-span-1'} flex items-center justify-end gap-1`}><Button size="icon-sm" variant="ghost" aria-label={`Download ${file.display_name}`} asChild><a href={api.downloadUrl(file.file_id)} download={file.display_name} onClick={event => { event.preventDefault(); void onDownload() }}><Download/></a></Button>{file.owned ? <><Button size="icon-sm" variant="ghost" aria-label={`Rename or share ${file.display_name}`} onClick={onManage}><Pencil/></Button><Button size="icon-sm" variant="ghost" aria-label={`Delete ${file.display_name}`} onClick={onDelete}><Trash2/></Button></> : null}</div></article>
 }
 
 export function ManageDialog({ file, onClose, onChanged, onError }: { file?: StashFile; onClose: () => void; onChanged: (message: string) => Promise<void>; onError: (error: unknown) => void }) {

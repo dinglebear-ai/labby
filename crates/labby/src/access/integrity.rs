@@ -28,31 +28,27 @@ pub(super) fn validate(connection: &Connection) -> AccessStoreResult<()> {
         return Err(integrity("application_id"));
     }
 
-    let metadata = connection.query_row(
-        "SELECT schema_version, schema_fingerprint, global_revision,
-                bootstrap_generation, bootstrap_identity_fingerprint
-         FROM access_metadata WHERE singleton = 1",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        },
-    );
-    let Ok((
-        schema_version,
-        fingerprint,
-        global_revision,
-        bootstrap_generation,
-        bootstrap_fingerprint,
-    )) = metadata
-    else {
-        return Err(integrity("schema_metadata"));
-    };
+    // A busy/locked/IO failure while reading metadata is an operational
+    // condition, not evidence of corruption; only a missing or malformed row
+    // is an integrity verdict.
+    let (schema_version, fingerprint, global_revision, bootstrap_generation, bootstrap_fingerprint) =
+        connection
+            .query_row(
+                "SELECT schema_version, schema_fingerprint, global_revision,
+                    bootstrap_generation, bootstrap_identity_fingerprint
+             FROM access_metadata WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .map_err(map_metadata_error)?;
     let bootstrap_metadata_valid = match (bootstrap_generation, bootstrap_fingerprint.as_deref()) {
         (0, None) => true,
         (1, Some(value)) => !value.is_empty(),
@@ -67,7 +63,8 @@ pub(super) fn validate(connection: &Connection) -> AccessStoreResult<()> {
     }
 
     validate_manifest(connection)?;
-    validate_bootstrap_state(connection, bootstrap_generation)
+    validate_bootstrap_state(connection, bootstrap_generation)?;
+    validate_team_authority(connection, bootstrap_generation)
 }
 
 pub(super) fn validate_v1_before_migration(connection: &Connection) -> AccessStoreResult<()> {
@@ -153,18 +150,95 @@ fn persisted_link_fingerprint(connection: &Connection) -> AccessStoreResult<Opti
 
 fn validate_manifest(connection: &Connection) -> AccessStoreResult<()> {
     let actual = schema_manifest(connection)?;
-    let canonical = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
-    canonical
-        .execute_batch(super::migrations::SCHEMA_V2_METADATA)
-        .map_err(super::store::map_sqlite_error)?;
-    canonical
-        .execute_batch(super::migrations::DOMAIN_SCHEMA)
-        .map_err(super::store::map_sqlite_error)?;
+    let canonical = super::migrations::canonical_current_schema()?;
     let expected = schema_manifest(&canonical)?;
     if actual != expected {
         return Err(integrity("schema_manifest"));
     }
     Ok(())
+}
+
+pub(super) fn validate_team_authority(
+    connection: &Connection,
+    generation: i64,
+) -> AccessStoreResult<()> {
+    let reserved: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM platform_administrators
+                            WHERE principal_id='bootstrap-owner')
+                 OR EXISTS(SELECT 1 FROM groups
+                           WHERE group_id='bootstrap-initial-team')
+                 OR EXISTS(SELECT 1 FROM team_memberships
+                           WHERE membership_id='bootstrap-initial-team-owner')
+                 OR EXISTS(SELECT 1 FROM access_audit
+                           WHERE event_id IN ('bootstrap-platform-admin-audit',
+                                              'bootstrap-initial-team-audit'))",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    if generation == 0 {
+        return if reserved {
+            Err(integrity("team_bootstrap_state"))
+        } else {
+            Ok(())
+        };
+    }
+    // Bootstrap rows must exist with their canonical identity. Their epochs
+    // and statuses are ordinary mutable state (member changes, suspensions,
+    // later administrator grants), so they are not pinned: only existence,
+    // identity, and the audit trail are structural.
+    let canonical: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM platform_administrators
+                 WHERE principal_id='bootstrap-owner' AND authority_epoch >= 1
+                   AND granted_by='bootstrap-owner')
+             AND EXISTS(
+                 SELECT 1 FROM groups
+                 WHERE group_id='bootstrap-initial-team'
+                   AND organization_id='bootstrap-local' AND kind='team'
+                   AND policy_epoch >= 1 AND membership_epoch >= 1
+                   AND created_by='bootstrap-owner')
+             AND EXISTS(
+                 SELECT 1 FROM team_memberships
+                 WHERE membership_id='bootstrap-initial-team-owner'
+                   AND organization_id='bootstrap-local'
+                   AND team_id='bootstrap-initial-team'
+                   AND principal_id='bootstrap-owner'
+                   AND membership_epoch >= 1
+                   AND created_by='bootstrap-owner')
+             AND EXISTS(
+                 SELECT 1 FROM access_audit
+                 WHERE event_id='bootstrap-platform-admin-audit'
+                   AND actor_principal_id='bootstrap-owner'
+                   AND action='access.platform_admin.bootstrap'
+                   AND reason_code='canonical_bootstrap_principal')
+             AND EXISTS(
+                 SELECT 1 FROM access_audit
+                 WHERE event_id='bootstrap-initial-team-audit'
+                   AND actor_principal_id='bootstrap-owner'
+                   AND action='access.team.bootstrap'
+                   AND reason_code='canonical_bootstrap_principal')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    // The installation must retain at least one active platform administrator
+    // once bootstrapped; the bootstrap owner may be revoked only after another
+    // administrator exists.
+    let administered: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE status='active')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::store::map_sqlite_error)?;
+    if canonical && administered {
+        Ok(())
+    } else {
+        Err(integrity("team_bootstrap_state"))
+    }
 }
 
 fn map_metadata_error(error: rusqlite::Error) -> AccessStoreError {
@@ -218,4 +292,63 @@ fn normalize_sql(sql: &str) -> String {
 
 const fn integrity(check: &'static str) -> AccessStoreError {
     AccessStoreError::IntegrityViolation { check }
+}
+
+#[cfg(test)]
+mod tests {
+    use labby_auth::{Authenticator, VerifiedIdentity};
+
+    use crate::access::{AccessStore, BootstrapOwnerInput};
+
+    #[tokio::test]
+    async fn ordinary_authority_mutations_do_not_brick_the_store_on_reopen() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(identity, "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        // Member churn, a Team suspension, and a second administrator all move
+        // the bootstrap rows' epochs and statuses; none of that is corruption.
+        store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES('second-admin','bootstrap-local','user','active',NULL,10,10);
+                 INSERT INTO principal_links VALUES('second-link','second-admin','external','https://accounts.google.com','second',NULL,'active',1,1,10,10);
+                 INSERT INTO team_memberships VALUES('second-membership','bootstrap-local','bootstrap-initial-team','second-admin','owner','active',3,'bootstrap-owner',10,10,NULL);
+                 UPDATE groups SET membership_epoch=membership_epoch+4,policy_epoch=policy_epoch+2,status='suspended',updated_at=11 WHERE group_id='bootstrap-initial-team';
+                 UPDATE team_memberships SET membership_epoch=membership_epoch+5,role='admin' WHERE membership_id='bootstrap-initial-team-owner';
+                 INSERT INTO platform_administrators VALUES('second-admin','active',2,'bootstrap-owner',12,12,NULL);
+                 UPDATE platform_administrators SET status='revoked',revoked_at=13,authority_epoch=authority_epoch+1 WHERE principal_id='bootstrap-owner';",
+            )
+            .await
+            .unwrap();
+        drop(store);
+        AccessStore::open(path.clone()).await.unwrap();
+        AccessStore::open_existing_current(path.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::access::inspect_health(&path).status,
+            crate::access::AccessHealthStatus::Ready
+        );
+        // Removing the last active administrator is structural, not ordinary.
+        let store = AccessStore::open_existing_current(path.clone())
+            .await
+            .unwrap();
+        store
+            .execute_test_statement(
+                "UPDATE platform_administrators SET status='revoked',revoked_at=14 WHERE principal_id='second-admin';",
+            )
+            .await
+            .unwrap();
+        drop(store);
+        assert!(AccessStore::open_existing_current(path).await.is_err());
+    }
 }

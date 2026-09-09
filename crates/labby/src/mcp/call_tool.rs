@@ -15,7 +15,7 @@
 
 #[cfg(feature = "gateway")]
 use std::time::SystemTime;
-use std::{future::Future, pin::Pin, time::Instant};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -575,7 +575,7 @@ impl LabMcpServer {
                 } else {
                     LoggingLevel::Warning
                 },
-                kind,
+                kind: kind.into(),
             },
         )
         .await;
@@ -615,7 +615,7 @@ impl LabMcpServer {
             elapsed_ms,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Warning,
-                kind: "route_scope_denied",
+                kind: "route_scope_denied".into(),
             },
         );
     }
@@ -779,9 +779,9 @@ impl LabMcpServer {
                     DispatchLogOutcome::Failure {
                         level,
                         kind: if access_context_unavailable {
-                            "access_context_unavailable"
+                            "access_context_unavailable".into()
                         } else {
-                            kind
+                            kind.into()
                         },
                     },
                 )
@@ -1370,11 +1370,14 @@ impl LabMcpServer {
                         );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                                auth_context_from_extensions(&context.extensions),
-                                self.request_subject(&context),
-                            )
-                            .map(|subject| subject.into_owned()),
+                            oauth_subject: self
+                                .route_oauth_subject(
+                                    crate::mcp::context::oauth_upstream_subject_for_request(
+                                        auth_context_from_extensions(&context.extensions),
+                                        self.request_subject(&context),
+                                    ),
+                                )
+                                .map(std::borrow::Cow::into_owned),
                         };
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -1431,11 +1434,14 @@ impl LabMcpServer {
                             .expect("availability requires a gateway manager");
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                                auth_context_from_extensions(&context.extensions),
-                                self.request_subject(&context),
-                            )
-                            .map(|subject| subject.into_owned()),
+                            oauth_subject: self
+                                .route_oauth_subject(
+                                    crate::mcp::context::oauth_upstream_subject_for_request(
+                                        auth_context_from_extensions(&context.extensions),
+                                        self.request_subject(&context),
+                                    ),
+                                )
+                                .map(std::borrow::Cow::into_owned),
                         };
                         if synthetic_action == "refresh" {
                             drop(
@@ -1797,18 +1803,113 @@ impl LabMcpServer {
                     .map(Into::into);
                 #[cfg(not(feature = "gateway"))]
                 unreachable!("snippet promotion is gateway-only")
-            } else if self.registry.dispatch_capability(&service)
-                == Some(crate::registry::DispatchCapability::CallerBound)
-                && !matches!(action.as_str(), "help" | "schema")
-            {
-                self.dispatch_caller_bound_service(
-                    &service,
-                    &action,
-                    params,
-                    &context,
-                    request.meta.as_ref(),
-                )
-                .await
+            } else if matches!(action.as_str(), "help" | "schema") {
+                (entry.dispatch)(action.clone(), params).await
+            } else if service == "access" {
+                let auth = auth_context_from_extensions(&context.extensions);
+                let identity =
+                    crate::mcp::context::verified_identity_from_extensions(&context.extensions)
+                        .cloned();
+                let bound_installation_id =
+                    crate::mcp::context::bound_access_grant_from_extensions(&context.extensions)
+                        .map(|grant| grant.installation_id.clone());
+                match identity {
+                    Some(identity) => {
+                        // Store lifecycle failures are typed outages, never
+                        // authorization decisions.
+                        match self.access_runtime.store().await {
+                            Ok(store) => match self.caller_ceiling(auth) {
+                                Some(ceiling) => {
+                                    // A route-bound grant pins administration
+                                    // to the installation it was issued for.
+                                    // Otherwise this is the installation the
+                                    // process bound at startup — the same
+                                    // binding the HTTP surface dispatches with,
+                                    // so one identity governs both adapters.
+                                    let installation_id = match bound_installation_id {
+                                        Some(value) => value,
+                                        None => self
+                                            .installation_id
+                                            .as_deref()
+                                            .unwrap_or_default()
+                                            .to_owned(),
+                                    };
+                                    if installation_id.is_empty()
+                                        && crate::dispatch::access::required_capability(&action)
+                                            .is_some_and(
+                                                labby_primitives::access::Capability::is_platform,
+                                            )
+                                    {
+                                        tracing::warn!(
+                                            surface = "mcp",
+                                            service = %service,
+                                            action = %action,
+                                            kind = "service_unavailable",
+                                            "installation identity is not bound on this process"
+                                        );
+                                        Err(ToolError::Sdk {
+                                                sdk_kind: "service_unavailable".to_owned(),
+                                                message:
+                                                    "installation-bound access administration is unavailable"
+                                                        .to_owned(),
+                                            })
+                                    } else {
+                                        crate::dispatch::access::dispatch(
+                                            crate::dispatch::access::AccessDispatchContext {
+                                                store,
+                                                identity,
+                                                ceiling,
+                                                installation_id,
+                                                #[cfg(feature = "gateway")]
+                                                gateway_manager: self.gateway_manager.clone(),
+                                            },
+                                            &action,
+                                            params,
+                                        )
+                                        .await
+                                    }
+                                }
+                                None => Err(ToolError::Forbidden {
+                                    message:
+                                        "access administration requires host-established identity"
+                                            .to_owned(),
+                                    required_scopes: Vec::new(),
+                                }),
+                            },
+                            Err(error) => Err(crate::dispatch::access_errors::map_runtime_error(
+                                "access", error,
+                            )),
+                        }
+                    }
+                    None => Err(ToolError::Forbidden {
+                        message: "access administration requires host-established identity"
+                            .to_owned(),
+                        required_scopes: Vec::new(),
+                    }),
+                }
+            } else if service == "dev_containers" {
+                let auth = auth_context_from_extensions(&context.extensions);
+                let identity =
+                    crate::mcp::context::verified_identity_from_extensions(&context.extensions)
+                        .cloned();
+                match (identity, self.caller_ceiling(auth)) {
+                    (Some(identity), Some(ceiling)) => {
+                        crate::dispatch::dev_containers::dispatch(
+                            crate::dispatch::dev_containers::DevContainerDispatchContext {
+                                access_runtime: Arc::clone(&self.access_runtime),
+                                identity,
+                                ceiling,
+                            },
+                            &action,
+                            params,
+                        )
+                        .await
+                    }
+                    _ => Err(ToolError::Forbidden {
+                        message: "Dev Container operation is not authorized".to_owned(),
+                        required_scopes: Vec::new(),
+                    }),
+                }
             } else if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
@@ -1824,6 +1925,17 @@ impl LabMcpServer {
                 {
                     (entry.dispatch)(action.clone(), params).await
                 }
+            } else if self.registry.dispatch_capability(&service)
+                == Some(crate::registry::DispatchCapability::CallerBound)
+            {
+                self.dispatch_caller_bound_service(
+                    &service,
+                    &action,
+                    params,
+                    &context,
+                    request.meta.as_ref(),
+                )
+                .await
             } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {
@@ -1836,6 +1948,158 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
+                    let auth = auth_context_from_extensions(&context.extensions);
+                    let identity =
+                        crate::mcp::context::verified_identity_from_extensions(&context.extensions)
+                            .cloned();
+                    let Some(identity) = identity else {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            "forbidden",
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    };
+                    // A protected route bound to a Team Loadout is the
+                    // authoritative selector; `params.team_id` may only
+                    // agree with it. Root/unbound routes take the parameter.
+                    let requested_team_id = params
+                        .get("team_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let team_id = match (self.route_scope.bound_team_id(), requested_team_id) {
+                        (Some(bound), Some(requested)) if requested != bound => {
+                            tracing::warn!(
+                                surface = "mcp",
+                                service = %service,
+                                action = %action,
+                                kind = "invalid_param",
+                                "team_id parameter disagrees with the route's bound Team"
+                            );
+                            return Ok(error_result_from_envelope(build_error_extra(
+                                &service,
+                                &action,
+                                "invalid_param",
+                                "team_id must match the Team bound to this route",
+                                &serde_json::json!({ "param": "team_id" }),
+                            ))
+                            .into());
+                        }
+                        (Some(bound), _) => Some(bound.to_owned()),
+                        (None, requested) => requested,
+                    };
+                    // Absent auth is trusted only on transports that imply
+                    // local stdio; everywhere else it is a denial. The
+                    // transport ceiling is passed as such: trusted local stdio
+                    // is the full ceiling, never a synthesized AuthContext.
+                    let ceiling = match (auth, self.absent_auth_trust()) {
+                        (Some(auth), _) => crate::access::AuthorityCeiling::from_auth_context(auth),
+                        (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
+                            crate::access::AuthorityCeiling::trusted_local()
+                        }
+                        (None, crate::mcp::context::AbsentAuth::Untrusted) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "forbidden",
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
+                    // Installation-scoped platform actions authorize against the
+                    // real installation id, as HTTP does; a store outage is a
+                    // typed unavailability, never a silent denial.
+                    let store = match self.access_runtime.store().await {
+                        Ok(store) => store,
+                        Err(error) => {
+                            let mapped =
+                                crate::dispatch::access_errors::map_runtime_error("gateway", error);
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                mapped.kind(),
+                                "Gateway authority store is unavailable",
+                            ))
+                            .into());
+                        }
+                    };
+                    let installation_id = match store.installation_id().await {
+                        Ok(Some(installation_id)) => installation_id,
+                        // No installation binding yet: the evaluator authorizes
+                        // installation scope on platform-administrator status,
+                        // so the placeholder only names the resource (as HTTP).
+                        Ok(None) => "installation".to_owned(),
+                        Err(error) => {
+                            tracing::warn!(
+                                surface = "mcp",
+                                service = %service,
+                                action = %action,
+                                cause = %error,
+                                kind = "service_unavailable",
+                                "installation identity lookup failed"
+                            );
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "service_unavailable",
+                                "Gateway authority store is unavailable",
+                            ))
+                            .into());
+                        }
+                    };
+                    if let Err(error) = crate::access::authorize_gateway_action(
+                        &self.access_runtime,
+                        identity,
+                        ceiling,
+                        &installation_id,
+                        team_id.as_deref(),
+                        &action,
+                    )
+                    .await
+                    {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            error.kind(),
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    }
+                    if let Some(team_id) = team_id.as_deref()
+                        && crate::dispatch::gateway::team_scoped_gateway_action(&action)
+                        && let Err(error) =
+                            crate::dispatch::gateway::validate_team_scoped_upstream_references(
+                                &store, team_id, &action, &params,
+                            )
+                            .await
+                    {
+                        return Ok(error_result_from_envelope(build_error_extra(
+                            &service,
+                            &action,
+                            error.kind(),
+                            "team-scoped gateway policy may only reference upstreams with an active Team credential binding",
+                            &serde_json::json!({ "param": "upstreams" }),
+                        ))
+                        .into());
+                    }
+                    let params = match crate::access::qualify_team_gateway_params(
+                        &action,
+                        team_id.as_deref(),
+                        params,
+                    ) {
+                        Ok(params) => params,
+                        Err(_) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                "forbidden",
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
                     let params = inject_gateway_origin_param(
                         &action,
                         params,
@@ -1843,19 +2107,36 @@ impl LabMcpServer {
                     );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                        oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
-                            auth_context_from_extensions(&context.extensions),
-                            self.request_subject(&context),
-                        )
-                        .map(|subject| subject.into_owned()),
+                        oauth_subject: crate::access::gateway_runtime_subject(
+                            &action,
+                            team_id.as_deref(),
+                            crate::mcp::context::oauth_upstream_subject_for_request(
+                                auth_context_from_extensions(&context.extensions),
+                                self.request_subject(&context),
+                            )
+                            .as_deref(),
+                        ),
                     };
-                    Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
-                        manager,
-                        &action,
-                        params,
-                        enrichment_scope,
-                    ))
-                    .await
+                    let response =
+                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
+                            manager,
+                            &action,
+                            params,
+                            enrichment_scope,
+                        ))
+                        .await;
+                    response.map(|mut response| {
+                        // Only Team-scoped policy responses are projected
+                        // through the Team namespace; platform responses stay
+                        // complete for an administrator with a Team selected.
+                        if crate::dispatch::gateway::team_scoped_gateway_action(&action) {
+                            crate::access::filter_team_gateway_projection(
+                                team_id.as_deref(),
+                                &mut response,
+                            );
+                        }
+                        response
+                    })
                 }
                 #[cfg(not(feature = "gateway"))]
                 {
@@ -1898,7 +2179,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "not_found",
+                        kind: "not_found".into(),
                     },
                 )
                 .await;
@@ -2176,10 +2457,11 @@ impl LabMcpServer {
                 return false;
             };
             let owner = self.request_runtime_owner(context);
-            let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
-                auth_context_from_extensions(&context.extensions),
-                self.request_subject(context),
-            );
+            let oauth_subject =
+                self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
+                    auth_context_from_extensions(&context.extensions),
+                    self.request_subject(context),
+                ));
             return manager
                 .resolve_raw_upstream_tool_scoped(
                     service,
@@ -2204,10 +2486,11 @@ impl LabMcpServer {
             return Ok(None);
         };
         let owner = self.request_runtime_owner(context);
-        let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
-            auth_context_from_extensions(&context.extensions),
-            self.request_subject(context),
-        );
+        let oauth_subject =
+            self.route_oauth_subject(crate::mcp::context::oauth_upstream_subject_for_request(
+                auth_context_from_extensions(&context.extensions),
+                self.request_subject(context),
+            ));
         let allowed = self.route_scope.allowed_upstreams();
 
         if self.code_mode_widget_callbacks_enabled() {

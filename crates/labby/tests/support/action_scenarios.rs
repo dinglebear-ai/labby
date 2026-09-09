@@ -71,6 +71,20 @@ impl ActionOutcome {
             && self.canary_free
     }
 
+    pub(crate) fn satisfies_surface(&self, intent: &CaseIntent, surface: Surface) -> bool {
+        let minimum = match surface {
+            Surface::Api => intent.api_minimum.unwrap_or(intent.minimum_evidence),
+            _ => intent.minimum_evidence,
+        };
+        self.key == intent.key()
+            && self.evidence >= minimum
+            && self.owner == intent.scenario_owner
+            && !self.outcome_kind.is_empty()
+            && !self.recovery.is_empty()
+            && !self.side_effects.is_empty()
+            && self.canary_free
+    }
+
     pub(crate) fn record(&self) {
         let Some(directory) = std::env::var_os("LABBY_E2E_CASE_DIR") else {
             return;
@@ -153,16 +167,21 @@ pub(crate) fn disposition(intent: &CaseIntent) -> Disposition {
 
 pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
     let values = [
+        include_str!("../fixtures/e2e_actions/access.json"),
+        include_str!("../fixtures/e2e_actions/agents.json"),
         include_str!("../fixtures/e2e_actions/doctor.json"),
+        include_str!("../fixtures/e2e_actions/dev_containers.json"),
         include_str!("../fixtures/e2e_actions/depot_publish.json"),
         include_str!("../fixtures/e2e_actions/browser.json"),
         include_str!("../fixtures/e2e_actions/fs.json"),
         include_str!("../fixtures/e2e_actions/gateway.json"),
         include_str!("../fixtures/e2e_actions/lab_admin.json"),
+        include_str!("../fixtures/e2e_actions/projects.json"),
         include_str!("../fixtures/e2e_actions/server_logs.json"),
         include_str!("../fixtures/e2e_actions/setup.json"),
         include_str!("../fixtures/e2e_actions/snippets.json"),
         include_str!("../fixtures/e2e_actions/stash.json"),
+        include_str!("../fixtures/e2e_actions/tasks.json"),
         include_str!("../fixtures/e2e_actions/artifacts.json"),
         include_str!("../fixtures/e2e_actions/sources.json"),
         include_str!("../fixtures/e2e_actions/jobs.json"),
@@ -288,6 +307,20 @@ pub(crate) async fn run_cli(home: &Path, args: &[&str]) -> Result<Output, String
         .map(|value| (*value).to_string())
         .collect::<Vec<_>>();
     run_cli_probe(home, &owned).await
+}
+
+pub(crate) async fn run_cli_against(
+    home: &Path,
+    args: &[&str],
+    guard: &crate::live_labby::LiveLabbyGuard,
+) -> Result<Output, String> {
+    let mut command = tokio::process::Command::from(isolated_command(home));
+    guard.authorize_cli(&mut command);
+    command.env("LABBY_MATRIX_CANARY", SECRET_CANARY).args(args);
+    tokio::time::timeout(CHILD_DEADLINE, command.output())
+        .await
+        .map_err(|_| format!("CLI child exceeded {CHILD_DEADLINE:?}"))?
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn run_cli_in_install(
@@ -477,16 +510,65 @@ pub(crate) fn dedicated_contract_accepts_for(
     // authority. These are stable errors; the authenticated restart journey
     // supplies the success evidence.
     if key.starts_with("stash:") && surface == Surface::Mcp {
+        // The principal-scoped read path now resolves, so `stash.list`,
+        // `stash.search`, and `stash.stats` prove live success here. A
+        // file-scoped action still answers the non-enumerating denial because
+        // this sweep owns no file; the authenticated restart journey supplies
+        // the sharing evidence.
         return matches!(
             error_kind,
-            "forbidden" | "upstream_connect_error" | "service_unavailable"
+            "forbidden" | "not_found" | "upstream_connect_error" | "service_unavailable"
         );
+    }
+    // On Linux the authenticated Stash routes are mounted, so a sweep without
+    // a durable principal link is refused at one of two points on the same
+    // boundary: owner-scope authorization answers the non-enumerating denial
+    // for a file-scoped action, and an unresolvable principal reports the
+    // store outage. Both are stable; the authenticated restart journey
+    // supplies the success evidence.
+    if key.starts_with("stash:") && surface == Surface::Api && cfg!(target_os = "linux") {
+        return matches!(error_kind, "not_found" | "service_unavailable");
+    }
+    if key.starts_with("gateway:") && surface == Surface::Cli {
+        return matches!(error_kind, "daemon_unavailable" | "unknown_action");
+    }
+    // The MCP sweep acts as one authenticated caller with no membership in the
+    // owner scopes these fixtures name, so a write to another principal's or
+    // Team's resource is refused by the multi-user boundary this PR enforces.
+    // That refusal is the point, not a gap: the API journey drives the same
+    // action to its durable state change under an owner it actually holds.
+    if surface == Surface::Mcp
+        && (key.starts_with("access:") || key.starts_with("agents:") || key.starts_with("tasks:"))
+    {
+        return error_kind == "forbidden";
+    }
+    // Dev Container authority is refused at either of two points on the same
+    // boundary: the operation is denied outright, or the template this caller
+    // may use is not enumerable and reads as an invalid `template_id`.
+    if surface == Surface::Mcp && key.starts_with("dev_containers:") {
+        return matches!(error_kind, "forbidden" | "invalid_param");
+    }
+    if key.starts_with("artifacts:") && surface == Surface::Mcp {
+        return matches!(error_kind, "forbidden" | "internal_error");
     }
     dedicated_contract_for(key, surface)
         .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    // Gateway actions are owned by the running daemon. The CLI dispatches them
+    // over the daemon's HTTP API and fails closed when none is reachable
+    // instead of answering from a local one-shot manager, so the compiled CLI
+    // probe cannot reach a live success. The owned gateway CLI workflow runs
+    // against a real daemon and supplies that evidence for the actions it
+    // covers; `gateway.clients.list` additionally has no daemon-side dispatch
+    // route at all.
+    if key.starts_with("gateway:") && surface == Surface::Cli {
+        return Some((
+            "requires_running_daemon_covered_by_owned_workflow",
+            "daemon_unavailable",
+        ));
+    }
     if key.starts_with("depot_publish:") && surface == Surface::Mcp {
         return Some((
             "requires_protected_team_route_bound_grant",
@@ -512,6 +594,17 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
         } else {
             None
         };
+    }
+    if surface == Surface::Mcp
+        && (key.starts_with("access:")
+            || key.starts_with("agents:")
+            || key.starts_with("tasks:")
+            || key.starts_with("dev_containers:"))
+    {
+        return Some((
+            "requires_owner_scope_membership_covered_by_api_journey",
+            "forbidden",
+        ));
     }
     if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
         return Some(("requires_skills_runtime", "feature_not_compiled"));
@@ -581,10 +674,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.set_publication"
         )
     {
-        return Some((
-            "requires_project_bound_artifact_authority",
-            "internal_error",
-        ));
+        // Artifact authority failures now collapse to the non-enumerating
+        // denial instead of leaking a store outage as an internal error, so
+        // both kinds are stable on this boundary.
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
     }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
@@ -594,10 +687,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     }
     if surface == Surface::Mcp {
         return match key {
-            "setup:services.status" => Some((
-                "requires_configured_external_plugin_service",
-                "internal_error",
-            )),
+            // `services.status` answers `claude_cli_unavailable` on every
+            // surface. It was listed here as `internal_error` only because the
+            // MCP seam used to rewrite unrecognised kinds; it now reports the
+            // kind it declares, so the shared contract applies.
             "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
             "setup:plugin_connectivity" => {
                 Some(("requires_host_plugin_connectivity_authority", "forbidden"))

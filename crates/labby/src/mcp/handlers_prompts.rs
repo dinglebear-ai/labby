@@ -147,7 +147,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;
@@ -263,9 +263,9 @@ impl LabMcpServer {
                 });
                 prompts.accept(listed.prompt);
             }
-            if let Some(oauth_subject) =
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-            {
+            if let Some(oauth_subject) = self.route_oauth_subject(
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context)),
+            ) {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let scoped_prompts = pool
                     .subject_scoped_prompts_until(
@@ -309,7 +309,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind,
+                        kind: kind.into(),
                     },
                 )
                 .await;
@@ -412,7 +412,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "access_context_unavailable",
+                        kind: "access_context_unavailable".into(),
                     },
                 )
                 .await;
@@ -492,7 +492,7 @@ impl LabMcpServer {
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
                                 level,
-                                kind: error_kind,
+                                kind: error_kind.into(),
                             },
                         )
                         .await;
@@ -572,7 +572,7 @@ impl LabMcpServer {
                 elapsed_ms,
                 DispatchLogOutcome::Failure {
                     level: LoggingLevel::Warning,
-                    kind: "route_scope_denied",
+                    kind: "route_scope_denied".into(),
                 },
             )
             .await;
@@ -701,7 +701,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Error,
-                            kind: "internal_error",
+                            kind: "internal_error".into(),
                         },
                     )
                     .await;
@@ -735,7 +735,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Warning,
-                            kind: "not_found",
+                            kind: "not_found".into(),
                         },
                     )
                     .await;
@@ -760,9 +760,10 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        if let Some(oauth_subject) =
-            oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-            && let Some(pool) = self.current_upstream_pool().await
+        if let Some(oauth_subject) = self.route_oauth_subject(oauth_upstream_subject_for_request(
+            auth,
+            self.request_subject(&context),
+        )) && let Some(pool) = self.current_upstream_pool().await
         {
             let configs = self.route_scoped_oauth_upstream_configs().await;
             if let Some(upstream_name) = pool
@@ -848,7 +849,7 @@ impl LabMcpServer {
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
                                 level: LoggingLevel::Warning,
-                                kind: "upstream_error",
+                                kind: "upstream_error".into(),
                             },
                         )
                         .await;
@@ -886,7 +887,7 @@ impl LabMcpServer {
             elapsed_ms,
             DispatchLogOutcome::Failure {
                 level: LoggingLevel::Warning,
-                kind: "not_found",
+                kind: "not_found".into(),
             },
         )
         .await;
@@ -938,6 +939,7 @@ mod tests {
 
     fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {
         LabMcpServer {
+            installation_id: None,
             registry: Arc::new(build_default_registry()),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),

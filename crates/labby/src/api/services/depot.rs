@@ -451,7 +451,7 @@ async fn status(
     .await?;
     let actor = actor(auth.clone(), identity.clone())?;
     let result = Ok(Json(
-        json!({"depot": state.depot.status_for_actor(&actor).await}),
+        json!({"depot": state.depot.status_for_actor(&actor).await, "authority_projection": crate::dispatch::depot::authority_projection::projection_readiness()}),
     ));
     access
         .finish(
@@ -1055,14 +1055,6 @@ async fn call(
             result,
         )
         .await
-}
-
-async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, Json<Value>)> {
-    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
-    grant
-        .has_scope("lab:read")
-        .then_some(())
-        .ok_or_else(forbidden)
 }
 
 fn map_error(error: DepotError) -> (StatusCode, Json<Value>) {

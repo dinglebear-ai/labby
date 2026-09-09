@@ -19,6 +19,97 @@ class TestActionError extends Error implements ServiceActionError {
   }
 }
 
+const originalFetch = globalThis.fetch
+test.afterEach(() => {
+  globalThis.fetch = originalFetch
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+})
+
+const authority = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'one', organizationId: 'org', activeOwner: { kind: 'personal' as const, id: 'one' }, activeTeamId: undefined, activeProjectId: undefined, teams: [{ id: 'team-a', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 1 } as const
+
+function blockedFetch() {
+  let release: (() => void) | undefined
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  globalThis.fetch = (async () => { await blocked; return new Response(JSON.stringify({ ok: true }), { status: 200 }) }) as typeof fetch
+  return () => release?.()
+}
+
+const run = () => performServiceAction({ action: 'artifacts.list', params: {}, serviceLabel: 'Library', url: '/v1/artifacts', createError: (message, status, code) => new TestActionError(message, status, code) })
+const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
+
+test('performServiceAction rejects a response from a superseded authority context', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'two' }, expiresAt: 2, csrfToken: 'two', authority: { ...authority, principalId: 'two', activeOwner: { kind: 'personal', id: 'two' }, generation: 2 } })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
+test('performServiceAction treats a team or project switch under the same generation as a change', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority: { ...authority, activeOwner: { kind: 'team', id: 'team-a' }, activeTeamId: 'team-a' } })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
+test('performServiceAction treats gaining or losing the authority projection as a change', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
+  let release = blockedFetch()
+  let pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
+  release()
+  await assert.rejects(pending, isAbort, 'a projection arriving mid-request supersedes the unprojected request')
+
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
+  release = blockedFetch()
+  pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
+  release()
+  await assert.rejects(pending, isAbort, 'losing the projection mid-request supersedes the projected request')
+})
+
+test('performServiceAction accepts a response when only transport fields changed in flight', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 99, csrfToken: 'rotated', authority: { ...authority } })
+  release()
+  assert.deepEqual(await pending, { ok: true })
+})
+
+test('performServiceAction retries a CSRF failure under a stable authority projection and re-captures it for the retry', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'expired-csrf', authority })
+  const actionCsrfTokens: Array<string | undefined> = []
+  globalThis.fetch = (async (input, init) => {
+    if (input === '/auth/session') {
+      return new Response(JSON.stringify({
+        authenticated: true,
+        user: { sub: 'one' },
+        expires_at: 456,
+        csrf_token: 'fresh-csrf',
+        principal_id: 'one',
+        organization_id: 'org',
+        active_owner: { kind: 'personal', id: 'one' },
+        teams: [{ id: 'team-a', role: 'member', membership_epoch: 1, policy_epoch: 1 }],
+        projects: [],
+        capabilities: ['scope.read'],
+        authority_generation: 1,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    actionCsrfTokens.push((init?.headers as Record<string, string>)['x-csrf-token'])
+    if (actionCsrfTokens.length === 1) {
+      return new Response(JSON.stringify({ kind: 'validation_failed', message: 'CSRF token mismatch' }), { status: 403, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  assert.deepEqual(await run(), { ok: true })
+  assert.deepEqual(actionCsrfTokens, ['expired-csrf', 'fresh-csrf'])
+})
+
 test('safeFanout returns per-item failures without rejecting the whole fan-out', async () => {
   const results = await safeFanout([1, 2, 3], async (item) => {
     if (item === 2) {

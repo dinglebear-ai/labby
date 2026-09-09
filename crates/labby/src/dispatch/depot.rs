@@ -3,6 +3,7 @@
 pub mod admin;
 #[cfg(test)]
 mod admin_tests;
+pub(crate) mod authority_projection;
 pub mod cursor;
 #[cfg(test)]
 mod cursor_tests;
@@ -1227,6 +1228,7 @@ mod tests {
             },
         }));
 
+        let grant = delegation_grant();
         let product_authorization_checks = Arc::new(AtomicUsize::new(0));
         let result = client
             .publish_skill_archive_revalidated(
@@ -1235,13 +1237,14 @@ mod tests {
                 Some("team"),
                 || {
                     product_authorization_checks.fetch_add(1, Ordering::SeqCst);
-                    async { Ok(delegation_grant()) }
+                    async { Ok(grant.clone()) }
                 },
             )
             .await
             .unwrap();
         assert_eq!(result["result"]["job"]["id"], "job-123");
         assert_eq!(product_authorization_checks.load(Ordering::SeqCst), 3);
+        let authorization = browser_authorization();
         let authorization_checks = Arc::new(AtomicUsize::new(0));
         let result = client
             .publish_skill_archive_for_browser_revalidated(
@@ -1250,7 +1253,7 @@ mod tests {
                 Some("team"),
                 || {
                     authorization_checks.fetch_add(1, Ordering::SeqCst);
-                    async { Ok(browser_authorization()) }
+                    async { Ok(authorization.clone()) }
                 },
             )
             .await
@@ -1309,6 +1312,7 @@ mod tests {
                     team_id: Some("team-lime".into()),
                 },
             );
+        let authorization = browser_authorization();
         let checks = Arc::new(AtomicUsize::new(0));
         let result = client
             .publish_skill_archive_for_browser_revalidated(
@@ -1317,11 +1321,12 @@ mod tests {
                 None,
                 || {
                     let check = checks.fetch_add(1, Ordering::SeqCst);
+                    let authorization = authorization.clone();
                     async move {
                         if check == 2 {
                             Err(DepotError::DelegationUnavailable)
                         } else {
-                            Ok(browser_authorization())
+                            Ok(authorization)
                         }
                     }
                 },
@@ -1365,6 +1370,7 @@ mod tests {
                     team_id: Some("team-lime".into()),
                 },
             );
+        let authorization = browser_authorization();
         let checks = Arc::new(AtomicUsize::new(0));
         let result = client
             .publish_skill_archive_for_browser_revalidated(
@@ -1373,11 +1379,12 @@ mod tests {
                 None,
                 || {
                     let check = checks.fetch_add(1, Ordering::SeqCst);
+                    let authorization = authorization.clone();
                     async move {
                         if check == 1 {
                             Err(DepotError::DelegationUnavailable)
                         } else {
-                            Ok(browser_authorization())
+                            Ok(authorization)
                         }
                     }
                 },

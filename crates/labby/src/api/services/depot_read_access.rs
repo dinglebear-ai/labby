@@ -6,6 +6,14 @@ use sha2::{Digest as _, Sha256};
 
 pub(super) struct ReadAccess(Option<ProjectPermissionSnapshot>);
 
+async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, Json<Value>)> {
+    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
+    grant
+        .has_scope("lab:read")
+        .then_some(())
+        .ok_or_else(forbidden)
+}
+
 impl ReadAccess {
     pub(super) async fn begin(
         state: &AppState,

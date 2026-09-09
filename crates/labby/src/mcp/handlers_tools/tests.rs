@@ -225,6 +225,7 @@ fn test_server(
         .map(|manager| manager.code_mode_app_state())
         .unwrap_or_default();
     LabMcpServer {
+        installation_id: None,
         registry: Arc::new(registry),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -240,6 +241,43 @@ fn test_server(
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
     }
+}
+
+async fn authorized_test_access_runtime() -> Arc<crate::access::AccessRuntime> {
+    let directory = tempfile::Builder::new()
+        .prefix("labby-mcp-access-test-")
+        .tempdir_in(std::env::current_dir().expect("test working directory"))
+        .expect("access tempdir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure access tempdir");
+    }
+    let runtime = Arc::new(
+        crate::access::AccessRuntime::initialize(directory.keep().join("access.db")).await,
+    );
+    let identity = labby_auth::VerifiedIdentity::local_credential(
+        labby_auth::Authenticator::StaticBearer,
+        "static-bearer:primary",
+    )
+    .expect("static bearer identity");
+    runtime
+        .bootstrap_owner(
+            crate::access::BootstrapOwnerInput::new(identity, "Local", "Default")
+                .expect("bootstrap input"),
+        )
+        .await
+        .expect("bootstrap access authority");
+    runtime
+}
+
+fn primary_static_bearer_identity() -> labby_auth::VerifiedIdentity {
+    labby_auth::VerifiedIdentity::local_credential(
+        labby_auth::Authenticator::StaticBearer,
+        "static-bearer:primary",
+    )
+    .expect("static bearer identity")
 }
 
 async fn code_mode_manager(
@@ -5561,6 +5599,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
     );
     let notifier = crate::mcp::peers::PeerNotifier::default();
     let server = LabMcpServer {
+        installation_id: None,
         registry: Arc::new(ToolRegistry::new()),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
@@ -5669,7 +5708,7 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
     let mut hidden_spec = fixture_upstream_config("github");
     hidden_spec.enabled = false;
 
-    let server = test_server(
+    let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
@@ -5680,6 +5719,7 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.access_runtime = authorized_test_access_runtime().await;
     let peer_server = test_server(
         ToolRegistry::new(),
         None,
@@ -5692,7 +5732,8 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
         transport,
         None,
     );
-    let context = request_context_with_peer(running.peer().clone());
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
 
     let result = Box::pin(server.call_tool_impl(
         CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
@@ -5758,7 +5799,7 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
         )
         .await;
 
-    let server = test_server(
+    let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
@@ -5769,6 +5810,7 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.access_runtime = authorized_test_access_runtime().await;
     let peer_server = test_server(
         ToolRegistry::new(),
         None,
@@ -5781,7 +5823,8 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
         transport,
         None,
     );
-    let context = request_context_with_peer(running.peer().clone());
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
 
     let result = Box::pin(server.call_tool_impl(
         CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
@@ -6471,6 +6514,95 @@ async fn settings_mutations_use_the_setup_destructive_policy() {
             .service()
             .tool_request_is_destructive(&read, &context)
             .await
+    );
+}
+
+/// B-I3: a protected route bound to a `team:<id>:...` Loadout is the
+/// authoritative Team selector. A `params.team_id` that disagrees with the
+/// bound Team must be rejected as `invalid_param` on `team_id` before any
+/// gateway authority evaluation or dispatch runs.
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn gateway_call_on_team_bound_route_rejects_mismatching_team_id_param() {
+    let loadout = GatewayLoadoutConfig {
+        name: "team:alpha:prod".to_string(),
+        services: vec!["gateway".to_string()],
+        expose_tools: true,
+        expose_resources: true,
+        expose_prompts: true,
+        expose_skills: false,
+        expose_code_mode: false,
+        ..GatewayLoadoutConfig::default()
+    };
+    let route = ProtectedMcpRouteConfig {
+        name: "team-alpha".to_string(),
+        enabled: true,
+        public_host: "mcp.example.com".to_string(),
+        public_path: "/team-alpha".to_string(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".to_string(),
+        scopes: vec![],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some(loadout.name.clone()),
+                ..Default::default()
+            },
+        )),
+    };
+    let scope = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+        &route,
+        std::slice::from_ref(&loadout),
+    )
+    .expect("loadout scope resolves")
+    .expect("gateway subset scope");
+    assert_eq!(scope.bound_team_id(), Some("alpha"));
+    assert!(scope.allows_service("gateway"));
+
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    context.extensions.insert(primary_static_bearer_identity());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gateway.loadout.get".to_string()),
+            ),
+            (
+                "params".to_string(),
+                serde_json::json!({ "team_id": "beta", "name": "prod" }),
+            ),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(
+        result.is_error.unwrap_or(false),
+        "a mismatching team_id must not dispatch"
+    );
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("gateway error envelope");
+    assert_eq!(envelope["ok"], false, "{text}");
+    assert_eq!(envelope["error"]["kind"], "invalid_param", "{text}");
+    assert_eq!(envelope["error"]["param"], "team_id", "{text}");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Team bound to this route")),
+        "{text}"
     );
 }
 

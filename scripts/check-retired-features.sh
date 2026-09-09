@@ -167,8 +167,8 @@ require_absent 'auth-method:' .github/workflows/mcp-registry.yml 'MCP Registry c
 require_present 'MCP_PRIVATE_KEY:.*secrets\.MCP_PRIVATE_KEY' .github/workflows/mcp-registry.yml 'MCP Registry publication must pass the DNS signing key to the shared workflow'
 require_absent 'mcp-publisher|registry\.modelcontextprotocol\.io|MCP_REGISTRY_DOMAIN' .github/workflows/release.yml 'release.yml must not duplicate the shared MCP Registry publisher'
 require_absent 'tootie\.tv' .github/workflows/mcp-registry.yml 'MCP Registry publication must not use the homelab tootie.tv domain'
-require_present 'principal-scoped arbitrary' docs/services/STASH.md \
-  'File Stash contract must remain limited to principal-scoped arbitrary files'
+require_present 'personal- or Team-scoped arbitrary' docs/services/STASH.md \
+  'File Stash contract must remain limited to personal- or Team-scoped arbitrary files'
 require_present 'stash://me/files/\{opaque_file_id\}' docs/services/STASH.md \
   'File Stash contract must preserve its opaque canonical resource URI'
 require_present 'no components, revisions, workspaces' docs/services/STASH.md \

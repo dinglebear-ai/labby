@@ -1,0 +1,17 @@
+{
+  "service": "projects",
+  "api_path": "/v1/projects",
+  "cli_probe": null,
+  "can_mutate": true,
+  "success_action": "projects.list",
+  "invalid_action": "schema",
+  "policy_action": "projects.archive",
+  "workflow": ["projects.create", "projects.update", "projects.archive", "projects.activate"],
+  "parameters": {
+    "action": "projects.list",
+    "name": "Matrix Project",
+    "project_id": "matrix-project",
+    "team_id": "bootstrap-initial-team"
+  },
+  "action_params": {}
+}

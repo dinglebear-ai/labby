@@ -161,8 +161,11 @@ fn bootstrap_skill_library(
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_config(&config.artifacts)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+            &config.artifacts,
+            &config.depot,
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?,
     );
     let blocking = BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
         .map_err(|_| anyhow::anyhow!("invalid Skill Library blocking executor configuration"))?;
@@ -385,6 +388,32 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    // Hermetic live-test binaries need a durable principal behind the static bearer so the
+    // protected API/MCP/CLI adapters exercise their real authority paths. This hook is compiled
+    // out of product builds and only active in test-support (`proxy-testkit`) builds, where it
+    // still requires the explicit `LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1` opt-in; production owner
+    // bootstrap continues to require an authenticated browser session.
+    if cfg!(feature = "proxy-testkit")
+        && std::env::var_os("LABBY_E2E_BOOTSTRAP_STATIC_OWNER").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+    {
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .context("construct live-test static bearer identity")?;
+        access_runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity, "Local", "Default")
+                    .context("construct live-test owner bootstrap")?,
+            )
+            .await
+            .context("bootstrap live-test static bearer authority")?;
+    }
+    let _authority_projection =
+        crate::dispatch::depot::authority_projection::start_managed_projection(&config.depot)
+            .await
+            .context("start managed Depot authority projection")?;
     let file_stash_runtime = initialize_selected_file_stash_runtime(&registry, config).await;
 
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
@@ -466,6 +495,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::clone(&gateway_manager),
                 Arc::clone(&access_runtime),
                 Arc::clone(&file_stash_runtime),
+                Some(Arc::from(installation_id.as_str())),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -478,6 +508,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 Arc::new(registry),
                 Arc::clone(&access_runtime),
                 Arc::clone(&file_stash_runtime),
+                Some(Arc::from(installation_id.as_str())),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -1950,6 +1981,9 @@ fn run_stdio(
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
     access_runtime: Arc<AccessRuntime>,
     file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
+    // Durable installation identity this process resolved at startup. The
+    // stdio route administers the same installation the HTTP route does.
+    stdio_installation_id: Option<Arc<str>>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -2000,6 +2034,7 @@ fn run_stdio(
         );
         let service_count = registry.services().len();
         let server = LabMcpServer {
+            installation_id: stdio_installation_id,
             registry,
             access_runtime,
             file_stash_runtime,
@@ -2104,6 +2139,9 @@ fn build_mcp_service_with_scope(
     let registry = Arc::clone(&state.registry);
     let access_runtime = Arc::clone(&state.access_runtime);
     let file_stash_runtime = Arc::clone(&state.file_stash_runtime);
+    // The MCP route serves the same installation this process bound for the
+    // HTTP surface; both adapters must see one identity.
+    let installation_id = state.installation_id.clone();
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
@@ -2179,6 +2217,7 @@ fn build_mcp_service_with_scope(
                 "initializing HTTP MCP session handler"
             );
             Ok(LabMcpServer {
+                installation_id: installation_id.clone(),
                 registry: reg,
                 access_runtime,
                 file_stash_runtime,

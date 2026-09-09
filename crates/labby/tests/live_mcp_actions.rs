@@ -256,11 +256,108 @@ async fn assert_mcp_transition_readback(
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
             true
         }
+        // A multi-user mutation is only proven when the owning surface can
+        // read the new state back through its own authority, so each of these
+        // reads the collection the mutation changed and asserts the change is
+        // visible rather than trusting the mutation's own response.
+        "access:access.gateway_credential.bind" | "access:access.gateway_credential.revoke" => {
+            let (ok, text) = read(
+                "access",
+                "access.gateway_credential.list",
+                serde_json::json!({"team_id": live_labby::LiveLabbyGuard::HARNESS_TEAM_ID}),
+            )
+            .await;
+            assert!(ok, "{key} readback: {text}");
+            // Revocation is a tombstone, not a deletion: the binding stays
+            // listed so an operator can see it was withdrawn.
+            let binding = text
+                .split("\"binding_id\"")
+                .find(|entry| entry.contains("matrix-upstream"))
+                .unwrap_or_else(|| panic!("{key} readback lost the binding: {text}"));
+            let expected_status = if key.ends_with("bind") {
+                "\"status\":\"active\""
+            } else {
+                "\"status\":\"revoked\""
+            };
+            assert!(
+                binding.contains(expected_status),
+                "{key} binding status did not follow the mutation: {text}"
+            );
+            true
+        }
+        "access:access.team.create" | "access:access.team.suspend" => {
+            let (ok, text) = read("access", "access.team.list", serde_json::json!({})).await;
+            assert!(ok && text.contains("matrix-team"), "{key} readback: {text}");
+            true
+        }
+        "access:access.team_project.assign" => {
+            let (ok, text) = read(
+                "access",
+                "access.project.effective.list",
+                serde_json::json!({}),
+            )
+            .await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
+        "agents:agents.create" | "agents:agents.delete" => {
+            let (ok, text) = read("agents", "agents.list", serde_json::json!({})).await;
+            assert!(ok, "{key} readback: {text}");
+            let present = text.contains("matrix-agent");
+            assert_eq!(
+                present,
+                key.ends_with("create"),
+                "{key} agent visibility did not follow the mutation: {text}"
+            );
+            true
+        }
+        "projects:projects.create"
+        | "projects:projects.update"
+        | "projects:projects.archive"
+        | "projects:projects.activate" => {
+            let (ok, text) = read("projects", "projects.list", serde_json::json!({})).await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
         _ => false,
     }
 }
 
+/// Team-scoped Gateway policy may reference only upstreams that carry an
+/// active Team credential binding, so a loadout or protected-route transition
+/// must bind the harness Team to its upstream first. The binding is
+/// host-custodied metadata; no secret travels through this call.
+async fn bind_harness_team_upstream(runner: &BuiltinMcpRunner, upstream: &str, intent_key: &str) {
+    let params = serde_json::json!({
+        "team_id": live_labby::LiveLabbyGuard::HARNESS_TEAM_ID,
+        "upstream_name": upstream,
+        "binding_id": format!("matrix-{upstream}-binding"),
+    });
+    let result = runner
+        .call(
+            "access",
+            "access.gateway_credential.bind",
+            params.as_object().cloned().expect("binding params"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{intent_key} credential binding wire failure: {error}"));
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{intent_key} credential binding failed: {}",
+        result_text(&result)
+    );
+}
+
 async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
+    // Team-scoped Gateway policy may reference only upstreams carrying an
+    // active Team credential binding, so bind the harness Team before any
+    // loadout or protected-route action, not just its transition prerequisite.
+    if intent.action.starts_with("gateway.loadout.")
+        || intent.action.starts_with("gateway.protected_route.")
+    {
+        bind_harness_team_upstream(runner, "matrix-owned", &intent.key()).await;
+    }
     let prerequisite = match intent.key().as_str() {
         "setup:draft.commit" => Some((
             "draft.set",

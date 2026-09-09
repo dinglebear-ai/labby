@@ -50,6 +50,22 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = ColorPolicy::Auto)]
     pub color: ColorPolicy,
 
+    /// Select the Team authority context for team-scoped actions (sent as the
+    /// x-labby-team-id header to the Labby daemon).
+    //
+    // The `LABBY_E2E_TEAM_ID` environment fallback exists only in
+    // `proxy-testkit` (test-support) builds so the live test harness keeps
+    // working while it migrates to `--team-id`; product builds never consult
+    // that variable (see `team_id_env_fallback_is_compiled_out_of_product_builds`).
+    // `hide_env` keeps the hook out of `--help` and the generated
+    // `docs/generated/cli-help.md`, which is rendered with `--all-features`.
+    #[arg(long, global = true, value_name = "TEAM_ID", value_parser = parse_team_id)]
+    #[cfg_attr(
+        feature = "proxy-testkit",
+        arg(env = "LABBY_E2E_TEAM_ID", hide_env = true)
+    )]
+    pub team_id: Option<String>,
+
     /// Subcommand to run.
     #[command(subcommand)]
     pub command: Command,
@@ -61,6 +77,21 @@ impl Cli {
     pub fn format(&self) -> OutputFormat {
         OutputFormat::from_json_flag(self.json, self.color, RenderEnv::stdout())
     }
+}
+
+/// Validate a `--team-id` value at parse time.
+///
+/// The value travels verbatim as the `x-labby-team-id` HTTP header, so it must
+/// be a non-empty ASCII string without control characters. The daemon decides
+/// whether the Team exists and whether the caller may act within it.
+fn parse_team_id(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("team id must not be empty".to_owned());
+    }
+    if !value.is_ascii() || value.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err("team id must be ASCII without control characters".to_owned());
+    }
+    Ok(value.to_owned())
 }
 
 /// Every top-level subcommand. Service subcommands are added in later
@@ -149,6 +180,10 @@ pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<Exit
     // construction frames, exhausting a one-mebibyte main-thread stack.
     Box::pin(async move {
         let format = cli.format();
+        // Only daemon-backed gateway commands consume the selected Team; the
+        // binding stays here so unrelated subcommands never grow a Team axis.
+        #[cfg(feature = "gateway")]
+        let team_id = cli.team_id;
         match cli.command {
             Command::Serve(args) => serve::run(args, &config).await,
             Command::Mcp(args) => serve::run_mcp(args, &config).await,
@@ -162,7 +197,7 @@ pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<Exit
             Command::State(args) => state::run(args, format),
             Command::Completions(args) => completions::run(&args),
             #[cfg(feature = "gateway")]
-            Command::Gateway(args) => gateway::run(args, format, &config).await,
+            Command::Gateway(args) => gateway::run(args, format, &config, team_id.as_deref()).await,
             #[cfg(feature = "gateway")]
             Command::Snippets(args) => snippets::run(args, format, &config).await,
             #[cfg(feature = "skills")]
@@ -195,6 +230,110 @@ mod tests {
         let cli = Cli::parse_from(["lab", "doctor"]);
         assert_eq!(cli.color, ColorPolicy::Auto);
         assert!(matches!(cli.command, Command::Doctor(_)));
+    }
+
+    #[test]
+    fn cli_parses_global_team_id_flag() {
+        let cli = Cli::parse_from(["labby", "--team-id", "team-alpha", "doctor"]);
+        assert_eq!(cli.team_id.as_deref(), Some("team-alpha"));
+        assert!(matches!(cli.command, Command::Doctor(_)));
+
+        // `global = true` means the flag is accepted after the subcommand too.
+        let cli = Cli::parse_from(["labby", "doctor", "--team-id", "team-beta"]);
+        assert_eq!(cli.team_id.as_deref(), Some("team-beta"));
+    }
+
+    #[test]
+    fn cli_rejects_empty_team_id() {
+        let error = Cli::try_parse_from(["labby", "--team-id", "", "doctor"])
+            .expect_err("an empty team id must be rejected at parse time");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(
+            error.to_string().contains("team id must not be empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_non_ascii_or_control_team_id() {
+        for value in ["équipe", "team\u{1}id", "team\nid"] {
+            let error = Cli::try_parse_from(["labby", "--team-id", value, "doctor"])
+                .expect_err("non-ASCII and control characters must be rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(
+                error
+                    .to_string()
+                    .contains("team id must be ASCII without control characters"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn team_id_help_names_the_daemon_header() {
+        use clap::CommandFactory;
+
+        let command = Cli::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "team_id")
+            .expect("--team-id is a top-level argument");
+        assert!(arg.is_global_set(), "--team-id must be a global flag");
+        assert_eq!(
+            arg.get_help().map(ToString::to_string).as_deref(),
+            Some(
+                "Select the Team authority context for team-scoped actions (sent as the \
+                 x-labby-team-id header to the Labby daemon)"
+            )
+        );
+    }
+
+    /// Product builds must never consult the `LABBY_E2E_TEAM_ID` hook that the
+    /// live test harness still exports; only `--team-id` selects a Team.
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[test]
+    fn team_id_env_fallback_is_compiled_out_of_product_builds() {
+        use clap::CommandFactory;
+
+        let command = Cli::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "team_id")
+            .expect("--team-id is a top-level argument");
+        assert!(
+            arg.get_env().is_none(),
+            "product builds must not bind --team-id to any environment variable"
+        );
+        assert!(
+            Cli::command()
+                .get_arguments()
+                .all(|arg| arg.get_env() != Some(std::ffi::OsStr::new("LABBY_E2E_TEAM_ID"))),
+            "no top-level argument may read LABBY_E2E_TEAM_ID in product builds"
+        );
+    }
+
+    /// Test-support builds keep the env fallback only until the live harness
+    /// migrates to `--team-id`.
+    #[cfg(feature = "proxy-testkit")]
+    #[test]
+    fn team_id_env_fallback_is_limited_to_test_support_builds() {
+        use clap::CommandFactory;
+
+        let command = Cli::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "team_id")
+            .expect("--team-id is a top-level argument");
+        assert_eq!(
+            arg.get_env(),
+            Some(std::ffi::OsStr::new("LABBY_E2E_TEAM_ID")),
+            "proxy-testkit builds bind --team-id to the transitional harness variable"
+        );
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.contains("LABBY_E2E_TEAM_ID"),
+            "the transitional env hook must stay out of rendered help and generated docs"
+        );
     }
 
     #[test]

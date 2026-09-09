@@ -1,0 +1,1302 @@
+{
+  "schema": "labby.authority-action-expectations/v1",
+  "resource_under_test": "one Team-owned resource; other_team_member holds member role only in a different Team; personal_no_membership holds no Team membership",
+  "actions": {
+    "access:access.gateway_credential.bind": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.gateway_credential.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.gateway_credential.revoke": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.platform_admin.grant": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.platform_admin.revoke": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.project.effective.list": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "access:access.team.activate": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.create": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.list": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "access:access.team.member.add": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.member.remove": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.member.role.set": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.member.suspend": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.suspend": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_invitation.accept": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_invitation.create": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_project.assign": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "access:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "agents:agents.create": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.delete": {
+      "required_capability": "scope.delete",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.run": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.session.status": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.suspend": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:agents.update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "agents:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "agents:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.create": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.destroy": {
+      "required_capability": "scope.delete",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.reconcile": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.start": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:dev_containers.stop": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "dev_containers:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "dev_containers:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.add": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.client_config.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.clients.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.code_mode.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.code_mode.set": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.discover": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.discovered_prompts": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.discovered_resources": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.discovered_tools": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.enrich.apply": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.enrich.preview": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_pending.approve": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_pending.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_pending.reject": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_tombstones.clear": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_tombstones.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.import_tombstones.restore": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.add": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.list_state": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.patch": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.remove": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.stage_patch": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.stage_remove": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.stage_update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.loadout.update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.mcp.cleanup": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.mcp.disable": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.mcp.enable": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.mcp.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.mcp.restart": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.clear": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.google_revoke": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.probe": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.resource_lease.create": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.resource_lease.release": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.resource_lease.renew": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.start": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.status": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.wait": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.add": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.list_state": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.remove": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.stage_add": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.stage_remove": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.stage_update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.test": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.protected_route.update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.public_urls.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.reload": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.remove": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.server.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.servers": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.service_actions": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.service_config.get": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.service_config.set": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.skills.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.status": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.supported_services": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.test": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.update": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.usage.calls": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.usage.metrics": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.disable": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.enable": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.get_mcp_policy": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.quarantine.list": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.quarantine.restore": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.remove": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.set_mcp_policy": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.virtual_server.set_surface": {
+      "required_capability": "platform.manage",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "gateway:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "projects:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "projects:projects.activate": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "projects:projects.archive": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "projects:projects.create": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "projects:projects.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "projects:projects.list": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "projects:projects.update": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "projects:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "stash:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "stash:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "stash:stash.delete": {
+      "required_capability": "scope.delete",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.grants.create": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.grants.list": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.grants.revoke": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.metadata": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.rename": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.search": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "stash:stash.stats": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:help": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "tasks:schema": {
+      "required_capability": null,
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.cancel": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.create": {
+      "required_capability": "scope.create",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.get": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.queue": {
+      "required_capability": "scope.operate",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "tasks:tasks.result": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    }
+  }
+}

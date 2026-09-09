@@ -261,6 +261,48 @@ for example, a persisted upstream may point at
 Use [../generated/env-reference.md](../generated/env-reference.md) for the current
 required/optional environment-variable matrix, secret flags, and examples.
 
+### Access-store migration approval
+
+Opening an existing access schema older than the binary's schema (any of v1
+through v6 with a schema-v7 binary) is denied unless the operator supplies an
+approval document bound to an independent rollback checkpoint, the exact
+source and target, and an explicit activation:
+
+```env
+LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v7.json
+```
+
+The JSON document uses schema `labby.access-migration-approval/v1` and contains
+`operation_id`, `source_version`, `target_version`, `target_fingerprint`,
+`checkpoint_path`, `checkpoint_sha256`, and `activate: true`. The checkpoint
+must be a separate consolidated SQLite copy of the quiesced source (`VACUUM
+INTO` or the online backup API) whose streamed file digest matches
+`checkpoint_sha256`; the live store is verified against it logically (schema
+manifest plus per-table content), so a WAL-mode source does not have to match
+byte-for-byte. An optional legacy `source_sha256` field is accepted and must
+equal `checkpoint_sha256`. Set this only after completing and retaining the
+rehearsal evidence described in the multi-user migration runbook. Missing,
+stale, mismatched, or replayed evidence leaves the access runtime unavailable
+without changing the database.
+
+### Managed Depot authority secrets
+
+A `labby_managed` Depot pair resolves two secrets from environment variables
+whose *names* are configurable in the Depot preferences; the values are never
+persisted or projected:
+
+| Variable | Default for | Secret |
+| --- | --- | --- |
+| `LABBY_DEPOT_AUTHORITY_TOKEN` | `authority_bearer_token_env` (bearer presented to Depot's authority inbox) | yes |
+| `LABBY_DEPOT_AUTHORITY_SIGNING_KEY` | `authority_signing_key_env` (base64url, no padding, 32-byte Ed25519 seed for projection envelopes and delegated assertions) | yes |
+
+Configured names must stay in the `LABBY_DEPOT_*` namespace and end in
+`_TOKEN` or `_KEY`. Overlapping key rotation registers up to seven additional
+`(key_id, signing_key_env)` pairs under `authority_overlap_signing_keys`; the
+active key stays `authority_key_id` / `authority_signing_key_env`. The seed
+material is zeroized after the key is derived, and a malformed seed fails
+startup fast.
+
 ## Provisioning Environment
 
 `labby setup --provision` and `scripts/incus-bootstrap.sh` also honor:

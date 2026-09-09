@@ -252,6 +252,19 @@ impl ArtifactFetchPolicy {
     }
 }
 
+/// Per-request headers a host attaches to every guarded remote acquisition
+/// request (for example a signed delegated read assertion bound to the exact
+/// method and path). The runtime stays free of signing logic: it only reports
+/// the method and the path without query string it is about to request and
+/// forwards whatever the host returns.
+pub trait ArtifactRequestHeaderProvider: Send + Sync {
+    fn headers(
+        &self,
+        method: &reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::header::HeaderMap, ArtifactError>;
+}
+
 /// Remote transport seam. Implementations perform I/O only through the bounded transfer gate.
 pub trait ArtifactAcquisitionTransport: Send + Sync {
     fn fetch<'a>(
@@ -259,6 +272,7 @@ pub trait ArtifactAcquisitionTransport: Send + Sync {
         request: &'a ExactArtifactRequest,
         deadlines: ArtifactTransportDeadlines,
         gate: &'a mut ArtifactTransferGate,
+        headers: Option<&'a dyn ArtifactRequestHeaderProvider>,
     ) -> ArtifactTransportFuture<'a>;
 }
 
@@ -314,6 +328,28 @@ struct ExactHttpComponent {
     url: String,
 }
 
+/// Depot operation names enforced by the exact-acquisition routes. A delegated
+/// read assertion must carry the operation the route checks.
+pub const EXACT_ARTIFACT_OPERATION: &str = "depot.artifacts.exact";
+pub const ACQUIRE_ARTIFACT_OPERATION: &str = "depot.artifacts.acquire";
+pub const ARTIFACT_COMPONENT_OPERATION: &str = "depot.artifacts.component";
+
+/// Classify a Depot exact-acquisition path into the operation its route
+/// enforces. Unknown paths fail closed instead of guessing an operation.
+#[must_use]
+pub fn acquisition_operation_for_path(path: &str) -> Option<&'static str> {
+    let path = path.trim_end_matches('/');
+    if path.ends_with("/api/artifacts/exact") {
+        Some(EXACT_ARTIFACT_OPERATION)
+    } else if path.ends_with("/api/artifacts/acquire") {
+        Some(ACQUIRE_ARTIFACT_OPERATION)
+    } else if path.contains("/api/artifacts/components/") {
+        Some(ARTIFACT_COMPONENT_OPERATION)
+    } else {
+        None
+    }
+}
+
 /// Concrete guarded HTTP transport shared by Depot and repository acquisition.
 ///
 /// DNS is resolved by configuration, filtered to public addresses, and pinned into the HTTP
@@ -366,14 +402,23 @@ impl GuardedHttpTransport {
         })
     }
 
-    fn request(&self, method: reqwest::Method, url: Url) -> reqwest::RequestBuilder {
-        let request = self.client.request(method, url);
-        match &self.credential {
-            Some(credential) => {
-                request.header(reqwest::header::AUTHORIZATION, credential.0.clone())
-            }
-            None => request,
+    /// Build one outbound request. The host's header provider, when present,
+    /// sees only the method and the path without query string; the runtime
+    /// never signs anything itself.
+    fn request(
+        &self,
+        method: reqwest::Method,
+        url: Url,
+        headers: Option<&dyn ArtifactRequestHeaderProvider>,
+    ) -> Result<reqwest::RequestBuilder, ArtifactError> {
+        let mut request = self.client.request(method.clone(), url.clone());
+        if let Some(credential) = &self.credential {
+            request = request.header(reqwest::header::AUTHORIZATION, credential.0.clone());
         }
+        if let Some(provider) = headers {
+            request = request.headers(provider.headers(&method, url.path())?);
+        }
+        Ok(request)
     }
 
     async fn bounded_json(
@@ -432,6 +477,7 @@ impl ArtifactAcquisitionTransport for GuardedHttpTransport {
         request: &'a ExactArtifactRequest,
         deadlines: ArtifactTransportDeadlines,
         gate: &'a mut ArtifactTransferGate,
+        headers: Option<&'a dyn ArtifactRequestHeaderProvider>,
     ) -> ArtifactTransportFuture<'a> {
         Box::pin(async move {
             if request.endpoint != self.endpoint
@@ -439,7 +485,8 @@ impl ArtifactAcquisitionTransport for GuardedHttpTransport {
             {
                 return Err(ArtifactError::Conflict("provider_connection_mismatch"));
             }
-            let mut metadata_request = self.request(reqwest::Method::POST, self.endpoint.clone());
+            let mut metadata_request =
+                self.request(reqwest::Method::POST, self.endpoint.clone(), headers)?;
             metadata_request = metadata_request.json(&ExactHttpRequest {
                 source_id: &request.source_id,
                 artifact_id: &request.artifact_id,
@@ -481,7 +528,7 @@ impl ArtifactAcquisitionTransport for GuardedHttpTransport {
                     .await?;
                 let response = tokio::time::timeout(
                     deadlines.read,
-                    self.request(reqwest::Method::GET, url).send(),
+                    self.request(reqwest::Method::GET, url, headers)?.send(),
                 )
                 .await
                 .map_err(|_| ArtifactError::Conflict("provider_read_timeout"))?
@@ -576,6 +623,16 @@ where
         &self,
         request: &ExactArtifactRequest,
     ) -> Result<ArtifactAcquisition, ArtifactError> {
+        self.acquire_exact_with_headers(request, None).await
+    }
+
+    /// Acquire one exact revision, attaching the host's per-request headers
+    /// (for example signed delegated read assertions) to every remote request.
+    pub async fn acquire_exact_with_headers(
+        &self,
+        request: &ExactArtifactRequest,
+        headers: Option<&dyn ArtifactRequestHeaderProvider>,
+    ) -> Result<ArtifactAcquisition, ArtifactError> {
         request.validate()?;
         let permit = tokio::time::timeout(
             self.policy.queue_deadline,
@@ -592,7 +649,7 @@ where
         };
         let fetch = tokio::time::timeout(
             self.policy.total_deadline,
-            self.transport.fetch(request, deadlines, &mut gate),
+            self.transport.fetch(request, deadlines, &mut gate, headers),
         )
         .await;
         let interchange = match fetch {
@@ -1172,6 +1229,7 @@ mod tests {
             request: &'a ExactArtifactRequest,
             _deadlines: ArtifactTransportDeadlines,
             gate: &'a mut ArtifactTransferGate,
+            _headers: Option<&'a dyn ArtifactRequestHeaderProvider>,
         ) -> ArtifactTransportFuture<'a> {
             Box::pin(async move {
                 if matches!(self.behavior, MockBehavior::Rebind) {

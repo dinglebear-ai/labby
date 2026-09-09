@@ -7,9 +7,27 @@ use serde::{Deserialize, Serialize};
 pub const PUBLIC_ID: &str = "public";
 pub const LEGACY_ID: &str = "legacy";
 pub const PUBLIC_ENDPOINT: &str = "https://depot.dinglebear.ai";
+/// Default environment variable holding the managed-authority bearer token
+/// Labby presents to Depot's authority inbox (secret; never persisted).
+pub const DEFAULT_AUTHORITY_BEARER_TOKEN_ENV: &str = "LABBY_DEPOT_AUTHORITY_TOKEN";
+/// Default environment variable holding the base64url (no padding) 32-byte
+/// Ed25519 seed used to sign authority projections and delegated assertions
+/// (secret; never persisted).
+pub const DEFAULT_AUTHORITY_SIGNING_KEY_ENV: &str = "LABBY_DEPOT_AUTHORITY_SIGNING_KEY";
+/// Bounded overlapping key rotation: at most this many additional signing
+/// keys may be registered beside the active one.
+pub const MAX_AUTHORITY_OVERLAP_KEYS: usize = 7;
 pub const MAX_PROVIDERS: usize = 16;
 pub const MAX_TOMBSTONES: usize = 4096;
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DepotControlMode {
+    #[default]
+    Standalone,
+    LabbyManaged,
+}
 
 /// Wire generations remain opaque strings even if an upstream uses numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,6 +56,8 @@ impl From<OpaqueEpoch> for String {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DepotPreferences {
+    pub control_mode: DepotControlMode,
+    pub managed_authority_kill_switch: bool,
     /// Single host-selected project whose members may read these catalogs.
     pub read_project_id: Option<String>,
     /// Host-file-only loopback services. Never writable through provider APIs.
@@ -48,13 +68,41 @@ pub struct DepotPreferences {
     pub providers: Vec<toml::Value>,
     pub tombstones: BTreeSet<String>,
     pub legacy_migrated: bool,
+    /// Managed authority replication target. Secret material is referenced by
+    /// environment-variable *name* only and resolved whenever a managed
+    /// control plane or projection sender is constructed (daemon start and
+    /// every later rebuild); values are never serialized into projections.
+    pub authority_endpoint: Option<String>,
+    /// Environment variable holding the Depot authority bearer token. Absent
+    /// means [`DEFAULT_AUTHORITY_BEARER_TOKEN_ENV`].
+    pub authority_bearer_token_env: Option<String>,
+    pub authority_installation_id: Option<String>,
+    /// Key ID stamped into projection envelopes and delegated assertions.
+    pub authority_key_id: Option<String>,
+    /// Environment variable holding the active Ed25519 signing seed as
+    /// base64url without padding (32 bytes decoded). Absent means
+    /// [`DEFAULT_AUTHORITY_SIGNING_KEY_ENV`].
+    pub authority_signing_key_env: Option<String>,
+    /// Additional signing keys kept valid during rotation. Each entry names a
+    /// key ID and the environment variable holding its seed; the active key
+    /// stays `authority_key_id`/`authority_signing_key_env`.
+    pub authority_overlap_signing_keys: Vec<AuthorityOverlapSigningKey>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
+}
+
+/// One retired-but-still-valid signing key registered for rotation overlap.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityOverlapSigningKey {
+    pub key_id: String,
+    pub signing_key_env: String,
 }
 
 impl Default for DepotPreferences {
     fn default() -> Self {
         Self {
+            control_mode: DepotControlMode::Standalone,
+            managed_authority_kill_switch: false,
             read_project_id: None,
             local_providers: Vec::new(),
             publish: None,
@@ -62,6 +110,12 @@ impl Default for DepotPreferences {
             providers: Vec::new(),
             tombstones: BTreeSet::new(),
             legacy_migrated: false,
+            authority_endpoint: None,
+            authority_bearer_token_env: None,
+            authority_installation_id: None,
+            authority_key_id: None,
+            authority_signing_key_env: None,
+            authority_overlap_signing_keys: Vec::new(),
             extra: BTreeMap::new(),
         }
     }
@@ -87,9 +141,30 @@ impl std::fmt::Debug for DepotPreferences {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DepotPreferences")
             .field("public_enabled", &self.public_enabled)
+            .field("control_mode", &self.control_mode)
+            .field(
+                "managed_authority_kill_switch",
+                &self.managed_authority_kill_switch,
+            )
             .field("provider_count", &self.providers.len())
             .field("tombstone_count", &self.tombstones.len())
             .field("legacy_migrated", &self.legacy_migrated)
+            .field(
+                "authority_endpoint_configured",
+                &self.authority_endpoint.is_some(),
+            )
+            .field(
+                "authority_bearer_token_env",
+                &self.authority_bearer_token_env(),
+            )
+            .field(
+                "authority_signing_key_env",
+                &self.authority_signing_key_env(),
+            )
+            .field(
+                "authority_overlap_key_count",
+                &self.authority_overlap_signing_keys.len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -152,6 +227,62 @@ pub struct LegacyDepot {
 }
 
 impl DepotPreferences {
+    /// Environment variable name for the authority bearer token, applying the
+    /// documented default.
+    #[must_use]
+    pub fn authority_bearer_token_env(&self) -> &str {
+        self.authority_bearer_token_env
+            .as_deref()
+            .unwrap_or(DEFAULT_AUTHORITY_BEARER_TOKEN_ENV)
+    }
+
+    /// Environment variable name for the active signing seed, applying the
+    /// documented default.
+    #[must_use]
+    pub fn authority_signing_key_env(&self) -> &str {
+        self.authority_signing_key_env
+            .as_deref()
+            .unwrap_or(DEFAULT_AUTHORITY_SIGNING_KEY_ENV)
+    }
+
+    /// `(key_id, env)` pairs for every registered signing key, active first.
+    /// Fails closed on an invalid reference, a duplicate key ID, or more than
+    /// the bounded overlap set.
+    pub fn authority_signing_key_envs(&self) -> Result<Vec<(String, String)>, &'static str> {
+        let active_id = self
+            .authority_key_id
+            .as_deref()
+            .ok_or("authority_key_id_required")?;
+        let active_env = self.authority_signing_key_env();
+        if !allowed_secret_reference(active_env) {
+            return Err("invalid_signing_key_reference");
+        }
+        if self.authority_overlap_signing_keys.len() > MAX_AUTHORITY_OVERLAP_KEYS {
+            return Err("too_many_overlap_keys");
+        }
+        let mut keys = vec![(active_id.to_owned(), active_env.to_owned())];
+        for overlap in &self.authority_overlap_signing_keys {
+            if overlap.key_id.trim().is_empty()
+                || !allowed_secret_reference(&overlap.signing_key_env)
+                || keys.iter().any(|(id, _)| id == &overlap.key_id)
+            {
+                return Err("invalid_overlap_key");
+            }
+            keys.push((overlap.key_id.clone(), overlap.signing_key_env.clone()));
+        }
+        Ok(keys)
+    }
+
+    /// Managed mode must never fall back to standalone authority when its
+    /// projection path is stale, disabled, or on an unknown protocol version.
+    #[must_use]
+    pub fn managed_mutations_ready(&self, projection_ready: bool, protocol_version: u64) -> bool {
+        self.control_mode == DepotControlMode::LabbyManaged
+            && !self.managed_authority_kill_switch
+            && projection_ready
+            && protocol_version == 1
+    }
+
     #[must_use]
     pub fn resolve(&self, legacy: &LegacyDepot) -> ResolvedDepot {
         let mut result = ResolvedDepot {
@@ -352,10 +483,12 @@ pub fn valid_provider_id(id: &str) -> bool {
         && !id.ends_with('-')
 }
 
+/// Secret references are environment-variable names in the `LABBY_DEPOT_*`
+/// namespace ending in `_TOKEN` (bearer values) or `_KEY` (signing seeds).
 pub fn allowed_secret_reference(key: &str) -> bool {
     key.len() <= 128
         && key.starts_with("LABBY_DEPOT_")
-        && key.ends_with("_TOKEN")
+        && (key.ends_with("_TOKEN") || key.ends_with("_KEY"))
         && key
             .bytes()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')

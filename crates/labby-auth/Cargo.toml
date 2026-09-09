@@ -44,12 +44,12 @@ serde_json.workspace = true
 chacha20poly1305 = "0.10"
 sha2.workspace = true
 subtle = "2"
-zeroize = "1"
 thiserror.workspace = true
 tokio.workspace = true
 tower = { workspace = true, optional = true }
 tracing.workspace = true
 url.workspace = true
+zeroize = "1"
 anyhow = { workspace = true, optional = true }
 oauth2 = { version = "5.0", default-features = false, optional = true }
 

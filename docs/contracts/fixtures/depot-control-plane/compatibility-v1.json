@@ -37,7 +37,7 @@
     "operationFingerprint": {
       "algorithm": "sha256-canonical-json",
       "required": true,
-      "binds": ["name", "inputSchema", "annotations", "actor", "authorityEpoch"]
+      "binds": ["inputSchema"]
     },
     "inputSchema": {
       "dialect": "labby.depot-operation-schema/v1",

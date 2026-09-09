@@ -50,8 +50,10 @@ pub fn unknown_instance(label: &str, valid: Vec<String>) -> ToolError {
 /// and can be recovered via `anyhow::Error::downcast_ref` in `serve.rs`.
 #[derive(Debug, Clone)]
 pub struct DispatchError {
-    /// Stable kind tag matching the MCP error vocabulary.
-    pub kind: &'static str,
+    /// Stable kind tag. Carries the kind the dispatcher declared verbatim so
+    /// this seam never rewrites a caller-visible error contract; static kinds
+    /// stay borrowed.
+    pub kind: std::borrow::Cow<'static, str>,
     /// Human-readable message.
     pub message: String,
     /// Optional list of valid values (for `unknown_action`, `unknown_instance`).
@@ -75,7 +77,7 @@ impl DispatchError {
     #[must_use]
     pub fn unknown_action(service: &str, action: &str, valid: Vec<String>) -> Self {
         Self {
-            kind: "unknown_action",
+            kind: std::borrow::Cow::Borrowed("unknown_action"),
             message: format!("unknown action `{action}` for service `{service}`"),
             valid: Some(valid),
             param: None,
@@ -87,7 +89,7 @@ impl DispatchError {
     #[must_use]
     pub fn missing_param(param: &'static str) -> Self {
         Self {
-            kind: "missing_param",
+            kind: std::borrow::Cow::Borrowed("missing_param"),
             message: format!("missing required parameter `{param}`"),
             valid: None,
             param: Some(param.to_string()),
@@ -99,7 +101,7 @@ impl DispatchError {
     #[must_use]
     pub fn invalid_param(param: &'static str, reason: &str) -> Self {
         Self {
-            kind: "invalid_param",
+            kind: std::borrow::Cow::Borrowed("invalid_param"),
             message: format!("invalid parameter `{param}`: {reason}"),
             valid: None,
             param: Some(param.to_string()),
@@ -111,7 +113,7 @@ impl DispatchError {
     #[must_use]
     pub fn unknown_instance(label: &str, valid: Vec<String>) -> Self {
         Self {
-            kind: "unknown_instance",
+            kind: std::borrow::Cow::Borrowed("unknown_instance"),
             message: format!("unknown instance `{label}`"),
             valid: Some(valid),
             param: None,
@@ -123,7 +125,7 @@ impl DispatchError {
     #[must_use]
     pub fn sdk(kind: &'static str, message: impl std::fmt::Display) -> Self {
         Self {
-            kind,
+            kind: std::borrow::Cow::Borrowed(kind),
             message: message.to_string(),
             valid: None,
             param: None,
@@ -150,63 +152,66 @@ impl From<ToolError> for DispatchError {
                 valid,
                 hint,
             } => Self {
-                kind: "unknown_action",
+                kind: std::borrow::Cow::Borrowed("unknown_action"),
                 message,
                 valid: Some(valid),
                 param: None,
                 hint,
             },
             ToolError::MissingParam { message, param } => Self {
-                kind: "missing_param",
+                kind: std::borrow::Cow::Borrowed("missing_param"),
                 message,
                 valid: None,
                 param: Some(param),
                 hint: None,
             },
             ToolError::InvalidParam { message, param } => Self {
-                kind: "invalid_param",
+                kind: std::borrow::Cow::Borrowed("invalid_param"),
                 message,
                 valid: None,
                 param: Some(param),
                 hint: None,
             },
             ToolError::UnknownInstance { message, valid } => Self {
-                kind: "unknown_instance",
+                kind: std::borrow::Cow::Borrowed("unknown_instance"),
                 message,
                 valid: Some(valid),
                 param: None,
                 hint: None,
             },
             ToolError::ConfirmationRequired { message } => Self {
-                kind: "confirmation_required",
+                kind: std::borrow::Cow::Borrowed("confirmation_required"),
                 message,
                 valid: None,
                 param: None,
                 hint: None,
             },
             ToolError::Conflict { message, .. } => Self {
-                kind: "conflict",
+                kind: std::borrow::Cow::Borrowed("conflict"),
                 message,
                 valid: None,
                 param: None,
                 hint: None,
             },
             ToolError::Forbidden { message, .. } => Self {
-                kind: "forbidden",
+                kind: std::borrow::Cow::Borrowed("forbidden"),
                 message,
                 valid: None,
                 param: None,
                 hint: None,
             },
             ToolError::AmbiguousTool { message, valid } => Self {
-                kind: "ambiguous_tool",
+                kind: std::borrow::Cow::Borrowed("ambiguous_tool"),
                 message,
                 valid: Some(valid),
                 param: None,
                 hint: None,
             },
+            // The declared kind crosses this seam verbatim. Collapsing an
+            // unlisted kind here would rewrite the agent-facing contract and
+            // turn a typed outage into an unexplained internal error.
             ToolError::Sdk { sdk_kind, message } => Self {
-                kind: canonical_kind(&sdk_kind),
+                kind: std::borrow::Cow::Owned(sdk_kind),
                 message,
                 valid: None,
                 param: None,
@@ -216,7 +221,7 @@ impl From<ToolError> for DispatchError {
             // has no channel for the refined contract payload, so only the
             // canonical kind + message cross this seam.
             ToolError::Contract { kind, payload } => Self {
-                kind: canonical_kind(&kind),
+                kind: std::borrow::Cow::Owned(kind),
                 message: payload.message,
                 valid: None,
                 param: None,

@@ -513,6 +513,49 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     let _ = apply_runtime_conditions;
     let mut reg = ToolRegistry::new();
 
+    // Caller-bound services need a host-established identity and authority
+    // ceiling; the registry entry only serves `help`/`schema` and denies the
+    // rest. Both the HTTP adapter and the MCP caller-bound path bind them.
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "access",
+        "Manage teams, memberships, invitations, and project assignments",
+        "administration",
+        crate::dispatch::access::ACTIONS,
+        dispatch_fn!(crate::dispatch::access::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "agents",
+        "Create, manage, and run owner-scoped Agents",
+        "automation",
+        crate::dispatch::agents::ACTIONS,
+        dispatch_fn!(crate::dispatch::agents::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "tasks",
+        "Create and operate owner-scoped Agent Tasks",
+        "automation",
+        crate::dispatch::tasks::ACTIONS,
+        dispatch_fn!(crate::dispatch::tasks::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "dev_containers",
+        "Create and manage isolated development containers",
+        "administration",
+        crate::dispatch::dev_containers::ACTIONS,
+        dispatch_fn!(crate::dispatch::dev_containers::dispatch_unbound),
+    ));
+
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
+        "projects",
+        "Create and manage Team-owned Projects",
+        "administration",
+        crate::dispatch::projects::ACTIONS,
+        dispatch_fn!(crate::dispatch::projects::dispatch_unbound),
+    ));
+
     reg.register(RegisteredService::bootstrap_operator(
         crate::dispatch::depot_publish::SERVICE,
         "Publish skill archives to a protected Team Depot",
@@ -568,7 +611,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     }
 
     #[cfg(feature = "skills")]
-    reg.register(RegisteredService::bootstrap_operator(
+    reg.register_caller_bound(RegisteredService::bootstrap_operator(
         crate::dispatch::artifacts::META.name,
         crate::dispatch::artifacts::META.description,
         "bootstrap",
@@ -910,6 +953,28 @@ mod tests {
             .any(|service| service.name == name)
     }
 
+    #[cfg(feature = "skills")]
+    #[test]
+    fn artifacts_require_caller_bound_dispatch_for_local_and_remote_actions() {
+        let registry = build_default_registry();
+        assert_eq!(
+            registry.dispatch_capability("artifacts"),
+            Some(super::DispatchCapability::CallerBound)
+        );
+        assert!(!registry.supports_context_free_dispatch("artifacts"));
+        assert!(registry.supports_mcp_dispatch("artifacts"));
+        #[cfg(feature = "gateway")]
+        {
+            use labby_gateway::registry::InProcessServiceRegistry as _;
+            assert!(
+                registry
+                    .in_process_services()
+                    .iter()
+                    .all(|service| service.service_name() != "artifacts")
+            );
+        }
+    }
+
     #[cfg(not(feature = "gateway"))]
     #[test]
     fn default_registry_omits_gateway_without_feature() {
@@ -951,6 +1016,8 @@ mod tests {
     fn registry_and_router_service_sets_are_identical() {
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
+            s.insert("access");
+            s.extend(["agents", "tasks", "dev_containers", "projects"]);
             s.insert("browser");
             #[cfg(feature = "gateway")]
             s.insert("gateway");

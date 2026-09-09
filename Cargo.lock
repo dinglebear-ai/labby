@@ -2073,6 +2073,7 @@ dependencies = [
  "walkdir",
  "wiremock",
  "xxhash-rust",
+ "zeroize",
 ]
 
 [[package]]
@@ -2256,6 +2257,10 @@ name = "labby-primitives"
 version = "1.15.1"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.4.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
  "url",
 ]
@@ -2268,6 +2273,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "jiff",
+ "labby-primitives",
  "regex",
  "reqwest",
  "serde",

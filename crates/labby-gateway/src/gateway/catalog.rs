@@ -462,7 +462,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.list",
         description: "List reusable gateway capability loadouts, including Skills-over-MCP exposure policy",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig[]",
         params: &[],
     },
@@ -470,7 +470,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.list_state",
         description: "List desired Loadouts with pending restart state compared with this process's mounted projections",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutState[]",
         params: &[],
     },
@@ -478,7 +478,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.get",
         description: "Get one reusable gateway capability loadout",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig",
         params: &[NAME_PARAM],
     },
@@ -486,7 +486,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.add",
         description: "Add a reusable gateway loadout that narrows upstreams, services, Tools, Resources, Prompts, Skills, and Code Mode",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig",
         params: &[ParamSpec {
             name: "loadout",
@@ -499,7 +499,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.update",
         description: "Replace a reusable gateway loadout; active protected routes may require restart before changes can take effect",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig",
         params: &[
             NAME_PARAM,
@@ -515,7 +515,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.patch",
         description: "Patch selected fields on a reusable gateway loadout without resetting unspecified capability gates or selections",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig",
         params: &[
             NAME_PARAM,
@@ -531,7 +531,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.stage_update",
         description: "Persist a mounted Loadout replacement for the next Labby restart without changing the running route projection",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutStageResult",
         params: &[
             NAME_PARAM,
@@ -547,7 +547,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.stage_patch",
         description: "Patch a mounted Loadout in durable config for the next Labby restart",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutStageResult",
         params: &[
             NAME_PARAM,
@@ -563,7 +563,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.stage_remove",
         description: "Remove a Loadout from desired config after its protected-route references have also been staged away",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutStageResult",
         params: &[NAME_PARAM],
     },
@@ -571,7 +571,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.loadout.remove",
         description: "Remove an unreferenced reusable gateway loadout",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "GatewayLoadoutConfig",
         params: &[NAME_PARAM],
     },
@@ -579,7 +579,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.list",
         description: "List Gateway-managed public MCP routes protected by Lab OAuth",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteConfig[]",
         params: &[],
     },
@@ -587,7 +587,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.list_state",
         description: "List desired protected-route config with pending restart state compared with the routes mounted by this process",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteState[]",
         params: &[],
     },
@@ -595,7 +595,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.get",
         description: "Get one Gateway-managed protected MCP route",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
         params: &[NAME_PARAM],
     },
@@ -603,7 +603,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.add",
         description: "Add a Gateway-managed protected MCP route",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
         params: &[ParamSpec {
             name: "route",
@@ -616,7 +616,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.update",
         description: "Replace a Gateway-managed protected MCP route",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
         params: &[
             NAME_PARAM,
@@ -632,7 +632,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.remove",
         description: "Remove a Gateway-managed protected MCP route",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteConfig",
         params: &[NAME_PARAM],
     },
@@ -640,7 +640,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.stage_add",
         description: "Persist a gateway_subset protected route for the next Labby restart without pretending it is hot-mounted",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
         params: &[ParamSpec {
             name: "route",
@@ -653,7 +653,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.stage_update",
         description: "Persist a protected-route update involving a gateway_subset for the next Labby restart",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
         params: &[
             NAME_PARAM,
@@ -669,7 +669,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.stage_remove",
         description: "Persist removal of a gateway_subset protected route for the next Labby restart",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteStageResult",
         params: &[NAME_PARAM],
     },
@@ -677,7 +677,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "gateway.protected_route.test",
         description: "Validate a proposed protected MCP route without saving it",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "ProtectedMcpRouteTestResult",
         params: &[ParamSpec {
             name: "route",
@@ -1543,25 +1543,26 @@ mod tests {
         assert!(!schema.requires_admin);
     }
 
+    /// `requires_admin` is the transport ceiling for installation-scoped
+    /// platform administration. Team-scoped policy (`gateway.loadout.*`,
+    /// `gateway.protected_route.*`) is authorized by the durable Team role
+    /// instead, so those actions must not demand `lab:admin`.
     #[test]
-    fn all_non_discovery_gateway_actions_require_admin() {
+    fn requires_admin_marks_exactly_the_platform_scoped_actions() {
         for spec in ACTIONS {
-            if matches!(
+            let discovery = matches!(
                 spec.name,
                 "help" | "schema" | "gateway.help" | "gateway.schema"
-            ) {
-                assert!(
-                    !spec.requires_admin,
-                    "`{}` should NOT require admin (discovery action)",
-                    spec.name
-                );
-            } else {
-                assert!(
-                    spec.requires_admin,
-                    "`{}` should require admin but requires_admin=false",
-                    spec.name
-                );
-            }
+            );
+            let team_scoped = spec.name.starts_with("gateway.loadout.")
+                || spec.name.starts_with("gateway.protected_route.");
+            assert_eq!(
+                spec.requires_admin,
+                !(discovery || team_scoped),
+                "`{}` requires_admin={} disagrees with its authority class",
+                spec.name,
+                spec.requires_admin
+            );
         }
     }
 

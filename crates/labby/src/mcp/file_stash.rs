@@ -16,17 +16,63 @@ use crate::mcp::context::{
 use crate::mcp::server::LabMcpServer;
 
 pub(crate) const TEMPLATE_URI: &str = "stash://me/files/{file_id}";
+/// Request-scoped Stash owner selection. This value chooses a scope; it grants
+/// no authority and is always re-evaluated against the verified caller.
+pub(crate) const OWNER_META_KEY: &str = "ai.dinglebear.labby/stashOwner";
 const PRIVATE_IN_PROCESS_TRANSPORT: &str = "in-process";
 
-pub(crate) struct ResolvedStashPrincipal {
-    id: PrincipalId,
-    _lease: crate::access::ActiveFileStashPrincipalLease,
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StashOwnerSelection {
+    kind: String,
+    #[serde(default)]
+    id: Option<String>,
 }
 
-impl std::ops::Deref for ResolvedStashPrincipal {
+/// A Stash principal the MCP surface may act as. Verified callers carry the
+/// owner-scope authorization that is revalidated before commit; the private
+/// in-process peer carries a trusted principal plus the active-principal lease.
+pub(crate) struct AuthorizedStashPrincipal {
+    principal: PrincipalId,
+    authority: Option<crate::access::FileStashOwnerAuthorization>,
+    _lease: Option<crate::access::ActiveFileStashPrincipalLease>,
+}
+
+impl AuthorizedStashPrincipal {
+    fn sealed(authority: crate::access::FileStashOwnerAuthorization) -> Self {
+        Self {
+            principal: (*authority).clone(),
+            authority: Some(authority),
+            _lease: None,
+        }
+    }
+
+    fn trusted(
+        principal: PrincipalId,
+        lease: crate::access::ActiveFileStashPrincipalLease,
+    ) -> Self {
+        Self {
+            principal,
+            authority: None,
+            _lease: Some(lease),
+        }
+    }
+
+    async fn validate_before_commit(&self) -> Result<(), ToolError> {
+        if let Some(authority) = &self.authority {
+            authority
+                .validate_before_commit()
+                .await
+                .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for AuthorizedStashPrincipal {
     type Target = PrincipalId;
     fn deref(&self) -> &Self::Target {
-        &self.id
+        &self.principal
     }
 }
 
@@ -34,6 +80,47 @@ impl LabMcpServer {
     pub(crate) fn file_stash_caller_bound(&self) -> bool {
         self.registry.dispatch_capability("stash")
             == Some(crate::registry::DispatchCapability::CallerBound)
+    }
+
+    fn verified_identity(
+        context: &RequestContext<RoleServer>,
+    ) -> Option<labby_auth::VerifiedIdentity> {
+        context
+            .extensions
+            .get::<labby_auth::VerifiedIdentity>()
+            .cloned()
+            .or_else(|| {
+                context
+                    .extensions
+                    .get::<Parts>()
+                    .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
+                    .cloned()
+            })
+    }
+
+    /// Transport authority ceiling for the caller. Absent auth is trusted as
+    /// local operator authority only on transports that genuinely imply local
+    /// stdio (see [`LabMcpServer::absent_auth_trust`]); everywhere else an
+    /// absent context yields no ceiling and the caller is denied.
+    pub(crate) fn caller_ceiling(
+        &self,
+        auth: Option<&labby_auth::auth_context::AuthContext>,
+    ) -> Option<crate::access::AuthorityCeiling> {
+        match (auth, self.absent_auth_trust()) {
+            (Some(auth), _) => Some(crate::access::AuthorityCeiling::from_auth_context(auth)),
+            (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
+                Some(crate::access::AuthorityCeiling::trusted_local())
+            }
+            (None, crate::mcp::context::AbsentAuth::Untrusted) => None,
+        }
+    }
+
+    fn authority_ceiling(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<crate::access::AuthorityCeiling, ToolError> {
+        self.caller_ceiling(auth_context_from_extensions(&context.extensions))
+            .ok_or_else(forbidden)
     }
 
     pub(crate) async fn dispatch_caller_bound_service(
@@ -45,36 +132,120 @@ impl LabMcpServer {
         meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<serde_json::Value, ToolError> {
         match service {
-            "stash" => {
-                let (principal, validated_grantee) = if action == "stash.grants.create" {
-                    let recipient = params
-                        .get("grantee_principal_id")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| ToolError::InvalidParam {
-                            param: "grantee_principal_id".into(),
-                            message: "invalid File Stash parameter".into(),
-                        })?
-                        .to_owned();
-                    let (owner, recipient, lease) = self
-                        .file_stash_participants(context, meta, recipient)
-                        .await?;
-                    (
-                        ResolvedStashPrincipal {
-                            id: owner,
-                            _lease: lease,
+            "agents" | "tasks" | "projects" => {
+                let identity = Self::verified_identity(context).ok_or_else(forbidden)?;
+                let ceiling = self.authority_ceiling(context)?;
+                // Store lifecycle failures are typed outages, never denials.
+                let store = self.access_runtime.store().await.map_err(|error| {
+                    crate::dispatch::access_errors::map_runtime_error(
+                        match service {
+                            "agents" => "agents",
+                            "tasks" => "tasks",
+                            _ => "projects",
                         },
-                        Some(recipient),
+                        error,
+                    )
+                })?;
+                match service {
+                    "agents" => {
+                        crate::dispatch::agents::dispatch(
+                            crate::dispatch::agents::AgentDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
+                    "tasks" => {
+                        crate::dispatch::tasks::dispatch(
+                            crate::dispatch::tasks::TaskDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
+                    _ => {
+                        crate::dispatch::projects::dispatch(
+                            crate::dispatch::projects::ProjectDispatchContext {
+                                store,
+                                identity,
+                                ceiling,
+                            },
+                            action,
+                            params,
+                        )
+                        .await
+                    }
+                }
+            }
+            "stash" => {
+                let recipient = if action == "stash.grants.create" {
+                    Some(
+                        params
+                            .get("grantee_principal_id")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| ToolError::InvalidParam {
+                                param: "grantee_principal_id".into(),
+                                message: "invalid File Stash parameter".into(),
+                            })?
+                            .to_owned(),
                     )
                 } else {
-                    (self.file_stash_principal(context, meta).await?, None)
+                    None
                 };
+                let (principal, validated_grantee) =
+                    if let Some(identity) = Self::verified_identity(context) {
+                        let authority = crate::dispatch::file_stash::authorize_owner(
+                            &self.access_runtime,
+                            identity.clone(),
+                            self.authority_ceiling(context)?,
+                            params.get("owner_kind").and_then(serde_json::Value::as_str),
+                            params.get("owner_id").and_then(serde_json::Value::as_str),
+                            action,
+                        )
+                        .await?;
+                        let grantee = match recipient {
+                            Some(recipient) => {
+                                let (_owner, recipient, lease) = self
+                                    .access_runtime
+                                    .resolve_and_lease_file_stash_participants(identity, recipient)
+                                    .await
+                                    .map_err(|_| forbidden())?;
+                                Some((recipient, Some(lease)))
+                            }
+                            None => None,
+                        };
+                        (AuthorizedStashPrincipal::sealed(authority), grantee)
+                    } else if let Some(recipient) = recipient {
+                        let (owner, recipient, lease) = self
+                            .file_stash_participants(context, meta, recipient)
+                            .await?;
+                        (
+                            AuthorizedStashPrincipal::trusted(owner, lease),
+                            // The participants lease covers both principals; the
+                            // grantee needs no second lease of its own.
+                            Some((recipient, None)),
+                        )
+                    } else {
+                        (self.file_stash_principal(context, meta).await?, None)
+                    };
+                principal.validate_before_commit().await?;
                 crate::dispatch::file_stash::dispatch_for_principal(
                     &self.file_stash_service(),
                     &principal,
                     "mcp",
                     action,
                     params,
-                    validated_grantee.as_ref(),
+                    validated_grantee
+                        .as_ref()
+                        .map(|(recipient, _lease)| recipient),
                 )
                 .await
             }
@@ -100,7 +271,7 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-    ) -> Result<ResolvedStashPrincipal, ToolError> {
+    ) -> Result<AuthorizedStashPrincipal, ToolError> {
         let caller = resolve_caller_authorization(
             auth_context_from_extensions(&context.extensions),
             self.absent_auth_trust(),
@@ -112,12 +283,18 @@ impl LabMcpServer {
         if let Some(parts) = context.extensions.get::<Parts>()
             && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
         {
-            return self
-                .access_runtime
-                .resolve_and_lease_file_stash_principal(identity.clone())
-                .await
-                .map(|(id, lease)| ResolvedStashPrincipal { id, _lease: lease })
-                .map_err(|_| forbidden());
+            let (kind, id) = selected_stash_owner(meta)?;
+            return crate::dispatch::file_stash::authorize_owner(
+                &self.access_runtime,
+                identity.clone(),
+                self.authority_ceiling(context)?,
+                kind.as_deref(),
+                id.as_deref(),
+                "stash.resources.read",
+            )
+            .await
+            .map(AuthorizedStashPrincipal::sealed)
+            .map_err(|_| forbidden());
         }
         // Serialized principal IDs are trusted on only the private in-process
         // peer. Network and stdio routes must resolve a VerifiedIdentity.
@@ -128,10 +305,7 @@ impl LabMcpServer {
                 .access_runtime
                 .lease_active_file_stash_principal(principal.clone())
                 .await
-                .map(|lease| ResolvedStashPrincipal {
-                    id: principal,
-                    _lease: lease,
-                })
+                .map(|lease| AuthorizedStashPrincipal::trusted(principal, lease))
                 .map_err(|_| forbidden());
         }
         Err(forbidden())
@@ -223,22 +397,32 @@ impl LabMcpServer {
                     return Ok(Vec::new());
                 }
                 let principal = if let Some(identity) = verified_identity {
-                    match self
-                        .access_runtime
-                        .resolve_and_lease_file_stash_principal(identity)
-                        .await
+                    let (kind, id) = selected_stash_owner(Some(&context.meta))?;
+                    match crate::dispatch::file_stash::authorize_owner(
+                        &self.access_runtime,
+                        identity,
+                        self.authority_ceiling(context)?,
+                        kind.as_deref(),
+                        id.as_deref(),
+                        "stash.resources.read",
+                    )
+                    .await
                     {
-                        Ok((id, lease)) => ResolvedStashPrincipal { id, _lease: lease },
+                        Ok(authority) => AuthorizedStashPrincipal::sealed(authority),
                         // Resource listing is additive. A verified identity
-                        // without a durable Stash principal (including a host
-                        // where the access store is not configured) contributes
-                        // no Stash resources without hiding other providers.
-                        Err(_) => return Ok(Vec::new()),
+                        // without durable Stash authority in the selected scope
+                        // contributes no Stash resources without hiding other
+                        // providers. Storage failures stay observable.
+                        Err(error) if error.kind() == "not_found" => return Ok(Vec::new()),
+                        Err(error) => return Err(error),
                     }
                 } else {
                     self.file_stash_principal(context, Some(&context.meta))
                         .await?
                 };
+                if principal.validate_before_commit().await.is_err() {
+                    return Ok(Vec::new());
+                }
                 collect_file_stash_resources(
                     &self.file_stash_service(),
                     &principal,
@@ -271,6 +455,7 @@ impl LabMcpServer {
                     .await?;
                 let stash = self.file_stash_service();
                 let (_metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
+                principal.validate_before_commit().await?;
                 let capacity = usize::try_from(blob.size).map_err(|_| ToolError::Sdk {
                     sdk_kind: "quota_exceeded".to_owned(),
                     message: "File Stash operation failed".to_owned(),
@@ -307,6 +492,22 @@ impl LabMcpServer {
         .await
         .map_err(|error| map_resource_read_error(&error, uri))
     }
+}
+
+/// Parse the optional `_meta` owner selection into `(owner_kind, owner_id)`
+/// strings. Malformed selections are rejected before any authority lookup.
+fn selected_stash_owner(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Result<(Option<String>, Option<String>), ToolError> {
+    let Some(value) = meta.and_then(|meta| meta.get(OWNER_META_KEY)) else {
+        return Ok((None, None));
+    };
+    let selection: StashOwnerSelection =
+        serde_json::from_value(value.clone()).map_err(|_| ToolError::InvalidParam {
+            param: OWNER_META_KEY.to_owned(),
+            message: "invalid File Stash owner selection".to_owned(),
+        })?;
+    Ok((Some(selection.kind), selection.id))
 }
 
 fn list_error(error: &ToolError) -> ErrorData {

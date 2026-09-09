@@ -130,6 +130,12 @@ struct PageQuery {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct OwnerQuery {
+    owner_kind: Option<String>,
+    owner_id: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecipientQuery {
     query: String,
 }
@@ -173,6 +179,8 @@ async fn action(
 
 async fn list(
     state: State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
@@ -183,12 +191,14 @@ async fn list(
     };
     observe_api(action, None, None, false, async move {
         let query = query.map_err(|_| stable("invalid_param"))?;
-        list_impl(state, identity, query).await
+        list_impl(state, headers, auth, identity, query).await
     })
     .await
 }
 observed_handler!(stats, stats_impl, "stash.stats", false, (
-    state: State<AppState>, identity: Option<axum::Extension<VerifiedIdentity>>,
+    state: State<AppState>, headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
+    identity: Option<axum::Extension<VerifiedIdentity>>,
 ));
 async fn recipients(
     state: State<AppState>,
@@ -211,6 +221,8 @@ async fn recipients(
 }
 async fn metadata(
     state: State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     file_id: Path<String>,
 ) -> Result<Response, ApiError> {
@@ -220,7 +232,7 @@ async fn metadata(
         Some(&object_id),
         None,
         false,
-        metadata_impl(state, identity, file_id),
+        metadata_impl(state, headers, auth, identity, file_id),
     )
     .await
 }
@@ -293,6 +305,8 @@ async fn create_grant(
 }
 async fn list_grants(
     state: State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     file_id: Path<String>,
     query: Result<Query<PageQuery>, QueryRejection>,
@@ -306,6 +320,8 @@ async fn list_grants(
         async move {
             list_grants_impl(
                 state,
+                headers,
+                auth,
                 identity,
                 file_id,
                 query.map_err(|_| stable("invalid_param"))?,
@@ -352,32 +368,48 @@ async fn action_impl(
         mutation_csrf(&headers, auth.as_ref(), &request.action)?;
     }
     let action = request.action;
-    let (principal, validated_grantee) = if action == "stash.grants.create" {
+    let recipient_identity = identity.clone();
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        request
+            .params
+            .get("owner_kind")
+            .and_then(serde_json::Value::as_str),
+        request
+            .params
+            .get("owner_id")
+            .and_then(serde_json::Value::as_str),
+        &action,
+    )
+    .await?;
+    let validated_grantee = if action == "stash.grants.create" {
         let recipient = request
             .params
             .get("grantee_principal_id")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| stable("invalid_param"))?
             .to_owned();
-        let (owner, recipient, lease) =
-            principal_and_recipient(&state, identity, recipient).await?;
-        (
-            ResolvedStashPrincipal {
-                id: owner,
-                _lease: lease,
-            },
-            Some(recipient),
-        )
+        let (_owner, recipient, lease) =
+            principal_and_recipient(&state, recipient_identity, recipient).await?;
+        Some((recipient, lease))
     } else {
-        (principal(&state, identity).await?, None)
+        None
     };
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let response = crate::dispatch::file_stash::dispatch_for_principal(
         &service(&state),
         &principal,
         "api",
         &action,
         request.params,
-        validated_grantee.as_ref(),
+        validated_grantee
+            .as_ref()
+            .map(|(recipient, _lease)| recipient),
     )
     .await
     .map_err(|error| ApiError::new(error).with_service_action("stash", &action))?;
@@ -452,32 +484,44 @@ async fn observe_api<T>(
     result
 }
 
-async fn principal(
+/// Resolve the caller's selected owner scope and authorize `action` in it.
+/// The selection (params, query, or `x-labby-owner-*` headers) never grants
+/// authority; the verified identity and durable roles decide.
+async fn selected_principal(
     state: &AppState,
     identity: Option<axum::Extension<VerifiedIdentity>>,
-) -> Result<ResolvedStashPrincipal, ApiError> {
+    auth: Option<&axum::Extension<AuthContext>>,
+    kind: Option<&str>,
+    owner_id: Option<&str>,
+    action: &str,
+) -> Result<crate::access::FileStashOwnerAuthorization, ApiError> {
     let Some(axum::Extension(identity)) = identity else {
         return Err(stable("not_found"));
     };
-    state
-        .access_runtime
-        .resolve_and_lease_file_stash_principal(identity)
-        .await
-        .map(|(id, lease)| ResolvedStashPrincipal { id, _lease: lease })
-        .map_err(map_principal_error)
+    let ceiling = auth.map_or_else(crate::access::AuthorityCeiling::trusted_local, |auth| {
+        crate::access::AuthorityCeiling::from_auth_context(&auth.0)
+    });
+    crate::dispatch::file_stash::authorize_owner(
+        &state.access_runtime,
+        identity,
+        ceiling,
+        kind,
+        owner_id,
+        action,
+    )
+    .await
+    .map_err(|error| ApiError::new(error).with_service_action("stash", action))
 }
 
-struct ResolvedStashPrincipal {
-    id: crate::access::AccessPrincipalId,
-    _lease: crate::access::ActiveFileStashPrincipalLease,
-}
-
-impl std::ops::Deref for ResolvedStashPrincipal {
-    type Target = crate::access::AccessPrincipalId;
-
-    fn deref(&self) -> &Self::Target {
-        &self.id
-    }
+fn selected_owner_headers(headers: &HeaderMap) -> (Option<&str>, Option<&str>) {
+    (
+        headers
+            .get("x-labby-owner-kind")
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get("x-labby-owner-id")
+            .and_then(|value| value.to_str().ok()),
+    )
 }
 
 fn stable(kind: &str) -> ApiError {
@@ -506,10 +550,22 @@ fn mutation_csrf(
 
 async fn list_impl(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
-    let principal = principal(&state, identity).await?;
+    let action = if q.query.is_some() {
+        "stash.search"
+    } else {
+        "stash.list"
+    };
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal = selected_principal(&state, identity, auth.as_ref(), kind, id, action).await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let page = if let Some(query) = q.query {
         let stash = service(&state);
         let page = crate::dispatch::file_stash::observe_result(
@@ -543,9 +599,17 @@ async fn list_impl(
 }
 async fn stats_impl(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
 ) -> Result<Response, ApiError> {
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal =
+        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.stats").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     let stats = crate::dispatch::file_stash::observe_result(
         "api",
@@ -630,10 +694,18 @@ async fn recipients_impl(
 }
 async fn metadata_impl(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal =
+        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.metadata").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     let file = crate::dispatch::file_stash::observe_result(
         "api",
@@ -661,7 +733,13 @@ async fn rename_impl(
     Json(body): Json<RenameRequest>,
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.rename")?;
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal =
+        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.rename").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     let file = crate::dispatch::file_stash::observe_result(
         "api",
@@ -688,7 +766,13 @@ async fn remove_impl(
     Path(file_id): Path<String>,
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.delete")?;
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal =
+        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.delete").await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     crate::dispatch::file_stash::observe_result(
         "api",
@@ -712,12 +796,23 @@ async fn create_grant_impl(
     Json(body): Json<GrantRequest>,
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.create")?;
-    let (principal, grantee, lease) =
-        principal_and_recipient(&state, identity, body.grantee_principal_id).await?;
-    let principal = ResolvedStashPrincipal {
-        id: principal,
-        _lease: lease,
-    };
+    let recipient_identity = identity.clone();
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.create",
+    )
+    .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
+    let (_owner, grantee, _lease) =
+        principal_and_recipient(&state, recipient_identity, body.grantee_principal_id).await?;
     let stash = service(&state);
     let grant = crate::dispatch::file_stash::observe_result(
         "api",
@@ -738,11 +833,26 @@ async fn create_grant_impl(
 }
 async fn list_grants_impl(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.list",
+    )
+    .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     let grants = crate::dispatch::file_stash::observe_result(
         "api",
@@ -765,7 +875,20 @@ async fn revoke_grant_impl(
     Path((file_id, grant_id)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     mutation_csrf(&headers, auth.as_ref(), "stash.grants.revoke")?;
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal = selected_principal(
+        &state,
+        identity,
+        auth.as_ref(),
+        kind,
+        id,
+        "stash.grants.revoke",
+    )
+    .await?;
+    principal
+        .validate_before_commit()
+        .await
+        .map_err(map_principal_error)?;
     let stash = service(&state);
     crate::dispatch::file_stash::observe_result(
         "api",
@@ -790,7 +913,9 @@ async fn upload_impl(
 ) -> Result<Response, ApiError> {
     validate_header_budget(&headers, state.config.file_stash.max_header_bytes)?;
     mutation_csrf(&headers, auth.as_ref(), "stash.upload")?;
-    let principal = principal(&state, identity).await?;
+    let (kind, id) = selected_owner_headers(&headers);
+    let principal =
+        selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.upload").await?;
     let display_name = headers
         .get("x-labby-stash-filename")
         .and_then(|value| value.to_str().ok())
@@ -833,6 +958,18 @@ async fn upload_impl(
         },
     )
     .await?;
+    if let Err(error) = principal.validate_before_commit().await {
+        // Authority changed between dispatch and commit. The committed file
+        // must not survive under a scope the caller can no longer act in.
+        if let Err(cleanup) = service(&state).delete(&principal, &file_id).await {
+            tracing::warn!(
+                file_id = %file_id,
+                error = %cleanup,
+                "File Stash upload authority changed before commit and the compensating delete failed"
+            );
+        }
+        return Err(map_principal_error(error));
+    }
     guard.0 = None;
     crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, Some(declared));
     Ok((
@@ -846,14 +983,25 @@ async fn upload_impl(
 
 async fn download(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<AuthContext>>,
     identity: Option<axum::Extension<VerifiedIdentity>>,
     Path(file_id): Path<String>,
+    Query(owner): Query<OwnerQuery>,
 ) -> Result<Response, ApiError> {
     let started = std::time::Instant::now();
     let result: Result<Response, ApiError> = async {
-        let principal = principal(&state, identity).await?;
+        let (header_kind, header_id) = selected_owner_headers(&headers);
+        let kind = owner.owner_kind.as_deref().or(header_kind);
+        let id = owner.owner_id.as_deref().or(header_id);
+        let principal =
+            selected_principal(&state, identity, auth.as_ref(), kind, id, "stash.download").await?;
         let stash = service(&state);
         let (file, opened) = stash.open_download(&principal, &file_id, false).await?;
+        principal
+            .validate_before_commit()
+            .await
+            .map_err(map_principal_error)?;
         let size = opened.size;
         let mut response = Response::new(blob_body(opened, file_id.clone(), started));
         *response.status_mut() = StatusCode::OK;
@@ -1542,7 +1690,7 @@ mod tests {
         let auth = AuthContext {
             sub: "owner".into(),
             issuer: "https://accounts.google.com".into(),
-            scopes: Vec::new(),
+            scopes: vec!["lab".into()],
             actor_key: None,
             email: None,
             via_session: false,

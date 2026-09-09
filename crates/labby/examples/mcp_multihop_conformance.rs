@@ -1,7 +1,7 @@
 //! Labby-native MCP multi-hop conformance driver.
 //!
 //! The driver launches this process as a synthetic leaf behind two real Labby
-//! stdio gateways:
+//! gateways (a local stdio root and an authenticated HTTP middle):
 //!
 //! client -> root Labby -> middle Labby -> synthetic leaf
 
@@ -626,7 +626,15 @@ fn config_path(home: &Path) -> PathBuf {
 
 fn write_config(home: &Path, upstream: UpstreamConfig) -> Result<()> {
     let path = config_path(home);
-    std::fs::create_dir_all(path.parent().context("config parent")?)?;
+    let state_root = path.parent().context("config parent")?;
+    std::fs::create_dir_all(state_root)?;
+    // This is also LABBY_HOME: the durable access store requires its existing
+    // parent to be private, just as the live daemon fixture does.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700))?;
+    }
     let config = LabConfig {
         gateway: GatewayPreferences {
             disable_spawn_guard: true,
@@ -940,6 +948,8 @@ async fn run_driver() -> Result<()> {
         .env("LABBY_HOME", middle_home.join(".config/labby"))
         .env("LABBY_AUTH_MODE", "bearer")
         .env("LABBY_MCP_HTTP_TOKEN", middle_token)
+        // Testkit-only bootstrap persists the real owner behind this bearer.
+        .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
         .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
         .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
@@ -974,6 +984,9 @@ async fn run_driver() -> Result<()> {
             .arg("--stdio")
             .env("HOME", &root_home)
             .env("LABBY_HOME", root_home.join(".config/labby"))
+            .env_remove("LABBY_SERVER_URL")
+            .env_remove("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+            .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
@@ -1340,6 +1353,7 @@ async fn run_driver() -> Result<()> {
 
     service.cancel().await?;
     middle_child.kill().await.ok();
+    middle_child.wait().await.ok();
     println!("Labby multi-hop conformance passed");
     Ok(())
 }

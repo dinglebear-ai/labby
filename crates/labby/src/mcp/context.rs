@@ -108,7 +108,120 @@ impl LabMcpServer {
     ) -> Vec<crate::config::UpstreamConfig> {
         let mut configs = self.oauth_upstream_configs().await;
         configs.retain(|config| self.route_scope.allows_upstream(&config.name));
+        if self.route_scope.team_credential_subject().is_some() {
+            let store = match self.access_runtime.store().await {
+                Ok(store) => store,
+                Err(error) => {
+                    // Fail closed, but never silently: an outage that hides
+                    // every Team upstream must be diagnosable from the logs.
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "gateway",
+                        cause = %error,
+                        kind = "service_unavailable",
+                        "team credential store unavailable; hiding route upstreams"
+                    );
+                    return Vec::new();
+                }
+            };
+            let mut admitted = Vec::with_capacity(configs.len());
+            for config in configs {
+                let Some((team_id, binding_id, generation)) =
+                    self.route_scope.team_credential_binding(&config.name)
+                else {
+                    continue;
+                };
+                let binding = match store
+                    .get_team_gateway_credential_binding(team_id.to_owned(), config.name.clone())
+                    .await
+                {
+                    Ok(Some(binding)) => binding,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = "gateway",
+                            cause = %error,
+                            kind = "service_unavailable",
+                            "team credential binding lookup failed; hiding upstream"
+                        );
+                        continue;
+                    }
+                };
+                if team_credential_binding_matches(Some(&binding), binding_id, generation) {
+                    admitted.push(config);
+                }
+            }
+            return admitted;
+        }
         configs
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn route_oauth_subject<'a>(
+        &self,
+        personal: Option<std::borrow::Cow<'a, str>>,
+    ) -> Option<std::borrow::Cow<'a, str>> {
+        self.route_scope
+            .team_credential_subject()
+            .map(std::borrow::Cow::Owned)
+            .or(personal)
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn route_team_credential_valid(&self, upstream: &str) -> bool {
+        let Some((team_id, binding_id, generation)) =
+            self.route_scope.team_credential_binding(upstream)
+        else {
+            return self.route_scope.team_credential_subject().is_none();
+        };
+        let store = match self.access_runtime.store().await {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "gateway",
+                    cause = %error,
+                    kind = "service_unavailable",
+                    "team credential store unavailable; route credential treated as invalid"
+                );
+                return false;
+            }
+        };
+        let binding = match store
+            .get_team_gateway_credential_binding(team_id.to_owned(), upstream.to_owned())
+            .await
+        {
+            Ok(binding) => binding,
+            Err(error) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "gateway",
+                    cause = %error,
+                    kind = "service_unavailable",
+                    "team credential binding lookup failed; route credential treated as invalid"
+                );
+                return false;
+            }
+        };
+        team_credential_binding_matches(binding.as_ref(), binding_id, generation)
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn route_team_credentials_current(&self) -> bool {
+        if self.route_scope.team_credential_subject().is_none() {
+            return true;
+        }
+        let configs = self.oauth_upstream_configs().await;
+        for config in configs
+            .iter()
+            .filter(|config| self.route_scope.allows_upstream(&config.name))
+        {
+            if !self.route_team_credential_valid(&config.name).await {
+                return false;
+            }
+        }
+        true
     }
 
     #[cfg(feature = "gateway")]
@@ -121,6 +234,15 @@ impl LabMcpServer {
             None => None,
         }
     }
+}
+
+#[cfg(feature = "gateway")]
+fn team_credential_binding_matches(
+    binding: Option<&labby_runtime::gateway_authority::TeamCredentialBinding>,
+    binding_id: &str,
+    generation: u64,
+) -> bool {
+    binding.is_some_and(|binding| binding.binding_id == binding_id && binding.usable(generation))
 }
 
 /// Return the capability snapshot for the current request.
@@ -167,6 +289,28 @@ pub(crate) fn auth_context_from_extensions(
 ) -> Option<&AuthContext> {
     let parts = extensions.get::<Parts>()?;
     parts.extensions.get::<AuthContext>()
+}
+
+/// Host-established identity for the request. The HTTP transport carries it
+/// inside the request `Parts`; server-owned transports (in-process peer,
+/// tests) may attach it directly to the rmcp extensions. Both are server-side
+/// insertions a client cannot forge.
+pub(crate) fn verified_identity_from_extensions(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&labby_auth::VerifiedIdentity> {
+    extensions
+        .get::<Parts>()
+        .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
+        .or_else(|| extensions.get::<labby_auth::VerifiedIdentity>())
+}
+
+pub(crate) fn bound_access_grant_from_extensions(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&labby_primitives::product_credential::BoundAccessGrant> {
+    let parts = extensions.get::<Parts>()?;
+    parts
+        .extensions
+        .get::<labby_primitives::product_credential::BoundAccessGrant>()
 }
 
 pub(crate) fn tool_execute_scope_allowed(auth: Option<&AuthContext>) -> bool {

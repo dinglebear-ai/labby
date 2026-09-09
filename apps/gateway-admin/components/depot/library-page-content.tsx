@@ -15,8 +15,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { depotCall, depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
+import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
+import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, filterArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { updateLibraryUrl as updateUrl } from './library-url'
@@ -81,13 +82,13 @@ function SessionLibraryPage() {
       ? { ...current, loading: true, error: undefined, publishing: undefined }
       : { artifacts: [], loading: true })
     try {
-      // Status primes the server's actor-scoped operation policy; reads must
-      // wait for it on a cold process or after the policy cache expires.
+      // Read the server's live status before issuing caller-bound library reads.
       const status = await depotStatus(signal)
       if (!isCurrent()) return
       const [response, publishing] = await Promise.all([
-        depotCall<{ result?: { artifacts?: DepotArtifact[]; nextCursor?: string; total?: number } }>(
-          'depot.artifacts.list',
+        controlPlaneAction<{ artifacts?: DepotArtifact[]; nextCursor?: string; total?: number }>(
+          'artifacts',
+          'artifacts.list_remote',
           { limit: PAGE_SIZE, ...(search ? { query: search } : {}), ...(cursor ? { cursor } : {}) },
           signal,
         ),
@@ -95,12 +96,12 @@ function SessionLibraryPage() {
       ])
       if (!isCurrent()) return
       setState((current) => ({
-        artifacts: cursor ? [...current.artifacts, ...(response.result?.artifacts ?? [])] : (response.result?.artifacts ?? []),
-        cursor: response.result?.nextCursor,
+        artifacts: cursor ? [...current.artifacts, ...(response.artifacts ?? [])] : (response.artifacts ?? []),
+        cursor: response.nextCursor,
         loading: false,
         status,
         publishing,
-        total: response.result?.total,
+        total: response.total,
       }))
     } catch (error) {
       if (isCurrent()) setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error), loading: false }))
@@ -126,8 +127,8 @@ function SessionLibraryPage() {
     const isCurrent = () => !controller.signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
     setDetailLoading(true)
     void depotStatus(controller.signal)
-      .then(() => isCurrent() ? depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId: selectedId }, controller.signal) : undefined)
-      .then((response) => { if (isCurrent()) setDetail(response?.result?.artifact ? { selectedId, artifact: response.result.artifact } : null) })
+      .then(() => isCurrent() ? controlPlaneAction<{ artifact?: DepotArtifact }>('artifacts', 'artifacts.get_remote', { id: selectedId }, controller.signal) : undefined)
+      .then((response) => { if (isCurrent()) setDetail(response?.artifact ? { selectedId, artifact: response.artifact } : null) })
       .catch((error) => { if (isCurrent()) toast.error(error instanceof Error ? error.message : String(error)) })
       .finally(() => { if (isCurrent()) setDetailLoading(false) })
     return () => controller.abort()

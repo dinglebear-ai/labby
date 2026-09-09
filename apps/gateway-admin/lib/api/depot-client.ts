@@ -66,6 +66,12 @@ const operationSchema = z.object({
   annotations: z.object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional(), idempotentHint: z.boolean().optional(), openWorldHint: z.boolean().optional() }).passthrough().optional(),
   outputSchema: z.record(z.string(), z.unknown()).refine(schema => new TextEncoder().encode(JSON.stringify(schema)).length <= 65_536, 'output schema exceeds 65536 bytes').optional(),
   group: z.enum(['catalog', 'access', 'operations']).optional(),
+  // Depot control-plane contract (docs/contracts/depot-control-plane.md):
+  // every public operation may declare the contract version it was published
+  // under and the sha256 of its canonical `inputSchema`. The browser only
+  // validates their shape; labby-apis performs the fingerprint cross-check.
+  contractVersion: z.number().int().min(1).optional(),
+  schemaFingerprint: z.string().regex(/^[0-9a-f]{64}$/, 'schemaFingerprint must be 64 lowercase hex characters').optional(),
 }).strict()
 const operationsSchema = z.object({ operations: z.array(operationSchema).max(1000) }).passthrough()
 const genericResultSchema = contractSchema.extend({ result: z.unknown() })

@@ -344,6 +344,11 @@ pub struct LabMcpServer {
     /// decisions while constructing a request handler.
     #[allow(dead_code)] // Consumed by the next project-binding/enforcement wave.
     pub(crate) access_runtime: Arc<AccessRuntime>,
+    /// Durable installation identity this process resolved at startup, shared
+    /// verbatim with the HTTP surface. Installation-scoped administration is a
+    /// property of the process, not of the transport, so both adapters must
+    /// read the same binding instead of re-deriving one per surface.
+    pub(crate) installation_id: Option<Arc<str>>,
     /// Process-owned File Stash runtime shared by every surface adapter.
     pub(crate) file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
     /// Shared gateway manager used to resolve the current live upstream pool.
@@ -873,6 +878,18 @@ impl ServerHandler for LabMcpServer {
         mut request: CallToolRequestParams,
         mut context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        #[cfg(feature = "proxy-testkit")]
+        if crate::mcp::context::verified_identity_from_extensions(&context.extensions).is_none()
+            && let Some(identity) = crate::testkit::local_stdio_fixture_identity(
+                &self.access_runtime,
+                self.transport_label,
+                std::env::var_os("LABBY_E2E_BOOTSTRAP_STATIC_OWNER").as_deref()
+                    == Some(std::ffi::OsStr::new("1")),
+            )
+            .await
+        {
+            context.extensions.insert(identity);
+        }
         let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         context
             .extensions
@@ -1042,6 +1059,7 @@ mod tests {
         LabMcpServer {
             registry: std::sync::Arc::new(ToolRegistry::new()),
             access_runtime: std::sync::Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            installation_id: None,
             file_stash_runtime: std::sync::Arc::new(crate::file_stash::FileStashRuntime::blocked()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,

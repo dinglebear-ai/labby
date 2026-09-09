@@ -1,3 +1,9 @@
+import { invalidateAuthorityRequests } from './authority-context.ts'
+import { MalformedAuthorityResponseError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
+
+export type SessionAuthority = AuthoritySnapshot
+export type { AuthorityOwner, AuthoritySnapshot }
+
 export type BrowserSessionState =
   | { status: 'loading' }
   | {
@@ -8,6 +14,8 @@ export type BrowserSessionState =
       }
       expiresAt: number
       csrfToken: string
+      authority?: SessionAuthority
+      /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
       projectId?: string
     }
@@ -28,8 +36,18 @@ type SessionPayload =
       }
       expires_at: number
       csrf_token: string
-      is_admin: boolean
       project_id?: string | null
+      principal_id?: string | null
+      active_owner?: { kind?: string; id?: string } | null
+      active_team_id?: string | null
+      active_project_id?: string | null
+      capabilities?: unknown
+      authority_generation?: number | null
+      owner?: unknown
+      organization_id?: unknown
+      teams?: unknown
+      projects?: unknown
+      project?: unknown
     }
   | {
       authenticated: false
@@ -41,6 +59,7 @@ type SessionErrorPayload = {
 }
 
 let currentState: BrowserSessionState = { status: 'loading' }
+export const AUTHORITY_WORKSPACE_CHANGED_EVENT = 'labby:authority-workspace-changed'
 let sessionGeneration = 0
 const listeners = new Set<() => void>()
 
@@ -53,28 +72,43 @@ function emit() {
 function setState(next: BrowserSessionState) {
   const previousIdentity = sessionIdentity(currentState)
   const nextIdentity = sessionIdentity(next)
-  if (previousIdentity !== nextIdentity) sessionGeneration += 1
+  if (previousIdentity !== nextIdentity) {
+    sessionGeneration += 1
+    invalidateAuthorityRequests(sessionGeneration)
+  }
   currentState = next
   emit()
 }
 
+/**
+ * The identity that decides whether a state change is an authority change.
+ * Transport fields (CSRF token, expiry) are deliberately excluded: a session
+ * refresh that only rotates them must neither abort in-flight requests nor
+ * defeat the CSRF retry in `performServiceAction`.
+ */
 function sessionIdentity(state: BrowserSessionState) {
-  return state.status === 'authenticated'
-    ? `authenticated:${state.user.sub}:${state.isAdmin ? 'admin' : 'user'}:${state.projectId ?? 'unbound'}:${state.csrfToken}:${state.expiresAt}`
-    : state.status
+  if (state.status !== 'authenticated') return state.status
+  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}`
+}
+
+function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: true }>): SessionAuthority | undefined {
+  const hasProjection = payload.authority_generation !== undefined || payload.organization_id !== undefined || payload.owner !== undefined || payload.active_owner !== undefined
+  return hasProjection ? parseAuthoritySnapshot(payload as unknown as Record<string, unknown>) : undefined
 }
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
   if (!payload.authenticated) {
     return { status: 'unauthenticated' }
   }
+  const authority = normalizeAuthority(payload)
   return {
     status: 'authenticated',
     user: payload.user,
     expiresAt: payload.expires_at,
     csrfToken: payload.csrf_token,
-    isAdmin: payload.is_admin ?? false,
-    projectId: payload.project_id ?? undefined,
+    authority,
+    isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
+    projectId: authority?.activeProjectId,
   }
 }
 
@@ -95,6 +129,22 @@ export function getSessionCsrfToken() {
 
 export function getSessionProjectId() {
   return currentState.status === 'authenticated' ? currentState.projectId : undefined
+}
+
+export function getSessionAuthority() {
+  return currentState.status === 'authenticated' ? currentState.authority : undefined
+}
+
+export function sessionHasCapability(capability: string) {
+  return getSessionAuthority()?.capabilities.includes(capability) ?? false
+}
+
+export function selectSessionWorkspace(selection: { teamId?: string | null; projectId?: string | null }) {
+  if (currentState.status !== 'authenticated' || !currentState.authority) throw new Error('Authority is unavailable')
+  const authority = selectAuthorityWorkspace(currentState.authority, selection)
+  setState({ ...currentState, authority, projectId: authority.activeProjectId })
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(AUTHORITY_WORKSPACE_CHANGED_EVENT))
+  return authority
 }
 
 /** Authority-adjacent cache generation. Never expose the subject in cache keys. */
@@ -126,11 +176,15 @@ export async function loadBrowserSession() {
         requestId: response.headers.get('x-request-id') ?? undefined,
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof MalformedAuthorityResponseError) {
+      next = { status: 'auth_error', kind: 'incompatible_authority', message: error.message }
+    } else {
     next = {
       status: 'auth_error',
       kind: 'network_error',
       message: SESSION_ERROR_MESSAGE,
+    }
     }
   }
 
@@ -142,25 +196,44 @@ export async function loadBrowserSession() {
   return next
 }
 
+export class LogoutRevocationError extends Error {
+  constructor(public readonly status?: number) {
+    super(status === undefined
+      ? 'The server could not be reached to revoke the session. Local sign-out completed; the server session may remain active until it expires.'
+      : `The server did not confirm sign-out (HTTP ${status}). Local sign-out completed; the server session may remain active until it expires.`)
+    this.name = 'LogoutRevocationError'
+  }
+}
+
+/**
+ * Sign the browser out. Local authority state is always cleared, even when the
+ * server-side revocation fails: a browser that keeps rendering a workspace it
+ * asked to leave is the worse failure. A failed revocation is still reported
+ * to the caller as `LogoutRevocationError` so it can be surfaced separately.
+ */
 export async function logoutBrowserSession() {
   const csrfToken = getSessionCsrfToken()
-  const response = await fetch('/auth/logout', {
-    method: 'POST',
-    cache: 'no-store',
-    credentials: 'include',
-    headers: csrfToken
-      ? {
-          'x-csrf-token': csrfToken,
-        }
-      : undefined,
-  })
-
-  if (!response.ok) {
-    throw new Error('Failed to logout browser session')
+  let failure: LogoutRevocationError | undefined
+  try {
+    const response = await fetch('/auth/logout', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+      headers: csrfToken
+        ? {
+            'x-csrf-token': csrfToken,
+          }
+        : undefined,
+    })
+    if (!response.ok) failure = new LogoutRevocationError(response.status)
+  } catch {
+    failure = new LogoutRevocationError()
+  } finally {
+    sessionGeneration += 1
+    resetAuthorityOpaqueValues()
+    setState({ status: 'unauthenticated' })
   }
-
-  sessionGeneration += 1
-  setState({ status: 'unauthenticated' })
+  if (failure) throw failure
 }
 
 export function __setBrowserSessionStateForTests(state: BrowserSessionState) {
