@@ -1,6 +1,9 @@
 //! Top-level axum router — mounts `POST /v1/<service>` for every enabled service
 //! and the MCP streamable HTTP transport at `/mcp`.
 
+#[path = "domain_viewer.rs"]
+mod domain_viewer;
+
 #[cfg(feature = "gateway")]
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
@@ -375,6 +378,49 @@ async fn auth_native_poll(
     .await?)
 }
 
+async fn auth_desktop_start(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Json<labby_auth::types::DesktopStartRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_start(
+        State(app_auth_state(&state)?),
+        labby_auth::authorize::RemoteAddr(addr),
+        headers,
+        body,
+    )
+    .await?)
+}
+async fn auth_desktop_authorize(
+    State(state): State<AppState>,
+    query: Query<labby_auth::types::DesktopAuthorizeQuery>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_authorize(State(app_auth_state(&state)?), query).await?)
+}
+async fn auth_desktop_poll(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    body: Json<labby_auth::types::DesktopPollRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::desktop_poll(
+        State(app_auth_state(&state)?),
+        labby_auth::authorize::RemoteAddr(addr),
+        body,
+    )
+    .await?)
+}
+async fn auth_desktop_redeem(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Json<labby_auth::types::DesktopRedeemRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(
+        labby_auth::authorize::desktop_redeem(State(app_auth_state(&state)?), headers, body)
+            .await?,
+    )
+}
+
 async fn reject_ambiguous_request_target(
     request: Request<Body>,
     next: Next,
@@ -587,6 +633,10 @@ fn build_v1_router(
         );
     }
     v1 = v1
+        .nest(
+            "/access/owner-link",
+            services::owner_link::routes(state.clone()),
+        )
         .merge(services::access_credentials::issue_routes(state.clone()))
         .nest(
             "/access/credentials",
@@ -852,7 +902,14 @@ pub(crate) fn build_router_with_external_auth(
         layer
     };
     let v1_protected = if credential_auth_configured {
-        v1_group.map_router(|router| router.route_layer(make_auth_layer(true)))
+        v1_group.map_router(|router| {
+            router
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    domain_viewer::provision,
+                ))
+                .route_layer(make_auth_layer(true))
+        })
     } else {
         v1_group
     };
@@ -1035,6 +1092,10 @@ pub(crate) fn build_router_with_external_auth(
                 AuthRouteId::Register => continue,
                 AuthRouteId::Authorize => get(auth_authorize),
                 AuthRouteId::BrowserLogin => get(auth_browser_login),
+                AuthRouteId::DesktopStart => post(auth_desktop_start),
+                AuthRouteId::DesktopAuthorize => get(auth_desktop_authorize),
+                AuthRouteId::DesktopPoll => post(auth_desktop_poll),
+                AuthRouteId::DesktopRedeem => post(auth_desktop_redeem),
                 AuthRouteId::ProviderCallback => get(auth_callback),
                 AuthRouteId::NativeCallback => get(auth_native_callback),
                 AuthRouteId::NativePoll => post(auth_native_poll),
@@ -4816,22 +4877,25 @@ mod tests {
 
         let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
         let app = build_router_with_bearer(state, None, None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/gateways/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("Labby"));
+        for route in ["/gateways/", "/browsers", "/browsers/", "/stash", "/stash/"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(route)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "route: {route}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(text.contains("Labby"));
+        }
     }
 
     #[cfg(unix)]

@@ -20,7 +20,7 @@ OUTPUT_KEYS = [
     "rust_test",
     "web",
     "browser_extension",
-    "palette",
+    "desktop",
     "npm",
     "docker",
     "security",
@@ -163,7 +163,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "crates/labby/src/dispatch/browser/",
         ),
     )
-    palette = any_match(paths, lambda p: starts(p, "apps/palette-tauri/"))
+    desktop = any_match(paths, lambda p: starts(p, "apps/labby-desktop/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
     rust_sources = any_match(
         paths,
@@ -234,7 +234,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "rust_test": rust_test,
         "web": web,
         "browser_extension": browser_extension,
-        "palette": palette,
+        "desktop": desktop,
         "npm": npm,
         "docker": docker,
         "security": security,

@@ -456,6 +456,18 @@ impl AccessStore {
         .await
     }
 
+    /// Called only after product-owned verified-domain admission succeeds.
+    pub(crate) async fn provision_team_viewer(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::provision_viewer(connection, &identity, &project_id)
+        })
+        .await
+    }
+
     pub(crate) async fn authorize_skill_library(
         &self,
         identity: labby_auth::VerifiedIdentity,

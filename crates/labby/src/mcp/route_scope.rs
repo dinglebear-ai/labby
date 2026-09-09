@@ -22,7 +22,7 @@ impl McpRouteCapabilityGates {
         }
     }
 
-    fn from_loadout(loadout: &GatewayLoadoutConfig) -> Self {
+    pub(crate) fn from_loadout(loadout: &GatewayLoadoutConfig) -> Self {
         Self {
             expose_tools: loadout.expose_tools,
             expose_resources: loadout.expose_resources,

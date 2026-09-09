@@ -33,6 +33,11 @@ impl SecretSnapshot {
                 keys.insert(key);
             }
         }
+        for local in config.local_providers.iter().take(16) {
+            if allowed_secret_reference(&local.bearer_token_env) {
+                keys.insert(&local.bearer_token_env);
+            }
+        }
         Self::from_values(
             keys.into_iter()
                 .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
@@ -57,6 +62,24 @@ impl SecretSnapshot {
             .as_ref()
             .and_then(|key| self.0.get(key))
             .map(String::as_str)
+    }
+    pub fn validate_local_credentials(
+        &self,
+        config: &DepotPreferences,
+    ) -> Result<(), &'static str> {
+        config.validate_local_providers()?;
+        for local in &config.local_providers {
+            let value = self
+                .0
+                .get(&local.bearer_token_env)
+                .ok_or("local Depot read credential required")?;
+            super::network::Secret::local_bearer(&local.id, &local.endpoint, value)
+                .map_err(|_| "invalid local Depot read credential")?;
+            if value.trim().is_empty() {
+                return Err("local Depot read credential required");
+            }
+        }
+        Ok(())
     }
     fn legacy(&self) -> LegacyDepot {
         LegacyDepot {
@@ -111,6 +134,8 @@ pub struct ProviderAdminStatus {
     pub enabled: bool,
     pub auth_mode: crate::config::depot::AuthMode,
     pub builtin: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub host_managed: bool,
     pub config_version: String,
     pub credential_configured: bool,
     pub health: HealthView,
@@ -207,6 +232,7 @@ impl Manager {
                 enabled: provider.view.enabled,
                 auth_mode: provider.view.auth_mode,
                 builtin: provider.view.id == crate::config::depot::PUBLIC_ID,
+                host_managed: provider.view.host_managed,
                 config_version: config_version.to_owned(),
                 credential_configured: provider.credential_configured,
                 health: provider.runtime.health.view(),
@@ -267,6 +293,7 @@ fn build(
 
 /// Host-file-only exact private address grants. Invalid policy fails closed.
 pub fn host_policy(config: &DepotPreferences) -> Result<NetworkPolicy, &'static str> {
+    config.validate_local_providers()?;
     let Some(raw) = config.extra.get("private_hosts") else {
         return Ok(NetworkPolicy::default());
     };

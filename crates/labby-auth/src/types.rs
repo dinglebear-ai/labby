@@ -496,6 +496,84 @@ pub struct BrowserLoginStateRow {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct DesktopLoginStateRow {
+    pub state_hash: String,
+    pub return_to: String,
+    pub provider_code_verifier: String,
+    pub poll_token_hash: String,
+    pub redeem_code_hash: String,
+    pub launch_code_challenge: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+impl std::fmt::Debug for DesktopLoginStateRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopLoginStateRow")
+            .field("state_hash", &"<redacted>")
+            .field("return_to", &"<redacted>")
+            .field("provider_code_verifier", &"<redacted>")
+            .field("poll_token_hash", &"<redacted>")
+            .field("redeem_code_hash", &"<redacted>")
+            .field("launch_code_challenge", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct DesktopStartRequest {
+    pub code_challenge: String,
+    pub return_to: Option<String>,
+}
+#[derive(Clone, Serialize)]
+pub struct DesktopStartResponse {
+    pub authorization_url: String,
+    pub poll_token: String,
+    pub redeem_code: String,
+    pub expires_at: i64,
+}
+#[derive(Clone, Deserialize)]
+pub struct DesktopAuthorizeQuery {
+    pub state: String,
+}
+#[derive(Clone, Deserialize)]
+pub struct DesktopPollRequest {
+    pub poll_token: String,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct DesktopPollResponse {
+    pub ready: bool,
+    pub expires_at: i64,
+}
+#[derive(Clone, Deserialize)]
+pub struct DesktopRedeemRequest {
+    pub redeem_code: String,
+    pub code_verifier: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopSessionHandoffRow {
+    pub poll_token_hash: String,
+    pub redeem_code_hash: String,
+    pub launch_code_challenge: String,
+    pub session_id: String,
+    pub expires_at: i64,
+}
+
+impl std::fmt::Debug for DesktopSessionHandoffRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopSessionHandoffRow")
+            .field("poll_token_hash", &"<redacted>")
+            .field("redeem_code_hash", &"<redacted>")
+            .field("launch_code_challenge", &"<redacted>")
+            .field("session_id", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct BrowserReauthChallengeRow {
     pub state: String,
     pub interaction_hash: [u8; 32],

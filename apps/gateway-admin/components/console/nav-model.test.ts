@@ -56,3 +56,10 @@ test('browser bridge is a real control-plane destination', () => {
   assert.ok(browsers)
   assert.equal(browsers.href, '/browsers')
 })
+
+test('control-plane navigation excludes the redundant Labby settings shortcut', () => {
+  const controlPlane = consoleNavSections.find((section) => section.id === 'Control Plane')
+  assert.deepEqual(controlPlane?.items.map((item) => item.id), ['Overview', 'Gateway', 'Browsers'])
+  assert.equal(consoleNavItems.some((item) => item.id === 'Labby'), false)
+  assert.equal(consoleNavItems.some((item) => item.href === '/settings/surfaces'), false)
+})

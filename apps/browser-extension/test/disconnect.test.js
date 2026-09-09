@@ -1,0 +1,97 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import vm from "node:vm";
+import {cancelWebMcp, invokeWebMcp} from "../src/probe.js";
+
+// Run the actual worker handlers with Chrome boundary fakes; do not start its
+// unrelated identity/scan bootstrap or maintain a second handler implementation.
+function worker({getSettings = async () => ({}), execute = async () => []} = {}) {
+  const listener = {addListener() {}};
+  const context = vm.createContext({
+    console, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp,
+    createIdentityManager: () => ({}), IndexedDbIdentityStore: class {},
+    indexedDB: {}, crypto: {subtle: {}},
+    stableStringify: JSON.stringify, canScanTab: async () => true,
+    executionAllowed: () => true,
+    chrome: {
+      runtime: {onInstalled: listener, onStartup: listener, onMessage: listener},
+      tabs: {onUpdated: listener, onActivated: listener, onRemoved: listener, get: async () => ({id: 7})},
+      alarms: {onAlarm: listener}, permissions: {onAdded: listener, onRemoved: listener},
+      storage: {onChanged: listener, local: {get: getSettings}},
+      scripting: {executeScript: execute},
+    },
+    ScanScheduler: class {},
+  });
+  const source = readFileSync(new URL("../src/service_worker.js", import.meta.url), "utf8")
+    .replace(/^import .*;\n/gm, "").replace(/\ninitialize\(\);\s*$/, "");
+  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, pendingCalls, observations};`, context);
+  context.handlers.observations.set(7, {tab_id: 7, document_id: "doc", tools: []});
+  return context.handlers;
+}
+
+const payload = {call_id: "call", tab_id: 7, document_id: "doc", catalog_fingerprint: "[]", tool_name: "tool"};
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return {promise, resolve}; };
+
+test("disconnect during permission wait cancels exact document and prevents page execution", async () => {
+  const settings = deferred();
+  const injections = [];
+  const handlers = worker({getSettings: () => settings.promise, execute: async (request) => { injections.push(request); return []; }});
+  let current = true;
+  const replies = [];
+  const connection = {isCurrent: () => current, messageNow: async (...args) => replies.push(args)};
+  const running = handlers.executeToolCall(payload, connection);
+  current = false;
+  await handlers.cancelDisconnectedCalls(connection);
+  settings.resolve({});
+  await running;
+  assert.equal(injections.length, 1);
+  assert.equal(injections[0].func, cancelWebMcp);
+  assert.equal(injections[0].target.tabId, 7);
+  assert.deepEqual(Array.from(injections[0].target.documentIds), ["doc"]);
+  assert.deepEqual(Array.from(injections[0].args), ["call"]);
+  assert.equal(replies.length, 0);
+});
+
+test("late old execution cannot deliver to or delete a replacement generation call", async () => {
+  const execution = deferred();
+  const entered = deferred();
+  const handlers = worker({execute: async (request) => {
+    if (request.func === invokeWebMcp) { entered.resolve(); return execution.promise; }
+    return [];
+  }});
+  let current = true;
+  const replies = [];
+  const connection = {isCurrent: () => current, messageNow: async (...args) => replies.push(args)};
+  const running = handlers.executeToolCall(payload, connection);
+  await entered.promise;
+  current = false;
+  await handlers.cancelDisconnectedCalls(connection);
+  const replacement = {connection: {}, tab_id: 8, document_id: "new", cancelled: false};
+  handlers.pendingCalls.set("call", replacement);
+  await handlers.cancelDisconnectedCalls(connection);
+  assert.equal(replacement.cancelled, false);
+  execution.resolve([{result: {__webby_execution_v1__: true, ok: true, value: "old"}}]);
+  await running;
+  assert.equal(handlers.pendingCalls.get("call"), replacement);
+  assert.equal(replies.length, 0);
+});
+
+test("disconnect attempts every cancellation and exposes injection failures", async () => {
+  const attempted = [];
+  const handlers = worker({execute: async (request) => {
+    attempted.push(request.args[0]);
+    if (request.args[0] === "first") throw new Error("injection_failed");
+    return [];
+  }});
+  const connection = {isCurrent: () => false, messageNow: async () => {}};
+  const first = {connection, tab_id: 7, document_id: "doc", cancelled: false};
+  const second = {...first};
+  handlers.pendingCalls.set("first", first);
+  handlers.pendingCalls.set("second", second);
+  await assert.rejects(handlers.cancelDisconnectedCalls(connection), /disconnect_cancellation_failed/);
+  assert.deepEqual(attempted, ["first", "second"]);
+  assert.equal(first.cancelled, true);
+  assert.equal(second.cancelled, true);
+  assert.equal(handlers.pendingCalls.size, 0);
+});

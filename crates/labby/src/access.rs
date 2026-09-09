@@ -11,6 +11,7 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+pub(crate) mod owner_link;
 #[cfg(test)]
 pub(crate) mod migration_fixture {
     pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;

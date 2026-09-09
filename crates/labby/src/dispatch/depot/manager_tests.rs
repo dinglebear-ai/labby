@@ -28,6 +28,70 @@ auth_mode = "anonymous"
     .unwrap()
 }
 
+#[test]
+fn host_local_credentials_and_every_authority_binding_rotate_runtime() {
+    let mut config: DepotPreferences = toml::from_str(
+        r#"
+public_enabled = false
+read_project_id = "team-project"
+[[local_providers]]
+id = "team-local"
+name = "Team"
+endpoint = "http://127.0.0.1:4100"
+bearer_token_env = "LABBY_DEPOT_TEAM_READ_TOKEN"
+"#,
+    )
+    .unwrap();
+    assert!(
+        SecretSnapshot::default()
+            .validate_local_credentials(&config)
+            .is_err()
+    );
+    let secrets = |token: &str| {
+        SecretSnapshot::from_values(BTreeMap::from([(
+            "LABBY_DEPOT_TEAM_READ_TOKEN".into(),
+            token.into(),
+        )]))
+    };
+    assert!(
+        secrets("read-secret")
+            .validate_local_credentials(&config)
+            .is_ok()
+    );
+    assert!(secrets("\n").validate_local_credentials(&config).is_err());
+    let manager = Manager::new(&config, secrets("first"), NetworkPolicy::default());
+    for change in 0..3 {
+        let previous = manager.snapshot().providers["team-local"].runtime.clone();
+        match change {
+            0 => config.read_project_id = Some("other-project".into()),
+            1 => config.local_providers[0].endpoint = "http://127.0.0.1:4101".into(),
+            _ => {}
+        }
+        manager
+            .publish(manager.prepare(
+                &config,
+                secrets(if change == 2 { "second" } else { "first" }),
+                NetworkPolicy::default(),
+            ))
+            .unwrap();
+        assert!(previous.cancelled());
+        assert_ne!(
+            previous.incarnation(),
+            manager.snapshot().providers["team-local"]
+                .runtime
+                .incarnation()
+        );
+    }
+    assert!(
+        manager
+            .admin_status("version")
+            .iter()
+            .find(|p| p.id == "team-local")
+            .unwrap()
+            .host_managed
+    );
+}
+
 fn identity() -> Value {
     json!({"contractVersion":"depot.discovery/v1", "deploymentId":"deployment",
         "deploymentEpoch":"boot", "authorityEpoch":"tenant-visibility", "listingEpoch":"catalog",

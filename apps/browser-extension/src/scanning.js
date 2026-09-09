@@ -38,7 +38,7 @@ export async function canScanTab(tab, permissionsApi) {
 
 /**
  * @param {unknown} tools
- * @returns {Array<{name: string, title: string, description: string, input_schema: unknown, origin: string, annotations: {read_only_hint: boolean, untrusted_content_hint: boolean}}>}
+ * @returns {Array<{name: string, title: string, description: string, input_schema: unknown, origin: string, annotations: {read_only_hint: boolean, untrusted_content_hint: boolean, consequential_hint: boolean}}>}
  */
 export function normalizeTools(tools) {
   if (!Array.isArray(tools) || tools.length === 0 || tools.length > 64) return [];
@@ -57,7 +57,8 @@ export function normalizeTools(tools) {
       origin: typeof tool.origin === "string" ? tool.origin.slice(0, 256) : "",
       annotations: {
         read_only_hint: (annotations.readOnlyHint ?? annotations.read_only_hint) === true,
-        untrusted_content_hint: (annotations.untrustedContentHint ?? annotations.untrusted_content_hint) === true
+        untrusted_content_hint: (annotations.untrustedContentHint ?? annotations.untrusted_content_hint) === true,
+        consequential_hint: (annotations.consequentialHint ?? annotations.consequential_hint) === true
       }
     }];
   }).sort((left, right) => left.name.localeCompare(right.name));

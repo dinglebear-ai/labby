@@ -25,7 +25,7 @@ TOP_LEVEL_DOCS = {
     "apps/README.md",
     "apps/gateway-admin/README.md",
     "apps/gateway-admin/components/aurora/README.md",
-    "apps/palette-tauri/README.md",
+    "apps/labby-desktop/README.md",
     "crates/labby/README.md",
     "crates/labby-apis/README.md",
     "docs/assets/brand/README.md",

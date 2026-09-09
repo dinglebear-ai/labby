@@ -126,6 +126,8 @@ pub(crate) enum Permission {
     ProjectManage,
     AssetDiscover,
     AssetUse,
+    /// Upload a new artifact to the team library; does not authorize other mutations.
+    ArtifactPublish,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,19 +139,24 @@ pub(crate) enum ProjectRole {
 }
 
 impl ProjectRole {
-    const ADMIN_PERMISSIONS: [Permission; 4] = [
+    const ADMIN_PERMISSIONS: [Permission; 5] = [
         Permission::ProjectRead,
         Permission::ProjectManage,
         Permission::AssetDiscover,
         Permission::AssetUse,
+        Permission::ArtifactPublish,
     ];
-    const MEMBER_PERMISSIONS: [Permission; 3] = [
+    const MEMBER_PERMISSIONS: [Permission; 4] = [
         Permission::ProjectRead,
         Permission::AssetDiscover,
         Permission::AssetUse,
+        Permission::ArtifactPublish,
     ];
-    const VIEWER_PERMISSIONS: [Permission; 2] =
-        [Permission::ProjectRead, Permission::AssetDiscover];
+    const VIEWER_PERMISSIONS: [Permission; 3] = [
+        Permission::ProjectRead,
+        Permission::AssetDiscover,
+        Permission::ArtifactPublish,
+    ];
 
     pub(super) const fn permissions(self) -> &'static [Permission] {
         match self {
@@ -288,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn project_roles_expand_to_the_milestone_one_permission_set() {
+    fn project_roles_allow_upload_without_expanding_viewer_execution_or_management() {
         assert_eq!(
             ProjectRole::Owner.permissions(),
             &[
@@ -296,6 +303,7 @@ mod tests {
                 Permission::ProjectManage,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactPublish,
             ]
         );
         assert_eq!(
@@ -305,6 +313,7 @@ mod tests {
                 Permission::ProjectManage,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactPublish,
             ]
         );
         assert_eq!(
@@ -313,11 +322,16 @@ mod tests {
                 Permission::ProjectRead,
                 Permission::AssetDiscover,
                 Permission::AssetUse,
+                Permission::ArtifactPublish,
             ]
         );
         assert_eq!(
             ProjectRole::Viewer.permissions(),
-            &[Permission::ProjectRead, Permission::AssetDiscover]
+            &[
+                Permission::ProjectRead,
+                Permission::AssetDiscover,
+                Permission::ArtifactPublish
+            ]
         );
     }
 

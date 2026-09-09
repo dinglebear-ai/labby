@@ -183,6 +183,13 @@ mod tests {
 
     #[test]
     fn content_type_and_cache_by_extension() {
+        for path in [
+            "library/index.txt",
+            "library/__next.library.txt",
+            "index.txt",
+        ] {
+            assert_eq!(cache_control_for(std::path::Path::new(path)), "no-store");
+        }
         assert_eq!(
             guess_content_type(std::path::Path::new("app.js")),
             "application/javascript; charset=utf-8"

@@ -108,11 +108,11 @@ RUN mkdir -p \
       target/release/labby
 
 # ── Real source + frontend assets ─────────────────────────────────────────────
-# crates/labby/build.rs embeds the Next.js static export (apps/gateway-admin/out)
-# into the binary via include_bytes!. The out/ dir must exist before `cargo build`.
-# (.dockerignore excludes apps/gateway-admin/{node_modules,.next,...} — only
-# apps/gateway-admin/out is sent in the build context.)
-COPY apps/gateway-admin/out apps/gateway-admin/out
+# crates/labby/build.rs embeds the Next.js static export, while the generated
+# action-catalog checks include selected Gateway Admin TypeScript sources. Copy
+# the complete app tree so both compile-time contracts are present. The
+# .dockerignore excludes node_modules, .next, and other transient build caches.
+COPY apps/gateway-admin apps/gateway-admin
 COPY docs/generated/env-reference.json docs/generated/env-reference.json
 COPY docs/contracts/ docs/contracts/
 COPY plugins/labby/skills/using-labby/ plugins/labby/skills/using-labby/
@@ -152,6 +152,12 @@ ARG LABBY_UV_SHA256
 ARG LABBY_AGENT_CLIS_LOCK_SHA256
 
 LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
+
+# The pinned slim runtime can carry a CA bundle older than the snapshot service's
+# current certificate chain. The builder has already reached that same HTTPS
+# snapshot successfully, so seed runtime TLS from its verified system bundle
+# before the first apt transaction. apt then installs the pinned current bundle.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.

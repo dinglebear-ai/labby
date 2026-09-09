@@ -628,6 +628,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
     let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
+    depot_secrets
+        .validate_local_credentials(&config.depot)
+        .map_err(anyhow::Error::msg)?;
     let depot_policy =
         crate::dispatch::depot::manager::host_policy(&config.depot).map_err(anyhow::Error::msg)?;
 

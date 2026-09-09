@@ -31,6 +31,40 @@ pub(super) fn provision(
     identity: &VerifiedIdentity,
     project_id: &str,
 ) -> AccessStoreResult<TeamMemberProvisionOutcome> {
+    provision_with_role(connection, identity, project_id, InitialRole::Member)
+}
+
+pub(super) fn provision_viewer(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+) -> AccessStoreResult<TeamMemberProvisionOutcome> {
+    provision_with_role(connection, identity, project_id, InitialRole::Viewer)
+}
+
+/// Only product-owned admission paths select an initial role; callers cannot
+/// request administrative roles or replace an existing membership's role.
+#[derive(Clone, Copy)]
+enum InitialRole {
+    Member,
+    Viewer,
+}
+
+impl InitialRole {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Viewer => "viewer",
+        }
+    }
+}
+
+fn provision_with_role(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+    initial_role: InitialRole,
+) -> AccessStoreResult<TeamMemberProvisionOutcome> {
     let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
         return Err(AccessStoreError::NotAuthorized);
     };
@@ -111,26 +145,28 @@ pub(super) fn provision(
         .map_err(map_sqlite_error)?;
     match membership {
         Some((role, status))
-            if status == "active" && matches!(role.as_str(), "member" | "admin" | "owner") =>
+            if status == "active"
+                && matches!(role.as_str(), "viewer" | "member" | "admin" | "owner") =>
         {
             transaction.commit().map_err(map_sqlite_error)?;
             Ok(TeamMemberProvisionOutcome::AlreadyActive)
         }
         Some(_) => Err(AccessStoreError::NotAuthorized),
         None => {
+            let role = initial_role.as_str();
             let scoped_fingerprint = scoped_fingerprint(identity, &organization_id, project_id);
             let membership_id = format!("team-membership-{scoped_fingerprint}");
             transaction.execute(
-                "INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,'member','active',?5,unixepoch(),unixepoch())",
-                params![membership_id, organization_id, project_id, principal_id, creator],
+                "INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,unixepoch(),unixepoch())",
+                params![membership_id, organization_id, project_id, principal_id, role, creator],
             ).map_err(map_sqlite_error)?;
             transaction.execute(
                 "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=unixepoch() WHERE singleton=1",
                 [],
             ).map_err(map_sqlite_error)?;
             transaction.execute(
-                "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,unixepoch(),NULL,?2,?3,?4,'access.team_member.provision','project_membership',?5,'allow','verified_team_admission',?6,'{\"role\":\"member\"}')",
-                params![format!("team-provision-{scoped_fingerprint}"), principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch],
+                "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,unixepoch(),NULL,?2,?3,?4,'access.team_member.provision','project_membership',?5,'allow','verified_team_admission',?6,?7)",
+                params![format!("team-provision-{scoped_fingerprint}"), principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch, serde_json::json!({"role": role}).to_string()],
             ).map_err(map_sqlite_error)?;
             transaction.commit().map_err(map_sqlite_error)?;
             Ok(TeamMemberProvisionOutcome::Created)
@@ -176,6 +212,165 @@ mod tests {
             .await
             .unwrap();
         (directory, store)
+    }
+
+    async fn viewer_state(store: &AccessStore) -> (String, i64, i64, String, i64) {
+        store.with_connection(|connection| {
+            connection.query_row(
+                "SELECT m.role,m.updated_at,a.global_revision,e.metadata_json,
+                        (SELECT count(*) FROM access_audit WHERE action='access.team_member.provision')
+                 FROM project_memberships m CROSS JOIN access_metadata a
+                 JOIN access_audit e ON e.actor_principal_id=m.principal_id AND e.action='access.team_member.provision'
+                 WHERE m.principal_id LIKE 'team-member-%'",
+                [],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+            ).map_err(map_sqlite_error)
+        }).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn viewer_first_and_repeat_admission_preserve_epochs_and_audit_role() {
+        let (_directory, store) = fixture().await;
+        let employee = identity("viewer");
+        assert_eq!(
+            store
+                .provision_team_viewer(employee.clone(), "bootstrap-default".into())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::Created
+        );
+        let first = viewer_state(&store).await;
+        assert_eq!(first.0, "viewer");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&first.3).unwrap(),
+            serde_json::json!({"role":"viewer"})
+        );
+        assert_eq!(first.4, 1);
+        assert_eq!(
+            store
+                .provision_team_viewer(employee.clone(), "bootstrap-default".into())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        // The older MCP member admission must not upgrade an existing Viewer.
+        assert_eq!(
+            store
+                .provision_team_member(employee.clone(), "bootstrap-default".into())
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        assert_eq!(viewer_state(&store).await, first);
+        for permission in [Permission::AssetDiscover, Permission::ArtifactPublish] {
+            assert!(
+                store
+                    .authorize_project(crate::access::AuthorizeProjectInput::new(
+                        employee.clone(),
+                        "bootstrap-default",
+                        permission
+                    ))
+                    .await
+                    .is_ok()
+            );
+        }
+        for permission in [Permission::AssetUse, Permission::ProjectManage] {
+            assert!(
+                store
+                    .authorize_project(crate::access::AuthorizeProjectInput::new(
+                        employee.clone(),
+                        "bootstrap-default",
+                        permission
+                    ))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_viewer_admission_creates_one_membership_and_audit_record() {
+        let (directory, store) = fixture().await;
+        let second = AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let employee = identity("concurrent-viewer");
+        let (first, second) = tokio::join!(
+            store.provision_team_viewer(employee.clone(), "bootstrap-default".into()),
+            second.provision_team_viewer(employee, "bootstrap-default".into()),
+        );
+        let outcomes = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == TeamMemberProvisionOutcome::Created)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == TeamMemberProvisionOutcome::AlreadyActive)
+                .count(),
+            1
+        );
+        assert_eq!(viewer_state(&store).await.4, 1);
+    }
+
+    #[tokio::test]
+    async fn viewer_admission_preserves_every_existing_active_role_without_mutation() {
+        let (_directory, store) = fixture().await;
+        let employee = identity("existing-role");
+        store
+            .provision_team_viewer(employee.clone(), "bootstrap-default".into())
+            .await
+            .unwrap();
+        for statement in [
+            "UPDATE project_memberships SET role='owner' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE project_memberships SET role='admin' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE project_memberships SET role='member' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE project_memberships SET role='viewer' WHERE principal_id LIKE 'team-member-%'",
+        ] {
+            store.execute_test_statement(statement).await.unwrap();
+            let before = viewer_state(&store).await;
+            assert_eq!(
+                store
+                    .provision_team_viewer(employee.clone(), "bootstrap-default".into())
+                    .await
+                    .unwrap(),
+                TeamMemberProvisionOutcome::AlreadyActive
+            );
+            assert_eq!(viewer_state(&store).await, before);
+        }
+    }
+
+    #[tokio::test]
+    async fn viewer_admission_never_reactivates_disabled_or_revoked_authority() {
+        for statement in [
+            "UPDATE project_memberships SET status='disabled' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE project_memberships SET status='suspended' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE principals SET status='disabled' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE principals SET status='suspended' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE principal_links SET status='revoked' WHERE principal_id LIKE 'team-member-%'",
+            "UPDATE projects SET status='suspended'",
+            "UPDATE organizations SET status='disabled'",
+        ] {
+            let (_directory, store) = fixture().await;
+            let employee = identity("revoked-viewer");
+            store
+                .provision_team_viewer(employee.clone(), "bootstrap-default".into())
+                .await
+                .unwrap();
+            store.execute_test_statement(statement).await.unwrap();
+            let before = viewer_state(&store).await;
+            assert!(
+                store
+                    .provision_team_viewer(employee, "bootstrap-default".into())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(viewer_state(&store).await, before);
+        }
     }
 
     #[tokio::test]

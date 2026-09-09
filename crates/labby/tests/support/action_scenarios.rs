@@ -247,13 +247,39 @@ pub(crate) fn exact_plans(surface: Surface) -> BTreeMap<String, Disposition> {
         .collect()
 }
 
+/// Admit an inert extension through the owned daemon's real socket. No pairing
+/// or document consent is granted by this action-matrix fixture.
+pub(crate) async fn initialize_browser_fixture(base_url: &str) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    let url = format!(
+        "{}/browser/socket",
+        base_url.replacen("http://", "ws://", 1)
+    );
+    let mut request = url.into_client_request().expect("browser fixture URL");
+    request.headers_mut().insert(
+        "Origin",
+        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap(),
+    );
+    tokio::time::timeout(CHILD_DEADLINE, async {
+        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("browser fixture socket");
+        socket
+            .close(None)
+            .await
+            .expect("close inert browser fixture");
+    })
+    .await
+    .expect("browser fixture deadline");
+}
+
 pub(crate) async fn run_cli_probe(home: &Path, args: &[String]) -> Result<Output, String> {
     let mut command = tokio::process::Command::from(isolated_command(home));
     command.args(args).env("LABBY_MATRIX_CANARY", SECRET_CANARY);
-    tokio::time::timeout(CHILD_DEADLINE, command.output())
-        .await
-        .map_err(|_| format!("CLI child exceeded {CHILD_DEADLINE:?}"))?
-        .map_err(|error| error.to_string())
+    crate::live_labby::bounded_cli_output(&mut command, CHILD_DEADLINE).await
 }
 
 pub(crate) async fn run_cli(home: &Path, args: &[&str]) -> Result<Output, String> {
@@ -274,10 +300,7 @@ pub(crate) async fn run_cli_in_install(
         .env("LABBY_HOME", labby_home)
         .env("LABBY_MATRIX_CANARY", SECRET_CANARY)
         .args(args);
-    tokio::time::timeout(CHILD_DEADLINE, command.output())
-        .await
-        .map_err(|_| format!("CLI child exceeded {CHILD_DEADLINE:?}"))?
-        .map_err(|error| error.to_string())
+    crate::live_labby::bounded_cli_output(&mut command, CHILD_DEADLINE).await
 }
 
 pub(crate) fn assert_sanitized(bytes: &[u8], context: &str) {

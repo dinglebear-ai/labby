@@ -27,6 +27,15 @@ pub struct Binding {
 }
 
 impl Binding {
+    /// Bind private read replay to the server's current project authorization.
+    pub(crate) fn bind_access_epoch(&mut self, epoch: Option<&str>) {
+        if let Some(epoch) = epoch {
+            use sha2::{Digest as _, Sha256};
+            let encoded = serde_json::json!([self.authority_epoch, epoch]).to_string();
+            self.authority_epoch = URL_SAFE_NO_PAD.encode(Sha256::digest(encoded.as_bytes()));
+        }
+    }
+
     pub async fn for_browser(
         authority: &labby_auth::browser_authority::BrowserAuthority,
         required_scope: &str,

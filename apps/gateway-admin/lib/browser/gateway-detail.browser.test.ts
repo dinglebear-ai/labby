@@ -805,3 +805,110 @@ test('stale Loadouts clients hard-navigate after a new static build is deployed'
   )
   assert.equal(staleDocumentSurvived, false, 'build skew must replace the stale document')
 })
+
+test('Discover cards preserve source filters and centered inspection on desktop and mobile', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const fixtures = [
+    { providerId: 'team', artifactId: 'review', id: 'review', kind: 'skill', title: 'Review changes', namespace: 'team', description: 'Review a scoped change before publishing.', currentRevision: { id: 'r1', authoredAt: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString() }, license: { declared: 'MIT', reviewState: 'unreviewed' } },
+    { providerId: 'catalog', artifactId: 'review', id: 'review', kind: 'agent', title: 'Release reviewer', namespace: 'community', description: 'Check a release against its acceptance criteria.' },
+  ]
+  let releaseInitial!: () => void
+  let observeInitial!: () => void
+  const initialPending = new Promise<void>(resolve => { releaseInitial = resolve })
+  const initialRequested = new Promise<void>(resolve => { observeInitial = resolve })
+  let firstDiscovery = true
+  await page.route('**/v1/depot/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/providers')) {
+      await route.fulfill({ json: ['team', 'catalog'].map(id => ({ id, name: id === 'team' ? 'Team Depot' : 'Catalog Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } })) })
+      return
+    }
+    const request = route.request().postDataJSON()
+    if (path.endsWith('/detail')) {
+      const row = fixtures.find(item => item.providerId === request.providerId && item.artifactId === request.artifactId)!
+      const { providerId, artifactId, ...artifact } = row
+      await route.fulfill({ json: { schemaVersion: 'labby.depot-compatibility/v2', providerId, artifactId, artifact } })
+      return
+    }
+    if (firstDiscovery) {
+      firstDiscovery = false
+      observeInitial()
+      await initialPending
+    }
+    const items = fixtures.filter(item => (!request.provider || item.providerId === request.provider) && (!request.query || item.title.toLowerCase().includes(request.query.toLowerCase())))
+    await route.fulfill({ json: { schemaVersion: 'labby.depot-compatibility/v2', scope: request.provider ?? 'all', scopeEpoch: 'test', items, providerOutcomes: [], failures: [], coverageComplete: true, knownTotal: items.length, totalIsExact: true, state: items.length ? 'complete' : 'empty', nextCursor: null } })
+  })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'domcontentloaded' })
+  await initialRequested
+  await page.getByRole('button', { name: 'All sources', exact: true }).click()
+  await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Kind and source filters', exact: true }).getByRole('button', { name: 'All sources', exact: true }).click()
+  await page.keyboard.press('Escape')
+  releaseInitial()
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  assert.equal(await page.locator('article').count(), 2)
+  await page.locator('article time').filter({ hasText: '4h ago' }).waitFor()
+  assert.equal(await page.locator('article time').getAttribute('datetime'), fixtures[0].currentRevision?.authoredAt)
+  await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  const filters = page.getByRole('dialog', { name: 'Kind and source filters', exact: true })
+  await filters.getByRole('button', { name: 'agent', exact: true }).click()
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor({ state: 'hidden' })
+  await page.getByRole('heading', { name: 'Discover', exact: true }).click()
+  await filters.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  await filters.getByRole('button', { name: 'All kinds', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await filters.waitFor({ state: 'hidden' })
+  if (process.env.DISCOVER_SCREENSHOTS) await page.screenshot({ path: `${process.env.DISCOVER_SCREENSHOTS}/discover-desktop.png`, fullPage: true })
+  await page.getByRole('button', { name: 'Sort, density and layout', exact: true }).click()
+  const viewOptions = page.getByRole('dialog', { name: 'Sort, density and layout', exact: true })
+  await viewOptions.getByRole('button', { name: 'Comfortable', exact: true }).click()
+  assert.equal(await page.locator('article').first().getAttribute('data-density'), 'comfortable')
+  assert.equal(await page.locator('article > a').first().evaluate(element => getComputedStyle(element).paddingLeft), '20px')
+  await viewOptions.getByRole('button', { name: 'List', exact: true }).click()
+  assert.equal(await page.locator('article > a').first().evaluate(element => getComputedStyle(element).display), 'grid')
+  await viewOptions.getByRole('button', { name: 'Cards', exact: true }).click()
+  await viewOptions.getByRole('button', { name: 'Default', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await viewOptions.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: 'Team Depot', exact: true }).click()
+  await page.getByRole('heading', { name: 'Release reviewer', exact: true }).waitFor({ state: 'hidden' })
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.waitFor()
+  await dialog.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  await dialog.getByText('Declared license', { exact: true }).waitFor()
+  await dialog.getByText('MIT', { exact: true }).waitFor()
+  const box = await dialog.boundingBox()
+  assert.ok(box && box.width > 600 && Math.abs(box.x + box.width / 2 - 720) < 3)
+  assert.match(page.url(), /artifactProvider=team/)
+  if (process.env.DISCOVER_SCREENSHOTS) await page.screenshot({ path: `${process.env.DISCOVER_SCREENSHOTS}/discover-inspection.png`, animations: 'disabled' })
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  assert.match(page.url(), /provider=team/)
+  assert.doesNotMatch(page.url(), /artifactProvider/)
+  assert.equal(await page.locator('a[data-artifact-key]').first().evaluate(element => element === document.activeElement), true)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('heading', { name: 'Review changes', exact: true }).click()
+  await dialog.waitFor()
+  const narrow = await dialog.boundingBox()
+  assert.ok(narrow && narrow.x >= 0 && narrow.x + narrow.width <= 390)
+  if (process.env.DISCOVER_SCREENSHOTS) await page.screenshot({ path: `${process.env.DISCOVER_SCREENSHOTS}/discover-mobile.png`, animations: 'disabled' })
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+  await page.getByRole('button', { name: 'Kind and source filters', exact: true }).click()
+  await filters.waitFor()
+  const filterBox = await filters.boundingBox()
+  assert.ok(filterBox && filterBox.x >= 0 && filterBox.x + filterBox.width <= 390)
+  await filters.getByRole('button', { name: 'Catalog Depot', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await filters.waitFor({ state: 'hidden' })
+  await page.getByRole('heading', { name: 'Release reviewer', exact: true }).waitFor()
+  assert.deepEqual(errors, [])
+})

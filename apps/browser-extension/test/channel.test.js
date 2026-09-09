@@ -6,6 +6,7 @@ function channel(options = {}) {
   const instance = new LabbyBrowserChannel({baseUrl: "http://127.0.0.1:8765", extensionId: "a".repeat(32), ...options});
   const frames = [];
   instance.socket = {readyState: 1, send(value) { frames.push(JSON.parse(value)); }};
+  instance.connection = {isCurrent: () => true, messageNow: (...args) => instance.messageNow(...args)};
   globalThis.WebSocket = {OPEN: 1};
   return {instance, frames};
 }
@@ -29,6 +30,27 @@ test("maps Rust tool calls to extension events", async () => {
   assert.equal(event.payload.call_id, "call");
 });
 
+test("disconnect cancellation is once-only and bound to the closing socket", () => {
+  const sockets = installSocket();
+  const disconnected = [];
+  const instance = new LabbyBrowserChannel({baseUrl: "http://localhost:8765", extensionId: "id", onChallenge() {}, onError() {}, onDisconnect(connection) { disconnected.push(connection); }});
+  instance.connect();
+  const first = instance.connection;
+  const staleClose = sockets[0].onclose;
+  instance.connect();
+  assert.deepEqual(disconnected, [first]);
+  assert.equal(first.isCurrent(), false);
+  const second = instance.connection;
+  staleClose();
+  assert.equal(second.isCurrent(), true);
+  assert.equal(disconnected.length, 1);
+  sockets[1].onclose();
+  assert.deepEqual(disconnected, [first, second]);
+  assert.equal(second.isCurrent(), false);
+  instance.close();
+  assert.equal(disconnected.length, 2);
+});
+
 test("publishes sanitized observations with a stable positive catalog revision", async () => {
   const {instance, frames} = channel();
   const pending = instance.messageNow("discovery.observed", {observations: [{url: "https://example.com/path?secret=yes", title: "Example", tab_id: 7, document_id: "doc", tools: [{name: "search"}]}]});
@@ -43,4 +65,68 @@ test("reply deadlines remove pending requests", async () => {
   const {instance} = channel({replyTimeoutMs: 5});
   await assert.rejects(instance.messageNow("pairing.status", {pairing_id: "missing"}), /channel_reply_timeout/);
   assert.equal(instance.pending.size, 0);
+});
+
+function installSocket() {
+  const sockets = [];
+  globalThis.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    frames = [];
+    send(value) { this.frames.push(JSON.parse(value)); }
+    constructor() { sockets.push(this); }
+    close() { this.closed = true; this.onclose?.(); }
+  };
+  return sockets;
+}
+
+test("closing before open rejects callers waiting for readiness", async () => {
+  installSocket();
+  const instance = new LabbyBrowserChannel({baseUrl: "http://127.0.0.1:8765", extensionId: "a".repeat(32), onChallenge() {}, onError() {}});
+  instance.connect();
+  const pending = instance.message("pairing.status", {pairing_id: "pending"});
+  instance.close();
+  await assert.rejects(pending, /channel_closed/);
+});
+
+test("an authentication capability cannot send an old challenge after reconnect", async () => {
+  const sockets = installSocket();
+  let resumeSigning;
+  const signing = new Promise((resolve) => { resumeSigning = resolve; });
+  let signingStarted;
+  const started = new Promise((resolve) => { signingStarted = resolve; });
+  const instance = new LabbyBrowserChannel({baseUrl: "http://127.0.0.1:8765", extensionId: "a".repeat(32), browserId: "browser", onError() {}, async onChallenge(challenge, capability) {
+    signingStarted();
+    await signing;
+    await assert.rejects(capability.messageNow("auth.respond", {challenge_id: challenge.challenge_id, signature: "old-signature"}), /channel_disconnected/);
+  }});
+  instance.connect();
+  const oldOpen = sockets[0].onopen();
+  instance.receive({version: 1, type: "auth_challenge", request_id: sockets[0].frames[0].request_id, challenge_id: "old-challenge", nonce: "old-nonce"});
+  await started;
+  instance.connect();
+  resumeSigning();
+  await oldOpen;
+  assert.deepEqual(sockets[1].frames, []);
+  assert.equal(sockets[1].closed, undefined);
+  instance.close();
+});
+
+test("a replaced socket's late failure cannot close or reject its replacement", async () => {
+  const sockets = installSocket();
+  let rejectOld;
+  const oldResync = new Promise((_resolve, reject) => { rejectOld = reject; });
+  let readyCalls = 0;
+  const instance = new LabbyBrowserChannel({baseUrl: "http://127.0.0.1:8765", extensionId: "a".repeat(32), onChallenge() {}, onReady() { return ++readyCalls === 1 ? oldResync : undefined; }, onError() {}});
+  instance.connect();
+  const oldOpen = sockets[0].onopen();
+  await instance.ready;
+  instance.connect();
+  const newReady = instance.ready;
+  rejectOld(new Error("stale resync"));
+  await oldOpen;
+  await sockets[1].onopen();
+  await newReady;
+  assert.equal(sockets[1].closed, undefined);
+  instance.close();
 });

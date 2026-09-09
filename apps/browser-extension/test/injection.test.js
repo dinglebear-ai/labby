@@ -70,7 +70,7 @@ const catalogs = {
   "annotated tools": [
     tool({name: "alpha", annotations: {readOnlyHint: true}}),
     tool({name: "beta", annotations: {untrustedContentHint: true}}),
-    tool({name: "gamma", annotations: {readOnlyHint: true, untrustedContentHint: true}})
+    tool({name: "gamma", annotations: {readOnlyHint: true, untrustedContentHint: true, consequentialHint: true}})
   ],
   "unannotated tools": [tool({name: "alpha", annotations: undefined})],
   "cross-origin tools": [

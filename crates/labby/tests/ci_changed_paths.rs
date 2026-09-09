@@ -441,9 +441,9 @@ fn explicit_policy_files_route_to_the_right_checks() {
 }
 
 #[test]
-fn palette_changes_route_to_dedicated_checks() {
-    let out = classify("pull_request", &["apps/palette-tauri/src/App.tsx"]);
-    assert_eq!(out["palette"], "true");
+fn desktop_changes_route_to_dedicated_checks() {
+    let out = classify("pull_request", &["apps/labby-desktop/src/index.js"]);
+    assert_eq!(out["desktop"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["web"], "false");
 }
@@ -477,8 +477,8 @@ fn every_javascript_dependency_graph_change_routes_to_advisory_checks() {
         "apps/browser-extension/package-lock.json",
         "apps/gateway-admin/package.json",
         "apps/gateway-admin/pnpm-lock.yaml",
-        "apps/palette-tauri/package.json",
-        "apps/palette-tauri/pnpm-lock.yaml",
+        "apps/labby-desktop/package.json",
+        "apps/labby-desktop/pnpm-lock.yaml",
         "config/agent-clis/package.json",
         "config/agent-clis/package-lock.json",
         "packages/labby-mcp/package.json",
@@ -508,7 +508,7 @@ fn ci_workflow_and_action_changes_enable_everything() {
 #[test]
 fn secondary_workflow_changes_enable_only_their_own_categories() {
     // Non-ci.yml workflow files enable the workflow gate (actionlint,
-    // mcp-conformance) without re-running the full Rust/web/palette suites.
+    // mcp-conformance) without re-running the full Rust/web/desktop suites.
     for path in [
         "conformance/expected-failures-dated.yaml",
         "conformance/expected-failures-extensions.yaml",
@@ -520,7 +520,7 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
         assert_eq!(out["rust_compile"], "false", "{path}");
         assert_eq!(out["rust_test"], "false", "{path}");
         assert_eq!(out["web"], "false", "{path}");
-        assert_eq!(out["palette"], "false", "{path}");
+        assert_eq!(out["desktop"], "false", "{path}");
         assert_eq!(out["release"], "false", "{path}");
     }
 }
@@ -672,8 +672,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "live-e2e-core",
         "codemode-runner-smoke",
         "mcp-regressions",
-        "palette-web",
-        "palette-rust",
+        "desktop-web",
+        "desktop-rust",
         "rust-coverage",
     ] {
         assert!(
@@ -934,7 +934,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["palette-windows"];
+const ADVISORY_JOBS: &[&str] = &["desktop-windows"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
@@ -1090,7 +1090,7 @@ fn ci_gate_aggregates_every_non_advisory_job() {
 const STALE_CLASSIFIER: &str = r#"import argparse
 from pathlib import Path
 
-keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release".split()
+keys = "all docs docs_check workflow rust_compile rust_test web desktop npm docker security release".split()
 parser = argparse.ArgumentParser()
 parser.add_argument("--event", required=True)
 parser.add_argument("--output", type=Path, required=True)
@@ -1272,19 +1272,19 @@ fn classify_step_unions_the_branch_classifier_but_never_lets_it_narrow() {
                 r#"args.output.write_text("".join(f"{key}=false\n" for key in keys))"#,
                 r#"args.output.write_text("".join(f"{key}=false\n" for key in keys) + "unraid=false\nrust_test=true\n")"#,
             )
-            .replace("unraid/labby.plg", "apps/palette-v2/App.tsx"),
+            .replace("unraid/labby.plg", "apps/labby-desktop/index.html"),
     )
     .expect("write trusted classifier");
     // The branch knows a mapping the base commit does not, and also tries to
     // switch the workspace test suite off.
-    write_branch_classifier(root, "palette=true\nrust_test=false\nweb=false\n");
+    write_branch_classifier(root, "desktop=true\nrust_test=false\nweb=false\n");
 
     let run = run_classify_step(root, &classify_step_script(), &trusted);
     assert!(run.succeeded, "classify step failed:\n{}", run.log);
 
     let outputs = &run.outputs;
     assert!(
-        outputs.lines().any(|line| line == "palette=true"),
+        outputs.lines().any(|line| line == "desktop=true"),
         "a category the branch classifier routes to must run even when the base commit's mapping predates it, got:\n{outputs}"
     );
     assert!(
@@ -1296,7 +1296,7 @@ fn classify_step_unions_the_branch_classifier_but_never_lets_it_narrow() {
         "keys both classifiers call false must stay false, got:\n{outputs}"
     );
     assert!(
-        run.log.contains("routing broadened") && run.log.contains("palette"),
+        run.log.contains("routing broadened") && run.log.contains("desktop"),
         "broadening must be annotated on the run, got:\n{}",
         run.log
     );

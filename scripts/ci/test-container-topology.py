@@ -16,6 +16,39 @@ ROOT = pathlib.Path(os.environ.get("LABBY_TOPOLOGY_ROOT", pathlib.Path(__file__)
 
 
 class ContainerTopology(unittest.TestCase):
+    def test_gateway_admin_context_preserves_source_without_reincluding_secrets(self):
+        """Exercise Docker's real ordered ignore matcher with synthetic files only."""
+        with tempfile.TemporaryDirectory() as directory:
+            context = pathlib.Path(directory) / "context"
+            context.mkdir()
+            output = pathlib.Path(directory) / "output"
+            (context / ".dockerignore").write_text(self.text(".dockerignore"))
+            retained = ["components/example.tsx", "out/index.html", ".env.example"]
+            excluded = [
+                ".env", ".env.local", "config.env", "nested/.env.production",
+                "nested/client.key", "nested/client.pem", "nested/client.cert",
+                "nested/settings.local.json", "nested/session.db", "nested/session.db-wal",
+                "nested/config.local.toml", "node_modules/fixture.js", ".next/cache/file",
+                "nested/.cache/file", "nested/.git/config", "nested/debug.log",
+                ".beads-credential-key", "backups/config.bak", "nested/backups/state.bak",
+                "data/runtime.json", "nested/.dolt/state", "nested/.omc/state",
+                "nested/.codex/config.toml", "nested/.vscode/settings.json",
+            ]
+            for name in retained + excluded:
+                path = context / "apps/gateway-admin" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic fixture only\n")
+            result = subprocess.run(
+                ["docker", "build", "--no-cache", "--output", f"type=local,dest={output}",
+                 "-f", "-", str(context)],
+                input="FROM scratch\nCOPY apps/gateway-admin /app\n",
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            actual = sorted(str(path.relative_to(output / "app"))
+                            for path in (output / "app").rglob("*") if path.is_file())
+            self.assertEqual(actual, sorted(retained))
+
     def text(self, path):
         return (ROOT / path).read_text()
 
@@ -206,6 +239,18 @@ class ContainerTopology(unittest.TestCase):
                 self.assertIn("--connect-timeout", line)
                 self.assertIn("--max-time", line)
         self.assertNotIn("npm install --omit=dev", text)
+        self.assertIn("COPY apps/gateway-admin apps/gateway-admin", text)
+        self.assertNotIn("COPY apps/gateway-admin/out apps/gateway-admin/out", text)
+        self.assertIn(
+            "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
+            text,
+        )
+        dockerignore = self.text(".dockerignore")
+        self.assertIn("!apps/gateway-admin/\n", dockerignore)
+        self.assertNotIn("!apps/gateway-admin/**\n", dockerignore)
+        self.assertIn("apps/gateway-admin/node_modules/", dockerignore)
+        self.assertIn("apps/gateway-admin/.next/", dockerignore)
+        self.assertNotIn("\napps/\n", dockerignore)
         release = self.text(".github/workflows/release.yml")
         self.assertIn("source config/container-supply.conf", release)
         self.assertIn("LABBY_BUILDER_IMAGE=${{ steps.container_supply.outputs.builder }}", release)

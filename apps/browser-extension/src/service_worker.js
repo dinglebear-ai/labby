@@ -1,4 +1,5 @@
 import {LabbyBrowserChannel} from "./channel.js";
+import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
@@ -18,7 +19,7 @@ const scanGenerations = new Map();
 const SCAN_CONCURRENCY = 8;
 /** @type {Map<number, string>} */
 const pendingClosures = new Map();
-/** @type {Map<string, {tab_id: number, document_id: string}>} */
+/** @type {Map<string, {tab_id: number, document_id: string, connection: import('./channel.js').Connection, cancelled: boolean}>} */
 const pendingCalls = new Map();
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let pairingPollTimer;
@@ -93,6 +94,7 @@ async function initialize() {
       browserId: identity.browserId,
       onChallenge: authenticate,
       onReady: resumeAndScan,
+      onDisconnect: cancelDisconnectedCalls,
       onEvent: handleServerEvent,
       onError: reportBridgeFailure
     });
@@ -104,8 +106,8 @@ async function initialize() {
 
 /** @param {unknown} error @param {unknown} context */
 async function reportBridgeFailure(error, context) {
-  const message = error instanceof Error ? error.message : "bridge_connection_failed";
-  console.error("Labby browser bridge connection failed", {message, context});
+  const message = bridgeFailureKind(error);
+  console.error("Labby browser bridge connection failed", {kind: message});
   await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
   if (message === "auth_failed") {
     await identityManager.revoke();
@@ -129,11 +131,12 @@ async function ensureIdentity() {
 
 /**
  * @param {{nonce: string, challenge_id: string}} challenge
+ * @param {Pick<LabbyBrowserChannel, "messageNow">} challengeChannel
  */
-async function authenticate(challenge) {
+async function authenticate(challenge, challengeChannel) {
   const signature = await identityManager.sign(challenge.nonce);
-  await requireChannel().messageNow("auth.respond", {challenge_id: challenge.challenge_id, signature: encode(signature)});
-  const welcome = await requireChannel().messageNow("browser.hello", {});
+  await challengeChannel.messageNow("auth.respond", {challenge_id: challenge.challenge_id, signature: encode(signature)});
+  const welcome = await challengeChannel.messageNow("browser.hello", {});
   await persistIgnoredOrigins(welcome);
 }
 
@@ -197,8 +200,9 @@ async function syncBrowserSettings() {
 
 /**
  * @param {{type?: string, payload?: any} | undefined} envelope
+ * @param {import('./channel.js').Connection} [connection]
  */
-async function handleServerEvent(envelope) {
+async function handleServerEvent(envelope, connection) {
   if (envelope?.type === "pairing.approved" && envelope.payload?.browser_id) {
     if (channel?.browserId !== envelope.payload.browser_id) {
       await chrome.storage.local.set({browserId: envelope.payload.browser_id});
@@ -209,25 +213,29 @@ async function handleServerEvent(envelope) {
     await initialize();
     return;
   }
-  if (envelope?.type === "tool.call") return executeToolCall(envelope.payload);
-  if (envelope?.type === "tool.cancel") return cancelToolCall(envelope.payload);
+  if (envelope?.type === "tool.call" && connection) return executeToolCall(envelope.payload, connection);
+  if (envelope?.type === "tool.cancel" && connection) return cancelToolCall(envelope.payload, connection);
 }
 
 /**
  * @param {{tab_id: number, document_id: string, catalog_fingerprint: string, call_id: string, tool_name: string, arguments?: unknown}} payload
+ * @param {import('./channel.js').Connection} connection
  */
-async function executeToolCall(payload) {
+async function executeToolCall(payload, connection) {
+  const call = {tab_id: payload.tab_id, document_id: payload.document_id, connection, cancelled: false};
+  const sendError = (/** @type {string} */ kind, /** @type {string} */ message) => connection.messageNow("tool.error", {call_id: payload.call_id, error: {kind, message}});
   try {
     const observation = observations.get(payload.tab_id);
     if (!observation || observation.document_id !== payload.document_id || stableStringify(observation.tools) !== payload.catalog_fingerprint) {
-      return await sendToolError(payload.call_id, "stale_document", "The requested document is no longer active");
+      return await sendError("stale_document", "The requested document is no longer active");
     }
-    pendingCalls.set(payload.call_id, {tab_id: observation.tab_id, document_id: observation.document_id});
+    pendingCalls.set(payload.call_id, call);
     const settings = {...DEFAULTS, ...await chrome.storage.local.get(["scanningPaused"])};
     const permissionGranted = await canScanTab(await chrome.tabs.get(payload.tab_id).catch(() => undefined), chrome.permissions);
+    if (call.cancelled || !connection.isCurrent()) return;
     if (!executionAllowed(settings.scanningPaused, permissionGranted)) {
       await closeObservation(payload.tab_id);
-      return await sendToolError(payload.call_id, "permission_denied", "Browser access is paused or no longer granted");
+      return await sendError("permission_denied", "Browser access is paused or no longer granted");
     }
     const expectedCatalog = stableStringify(observation.tools);
     const [execution] = await chrome.scripting.executeScript({
@@ -243,31 +251,37 @@ async function executeToolCall(payload) {
     if (!boundary.ok) throw new Error(boundary.error ?? "tool_failed");
     const result = boundary.value;
     if (encodedSize(result) > 131_072 || jsonDepth(result) > 32) throw new Error("result_too_large");
-    await requireChannel().message("tool.result", {call_id: payload.call_id, result});
+    if (!call.cancelled && connection.isCurrent()) await connection.messageNow("tool.result", {call_id: payload.call_id, result});
   } catch (error) {
+    if (call.cancelled || !connection.isCurrent()) return;
     const message = error instanceof Error ? error.message : undefined;
     const kind = classifyToolError(error, message);
     const log = ["renderer_crashed", "worker_crashed"].includes(kind) ? console.error : console.info;
-    log("Labby browser tool call failed", {callId: payload.call_id, kind, error});
+    log("Labby browser tool call failed", {callId: payload.call_id, kind});
     try {
-      await sendToolError(payload.call_id, kind, "The page tool could not be completed");
+      await sendError(kind, kind === "browser_call_capacity_exhausted"
+        ? "Reload this page before invoking another tool; its cancellation safety budget is exhausted."
+        : "The page tool could not be completed");
     } catch (deliveryError) {
-      console.error("Labby browser tool error delivery failed", {callId: payload.call_id, kind, error, deliveryError});
+      if (!connection.isCurrent()) return;
+      console.error("Labby browser tool error delivery failed", {callId: payload.call_id, kind, deliveryKind: deliveryError instanceof Error ? "channel_delivery_failed" : "unknown_delivery_failure"});
       channel?.close();
       channel = undefined;
-      void initialize().catch((reconnectError) => console.error("Labby browser reconnect failed", reconnectError));
+      void initialize().catch((reconnectError) => console.error("Labby browser reconnect failed", {kind: bridgeFailureKind(reconnectError)}));
     }
   } finally {
-    pendingCalls.delete(payload.call_id);
+    if (pendingCalls.get(payload.call_id) === call) pendingCalls.delete(payload.call_id);
   }
 }
 
 /**
  * @param {{document_id: string, call_id: string}} payload
+ * @param {import('./channel.js').Connection} connection
  */
-async function cancelToolCall(payload) {
+async function cancelToolCall(payload, connection) {
   const observation = pendingCalls.get(payload.call_id);
-  if (!observation) return;
+  if (!observation || observation.connection !== connection) return;
+  observation.cancelled = true;
   try {
     await chrome.scripting.executeScript({
       target: {tabId: observation.tab_id, documentIds: [observation.document_id]},
@@ -279,21 +293,23 @@ async function cancelToolCall(payload) {
       callId: payload.call_id,
       tabId: observation.tab_id,
       documentId: observation.document_id,
-      error
+      kind: "cancellation_injection_failed"
     });
     throw error;
   } finally {
-    pendingCalls.delete(payload.call_id);
+    if (pendingCalls.get(payload.call_id) === observation) pendingCalls.delete(payload.call_id);
   }
 }
 
-/**
- * @param {string} callId
- * @param {string} kind
- * @param {string} message
- */
-function sendToolError(callId, kind, message) {
-  return requireChannel().message("tool.error", {call_id: callId, error: {kind, message}});
+/** Mark every old call before yielding, including calls awaiting permission checks. */
+/** @param {import('./channel.js').Connection} connection */
+async function cancelDisconnectedCalls(connection) {
+  const cancellations = [];
+  for (const [call_id, call] of pendingCalls) {
+    if (call.connection === connection) cancellations.push(cancelToolCall({call_id, document_id: call.document_id}, connection));
+  }
+  const results = await Promise.allSettled(cancellations);
+  if (results.some((result) => result.status === "rejected")) throw new Error("disconnect_cancellation_failed");
 }
 
 /**
@@ -325,6 +341,7 @@ function knownToolError(kind) {
 
 /** @param {unknown} error @param {string | undefined} message */
 function classifyToolError(error, message) {
+  if (message === "browser_call_capacity_exhausted: reload this page before invoking another tool") return "browser_call_capacity_exhausted";
   if (expectedGoneDocumentError(error)) return "stale_document";
   if (message && /render(?:er)? process (?:gone|crashed)|render frame.*crashed/i.test(message)) return "renderer_crashed";
   if (message && /service worker.*(?:stopped|crashed|terminated)/i.test(message)) return "worker_crashed";

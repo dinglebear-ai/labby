@@ -431,6 +431,7 @@ Commands:
   wizard               Open the web-based first-run wizard or settings flow
   draft                Manage the local setup draft
   access-bootstrap     Prepare and operate the local project-credential bootstrap flow
+  owner-link-prepare   Approve one specific existing-owner identity link while the gateway is stopped
   host-service         Manage the systemd Labby gateway service
   installed-plugins    List installed Claude Code lab plugins
   services-status      Join service configuration, draft, and Claude plugin state
@@ -766,6 +767,30 @@ Usage: help [COMMAND]...
 Arguments:
   [COMMAND]...
           Print help for the subcommand(s)
+```
+
+## `labby setup owner-link-prepare`
+
+```text
+Approve one specific existing-owner identity link while the gateway is stopped
+
+Usage: owner-link-prepare [OPTIONS] --approval-file <APPROVAL_FILE>
+
+Options:
+      --approval-file <APPROVAL_FILE>
+          Protected JSON approval manifest binding the verified identity and existing project
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
 ```
 
 ## `labby setup host-service`

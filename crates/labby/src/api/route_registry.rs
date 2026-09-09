@@ -487,6 +487,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         "/auth/bootstrap",
         crate::api::services::access_bootstrap_proof::descriptors(),
     ));
+    routes.extend(prefixed(
+        "/v1/access/owner-link",
+        crate::api::services::owner_link::descriptors(),
+    ));
     routes.extend(crate::api::services::local_session::descriptors());
     routes.extend(prefixed(
         "/v1/access/credentials",
@@ -665,6 +669,10 @@ pub(crate) fn oauth_protocol_routes_for_provider(
                 AuthRouteId::Register => "auth_register",
                 AuthRouteId::Authorize => "auth_authorize",
                 AuthRouteId::BrowserLogin => "auth_browser_login",
+                AuthRouteId::DesktopStart => "auth_desktop_start",
+                AuthRouteId::DesktopAuthorize => "auth_desktop_authorize",
+                AuthRouteId::DesktopPoll => "auth_desktop_poll",
+                AuthRouteId::DesktopRedeem => "auth_desktop_redeem",
                 AuthRouteId::ProviderCallback => "auth_callback",
                 AuthRouteId::NativeCallback => "auth_native_callback",
                 AuthRouteId::NativePoll => "auth_native_poll",

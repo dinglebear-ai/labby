@@ -41,6 +41,91 @@ pub struct DepotDelegationTarget {
     pub team_id: Option<String>,
 }
 
+/// Browser-session identity revalidated by the API immediately before a Depot
+/// write. This is deliberately distinct from a product credential grant: the
+/// API remains responsible for revalidating the original browser authority,
+/// membership, policy epochs, and selected approval binding on every request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserDepotAuthorization {
+    pub installation_id: String,
+    pub principal_id: String,
+    pub organization_id: String,
+    pub project_id: String,
+    pub membership_epoch: u64,
+    pub organization_policy_epoch: u64,
+    pub project_policy_epoch: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Copy)]
+pub enum DepotDelegationSubject<'a> {
+    ProductCredential(&'a BoundAccessGrant),
+    Browser(&'a BrowserDepotAuthorization),
+}
+
+impl<'a> From<&'a BoundAccessGrant> for DepotDelegationSubject<'a> {
+    fn from(grant: &'a BoundAccessGrant) -> Self {
+        Self::ProductCredential(grant)
+    }
+}
+
+impl<'a> From<&'a BrowserDepotAuthorization> for DepotDelegationSubject<'a> {
+    fn from(authorization: &'a BrowserDepotAuthorization) -> Self {
+        Self::Browser(authorization)
+    }
+}
+
+impl<'a> DepotDelegationSubject<'a> {
+    fn installation_id(self) -> &'a str {
+        match self {
+            Self::ProductCredential(grant) => &grant.installation_id,
+            Self::Browser(authorization) => &authorization.installation_id,
+        }
+    }
+
+    pub fn principal_id(self) -> &'a str {
+        match self {
+            Self::ProductCredential(grant) => &grant.principal_id,
+            Self::Browser(authorization) => &authorization.principal_id,
+        }
+    }
+
+    fn organization_id(self) -> &'a str {
+        match self {
+            Self::ProductCredential(grant) => &grant.organization_id,
+            Self::Browser(authorization) => &authorization.organization_id,
+        }
+    }
+
+    fn project_id(self) -> &'a str {
+        match self {
+            Self::ProductCredential(grant) => &grant.project_id,
+            Self::Browser(authorization) => &authorization.project_id,
+        }
+    }
+
+    const fn organization_policy_epoch(self) -> u64 {
+        match self {
+            Self::ProductCredential(grant) => grant.organization_policy_epoch,
+            Self::Browser(authorization) => authorization.organization_policy_epoch,
+        }
+    }
+
+    const fn project_policy_epoch(self) -> u64 {
+        match self {
+            Self::ProductCredential(grant) => grant.project_policy_epoch,
+            Self::Browser(authorization) => authorization.project_policy_epoch,
+        }
+    }
+
+    const fn expires_at(self) -> u64 {
+        match self {
+            Self::ProductCredential(grant) => grant.expires_at,
+            Self::Browser(authorization) => authorization.expires_at,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegatedActor {
     pub sub: String,
@@ -84,6 +169,47 @@ impl SigningKeys {
         params: &Value,
         ttl_secs: u64,
     ) -> Result<String, AuthError> {
+        self.issue_depot_delegation_for_subject(
+            target,
+            grant.into(),
+            scope,
+            operation,
+            params,
+            ttl_secs,
+        )
+    }
+
+    /// Mint a Depot assertion from browser authority that the API revalidated
+    /// for this exact request. This never turns browser authority into, or
+    /// pretends it is, a product credential grant.
+    pub fn issue_browser_depot_delegation(
+        &self,
+        target: &DepotDelegationTarget,
+        authorization: &BrowserDepotAuthorization,
+        scope: DepotDelegationScope,
+        operation: &str,
+        params: &Value,
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
+        self.issue_depot_delegation_for_subject(
+            target,
+            authorization.into(),
+            scope,
+            operation,
+            params,
+            ttl_secs,
+        )
+    }
+
+    fn issue_depot_delegation_for_subject(
+        &self,
+        target: &DepotDelegationTarget,
+        subject: DepotDelegationSubject<'_>,
+        scope: DepotDelegationScope,
+        operation: &str,
+        params: &Value,
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
         validate_target(target)?;
         if ttl_secs == 0 || ttl_secs > MAX_DEPOT_DELEGATION_TTL_SECS {
             return Err(AuthError::InvalidGrant(
@@ -91,10 +217,10 @@ impl SigningKeys {
             ));
         }
         for value in [
-            grant.installation_id.as_str(),
-            grant.principal_id.as_str(),
-            grant.organization_id.as_str(),
-            grant.project_id.as_str(),
+            subject.installation_id(),
+            subject.principal_id(),
+            subject.organization_id(),
+            subject.project_id(),
         ] {
             validate_identifier(value)?;
         }
@@ -103,7 +229,7 @@ impl SigningKeys {
         let now = now_unix();
         let ttl_secs = i64::try_from(ttl_secs)
             .map_err(|_| AuthError::InvalidGrant("invalid Depot delegation lifetime".into()))?;
-        let source_expiry = i64::try_from(grant.expires_at)
+        let source_expiry = i64::try_from(subject.expires_at())
             .map_err(|_| AuthError::InvalidGrant("source grant expiry is invalid".into()))?;
         let exp = now
             .checked_add(ttl_secs)
@@ -119,10 +245,10 @@ impl SigningKeys {
         let claims = DepotDelegationClaims {
             iss: target.issuer.clone(),
             aud: target.audience.clone(),
-            sub: grant.principal_id.clone(),
+            sub: subject.principal_id().to_owned(),
             scope: scope.as_str().into(),
             act: DelegatedActor {
-                sub: grant.installation_id.clone(),
+                sub: subject.installation_id().to_owned(),
             },
             iat: usize::try_from(now)
                 .map_err(|_| AuthError::Server("system clock is out of range".into()))?,
@@ -134,11 +260,14 @@ impl SigningKeys {
             depot_account_id: target.account_id.clone(),
             depot_tenant_id: target.tenant_id.clone(),
             depot_team_id: target.team_id.clone(),
-            depot_membership_epoch: grant.membership_epoch,
-            depot_organization_policy_epoch: grant.organization_policy_epoch,
-            depot_project_policy_epoch: grant.project_policy_epoch,
-            depot_organization_id: grant.organization_id.clone(),
-            depot_project_id: grant.project_id.clone(),
+            // Depot is project-scoped and therefore compares one shared policy
+            // generation. Each principal's distinct membership-row epoch stays
+            // in the source authorization that Labby revalidates before minting.
+            depot_membership_epoch: subject.project_policy_epoch(),
+            depot_organization_policy_epoch: subject.organization_policy_epoch(),
+            depot_project_policy_epoch: subject.project_policy_epoch(),
+            depot_organization_id: subject.organization_id().to_owned(),
+            depot_project_id: subject.project_id().to_owned(),
             depot_operation: operation.to_owned(),
             depot_params_sha256: depot_params_digest(params)?,
         };
@@ -286,6 +415,19 @@ mod tests {
         }
     }
 
+    fn browser_authorization(expires_at: i64) -> BrowserDepotAuthorization {
+        BrowserDepotAuthorization {
+            installation_id: "labby-browser-prod".into(),
+            principal_id: "browser-person-456".into(),
+            organization_id: "browser-organization".into(),
+            project_id: "browser-project".into(),
+            membership_epoch: 15,
+            organization_policy_epoch: 16,
+            project_policy_epoch: 17,
+            expires_at: u64::try_from(expires_at).unwrap(),
+        }
+    }
+
     #[test]
     fn assertion_preserves_person_actor_and_current_authority_epochs() {
         let keys = keys();
@@ -316,7 +458,7 @@ mod tests {
         assert_eq!(claims.depot_tenant_id, "tenant-lime");
         assert_eq!(claims.depot_organization_id, "organization-lime");
         assert_eq!(claims.depot_project_id, "project-skills");
-        assert_eq!(claims.depot_membership_epoch, 5);
+        assert_eq!(claims.depot_membership_epoch, 7);
         assert_eq!(claims.depot_organization_policy_epoch, 6);
         assert_eq!(claims.depot_project_policy_epoch, 7);
         assert_eq!(claims.depot_operation, "depot.uploads.create");
@@ -354,6 +496,82 @@ mod tests {
             .unwrap();
         assert_ne!(first, second);
         assert!(!first.contains("inbound-secret"));
+    }
+
+    #[test]
+    fn browser_authorization_signs_its_revalidated_identity_without_a_product_grant() {
+        let keys = keys();
+        let source_expiry = now_unix() + 5;
+        let token = keys
+            .issue_browser_depot_delegation(
+                &target(),
+                &browser_authorization(source_expiry),
+                DepotDelegationScope::Write,
+                "depot.ingest.start",
+                &serde_json::json!({"kind":"archive"}),
+                30,
+            )
+            .unwrap();
+        let claims: DepotDelegationClaims = keys.decode_custom_token(
+            &token,
+            "https://depot.example",
+            "https://team-labby.example",
+        );
+
+        assert_eq!(claims.sub, "browser-person-456");
+        assert_eq!(claims.act.sub, "labby-browser-prod");
+        assert_eq!(claims.depot_organization_id, "browser-organization");
+        assert_eq!(claims.depot_project_id, "browser-project");
+        assert_eq!(claims.depot_membership_epoch, 17);
+        assert_eq!(claims.depot_organization_policy_epoch, 16);
+        assert_eq!(claims.depot_project_policy_epoch, 17);
+        assert_eq!(claims.depot_operation, "depot.ingest.start");
+        assert!(i64::try_from(claims.exp).unwrap() <= source_expiry);
+    }
+
+    #[test]
+    fn distinct_membership_rows_share_the_project_policy_epoch_on_the_depot_wire() {
+        let keys = keys();
+        let product = grant(now_unix() + 600);
+        let mut browser = browser_authorization(now_unix() + 600);
+        browser.project_policy_epoch = product.project_policy_epoch;
+
+        let product_token = keys
+            .issue_depot_delegation(
+                &target(),
+                &product,
+                DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"product.zip"}),
+                30,
+            )
+            .unwrap();
+        let browser_token = keys
+            .issue_browser_depot_delegation(
+                &target(),
+                &browser,
+                DepotDelegationScope::Write,
+                "depot.uploads.create",
+                &serde_json::json!({"filename":"browser.zip"}),
+                30,
+            )
+            .unwrap();
+        let product_claims: DepotDelegationClaims = keys.decode_custom_token(
+            &product_token,
+            "https://depot.example",
+            "https://team-labby.example",
+        );
+        let browser_claims: DepotDelegationClaims = keys.decode_custom_token(
+            &browser_token,
+            "https://depot.example",
+            "https://team-labby.example",
+        );
+
+        assert_ne!(product.membership_epoch, browser.membership_epoch);
+        assert_eq!(product.membership_epoch, 5);
+        assert_eq!(browser.membership_epoch, 15);
+        assert_eq!(product_claims.depot_membership_epoch, 7);
+        assert_eq!(browser_claims.depot_membership_epoch, 7);
     }
 
     #[test]

@@ -54,7 +54,7 @@ validated. Do not carry validated service endpoints as raw strings.
 | TTY detection | `is-terminal` |
 | progress | `indicatif` |
 | web app | Next.js 16, React 19, Tailwind CSS 4 |
-| desktop palette | Tauri 2 + React |
+| desktop control plane | Tauri 2 shell hosting the canonical Gateway Admin web UI |
 
 Labby does **not** currently ship a Ratatui TUI. Historical plugin-manager TUI
 references are retired rather than treated as a supported surface.

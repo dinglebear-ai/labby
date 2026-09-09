@@ -125,6 +125,19 @@ impl AccessRuntime {
             .map_err(TeamMemberProvisionError::from)
     }
 
+    pub(crate) async fn provision_team_viewer(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
+        let _writer = self.acquire_bootstrap_writer().await?;
+        self.security_store()
+            .await?
+            .provision_team_viewer(identity, project_id)
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
         match &*self.state.lock().await {
             RuntimeState::Ready { store, .. } => Ok(store.clone()),

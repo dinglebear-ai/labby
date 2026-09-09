@@ -671,6 +671,42 @@ impl AuthState {
             || self.store.is_allowed_user_email(email).await?)
     }
 
+    /// Viewer evidence comes only from the provider-verified durable row, never
+    /// a request email or the display email on an unverified session alone.
+    #[cfg(feature = "http-axum")]
+    pub(crate) async fn verified_viewer_domain_for_session(
+        &self,
+        session: &crate::types::ProviderBound<crate::types::BrowserSessionRow>,
+    ) -> Result<Option<String>, AuthError> {
+        if self.config.viewer_email_domains.is_empty()
+            || session.binding != self.inbound_provider_binding()
+            || session.value.project_binding.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(email) = self
+            .store
+            .current_verified_inbound_email(
+                &session.binding.identity_issuer,
+                &session.value.subject,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !session
+            .value
+            .email
+            .as_deref()
+            .is_some_and(|display| display.eq_ignore_ascii_case(&email))
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .config
+            .viewer_domain_for_verified_email(Some(&email), Some(true)))
+    }
+
     /// Rejects new OAuth state rows when the pending count exceeds `max_pending_oauth_states`.
     pub async fn ensure_pending_oauth_state_capacity(&self) -> Result<(), AuthError> {
         let count = self.store.count_pending_oauth_states().await?;

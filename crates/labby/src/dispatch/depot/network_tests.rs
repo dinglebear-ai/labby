@@ -4,6 +4,100 @@ use super::network::{
 use std::net::IpAddr;
 use std::time::Duration;
 
+#[tokio::test]
+async fn host_local_transport_binds_provider_endpoint_and_never_redirects() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    for (status, expected) in [
+        (200, Ok(serde_json::json!({}))),
+        (302, Err(NetworkError::Status(302))),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let secret = Secret::local_bearer("local-team", &endpoint, "local-read-secret").unwrap();
+        assert!(NetworkClient::local("other-provider", &endpoint, secret.clone()).is_err());
+        assert!(NetworkClient::local("local-team", "http://127.0.0.1:1", secret.clone()).is_err());
+        assert!(
+            NetworkClient::new(&endpoint, Some(secret.clone()), NetworkPolicy::default()).is_err()
+        );
+        let client = NetworkClient::local("local-team", &endpoint, secret).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 8192];
+            let count = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8(bytes[..count].to_vec()).unwrap();
+            assert!(request.starts_with("GET /api/discovery HTTP/1.1"));
+            assert!(request.contains("authorization: Bearer local-read-secret"));
+            stream.write_all(format!("HTTP/1.1 {status} Test\r\nLocation: http://169.254.169.254/\r\nContent-Length: 2\r\n\r\n{{}}").as_bytes()).await.unwrap();
+        });
+        assert_eq!(
+            client
+                .call(
+                    Operation::Identity,
+                    None,
+                    tokio::time::Instant::now() + Duration::from_secs(2)
+                )
+                .await,
+            expected
+        );
+        server.await.unwrap();
+    }
+    assert!(Secret::local_bearer("local-team", "http://127.0.0.1:4100", "").is_err());
+}
+
+#[tokio::test]
+async fn host_local_transport_ignores_proxy_environment() {
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", proxy.local_addr().unwrap());
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "dispatch::depot::network_tests::host_local_transport_binds_provider_endpoint_and_never_redirects"])
+        .env("HTTP_PROXY", &endpoint)
+        .env("HTTPS_PROXY", &endpoint)
+        .env("ALL_PROXY", &endpoint)
+        .env("http_proxy", &endpoint)
+        .stdout(std::process::Stdio::null())
+        .status().unwrap();
+    assert!(status.success());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), proxy.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn host_local_ipv6_literal_connects_without_dns() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let secret = Secret::local_bearer("ipv6-local", &endpoint, "ipv6-read-token").unwrap();
+    let client = NetworkClient::local("ipv6-local", &endpoint, secret).unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let size = stream.read(&mut request).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..size])
+                .contains("authorization: Bearer ipv6-read-token")
+        );
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            .await
+            .unwrap();
+    });
+    assert_eq!(
+        client
+            .call(
+                Operation::Identity,
+                None,
+                tokio::time::Instant::now() + Duration::from_secs(2)
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({})
+    );
+    server.await.unwrap();
+}
+
 #[test]
 fn private_host_policy_cannot_grant_cloud_metadata_addresses() {
     let config = toml::from_str(

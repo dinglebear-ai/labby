@@ -38,6 +38,18 @@ pub fn build_upsert(
     environment: &str,
     mutation: &Mutation,
 ) -> Result<BuiltMutation, AdminError> {
+    let host_preferences = parse_preferences(config)?;
+    let proposed_env = format!(
+        "LABBY_DEPOT_PROVIDER_{}_TOKEN",
+        mutation.id.replace('-', "_").to_ascii_uppercase()
+    );
+    if host_preferences
+        .local_providers
+        .iter()
+        .any(|local| local.id == mutation.id || local.bearer_token_env == proposed_env)
+    {
+        return Err(AdminError::Invalid);
+    }
     if mutation.id == "public" {
         if mutation.name != "Public Depot"
             || mutation.endpoint != crate::config::depot::PUBLIC_ENDPOINT
@@ -68,6 +80,8 @@ pub fn build_upsert(
                 enabled: mutation.enabled,
                 auth_mode: AuthMode::Anonymous,
                 bearer_token_env: None,
+                host_managed: false,
+                read_project_id: None,
             },
             needs_fresh_proof: false,
         });
@@ -153,6 +167,14 @@ pub fn build_remove(
     environment: &str,
     provider_id: &str,
 ) -> Result<BuiltMutation, AdminError> {
+    let host_preferences = parse_preferences(config)?;
+    if host_preferences
+        .local_providers
+        .iter()
+        .any(|local| local.id == provider_id)
+    {
+        return Err(AdminError::Invalid);
+    }
     if !valid_provider_id(provider_id) || matches!(provider_id, "all" | "public" | "legacy") {
         return Err(AdminError::Invalid);
     }
@@ -174,6 +196,13 @@ pub fn build_remove(
         .remove(index)
         .try_into::<ProviderConfig>()
         .map_err(|_| AdminError::Invalid)?;
+    if preferences
+        .local_providers
+        .iter()
+        .any(|local| Some(&local.bearer_token_env) == removed.bearer_token_env.as_ref())
+    {
+        return Err(AdminError::Invalid);
+    }
     preferences.tombstones.insert(provider_id.to_owned());
     replace_depot_table(&mut document, &preferences)?;
     let mut values = parse_environment(environment)?;

@@ -94,6 +94,8 @@ pub enum SetupCommand {
     Draft(DraftArgs),
     /// Prepare and operate the local project-credential bootstrap flow.
     AccessBootstrap(AccessBootstrapArgs),
+    /// Approve one specific existing-owner identity link while the gateway is stopped.
+    OwnerLinkPrepare(OwnerLinkPrepareArgs),
     /// Manage the systemd Labby gateway service.
     HostService(HostServiceArgs),
     /// List installed Claude Code lab plugins.
@@ -138,6 +140,13 @@ pub enum SetupCommand {
     InstallPlugin(PluginMutationArgs),
     /// Uninstall the Claude Code plugin for a service.
     UninstallPlugin(PluginMutationArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct OwnerLinkPrepareArgs {
+    /// Protected JSON approval manifest binding the verified identity and existing project.
+    #[arg(long)]
+    pub approval_file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -660,6 +669,10 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
         SetupCommand::Draft(args) => {
             run_draft_command(args, format).await?;
+        }
+        SetupCommand::OwnerLinkPrepare(args) => {
+            let outcome = crate::dispatch::setup::owner_link::prepare(args.approval_file).await?;
+            print(&outcome, format)?;
         }
         SetupCommand::AccessBootstrap(args) => match args.command {
             AccessBootstrapCommand::Prepare {
@@ -1517,6 +1530,26 @@ mod tests {
         assert!(!args.provision);
         assert!(!args.dry_run);
         assert!(args.yes);
+    }
+
+    #[test]
+    fn owner_link_prepare_requires_an_explicit_approval_file() {
+        assert!(crate::cli::Cli::try_parse_from(["labby", "setup", "owner-link-prepare"]).is_err());
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "owner-link-prepare",
+            "--approval-file",
+            "/private/owner-approval.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            crate::cli::Command::Setup(SetupArgs {
+                command: Some(SetupCommand::OwnerLinkPrepare(OwnerLinkPrepareArgs { approval_file })),
+                ..
+            }) if approval_file.as_path() == std::path::Path::new("/private/owner-approval.json")
+        ));
     }
 
     #[test]

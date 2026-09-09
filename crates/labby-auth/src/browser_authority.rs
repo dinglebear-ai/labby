@@ -57,6 +57,8 @@ pub struct BrowserAuthority {
     binding: AuthorityBinding,
     permissions: PermissionState,
     google: bool,
+    #[cfg(feature = "http-axum")]
+    viewer_state: Option<Arc<crate::state::AuthState>>,
 }
 impl std::fmt::Debug for BrowserAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -65,8 +67,55 @@ impl std::fmt::Debug for BrowserAuthority {
 }
 pub struct VerifiedBrowserGrant {
     permissions: PermissionState,
+    expires_at: i64,
+}
+
+/// Provider-verified admission evidence, not a user-supplied role or identity.
+/// Product stores must revalidate immediately around their fixed-role commit.
+#[cfg(feature = "http-axum")]
+pub struct VerifiedViewerDomain {
+    authority: BrowserAuthority,
+    identity: crate::VerifiedIdentity,
+    domain: String,
+    provider_generation: i64,
+}
+#[cfg(feature = "http-axum")]
+impl std::fmt::Debug for VerifiedViewerDomain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifiedViewerDomain(<redacted>)")
+    }
+}
+#[cfg(feature = "http-axum")]
+impl VerifiedViewerDomain {
+    pub fn identity(&self) -> &crate::VerifiedIdentity {
+        &self.identity
+    }
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+    pub fn provider_generation(&self) -> i64 {
+        self.provider_generation
+    }
+    pub async fn revalidate(&self) -> Result<(), AuthorityError> {
+        let fresh = self
+            .authority
+            .verified_viewer_domain()
+            .await?
+            .ok_or(AuthorityError::Denied)?;
+        if fresh.identity != self.identity
+            || fresh.domain != self.domain
+            || fresh.provider_generation != self.provider_generation
+        {
+            return Err(AuthorityError::Changed);
+        }
+        Ok(())
+    }
 }
 impl VerifiedBrowserGrant {
+    /// Upper bound for assertions delegated from this freshly checked session.
+    pub fn expires_at(&self) -> i64 {
+        self.expires_at
+    }
     pub fn has_scope(&self, scope: &str) -> bool {
         self.permissions.scopes.iter().any(|item| item == scope)
     }
@@ -142,6 +191,8 @@ impl BrowserAuthority {
             },
             permissions,
             google: false,
+            #[cfg(feature = "http-axum")]
+            viewer_state: None,
         })
     }
     /// Call immediately before every protected cache read or mutation commit.
@@ -158,6 +209,7 @@ impl BrowserAuthority {
         }
         Ok(VerifiedBrowserGrant {
             permissions: fresh.permissions,
+            expires_at: fresh.session.expires_at,
         })
     }
     pub fn actor_key(&self) -> String {
@@ -194,6 +246,44 @@ impl BrowserAuthority {
     }
 
     #[cfg(feature = "http-axum")]
+    pub async fn verified_viewer_domain(
+        &self,
+    ) -> Result<Option<VerifiedViewerDomain>, AuthorityError> {
+        let Some(state) = &self.viewer_state else {
+            return Ok(None);
+        };
+        self.revalidate().await?;
+        let session = self
+            .store
+            .find_bound_browser_session(&self.session.session_id)
+            .await
+            .map_err(|_| AuthorityError::Unavailable)?
+            .ok_or(AuthorityError::Denied)?;
+        if session.value != self.session || session.binding != state.inbound_provider_binding() {
+            return Err(AuthorityError::Changed);
+        }
+        let Some(domain) = state
+            .verified_viewer_domain_for_session(&session)
+            .await
+            .map_err(|_| AuthorityError::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        let identity = crate::VerifiedIdentity::external(
+            crate::Authenticator::BrowserSession,
+            &session.binding.identity_issuer,
+            session.value.subject,
+        )
+        .map_err(|_| AuthorityError::Denied)?;
+        Ok(Some(VerifiedViewerDomain {
+            authority: self.clone(),
+            identity,
+            domain,
+            provider_generation: session.binding.provider_generation,
+        }))
+    }
+
+    #[cfg(feature = "http-axum")]
     pub(crate) async fn from_google(
         state: Arc<crate::state::AuthState>,
         session: BrowserSessionRow,
@@ -208,10 +298,14 @@ impl BrowserAuthority {
                 .ok_or(AuthorityError::Unavailable)?
         );
         let store = state.store.clone();
-        let policy: Arc<dyn BrowserPolicy> = Arc::new(GooglePolicy { state, scopes });
+        let policy: Arc<dyn BrowserPolicy> = Arc::new(GooglePolicy {
+            state: state.clone(),
+            scopes,
+        });
         let permissions = policy.current(&session).await?;
         let mut authority = Self::from_checked(store, session, source, policy, permissions)?;
         authority.google = true;
+        authority.viewer_state = Some(state);
         Ok(authority)
     }
     #[cfg(feature = "http-axum")]

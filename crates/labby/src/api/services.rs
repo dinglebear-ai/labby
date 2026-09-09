@@ -42,6 +42,7 @@ pub mod browser;
 pub mod access_bootstrap;
 pub mod access_bootstrap_proof;
 pub mod access_credentials;
+pub(crate) mod owner_link;
 
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;

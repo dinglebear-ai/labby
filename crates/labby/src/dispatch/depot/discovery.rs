@@ -57,6 +57,17 @@ pub async fn discover(
     request: &DiscoveryRequest,
     receipt: tokio::time::Instant,
 ) -> Result<DiscoveryResponse, DiscoveryError> {
+    discover_with_access_epoch(manager, authority, request, receipt, None).await
+}
+
+/// The API supplies a freshly authorized project epoch, never a client parameter.
+pub(crate) async fn discover_with_access_epoch(
+    manager: &Manager,
+    authority: &labby_auth::browser_authority::BrowserAuthority,
+    request: &DiscoveryRequest,
+    receipt: tokio::time::Instant,
+    access_epoch: Option<&str>,
+) -> Result<DiscoveryResponse, DiscoveryError> {
     validate_request(&request.query, request.limit)?;
     let topology = manager.snapshot();
     let selected: Vec<_> = topology
@@ -89,7 +100,7 @@ pub async fn discover(
             )
         })
         .collect();
-    let current_binding = Binding::for_browser(
+    let mut current_binding = Binding::for_browser(
         authority,
         "lab:read",
         scope.clone(),
@@ -99,6 +110,7 @@ pub async fn discover(
         current,
     )
     .await?;
+    current_binding.bind_access_epoch(access_epoch);
     let now = Instant::now();
     let (input, stored_binding) = if let Some(cursor) = &request.cursor {
         (
@@ -135,7 +147,7 @@ pub async fn discover(
                 )
             })
             .collect();
-        let binding = Binding::for_browser(
+        let mut binding = Binding::for_browser(
             authority,
             "lab:read",
             scope,
@@ -145,6 +157,7 @@ pub async fn discover(
             providers,
         )
         .await?;
+        binding.bind_access_epoch(access_epoch);
         let bytes = serde_json::to_vec(&federation).map_err(|_| DiscoveryError::InvalidProvider)?;
         let cursor = manager.cursors.create(binding.clone(), bytes, now).await?;
         (
@@ -244,25 +257,52 @@ async fn fetch_pages(
     let count = federation.providers.len().max(1);
     let base = usize::from(request.limit) / count;
     let remainder = usize::from(request.limit) % count;
-    let calls = federation.providers.iter().enumerate().filter_map(|(index, state)| {
-        let quota = base + usize::from(index < remainder);
-        let provider = selected.iter().find(|provider| provider.view.id == state.id)?;
-        let needed = quota.saturating_sub(state.page.items.len());
-        (needed > 0 && matches!(state.page.outcome.as_str(), "participating" | "pending")).then_some(async move {
-            let result = match provider.runtime.qualify(admission, false).await {
-                Ok(identity) => {
-                    let limit = provider_request_limit(needed, Some(identity.max_page_size));
-                    let body = serde_json::json!({ "query": request.query, "limit": limit, "cursor": state.upstream_cursor });
-                    provider.runtime.call(Operation::List, body, admission).await
-                }
-                Err(error) => Err(error),
-            };
-            (index, result)
-        })
-    });
+    let calls = federation
+        .providers
+        .iter()
+        .enumerate()
+        .filter_map(|(index, state)| {
+            let quota = base + usize::from(index < remainder);
+            let provider = selected
+                .iter()
+                .find(|provider| provider.view.id == state.id)?;
+            let needed = quota.saturating_sub(state.page.items.len());
+            (needed > 0 && matches!(state.page.outcome.as_str(), "participating" | "pending"))
+                .then_some(async move {
+                    let result = match provider.runtime.qualify(admission, false).await {
+                        Ok(identity) => {
+                            let limit =
+                                provider_request_limit(needed, Some(identity.max_page_size));
+                            let body = provider_list_body(
+                                &request.query,
+                                limit,
+                                state.upstream_cursor.as_deref(),
+                            );
+                            provider
+                                .runtime
+                                .call(Operation::List, body, admission)
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    (index, result)
+                })
+        });
     for (index, result) in join_all(calls).await {
         apply_reply(&mut federation.providers[index], result);
     }
+}
+
+pub(super) fn provider_list_body(query: &str, limit: usize, cursor: Option<&str>) -> Value {
+    let mut body = serde_json::json!({"limit": limit});
+    // Depot treats an omitted query as an unfiltered listing, but rejects "".
+    if !query.trim().is_empty() {
+        body["query"] = Value::String(query.to_owned());
+    }
+    if let Some(cursor) = cursor {
+        body["cursor"] = Value::String(cursor.to_owned());
+    }
+    body
 }
 
 pub(super) fn provider_request_limit(requested: usize, advertised: Option<u16>) -> usize {
@@ -504,7 +544,7 @@ pub async fn detail(
 
 pub fn validate_request(query: &str, limit: u16) -> Result<(), DiscoveryError> {
     let chars = query.chars().count();
-    if chars > 200 || (chars != 0 && chars < 3) {
+    if chars > 200 || (!query.trim().is_empty() && chars < 3) {
         return Err(DiscoveryError::InvalidQuery);
     }
     if !(1..=MAX_PAGE).contains(&limit) {
@@ -622,25 +662,7 @@ fn project(provider: &str, raw: Value) -> Result<Value, DiscoveryError> {
     let mut projected = Map::new();
     projected.insert("providerId".into(), Value::String(provider.into()));
     projected.insert("artifactId".into(), Value::String(id.into()));
-    for field in [
-        "id",
-        "kind",
-        "namespace",
-        "name",
-        "title",
-        "description",
-        "currentRevisionId",
-        "contentDigest",
-        "license",
-        "publication",
-    ] {
-        if let Some(value) = source.get(field) {
-            if !bounded_value(value, 0) {
-                return Err(DiscoveryError::InvalidProvider);
-            }
-            projected.insert(field.into(), value.clone());
-        }
-    }
+    projected.extend(project_fields(source)?);
     Ok(Value::Object(projected))
 }
 
@@ -655,25 +677,18 @@ pub(super) fn project_detail(expected_id: &str, raw: Value) -> Result<Value, Dis
         .or_else(|| descriptor.get("id"))
         .and_then(Value::as_str)
         .ok_or(DiscoveryError::InvalidProvider)?;
-    if actual != expected_id {
+    if actual != expected_id
+        || actual.is_empty()
+        || actual.len() > 512
+        || descriptor
+            .get("id")
+            .is_some_and(|value| value.as_str() != Some(actual))
+    {
         return Err(DiscoveryError::InvalidProvider);
     }
     let mut result = Map::new();
     result.insert("id".into(), Value::String(actual.into()));
-    for field in [
-        "descriptor",
-        "currentRevisionId",
-        "currentRevision",
-        "publication",
-        "license",
-    ] {
-        if let Some(value) = source.get(field) {
-            if !bounded_value(value, 0) {
-                return Err(DiscoveryError::InvalidProvider);
-            }
-            result.insert(field.into(), value.clone());
-        }
-    }
+    result.extend(project_fields(source)?);
     let value = Value::Object(result);
     if serde_json::to_vec(&value)
         .map_err(|_| DiscoveryError::InvalidProvider)?
@@ -685,6 +700,124 @@ pub(super) fn project_detail(expected_id: &str, raw: Value) -> Result<Value, Dis
     Ok(value)
 }
 
+const DESCRIPTOR_TEXT: &[(&str, usize)] = &[
+    ("id", 512),
+    ("kind", 128),
+    ("namespace", 512),
+    ("name", 512),
+    ("title", 4096),
+    ("description", MAX_FIELD),
+];
+
+fn project_text_fields(
+    source: &Map<String, Value>,
+    fields: &[(&str, usize)],
+) -> Result<Map<String, Value>, DiscoveryError> {
+    let mut projected = Map::new();
+    for &(field, limit) in fields {
+        let Some(value) = source.get(field) else {
+            continue;
+        };
+        // These optional display fields are nullable in Depot's real catalog.
+        if value.is_null() && matches!(field, "title" | "description") {
+            continue;
+        }
+        let text = value.as_str().ok_or(DiscoveryError::InvalidProvider)?;
+        if text.len() > limit || (field == "id" && text.is_empty()) {
+            return Err(DiscoveryError::InvalidProvider);
+        }
+        projected.insert(field.into(), value.clone());
+    }
+    Ok(projected)
+}
+
+fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, DiscoveryError> {
+    let mut projected = project_text_fields(source, DESCRIPTOR_TEXT)?;
+    project_timestamps(source, &mut projected)?;
+    projected.extend(project_text_fields(
+        source,
+        &[("currentRevisionId", 512), ("contentDigest", 512)],
+    )?);
+    for (field, fields) in [
+        ("descriptor", DESCRIPTOR_TEXT),
+        (
+            "currentRevision",
+            &[("id", 512), ("contentDigest", 512)][..],
+        ),
+        (
+            "license",
+            &[
+                ("redistribution", 128),
+                ("reviewState", 128),
+                ("takedownState", 128),
+            ][..],
+        ),
+        (
+            "publication",
+            &[("state", 128), ("visibility", 128), ("distribution", 128)][..],
+        ),
+    ] {
+        if let Some(value) = source.get(field) {
+            if !bounded_value(value, 0) {
+                return Err(DiscoveryError::InvalidProvider);
+            }
+            let nested = value.as_object().ok_or(DiscoveryError::InvalidProvider)?;
+            let mut summary = project_text_fields(nested, fields)?;
+            if field == "currentRevision" {
+                project_timestamp(nested, &mut summary, "authoredAt")?;
+            }
+            if field == "license"
+                && let Some(declared) = nested.get("declared")
+            {
+                if !declared.is_null()
+                    && !declared.as_str().is_some_and(|value| value.len() <= 1024)
+                {
+                    return Err(DiscoveryError::InvalidProvider);
+                }
+                summary.insert("declared".into(), declared.clone());
+            }
+            projected.insert(field.into(), Value::Object(summary));
+        }
+    }
+    if let Some(count) = source.get("revisionCount") {
+        if count.as_u64().is_none_or(|count| count > MAX_SAFE_INTEGER) {
+            return Err(DiscoveryError::InvalidProvider);
+        }
+        projected.insert("revisionCount".into(), count.clone());
+    }
+    Ok(projected)
+}
+
+fn project_timestamps(
+    source: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+) -> Result<(), DiscoveryError> {
+    for field in ["createdAt", "updatedAt"] {
+        project_timestamp(source, result, field)?;
+    }
+    Ok(())
+}
+
+fn project_timestamp(
+    source: &Map<String, Value>,
+    result: &mut Map<String, Value>,
+    field: &str,
+) -> Result<(), DiscoveryError> {
+    if let Some(value) = source.get(field) {
+        if !bounded_timestamp(value) {
+            return Err(DiscoveryError::InvalidProvider);
+        }
+        result.insert(field.into(), value.clone());
+    }
+    Ok(())
+}
+
+fn bounded_timestamp(value: &Value) -> bool {
+    value.is_null()
+        || value
+            .as_str()
+            .is_some_and(|value| value.len() <= 64 && value.parse::<jiff::Timestamp>().is_ok())
+}
 fn bounded_value(value: &Value, depth: usize) -> bool {
     if depth > 4 {
         return false;

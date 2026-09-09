@@ -21,7 +21,7 @@ while IFS= read -r path; do
   }
 done < <(python3 - <<'PY'
 from pathlib import Path
-roots = [Path("scripts"), Path("plugins/scripts"), Path("unraid/source"), Path("apps/palette-tauri/scripts")]
+roots = [Path("scripts"), Path("plugins/scripts"), Path("unraid/source")]
 paths = [Path("install.sh")]
 for root in roots:
     paths.extend(path for path in root.rglob("*") if path.is_file())
@@ -42,7 +42,7 @@ while IFS= read -r path; do
     echo "untracked lifecycle PowerShell entrypoint: $path" >&2
     exit 1
   }
-done < <(find scripts plugins/scripts unraid/source apps/palette-tauri/scripts -type f -name '*.ps1' -print | sort)
+done < <(find scripts plugins/scripts unraid/source -type f -name '*.ps1' -print | sort)
 
 for path in "${shell_files[@]}" "${powershell_files[@]}" "${test_files[@]}"; do
   [[ -f "$path" ]] || { echo "missing inventoried lifecycle file: $path" >&2; exit 1; }
