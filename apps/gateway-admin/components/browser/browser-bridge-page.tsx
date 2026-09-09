@@ -178,7 +178,7 @@ export function BrowserBridgePage() {
                 <CardHeader className="border-b border-aurora-border-default/60">
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="min-w-0"><CardTitle className={AURORA_CARD_TITLE}>{pageLabel(session)}</CardTitle><CardDescription className="mt-1 break-all">{session.origin}{session.sanitized_path} · {browserName(data.browsers, session.browser_id)}</CardDescription></div>
-                    <label className="flex items-center gap-2 text-sm font-medium text-aurora-text-primary"><span>{session.enabled ? 'Execution enabled' : 'Execution disabled'}</span><Switch aria-label={`Enable tool execution for ${pageLabel(session)}`} checked={session.enabled} disabled={Boolean(busyKey)} onCheckedChange={(checked) => void mutate(`session:${session.id}`, () => browserApi.setSessionEnabled(session.id, checked), `${pageLabel(session)} execution ${checked ? 'enabled' : 'disabled'}`)} /></label>
+                    <label className="flex items-center gap-2 text-sm font-medium text-aurora-text-primary"><span>{session.enabled ? 'Execution enabled' : 'Execution disabled'}</span><Switch aria-label={`Enable tool execution for ${pageLabel(session)}`} checked={session.enabled} disabled={Boolean(busyKey)} onCheckedChange={(checked) => void mutate(`session:${session.id}`, () => browserApi.setSessionEnabled(session.id, checked, session.catalog_digest), `${pageLabel(session)} execution ${checked ? 'enabled' : 'disabled'}`)} /></label>
                   </div>
                 </CardHeader>
                 <CardContent className="pb-6">

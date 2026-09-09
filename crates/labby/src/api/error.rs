@@ -83,14 +83,16 @@ impl IntoResponse for ApiError {
         let status = match self.error.kind() {
             "auth_failed" => StatusCode::UNAUTHORIZED,
             "not_found" | "route_not_found" => StatusCode::NOT_FOUND,
-            "rate_limited" | "queue_saturated" => StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited" | "queue_saturated" | "server_busy" => StatusCode::TOO_MANY_REQUESTS,
             "busy" => StatusCode::TOO_MANY_REQUESTS,
             "sync_in_progress"
             | "service_unavailable"
             | "provider_unavailable"
-            | "source_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            | "source_unavailable"
+            | "browser_offline"
+            | "browser_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint"
-            | "tool_error" => StatusCode::UNPROCESSABLE_ENTITY,
+            | "tool_error" | "invalid_request" => StatusCode::UNPROCESSABLE_ENTITY,
             "relay_invalid_target" => StatusCode::UNPROCESSABLE_ENTITY,
             "relay_registry_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "relay_forwarder_init_failed" => StatusCode::BAD_GATEWAY,
@@ -107,7 +109,8 @@ impl IntoResponse for ApiError {
             | "audit_timeout"
             | "code_mode_timeout"
             | "code_mode_fuel_exhausted"
-            | "provider_timeout" => StatusCode::GATEWAY_TIMEOUT,
+            | "provider_timeout"
+            | "tool_timeout" => StatusCode::GATEWAY_TIMEOUT,
             "oauth_needs_reauth" => StatusCode::UNAUTHORIZED,
             "oauth_state_invalid" => StatusCode::BAD_REQUEST,
             "oauth_scope_upgrade_required" | "forbidden" => StatusCode::FORBIDDEN,
@@ -130,6 +133,7 @@ impl IntoResponse for ApiError {
             | "not_connected"
             | "invalid_provider_output" => StatusCode::BAD_GATEWAY,
             "conflict"
+            | "stale_document"
             | "contract_changed"
             | "ambiguous_tool"
             | "restart_required"
@@ -165,6 +169,21 @@ mod tests {
         })
         .into_response()
         .status()
+    }
+
+    #[test]
+    fn browser_errors_keep_actionable_http_statuses() {
+        for (kind, expected) in [
+            ("browser_offline", StatusCode::SERVICE_UNAVAILABLE),
+            ("browser_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+            ("stale_document", StatusCode::CONFLICT),
+            ("server_busy", StatusCode::TOO_MANY_REQUESTS),
+            ("tool_timeout", StatusCode::GATEWAY_TIMEOUT),
+            ("invalid_request", StatusCode::UNPROCESSABLE_ENTITY),
+            ("internal_error", StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            assert_eq!(status_for(kind), expected, "{kind}");
+        }
     }
 
     #[test]

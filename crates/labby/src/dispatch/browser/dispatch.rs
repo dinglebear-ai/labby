@@ -21,6 +21,7 @@ struct CallParams {
     tab_id: i64,
     document_id: String,
     catalog_revision: i64,
+    catalog_digest: String,
     tool_name: String,
     #[serde(default)]
     arguments: Value,
@@ -105,7 +106,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             to_json(
                 bridge
                     .store()
-                    .set_session_enabled(&id, enabled)
+                    .set_session_enabled(&id, enabled, &require_str(&params, "catalog_digest")?)
                     .await
                     .map_err(map_error)?,
             )
@@ -131,6 +132,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
                     call.tab_id,
                     call.document_id,
                     call.catalog_revision,
+                    call.catalog_digest,
                     call.tool_name,
                     call.arguments,
                     call.timeout_ms.map(Duration::from_millis),

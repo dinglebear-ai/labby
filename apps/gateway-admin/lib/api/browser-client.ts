@@ -47,8 +47,16 @@ export const browserApi = {
   revoke: (browserId: string, signal?: AbortSignal) =>
     browserAction<BrowserIdentity>('browser.revoke', { browser_id: browserId }, signal),
   async sessions(signal?: AbortSignal) {
-    return (await browserAction<BrowserSessionListResponse>('browser.sessions', {}, signal)).sessions
+    const page = await browserAction<BrowserSessionListResponse>('browser.sessions', {}, signal)
+    const sessions: BrowserSession[] = []
+    // Lists intentionally omit catalogs. Fetch the reviewed detail in bounded batches.
+    for (let offset = 0; offset < page.sessions.length; offset += 4) {
+      const details = await Promise.all(page.sessions.slice(offset, offset + 4).map((session) =>
+        browserAction<BrowserSession>('browser.session.get', { session_id: session.id }, signal)))
+      sessions.push(...details)
+    }
+    return sessions
   },
-  setSessionEnabled: (sessionId: string, enabled: boolean, signal?: AbortSignal) =>
-    browserAction<BrowserSession>('browser.session.enable', { session_id: sessionId, enabled }, signal),
+  setSessionEnabled: (sessionId: string, enabled: boolean, catalogDigest: string, signal?: AbortSignal) =>
+    browserAction<BrowserSession>('browser.session.enable', { session_id: sessionId, enabled, catalog_digest: catalogDigest }, signal),
 }

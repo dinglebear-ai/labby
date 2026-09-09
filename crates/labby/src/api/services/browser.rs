@@ -1,6 +1,7 @@
 //! Thin HTTP adapters for the Rust browser bridge.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::{
@@ -21,6 +22,10 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::browser::runtime::{browser_bridge, initialize_browser_bridge};
 use crate::dispatch::error::ToolError;
+
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+static SOCKET_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
 
 pub fn routes(_state: AppState) -> RouteGroup {
     RouteGroup::empty().route(
@@ -116,12 +121,19 @@ async fn upgrade(
             required_scopes: Vec::new(),
         }));
     }
+    let permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
+        ApiError::new(ToolError::Sdk {
+            sdk_kind: "server_busy".to_string(),
+            message: "browser connection capacity is exhausted".to_string(),
+        })
+    })?;
     initialize_browser_bridge().await?;
     Ok(upgrade
         .max_message_size(512 * 1024)
         .max_frame_size(512 * 1024)
-        .on_upgrade(move |socket| {
-            handle_socket(socket, extension_id.expect("validated extension id"))
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            handle_socket(socket, extension_id.expect("validated extension id")).await;
         }))
 }
 
@@ -146,8 +158,16 @@ async fn run_socket(
     let (mut sink, mut source) = socket.split();
     let mut authenticated = None;
 
+    let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     while authenticated.is_none() {
-        let Some(message) = source.next().await else {
+        // Check explicitly: a continuously ready input stream must not extend admission.
+        if tokio::time::Instant::now() >= handshake_deadline {
+            return Err(labby_browser::BrowserError::ToolTimeout);
+        }
+        let Some(message) = tokio::time::timeout_at(handshake_deadline, source.next())
+            .await
+            .map_err(|_| labby_browser::BrowserError::ToolTimeout)?
+        else {
             return Ok(());
         };
         let Message::Text(text) =
@@ -301,7 +321,8 @@ async fn send_envelope(
     envelope: &BrowserEnvelope,
 ) -> Result<(), labby_browser::BrowserError> {
     let json = serde_json::to_string(envelope)?;
-    sink.send(Message::Text(json.into()))
+    tokio::time::timeout(SOCKET_WRITE_TIMEOUT, sink.send(Message::Text(json.into())))
         .await
+        .map_err(|_| labby_browser::BrowserError::ToolTimeout)?
         .map_err(|_| labby_browser::BrowserError::ConnectionClosed)
 }
