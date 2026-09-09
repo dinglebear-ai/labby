@@ -406,7 +406,8 @@ fn map_admin_error(error: AdminError) -> (StatusCode, Json<Value>) {
 
 fn map_discovery_error(error: DiscoveryError) -> (StatusCode, Json<Value>) {
     let (status, kind, message) = match error {
-        DiscoveryError::InvalidQuery
+        DiscoveryError::InvalidKind
+        | DiscoveryError::InvalidQuery
         | DiscoveryError::InvalidLimit
         | DiscoveryError::InvalidProvider => (
             StatusCode::BAD_REQUEST,

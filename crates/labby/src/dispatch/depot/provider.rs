@@ -18,6 +18,8 @@ pub enum ProviderError {
     Stale,
     #[error("Depot provider is disabled")]
     Disabled,
+    #[error("Depot provider does not support the requested kind filter")]
+    UnsupportedKind,
     #[error("Depot provider request failed")]
     Failed(Failure),
 }
@@ -32,6 +34,8 @@ pub struct Identity {
     pub listing_epoch: OpaqueEpoch,
     snapshot_continuations: bool,
     pub max_page_size: u16,
+    #[serde(default)]
+    pub supported_kinds: Vec<String>,
 }
 
 impl Identity {
@@ -41,6 +45,11 @@ impl Identity {
         if parsed.contract_version != "depot.discovery/v1"
             || !parsed.snapshot_continuations
             || !(1..=200).contains(&parsed.max_page_size)
+            || parsed.supported_kinds.len() > 64
+            || parsed
+                .supported_kinds
+                .iter()
+                .any(|kind| kind.is_empty() || kind.len() > 64)
         {
             return Err(ProviderError::Failed(Failure::Incompatible));
         }
