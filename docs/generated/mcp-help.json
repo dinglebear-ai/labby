@@ -988,6 +988,44 @@
       ]
     },
     {
+      "name": "depot_publish",
+      "description": "Publish skill archives to a protected Team Depot",
+      "category": "artifacts",
+      "status": "available",
+      "caller_bound": false,
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "depot.publish_skill_archive",
+          "description": "Publish a skill archive to the authenticated team's Depot",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "filename",
+              "ty": "string",
+              "required": true,
+              "description": "Archive filename ending in .zip, .tar.gz, or .tgz"
+            },
+            {
+              "name": "archive_base64",
+              "ty": "string",
+              "required": true,
+              "description": "Base64 encoded skill archive bytes"
+            },
+            {
+              "name": "namespace",
+              "ty": "string",
+              "required": false,
+              "description": "Optional Team Depot namespace"
+            }
+          ],
+          "returns": "IngestJobReceipt"
+        }
+      ]
+    },
+    {
       "name": "browser",
       "description": "Bridge browser-native WebMCP tools into Labby",
       "category": "bootstrap",

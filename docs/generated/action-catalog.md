@@ -68,12 +68,12 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `artifacts` | `artifacts.validate` | false | false | false |  | `transport` | `-` | `-` | `name*: string`<br>`files*: array` | `SkillValidation` | mcp, api, web |
 | `artifacts` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `artifacts` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `browser` | `browser.call` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `browser_id*: string`<br>`tab_id*: integer`<br>`document_id*: string`<br>`catalog_revision*: integer`<br>`tool_name*: string`<br>`arguments: object`<br>`timeout_ms: integer` | `PageToolResult` | mcp, api |
+| `browser` | `browser.call` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `browser_id*: string`<br>`tab_id*: integer`<br>`document_id*: string`<br>`catalog_revision*: integer`<br>`catalog_digest*: string`<br>`tool_name*: string`<br>`arguments: object`<br>`timeout_ms: integer` | `PageToolResult` | mcp, api |
 | `browser` | `browser.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `BrowserList` | mcp, api |
 | `browser` | `browser.pairing.approve` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `pairing_id*: string` | `Browser` | mcp, api |
 | `browser` | `browser.pairing.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `BrowserPairingList` | mcp, api |
 | `browser` | `browser.revoke` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `browser_id*: string` | `Browser` | mcp, api |
-| `browser` | `browser.session.enable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `session_id*: string`<br>`enabled*: boolean` | `BrowserSession` | mcp, api |
+| `browser` | `browser.session.enable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `session_id*: string`<br>`catalog_digest*: string`<br>`enabled*: boolean` | `BrowserSession` | mcp, api |
 | `browser` | `browser.session.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `session_id*: string` | `BrowserSession` | mcp, api |
 | `browser` | `browser.sessions` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `cursor: string`<br>`limit: integer` | `BrowserSessionList` | mcp, api |
 | `browser` | `browser.status` | false | false | false |  | `transport` | `-` | `-` |  | `BrowserBridgeStatus` | mcp, api |
@@ -89,6 +89,9 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
 | `bundles` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `bundles` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
+| `depot_publish` | `depot.publish_skill_archive` | false | false | false |  | `project_artifact_publish` | `-` | `artifact_library` | `filename*: string`<br>`archive_base64*: string`<br>`namespace: string` | `IngestJobReceipt` | mcp |
+| `depot_publish` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp |
+| `depot_publish` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp |
 | `dev_containers` | `dev_containers.create` | false | false | false |  | `resource_capability` | `scope.create` | `dev_container` | `instance_id*: string`<br>`template_id*: string`<br>`owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`secret_references: string[]` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.destroy` | false | true | false |  | `resource_capability` | `scope.delete` | `dev_container` | `instance_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.list` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `cursor: string`<br>`limit: string` | `object` | mcp, api |

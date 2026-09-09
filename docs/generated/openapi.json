@@ -8339,50 +8339,6 @@
           }
         }
       },
-      "Lab_adminActionRequest": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "help",
-              "schema",
-              "onboarding.audit"
-            ]
-          },
-          "params": {
-            "type": "object"
-          }
-        }
-      },
-      "Lab_adminOnboardingAuditParams": {
-        "type": "object",
-        "required": [
-          "services"
-        ],
-        "properties": {
-          "services": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "Lab_adminSchemaParams": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string"
-          }
-        }
-      },
       "LocalSessionResponseDoc": {
         "type": "object",
         "required": [

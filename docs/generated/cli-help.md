@@ -861,6 +861,9 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
   -h, --help
           Print help
 ```
