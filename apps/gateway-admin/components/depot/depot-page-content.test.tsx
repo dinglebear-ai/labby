@@ -2,7 +2,22 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { exactImportConnection, mergeArtifactPages } from './depot-page-content'
+import { depotCoveragePulse, exactImportConnection, mergeArtifactPages } from './depot-page-content'
+
+test('depotCoveragePulse never renders failed provider coverage as healthy', () => {
+  assert.deepEqual(depotCoveragePulse('all_failed'), {
+    color: 'var(--aurora-error)',
+    label: 'all_failed',
+  })
+  assert.deepEqual(depotCoveragePulse('partial'), {
+    color: 'var(--aurora-warn)',
+    label: 'partial',
+  })
+  assert.deepEqual(depotCoveragePulse('complete'), {
+    color: 'var(--aurora-success)',
+    label: 'complete',
+  })
+})
 
 test('mergeArtifactPages appends unique cursor results in order', () => {
   const current: DepotArtifact[] = [

@@ -1,0 +1,1 @@
+{"service":"depot_publish","api_path":null,"cli_probe":null,"can_mutate":true,"success_action":"depot.publish_skill_archive","invalid_action":"schema","policy_action":"depot.publish_skill_archive","workflow":[],"parameters":{"action":"help","filename":"skills.zip","archive_base64":"UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA=="},"action_params":{}}

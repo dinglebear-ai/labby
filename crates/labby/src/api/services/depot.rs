@@ -783,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutation_with_admin_and_csrf_reaches_depot() {
+    async fn mutation_with_admin_and_csrf_still_cannot_fall_back_to_static_token() {
         let (base_url, calls) = upstream().await;
         let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
         let mut state = AppState::new();
@@ -805,8 +805,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -836,18 +836,26 @@ mod tests {
         assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        for _ in 0..2 {
-            let response = router
-                .clone()
-                .oneshot(destructive_operation_request(
-                    "depot.tokens.revoke",
-                    "revoke-token-1",
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let response = router
+            .clone()
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "revoke-token-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let retry = router
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "revoke-token-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -935,7 +943,9 @@ async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, J
 
 fn map_error(error: DepotError) -> (StatusCode, Json<Value>) {
     let status = match &error {
-        DepotError::Disabled | DepotError::Unconfigured => StatusCode::SERVICE_UNAVAILABLE,
+        DepotError::Disabled | DepotError::Unconfigured | DepotError::DelegationUnavailable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         DepotError::UnsupportedOperation => StatusCode::BAD_REQUEST,
         DepotError::InvalidCatalog => StatusCode::BAD_GATEWAY,
         DepotError::DestructiveIntentRequired => StatusCode::UNPROCESSABLE_ENTITY,

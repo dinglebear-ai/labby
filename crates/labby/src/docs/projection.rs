@@ -17,6 +17,7 @@ use crate::registry::{RegisteredService, build_docs_registry};
 
 #[cfg(feature = "api-docs")]
 use crate::api::openapi::build_openapi_spec;
+use crate::api::route_registry::service_has_http_surface;
 
 const LABBY_CRATE: &str = "labby";
 const LABBY_APIS_CRATE: &str = "labby-apis";
@@ -803,9 +804,9 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "fs" | "stash"),
+        cli: !matches!(service, "fs" | "stash" | "depot_publish"),
         mcp: true,
-        api: service != "lab_admin",
+        api: service_has_http_surface(service),
         web_ui: matches!(
             service,
             "gateway"

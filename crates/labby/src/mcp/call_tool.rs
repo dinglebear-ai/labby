@@ -23,6 +23,137 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Conte
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
+// Base64 plus the JSON-RPC envelope must fit the HTTP MCP transport's 4 MiB cap.
+// Decimal 3 MB leaves over 190 KiB for the filename, namespace, and metadata.
+const MAX_DEPOT_PUBLISH_ARCHIVE_BYTES: usize = 3_000_000;
+const MAX_DEPOT_PUBLISH_BASE64_BYTES: usize = MAX_DEPOT_PUBLISH_ARCHIVE_BYTES.div_ceil(3) * 4;
+
+fn depot_publish_grant(
+    context: &RequestContext<RoleServer>,
+) -> Option<&labby_primitives::product_credential::BoundAccessGrant> {
+    let parts = context.extensions.get::<axum::http::request::Parts>()?;
+    let auth = parts
+        .extensions
+        .get::<labby_auth::auth_context::AuthContext>()?;
+    if !auth
+        .scopes
+        .iter()
+        .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
+    {
+        return None;
+    }
+    parts.extensions.get()
+}
+
+#[cfg(feature = "gateway")]
+async fn project_depot_publish_authorized(
+    server: &LabMcpServer,
+    context: &RequestContext<RoleServer>,
+) -> bool {
+    let ProjectExecutionBinding::Bound {
+        transport,
+        identity,
+    } = project_execution_binding(&context.extensions, SystemTime::now())
+    else {
+        return false;
+    };
+    let Some(manager) = server.gateway_manager.as_deref() else {
+        return false;
+    };
+    crate::mcp::bound_access::bind_asset_use_access_context(
+        server.access_runtime.as_ref(),
+        manager,
+        identity.clone(),
+        transport.core().route().route_name(),
+        transport.core().route().resource(),
+        transport.core().route().project_id(),
+    )
+    .await
+    .is_ok_and(|asset_use| asset_use.authorizes_asset_use_of(transport.core()))
+}
+
+fn depot_publish_params(params: &Value) -> Result<(String, Vec<u8>, Option<String>), ToolError> {
+    use base64::Engine as _;
+    let object = params.as_object().ok_or_else(|| ToolError::InvalidParam {
+        message: "Depot publish parameters must be an object".into(),
+        param: "params".into(),
+    })?;
+    if !object
+        .keys()
+        .all(|key| matches!(key.as_str(), "filename" | "archive_base64" | "namespace"))
+    {
+        return Err(ToolError::InvalidParam {
+            message: "Depot publish accepts only filename, archive_base64, and namespace".into(),
+            param: "params".into(),
+        });
+    }
+    let filename = object
+        .get("filename")
+        .and_then(Value::as_str)
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 255
+                && !name.contains(['/', '\\'])
+                && !name.chars().any(char::is_control)
+                && {
+                    let lower = name.to_ascii_lowercase();
+                    lower.ends_with(".zip") || lower.ends_with(".tar.gz") || lower.ends_with(".tgz")
+                }
+        })
+        .ok_or_else(|| ToolError::InvalidParam {
+            message: "filename must name a supported archive".into(),
+            param: "filename".into(),
+        })?
+        .to_owned();
+    let encoded = object
+        .get("archive_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidParam {
+            message: "archive_base64 is required".into(),
+            param: "archive_base64".into(),
+        })?;
+    if encoded.len() > MAX_DEPOT_PUBLISH_BASE64_BYTES {
+        return Err(ToolError::InvalidParam {
+            message: "archive_base64 is too large".into(),
+            param: "archive_base64".into(),
+        });
+    }
+    let archive = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| ToolError::InvalidParam {
+            message: "archive_base64 is invalid".into(),
+            param: "archive_base64".into(),
+        })?;
+    if archive.is_empty() || archive.len() > MAX_DEPOT_PUBLISH_ARCHIVE_BYTES {
+        return Err(ToolError::InvalidParam {
+            message: format!(
+                "archive must contain between 1 and {MAX_DEPOT_PUBLISH_ARCHIVE_BYTES} bytes"
+            ),
+            param: "archive_base64".into(),
+        });
+    }
+    let namespace = match object.get("namespace") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                        })
+                })
+                .ok_or_else(|| ToolError::InvalidParam {
+                    message: "namespace must be a non-empty string no longer than 128 bytes".into(),
+                    param: "namespace".into(),
+                })?
+                .to_owned(),
+        ),
+    };
+    Ok((filename, archive, namespace))
+}
+
 use crate::dispatch::error::ToolError;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::CallbackToolLookup;
@@ -652,6 +783,10 @@ impl LabMcpServer {
                 transport,
                 identity,
             } => {
+                if is_project_depot_publish_call(&request) {
+                    return Box::pin(self.call_tool_response_dispatch_impl(request, context, true))
+                        .await;
+                }
                 #[cfg(feature = "skills")]
                 if is_project_artifact_management_call(&request) {
                     if let Some(response) =
@@ -1582,16 +1717,59 @@ impl LabMcpServer {
                 route = "builtin",
                 "dispatch route selected"
             );
-            #[cfg(feature = "gateway")]
-            if service == "snippets" && action == "snippets.promote" {
+            let result = if cfg!(feature = "gateway")
+                && service == crate::dispatch::depot_publish::SERVICE
+                && action == crate::dispatch::depot_publish::ACTION
+            {
+                #[cfg(feature = "gateway")]
+                {
+                    match (
+                    self.route_scope
+                        .allows_service(crate::dispatch::depot_publish::SERVICE),
+                    project_depot_publish_authorized(self, &context).await,
+                    depot_publish_grant(&context),
+                    self.route_runtime.depot(),
+                ) {
+                    (true, true, Some(grant), Some(depot)) => match depot_publish_params(&params) {
+                        Ok((filename, archive, namespace)) => depot
+                            .publish_skill_archive(
+                                &filename,
+                                archive,
+                                namespace.as_deref(),
+                                || async {
+                                    if project_depot_publish_authorized(self, &context).await {
+                                        Ok(grant.clone())
+                                    } else {
+                                        Err(crate::dispatch::depot::DepotError::DelegationUnavailable)
+                                    }
+                                },
+                            )
+                            .await
+                            .map_err(crate::dispatch::depot::publish_tool_error),
+                        Err(error) => Err(error),
+                    },
+                    _ => Err(ToolError::Forbidden {
+                        message: "Depot publishing requires a protected team route and a current project grant".into(),
+                        required_scopes: vec!["lab".into()],
+                    }),
+                }
+                }
+                #[cfg(not(feature = "gateway"))]
+                unreachable!("Depot publishing is gateway-only")
+            } else if cfg!(feature = "gateway")
+                && service == "snippets"
+                && action == "snippets.promote"
+            {
+                #[cfg(feature = "gateway")]
                 return self
                     .call_snippets_promote_impl(
                         &action, params, &args, start, &subject, actor_key, &context,
                     )
                     .await
                     .map(Into::into);
-            }
-            let result = if self.registry.dispatch_capability(&service)
+                #[cfg(not(feature = "gateway"))]
+                unreachable!("snippet promotion is gateway-only")
+            } else if self.registry.dispatch_capability(&service)
                 == Some(crate::registry::DispatchCapability::CallerBound)
                 && !matches!(action.as_str(), "help" | "schema")
             {
@@ -1841,6 +2019,16 @@ impl LabMcpServer {
             )),
         }
     }
+}
+
+fn is_project_depot_publish_call(request: &CallToolRequestParams) -> bool {
+    request.name.as_ref() == crate::dispatch::depot_publish::SERVICE
+        && request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("action"))
+            .and_then(Value::as_str)
+            == Some(crate::dispatch::depot_publish::ACTION)
 }
 
 #[cfg(not(feature = "gateway"))]
@@ -2106,6 +2294,156 @@ mod project_artifact_routing_tests {
             "gateway",
             "artifacts.import",
         )));
+    }
+}
+
+#[cfg(test)]
+mod depot_publish_shim_tests {
+    use base64::Engine as _;
+    use rmcp::model::CallToolRequestParams;
+    use serde_json::json;
+
+    use super::{
+        MAX_DEPOT_PUBLISH_ARCHIVE_BYTES, MAX_DEPOT_PUBLISH_BASE64_BYTES, depot_publish_params,
+        is_project_depot_publish_call,
+    };
+
+    #[test]
+    fn archive_limit_rejects_one_extra_byte_before_decoding() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(vec![
+            0_u8;
+            MAX_DEPOT_PUBLISH_ARCHIVE_BYTES
+                + 1
+        ]);
+        assert!(encoded.len() > MAX_DEPOT_PUBLISH_BASE64_BYTES);
+        assert!(
+            depot_publish_params(&json!({
+                "filename": "skill.zip", "archive_base64": encoded,
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn maximum_archive_reaches_handler_through_default_http_body_limit() {
+        use axum::{body::Body, http::Request};
+        use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tower::ServiceExt as _;
+
+        #[derive(Clone)]
+        struct ArchiveProbe(Arc<AtomicBool>);
+        impl rmcp::ServerHandler for ArchiveProbe {
+            async fn call_tool(
+                &self,
+                request: CallToolRequestParams,
+                _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+            ) -> Result<CallToolResponse, rmcp::ErrorData> {
+                let arguments = request.arguments.expect("arguments");
+                let (_, archive, _) =
+                    depot_publish_params(&arguments["params"]).expect("maximum archive is valid");
+                assert_eq!(archive.len(), MAX_DEPOT_PUBLISH_ARCHIVE_BYTES);
+                self.0.store(true, Ordering::SeqCst);
+                Ok(CallToolResult::success(vec![ContentBlock::text("accepted")]).into())
+            }
+        }
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let probe = ArchiveProbe(Arc::clone(&reached));
+        let config = StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(true);
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(vec![0_u8; MAX_DEPOT_PUBLISH_ARCHIVE_BYTES]);
+        assert_eq!(encoded.len(), MAX_DEPOT_PUBLISH_BASE64_BYTES);
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "depot_publish", "arguments": {
+                "action": "depot.publish_skill_archive",
+                "params": {
+                    "filename": format!("{}.zip", "a".repeat(251)),
+                    "namespace": "n".repeat(128),
+                    "archive_base64": encoded,
+                },
+            }},
+        }))
+        .unwrap();
+        assert!(body.len() < config.max_request_body_bytes);
+        let service = StreamableHttpService::new(
+            move || Ok(probe.clone()),
+            Arc::new(NeverSessionManager::default()),
+            config,
+        );
+        let response = service
+            .oneshot(
+                Request::post("http://localhost/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2025-11-25")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        // Drain the response so a lazy transport cannot make this a size-only assertion.
+        axum::body::to_bytes(Body::new(response.into_body()), 8192)
+            .await
+            .unwrap();
+        assert!(reached.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn only_exact_archive_publish_calls_enter_the_owned_path() {
+        let request = CallToolRequestParams::new("depot_publish".to_owned()).with_arguments(
+            json!({"action":"depot.publish_skill_archive","params":{}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(is_project_depot_publish_call(&request));
+        for (service, action) in [
+            ("depot_publish", "depot.tokens.create"),
+            ("team-depot", "depot.publish_skill_archive"),
+        ] {
+            let request = CallToolRequestParams::new(service.to_owned()).with_arguments(
+                json!({"action":action,"params":{}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            assert!(!is_project_depot_publish_call(&request));
+        }
+    }
+
+    #[test]
+    fn publish_params_are_archive_only_and_fail_closed() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"archive");
+        let parsed = depot_publish_params(&json!({
+            "filename":"skill.zip",
+            "archive_base64":encoded,
+            "namespace":"team"
+        }))
+        .unwrap();
+        assert_eq!(parsed.0, "skill.zip");
+        assert_eq!(parsed.1, b"archive");
+        assert_eq!(parsed.2.as_deref(), Some("team"));
+
+        for params in [
+            json!({"filename":"skill.zip","archive_base64":"!!!"}),
+            json!({"filename":"../skill.zip","archive_base64":"YQ=="}),
+            json!({"filename":"skill.zip","archive_base64":"YQ==","source":"https://example.test"}),
+            json!({"filename":"skill.zip","archive_base64":""}),
+        ] {
+            assert!(depot_publish_params(&params).is_err(), "{params}");
+        }
     }
 }
 

@@ -1650,9 +1650,17 @@ struct ApiDoc;
 pub fn build_openapi_spec(
     services: &[RegisteredService],
 ) -> Result<Arc<String>, serde_json::Error> {
-    let service_names: Vec<String> = services.iter().map(|s| s.name.to_string()).collect();
+    let http_services: Vec<RegisteredService> = services
+        .iter()
+        .filter(|service| super::route_registry::service_has_http_surface(service.name))
+        .cloned()
+        .collect();
+    let service_names: Vec<String> = http_services
+        .iter()
+        .map(|service| service.name.to_string())
+        .collect();
 
-    let injector = ActionSchemaInjector::new(services);
+    let injector = ActionSchemaInjector::new(&http_services);
 
     let mut spec = ApiDoc::openapi();
 
@@ -2088,6 +2096,19 @@ mod tests {
             .expect("paths should be an object");
         assert!(paths.contains_key("/health"), "missing /health path");
         assert!(paths.contains_key("/ready"), "missing /ready path");
+        assert!(
+            !paths.contains_key("/v1/depot_publish"),
+            "MCP-only Depot publishing must not be advertised as an HTTP route"
+        );
+        let schemas = spec["components"]["schemas"]
+            .as_object()
+            .expect("component schemas should be an object");
+        assert!(
+            schemas
+                .keys()
+                .all(|name| !name.starts_with("Depot_publish")),
+            "MCP-only Depot publishing must not inject unreachable HTTP schemas"
+        );
         assert!(
             paths.contains_key(APPS_MANIFEST_API_ROUTE),
             "missing {APPS_MANIFEST_API_ROUTE} path"

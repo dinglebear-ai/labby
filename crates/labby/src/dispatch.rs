@@ -6,6 +6,7 @@ pub mod artifacts;
 pub mod browser;
 pub mod clients;
 pub mod depot;
+pub mod depot_publish;
 pub mod doctor;
 pub mod error;
 #[cfg(feature = "gateway")]

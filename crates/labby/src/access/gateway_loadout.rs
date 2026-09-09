@@ -59,6 +59,18 @@ impl ProjectRuntimeMcpCatalogContext {
     pub(crate) fn same_publication_as(&self, other: &Self) -> bool {
         self.access == other.access && self.catalog.same_publication_as(&other.catalog)
     }
+
+    /// Compare a fresh AssetUse decision with its discovery publication. Keep
+    /// equality over every authority field; only the requested permission differs.
+    pub(crate) fn authorizes_asset_use_of(mut self, discovery: &Self) -> bool {
+        if self.access.permission != Permission::AssetUse
+            || discovery.access.permission != Permission::AssetDiscover
+        {
+            return false;
+        }
+        self.access.permission = Permission::AssetDiscover;
+        self.same_publication_as(discovery)
+    }
 }
 
 #[derive(Debug, Error)]

@@ -154,6 +154,7 @@ pub(crate) fn disposition(intent: &CaseIntent) -> Disposition {
 pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
     let values = [
         include_str!("../fixtures/e2e_actions/doctor.json"),
+        include_str!("../fixtures/e2e_actions/depot_publish.json"),
         include_str!("../fixtures/e2e_actions/browser.json"),
         include_str!("../fixtures/e2e_actions/fs.json"),
         include_str!("../fixtures/e2e_actions/gateway.json"),
@@ -458,6 +459,12 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if key.starts_with("depot_publish:") && surface == Surface::Mcp {
+        return Some((
+            "requires_protected_team_route_bound_grant",
+            "route_scope_denied",
+        ));
+    }
     if key.starts_with("stash:") {
         return if surface == Surface::Mcp {
             Some((

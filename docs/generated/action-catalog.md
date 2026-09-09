@@ -60,6 +60,9 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
 | `bundles` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
 | `bundles` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `depot_publish` | `depot.publish_skill_archive` | false | false | false |  | `filename*: string`<br>`archive_base64*: string`<br>`namespace: string` | `IngestJobReceipt` | mcp |
+| `depot_publish` | `help` | true | false | false |  |  | `HelpPayload` | mcp |
+| `depot_publish` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp |
 | `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  | `live: boolean` | `DoctorReport` | cli, mcp, api |

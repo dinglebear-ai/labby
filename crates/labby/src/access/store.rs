@@ -445,6 +445,17 @@ impl AccessStore {
             .await
     }
 
+    pub(crate) async fn provision_team_member(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::provision(connection, &identity, &project_id)
+        })
+        .await
+    }
+
     pub(crate) async fn authorize_skill_library(
         &self,
         identity: labby_auth::VerifiedIdentity,

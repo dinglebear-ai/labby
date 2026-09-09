@@ -27,6 +27,9 @@ mod store_tests;
 
 use std::{collections::HashMap, env, sync::Arc, time::Duration};
 
+use labby_auth::depot_delegation::{DepotDelegationScope, DepotDelegationTarget};
+use labby_auth::jwt::SigningKeys;
+use labby_primitives::product_credential::BoundAccessGrant;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,11 +47,18 @@ pub struct DepotClient {
     http: Client,
     base_url: Option<Url>,
     token: Option<Arc<str>>,
+    delegation: Option<Arc<DepotDelegationSigner>>,
     enabled: bool,
     interactive: Arc<Semaphore>,
     destructive_requests: Arc<Mutex<HashMap<String, DestructiveRequest>>>,
     operation_catalogs: Arc<Mutex<HashMap<String, OperationCatalogSnapshot>>>,
     queue_timeout: Duration,
+}
+
+#[derive(Clone)]
+struct DepotDelegationSigner {
+    keys: Arc<SigningKeys>,
+    target: DepotDelegationTarget,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +118,7 @@ pub enum DepotError {
     Unavailable(TransportFailure),
     ResponseTooLarge,
     InvalidResponse,
+    DelegationUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +148,7 @@ impl DepotClient {
             http: Client::new(),
             base_url: None,
             token: None,
+            delegation: None,
             enabled: false,
             interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
             destructive_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -175,12 +187,37 @@ impl DepotClient {
             http,
             base_url,
             token,
+            delegation: None,
             enabled,
             interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
             destructive_requests: Arc::new(Mutex::new(HashMap::new())),
             operation_catalogs: Arc::new(Mutex::new(HashMap::new())),
             queue_timeout: QUEUE_TIMEOUT,
         }
+    }
+
+    /// Attach the server-owned Depot authority mapping. Incomplete mappings
+    /// leave delegation disabled so mutation requests fail closed.
+    #[must_use]
+    pub fn with_delegation_from_env(
+        mut self,
+        keys: Arc<SigningKeys>,
+        issuer: Option<&Url>,
+    ) -> Self {
+        let target = issuer.and_then(|issuer| {
+            Some(DepotDelegationTarget {
+                issuer: issuer.as_str().trim_end_matches('/').to_owned(),
+                audience: required_env("LABBY_DEPOT_DELEGATION_AUDIENCE")?,
+                deployment_id: required_env("LABBY_DEPOT_DELEGATION_DEPLOYMENT_ID")?,
+                account_id: required_env("LABBY_DEPOT_DELEGATION_ACCOUNT_ID")?,
+                tenant_id: required_env("LABBY_DEPOT_DELEGATION_TENANT_ID")?,
+                team_id: env::var("LABBY_DEPOT_DELEGATION_TEAM_ID")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty()),
+            })
+        });
+        self.delegation = target.map(|target| Arc::new(DepotDelegationSigner { keys, target }));
+        self
     }
 
     #[must_use]
@@ -204,6 +241,7 @@ impl DepotClient {
             http: Client::builder().no_proxy().build().unwrap(),
             base_url: Some(base_url),
             token: Some(Arc::from(token)),
+            delegation: None,
             enabled: true,
             interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
             destructive_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -280,13 +318,29 @@ impl DepotClient {
         policy: OperationPolicy,
         idempotency_key: Option<&str>,
     ) -> Result<Value, DepotError> {
+        self.call_with_grant(operation, params, actor, policy, idempotency_key, None)
+            .await
+    }
+
+    pub async fn call_with_grant(
+        &self,
+        operation: &str,
+        params: Value,
+        actor: &str,
+        policy: OperationPolicy,
+        idempotency_key: Option<&str>,
+        grant: Option<&BoundAccessGrant>,
+    ) -> Result<Value, DepotError> {
         if policy.destructive {
             let key = idempotency_key
                 .filter(|key| valid_idempotency_key(key))
                 .ok_or(DepotError::DestructiveIntentRequired)?;
-            return self.call_destructive(operation, params, actor, key).await;
+            return self
+                .call_destructive(operation, params, actor, key, grant)
+                .await;
         }
-        self.call_upstream(operation, params, actor, None).await
+        self.call_upstream(operation, params, actor, None, policy, grant)
+            .await
     }
 
     async fn call_destructive(
@@ -295,6 +349,7 @@ impl DepotClient {
         params: Value,
         actor: &str,
         idempotency_key: &str,
+        grant: Option<&BoundAccessGrant>,
     ) -> Result<Value, DepotError> {
         let digest: [u8; 32] = Sha256::digest(
             serde_json::to_vec(&json!({"actor":actor,"operation":operation,"params":params}))
@@ -340,7 +395,17 @@ impl DepotClient {
             }
         }
         let result = self
-            .call_upstream(operation, params, actor, Some(idempotency_key))
+            .call_upstream(
+                operation,
+                params,
+                actor,
+                Some(idempotency_key),
+                OperationPolicy {
+                    read_only: false,
+                    destructive: true,
+                },
+                grant,
+            )
             .await;
         let mut requests = self.destructive_requests.lock().await;
         match &result {
@@ -373,6 +438,8 @@ impl DepotClient {
         params: Value,
         actor: &str,
         idempotency_key: Option<&str>,
+        policy: OperationPolicy,
+        grant: Option<&BoundAccessGrant>,
     ) -> Result<Value, DepotError> {
         self.request_with_idempotency(
             reqwest::Method::POST,
@@ -380,6 +447,8 @@ impl DepotClient {
             Some(params),
             actor,
             idempotency_key,
+            !policy.read_only,
+            grant,
         )
         .await
         .and_then(compatibility_envelope)
@@ -392,7 +461,7 @@ impl DepotClient {
         body: Option<Value>,
         actor: &str,
     ) -> Result<Value, DepotError> {
-        self.request_with_idempotency(method, path, body, actor, None)
+        self.request_with_idempotency(method, path, body, actor, None, false, None)
             .await
     }
 
@@ -403,6 +472,8 @@ impl DepotClient {
         body: Option<Value>,
         actor: &str,
         idempotency_key: Option<&str>,
+        requires_delegation: bool,
+        delegation_grant: Option<&BoundAccessGrant>,
     ) -> Result<Value, DepotError> {
         if !self.enabled {
             return Err(DepotError::Disabled);
@@ -415,14 +486,28 @@ impl DepotClient {
             })?
             .map_err(|_| DepotError::Unavailable(TransportFailure::Request))?;
         let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
-        let token = self.token.as_ref().ok_or(DepotError::Unconfigured)?;
+        let delegated_token = if requires_delegation {
+            let operation = path
+                .strip_prefix("api/operations/")
+                .ok_or(DepotError::UnsupportedOperation)?;
+            let params = body.as_ref().ok_or(DepotError::UnsupportedOperation)?;
+            Some(self.delegation_token(delegation_grant, operation, params)?)
+        } else {
+            None
+        };
+        let token = delegated_token
+            .as_deref()
+            .or(self.token.as_deref())
+            .ok_or(DepotError::Unconfigured)?;
         let url = base.join(path).map_err(|_| DepotError::Unconfigured)?;
         let mut request = self
             .http
             .request(method, url)
-            .bearer_auth(token.as_ref())
-            .header("accept", "application/json")
-            .header("x-labby-actor", actor);
+            .bearer_auth(token)
+            .header("accept", "application/json");
+        if delegated_token.is_none() {
+            request = request.header("x-labby-actor", actor);
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -441,6 +526,181 @@ impl DepotClient {
             DepotError::Unavailable(category)
         })?;
         decode_response(response).await
+    }
+
+    fn delegation_token(
+        &self,
+        grant: Option<&BoundAccessGrant>,
+        operation: &str,
+        params: &Value,
+    ) -> Result<String, DepotError> {
+        let grant = grant.ok_or(DepotError::DelegationUnavailable)?;
+        let signer = self
+            .delegation
+            .as_ref()
+            .ok_or(DepotError::DelegationUnavailable)?;
+        signer
+            .keys
+            .issue_depot_delegation(
+                &signer.target,
+                grant,
+                DepotDelegationScope::Write,
+                operation,
+                params,
+                30,
+            )
+            .map_err(|_| DepotError::DelegationUnavailable)
+    }
+
+    /// Stream bytes into a principal-bound Depot upload slot. This path never
+    /// falls back to the configured read bearer and never forwards an actor
+    /// header; Depot derives ownership from the fresh delegation subject.
+    pub async fn upload_with_grant(
+        &self,
+        upload_id: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        grant: Option<&BoundAccessGrant>,
+    ) -> Result<Value, DepotError> {
+        if !self.enabled {
+            return Err(DepotError::Disabled);
+        }
+        if !valid_upload_id(upload_id) {
+            return Err(DepotError::UnsupportedOperation);
+        }
+        let _permit = tokio::time::timeout(self.queue_timeout, self.interactive.acquire())
+            .await
+            .map_err(|_| DepotError::QueueTimeout)?
+            .map_err(|_| DepotError::Unavailable(TransportFailure::Request))?;
+        let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
+        let binding = json!({
+            "contentLength": content_length,
+            "contentType": content_type,
+            "uploadId": upload_id,
+        });
+        let token =
+            self.delegation_token(grant, super::depot_publish::UPLOAD_PUT_OPERATION, &binding)?;
+        let url = base
+            .join(&format!("uploads/{upload_id}"))
+            .map_err(|_| DepotError::Unconfigured)?;
+        let mut request = self
+            .http
+            .put(url)
+            .bearer_auth(token)
+            .header("accept", "application/json")
+            .header("content-type", content_type)
+            .body(body);
+        if let Some(content_length) = content_length {
+            request = request.header("content-length", content_length);
+        }
+        let response = request.send().await.map_err(|error| {
+            DepotError::Unavailable(if error.is_timeout() {
+                TransportFailure::Timeout
+            } else if error.is_connect() {
+                TransportFailure::Connect
+            } else {
+                TransportFailure::Request
+            })
+        })?;
+        decode_response(response).await
+    }
+
+    pub async fn publish_skill_archive<F, Fut>(
+        &self,
+        filename: &str,
+        archive: Vec<u8>,
+        namespace: Option<&str>,
+        mut current_grant: F,
+    ) -> Result<Value, DepotError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<BoundAccessGrant, DepotError>>,
+    {
+        // Each stage mints a new assertion. Revalidate after preceding I/O so
+        // revocation during an upload cannot authorize a subsequent ingest.
+        let grant = current_grant()
+            .await
+            .inspect_err(|error| log_publish_failure("upload_create_authorization", error))?;
+        let created = self
+            .call_with_grant(
+                super::depot_publish::UPLOAD_CREATE_OPERATION,
+                json!({"filename": filename}),
+                &grant.principal_id,
+                OperationPolicy {
+                    read_only: false,
+                    destructive: false,
+                },
+                None,
+                Some(&grant),
+            )
+            .await
+            .inspect_err(|error| log_publish_failure("upload_create", error))?;
+        let upload_id = created
+            .pointer("/result/upload/id")
+            .or_else(|| created.pointer("/upload/id"))
+            .or_else(|| created.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| valid_upload_id(id))
+            .ok_or(DepotError::InvalidResponse)
+            .inspect_err(|error| log_publish_failure("upload_create_response", error))?
+            .to_owned();
+        let content_length =
+            u64::try_from(archive.len()).map_err(|_| DepotError::InvalidResponse)?;
+        let grant = current_grant()
+            .await
+            .inspect_err(|error| log_publish_failure("upload_put_authorization", error))?;
+        self.upload_with_grant(
+            &upload_id,
+            reqwest::Body::from(archive),
+            Some(content_length),
+            "application/octet-stream",
+            Some(&grant),
+        )
+        .await
+        .inspect_err(|error| log_publish_failure("upload_put", error))?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("uploadId".into(), Value::String(upload_id));
+        if let Some(namespace) = namespace {
+            arguments.insert("namespace".into(), Value::String(namespace.to_owned()));
+        }
+        let grant = current_grant()
+            .await
+            .inspect_err(|error| log_publish_failure("ingest_start_authorization", error))?;
+        self.call_with_grant(
+            super::depot_publish::INGEST_START_OPERATION,
+            json!({"kind":"archive","arguments":arguments}),
+            &grant.principal_id,
+            OperationPolicy {
+                read_only: false,
+                destructive: false,
+            },
+            None,
+            Some(&grant),
+        )
+        .await
+        .inspect_err(|error| log_publish_failure("ingest_start", error))
+    }
+}
+
+fn log_publish_failure(stage: &'static str, error: &DepotError) {
+    // Use the shared redacted envelope, never Debug on the upstream payload.
+    let transport_failure = match error {
+        DepotError::Unavailable(failure) => Some(failure.category()),
+        _ => None,
+    };
+    tracing::warn!(surface = "mcp", service = "depot_publish", stage,
+        transport_failure, failure = %error_body(error), "Depot publish stage failed");
+}
+
+pub fn publish_tool_error(error: DepotError) -> super::error::ToolError {
+    let safe = error_body(&error);
+    super::error::ToolError::Sdk {
+        sdk_kind: safe["error"]
+            .as_str()
+            .unwrap_or("depot_publish_failed")
+            .into(),
+        message: format!("Depot publish failed: {safe}"),
     }
 }
 
@@ -514,6 +774,14 @@ fn valid_operation_name(operation: &str) -> bool {
 
 fn valid_idempotency_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 160 && key.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+fn valid_upload_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn project_operation_groups(value: &mut Value) -> Result<(), DepotError> {
@@ -603,12 +871,319 @@ pub fn error_body(error: &DepotError) -> Value {
         DepotError::Unavailable(_) => json!({"error":"depot_unavailable"}),
         DepotError::ResponseTooLarge => json!({"error":"depot_response_too_large"}),
         DepotError::InvalidResponse => json!({"error":"invalid_depot_response"}),
+        DepotError::DelegationUnavailable => json!({"error":"depot_delegation_unavailable"}),
     }
+}
+
+fn required_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
     use super::*;
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    struct FreshDelegationWithoutActorHeader;
+
+    impl Match for FreshDelegationWithoutActorHeader {
+        fn matches(&self, request: &Request) -> bool {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| {
+                    value.starts_with("Bearer eyJ")
+                        && !value.contains("inbound-user-bearer")
+                        && !value.contains("shared-write-bearer")
+                })
+                && !request.headers.contains_key("x-labby-actor")
+        }
+    }
+
+    struct ExactDelegation {
+        operation: &'static str,
+        params: Value,
+        seen_jtis: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl Match for ExactDelegation {
+        fn matches(&self, request: &Request) -> bool {
+            let Some(token) = request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+            else {
+                return false;
+            };
+            let Some(payload) = token.split('.').nth(1) else {
+                return false;
+            };
+            let Ok(payload) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)
+            else {
+                return false;
+            };
+            let Ok(claims) = serde_json::from_slice::<Value>(&payload) else {
+                return false;
+            };
+            let expected_digest =
+                labby_auth::depot_delegation::depot_params_digest(&self.params).unwrap();
+            let Some(jti) = claims.get("jti").and_then(Value::as_str) else {
+                return false;
+            };
+            self.seen_jtis.lock().unwrap().push(jti.to_owned());
+            claims["depot_operation"] == self.operation
+                && claims["depot_params_sha256"] == expected_digest
+                && !request.headers.contains_key("x-labby-actor")
+        }
+    }
+
+    fn delegation_grant() -> BoundAccessGrant {
+        BoundAccessGrant {
+            installation_id: "labby-lime-prod".into(),
+            issuer: "https://team-labby.example".into(),
+            subject: "source-subject".into(),
+            principal_id: "person-123".into(),
+            organization_id: "organization-lime".into(),
+            project_id: "project-skills".into(),
+            loadout_id: "loadout".into(),
+            loadout_generation: 1,
+            assignment_generation: 1,
+            catalog_generation: 1,
+            route_id: "route".into(),
+            route_generation: 1,
+            membership_epoch: 2,
+            organization_policy_epoch: 3,
+            project_policy_epoch: 4,
+            credential_id: "credential".into(),
+            credential_generation: 1,
+            scopes: vec!["lab:read".into()],
+            resource: "https://team-labby.example/mcp".into(),
+            audience: "labby".into(),
+            expires_at: u64::try_from(labby_auth::util::now_unix() + 600).unwrap(),
+            requires_admin: false,
+            destructive: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn static_bearer_is_never_used_for_a_write_operation() {
+        let client = DepotClient::for_test(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            "shared-write-bearer-must-not-be-forwarded",
+        );
+        let result = client
+            .call(
+                "depot.skills.publish",
+                json!({"name":"example"}),
+                "untrusted-actor-header",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: false,
+                },
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(DepotError::DelegationUnavailable)));
+    }
+
+    #[tokio::test]
+    async fn write_forwards_only_a_fresh_delegation_and_no_actor_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.skills.publish"))
+            .and(FreshDelegationWithoutActorHeader)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client =
+            DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "shared-write-bearer");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        client
+            .call_with_grant(
+                "depot.skills.publish",
+                json!({"name":"example","bearer":"inbound-user-bearer"}),
+                "forged-actor-header",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: false,
+                },
+                None,
+                Some(&delegation_grant()),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn skill_archive_publish_uses_three_independently_delegated_requests() {
+        let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.uploads.create"))
+            .and(ExactDelegation {
+                operation: "depot.uploads.create",
+                params: json!({"filename":"skill.zip"}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": {"upload": {"id": "upload-123"}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/uploads/upload-123"))
+            .and(ExactDelegation {
+                operation: "depot.uploads.put",
+                params: json!({
+                    "contentLength": 13,
+                    "contentType": "application/octet-stream",
+                    "uploadId": "upload-123"
+                }),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "upload": {"id": "upload-123", "status": "ready"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.ingest.start"))
+            .and(ExactDelegation {
+                operation: "depot.ingest.start",
+                params: json!({
+                    "kind":"archive",
+                    "arguments":{"namespace":"team","uploadId":"upload-123"}
+                }),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": {"job": {"id": "job-123"}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client = DepotClient::for_test(
+            Url::parse(&server.uri()).unwrap(),
+            "shared-write-bearer-must-not-be-forwarded",
+        );
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        let result = client
+            .publish_skill_archive("skill.zip", b"archive bytes".to_vec(), Some("team"), || {
+                std::future::ready(Ok(delegation_grant()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(result["result"]["job"]["id"], "job-123");
+        let seen_jtis = seen_jtis.lock().unwrap();
+        assert_eq!(seen_jtis.len(), 3);
+        assert_eq!(
+            seen_jtis
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_revoked_during_upload_does_not_start_ingest() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.uploads.create"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"upload-revoked"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoke_on_put = Arc::clone(&revoked);
+        Mock::given(method("PUT"))
+            .and(path("/uploads/upload-revoked"))
+            .respond_with(move |_: &Request| {
+                revoke_on_put.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(25))
+                    .set_body_json(json!({"status":"ready"}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/api/operations/depot.ingest.start"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut client = DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "read-token");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys: Arc::new(SigningKeys::load_or_create(&temp.path().join("key.der")).unwrap()),
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+        let mut checks = 0;
+        let result = client
+            .publish_skill_archive("skill.zip", b"archive".to_vec(), None, || {
+                checks += 1;
+                std::future::ready(if revoked.load(Ordering::SeqCst) {
+                    Err(DepotError::DelegationUnavailable)
+                } else {
+                    Ok(delegation_grant())
+                })
+            })
+            .await;
+        assert!(matches!(result, Err(DepotError::DelegationUnavailable)));
+        assert_eq!(checks, 3);
+        server.verify().await;
+    }
 
     fn test_client(base_url: Url, permits: usize, queue_timeout: Duration) -> DepotClient {
         drop(rustls::crypto::ring::default_provider().install_default());
@@ -622,6 +1197,7 @@ mod tests {
                 .unwrap(),
             base_url: Some(base_url),
             token: Some(Arc::from("test-token")),
+            delegation: None,
             enabled: true,
             interactive: Arc::new(Semaphore::new(permits)),
             destructive_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -726,6 +1302,31 @@ mod tests {
         let body = error_body(&DepotError::Unavailable(TransportFailure::Connect)).to_string();
         assert_eq!(body, r#"{"error":"depot_unavailable"}"#);
         assert!(!body.contains("token"));
+    }
+
+    #[test]
+    fn publish_errors_preserve_safe_categories() {
+        for (error, kind) in [
+            (
+                DepotError::DelegationUnavailable,
+                "depot_delegation_unavailable",
+            ),
+            (DepotError::Unconfigured, "depot_unconfigured"),
+            (
+                DepotError::Unavailable(TransportFailure::Connect),
+                "depot_unavailable",
+            ),
+            (DepotError::QueueTimeout, "depot_busy"),
+            (DepotError::InvalidResponse, "invalid_depot_response"),
+            (
+                DepotError::Upstream(StatusCode::FORBIDDEN, json!({"token":"secret-token"})),
+                "depot_rejected",
+            ),
+        ] {
+            let error = publish_tool_error(error);
+            assert_eq!(error.kind(), kind);
+            assert!(!error.to_string().contains("secret-token"));
+        }
     }
 
     #[test]
