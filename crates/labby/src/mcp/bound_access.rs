@@ -19,6 +19,51 @@ use crate::registry::RegisteredService;
 const BIND_ATTEMPTS: usize = 3;
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+type DepotPublishRevalidationFuture = std::pin::Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    labby_primitives::product_credential::BoundAccessGrant,
+                    crate::dispatch::depot::DepotError,
+                >,
+            > + Send,
+    >,
+>;
+
+/// Request-owned live authority, supplied only by the protected HTTP adapter.
+/// Deliberately neither Debug nor serializable: its closure may hold credentials.
+#[derive(Clone)]
+pub(crate) struct DepotPublishRevalidator(
+    Arc<dyn Fn() -> DepotPublishRevalidationFuture + Send + Sync>,
+);
+
+impl DepotPublishRevalidator {
+    pub(crate) fn new<F>(authorize: F) -> Self
+    where
+        F: Fn() -> DepotPublishRevalidationFuture + Send + Sync + 'static,
+    {
+        Self(Arc::new(authorize))
+    }
+
+    pub(crate) async fn authorize(
+        &self,
+    ) -> Result<
+        labby_primitives::product_credential::BoundAccessGrant,
+        crate::dispatch::depot::DepotError,
+    > {
+        (self.0)().await
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OAuthDelegationCredential {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) credential_id: String,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) expires_at: u64,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct BoundAccessContextId(u64);
 
@@ -67,6 +112,49 @@ impl TransportBoundAccessContext {
 
     pub(crate) fn core(&self) -> &BoundAccessContext {
         &self.core
+    }
+
+    pub(crate) fn oauth_depot_grant(
+        &self,
+        installation_id: &str,
+        credential: &OAuthDelegationCredential,
+        policy: &labby_gateway::gateway::manager::PublishedBootstrapPolicyLease,
+    ) -> Result<labby_primitives::product_credential::BoundAccessGrant, BoundAccessContextError>
+    {
+        let access = self.core.catalog.access();
+        if installation_id.is_empty()
+            || access.loadout_name != policy.loadout_id()
+            || self.core.route.route_name() != policy.route_id()
+            || self.core.route.project_id() != access.project_id
+            || credential.expires_at == 0
+        {
+            return Err(BoundAccessContextError::Unavailable);
+        }
+        Ok(labby_primitives::product_credential::BoundAccessGrant {
+            installation_id: installation_id.to_owned(),
+            issuer: credential.issuer.clone(),
+            subject: credential.subject.clone(),
+            principal_id: access.principal_id.clone(),
+            organization_id: access.organization_id.clone(),
+            project_id: access.project_id.clone(),
+            loadout_id: policy.loadout_id().to_owned(),
+            loadout_generation: policy.loadout_generation(),
+            assignment_generation: access.assignment_generation,
+            catalog_generation: policy.catalog_generation(),
+            route_id: policy.route_id().to_owned(),
+            route_generation: policy.route_generation(),
+            membership_epoch: access.shared_membership_policy_epoch(),
+            organization_policy_epoch: access.organization_policy_epoch,
+            project_policy_epoch: access.project_policy_epoch,
+            credential_id: credential.credential_id.clone(),
+            credential_generation: 1,
+            scopes: credential.scopes.clone(),
+            resource: policy.resource().to_owned(),
+            audience: policy.audience().to_owned(),
+            expires_at: credential.expires_at,
+            requires_admin: false,
+            destructive: false,
+        })
     }
 
     pub(crate) fn credential_instance_fingerprint(&self) -> &str {
@@ -213,6 +301,39 @@ impl BoundAccessContext {
         self.credential_binding_fingerprint == other.credential_binding_fingerprint
             && self.catalog.same_publication_as(&other.catalog)
             && self.route.same_publication_as(&other.route)
+    }
+
+    /// Publishing and discovery ask different permissions of the same caller.
+    /// Compare every other access fact plus the exact catalog/route publication;
+    /// never weaken the general same-permission publication comparison.
+    pub(crate) fn authorizes_publish_from(&self, discovery: &Self) -> bool {
+        let access = self.catalog.access();
+        let expected = discovery.catalog.access();
+        if access.permission != Permission::ArtifactPublish
+            || expected.permission != Permission::AssetDiscover
+        {
+            return false;
+        }
+        let normalized = crate::access::ProjectPermissionSnapshot {
+            principal_id: access.principal_id.clone(),
+            organization_id: access.organization_id.clone(),
+            project_id: access.project_id.clone(),
+            role: access.role,
+            loadout_name: access.loadout_name.clone(),
+            permission: Permission::AssetDiscover,
+            global_revision: access.global_revision,
+            membership_epoch: access.membership_epoch,
+            organization_policy_epoch: access.organization_policy_epoch,
+            project_policy_epoch: access.project_policy_epoch,
+            assignment_generation: access.assignment_generation,
+        };
+        normalized == *expected
+            && self.credential_binding_fingerprint == discovery.credential_binding_fingerprint
+            && self
+                .catalog
+                .catalog()
+                .same_publication_as(discovery.catalog.catalog())
+            && self.route.same_publication_as(&discovery.route)
     }
 
     pub(crate) fn allows_upstream_prompt_pair(&self, upstream: &str, native_name: &str) -> bool {
@@ -394,6 +515,18 @@ impl ProjectDiscoveryShadow<'_> {
             return None;
         };
         binding.validate_not_expired(now).ok()?;
+        if service.name == crate::dispatch::depot_publish::SERVICE {
+            // This shim is owned by the protected route, not its published
+            // builtin service catalog. Share the exception with wire discovery
+            // and peer descriptor hashing, including credential expiry.
+            let loadout = binding.core().route().effective_loadout();
+            return Some(
+                loadout.expose_tools
+                    && loadout.upstreams.iter().any(|upstream| {
+                        upstream == crate::dispatch::depot_publish::REQUIRED_UPSTREAM
+                    }),
+            );
+        }
         if self.allows_builtin_service(service.name, now) != Some(true) {
             return Some(false);
         }
@@ -630,6 +763,26 @@ pub(crate) async fn bind_asset_use_access_context(
         resource,
         project_id,
         Permission::AssetUse,
+    )
+    .await
+}
+
+pub(crate) async fn bind_artifact_publish_access_context(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    identity: VerifiedIdentity,
+    route_name: &str,
+    resource: &str,
+    project_id: &str,
+) -> Result<BoundAccessContext, BoundAccessContextError> {
+    bind_access_context_with_permission(
+        runtime,
+        manager,
+        identity,
+        route_name,
+        resource,
+        project_id,
+        Permission::ArtifactPublish,
     )
     .await
 }
@@ -1177,6 +1330,82 @@ mod tests {
         };
         manager.try_seed_config(config()).await.unwrap();
 
+        // Publishing is distinct from executing tools: Viewers may publish,
+        // but must not acquire AssetUse or project-management authority.
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='viewer' WHERE project_id='bootstrap-default'",
+            )
+            .await
+            .unwrap();
+        let viewer_discovery = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let viewer_publish = bind_artifact_publish_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .expect("Viewer must be allowed to publish artifacts");
+        assert!(viewer_publish.authorizes_publish_from(&viewer_discovery));
+        assert!(!viewer_publish.same_publication_as(&viewer_discovery));
+        assert!(!viewer_discovery.authorizes_publish_from(&viewer_publish));
+        assert!(
+            bind_asset_use_access_context(
+                &runtime,
+                &manager,
+                identity.clone(),
+                "project-route",
+                "https://mcp.example.com/project",
+                "bootstrap-default",
+            )
+            .await
+            .is_err()
+        );
+        store.execute_test_statement("UPDATE project_memberships SET status='disabled' WHERE project_id='bootstrap-default'").await.unwrap();
+        assert!(
+            bind_artifact_publish_access_context(
+                &runtime,
+                &manager,
+                identity.clone(),
+                "project-route",
+                "https://mcp.example.com/project",
+                "bootstrap-default",
+            )
+            .await
+            .is_err()
+        );
+        store.execute_test_statement("UPDATE project_memberships SET status='active',updated_at=updated_at+1 WHERE project_id='bootstrap-default'").await.unwrap();
+        let changed_publish = bind_artifact_publish_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(!changed_publish.authorizes_publish_from(&viewer_discovery));
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='owner' WHERE project_id='bootstrap-default'",
+            )
+            .await
+            .unwrap();
+
         let first = bind_access_context(
             &runtime,
             &manager,
@@ -1197,6 +1426,50 @@ mod tests {
         )
         .await
         .expect("second binding");
+
+        let publish = bind_artifact_publish_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(!publish.catalog.same_publication_as(&first.catalog));
+        assert!(
+            publish.authorizes_publish_from(&first),
+            "fresh ArtifactPublish must authorize unchanged AssetDiscover publication"
+        );
+        let discovery_only = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !discovery_only.authorizes_publish_from(&first),
+            "discovery alone cannot authorize execution"
+        );
+        let mut wrong_identity = bind_artifact_publish_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        wrong_identity
+            .credential_binding_fingerprint
+            .push_str("different");
+        assert!(!wrong_identity.authorizes_publish_from(&first));
 
         assert_eq!(
             first.catalog().access().permission,
@@ -1295,6 +1568,20 @@ mod tests {
             vec![Prompt::new("deploy-v2", Some("changed"), None)],
         )
         .await;
+        let changed_publish = bind_artifact_publish_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !changed_publish.authorizes_publish_from(&first),
+            "a new catalog publication must invalidate the original authorization"
+        );
         let changed_core = bind_access_context(
             &runtime,
             &manager,
@@ -1890,7 +2177,10 @@ mod tests {
             "server-credential",
             "fs-primary",
         ] {
-            assert!(!bound_logs.contains(secret), "shadow log leaked {secret}");
+            assert!(
+                !bound_logs.contains(secret),
+                "shadow log leaked sensitive data"
+            );
         }
 
         let (legacy_resources, _) = list_resources_with_project_observation(None).await;
@@ -1926,7 +2216,7 @@ mod tests {
         ] {
             assert!(
                 !bound_resource_logs.contains(secret),
-                "resource shadow log leaked {secret}"
+                "resource shadow log leaked sensitive data"
             );
         }
 
@@ -1972,6 +2262,98 @@ mod tests {
             ),
             Err(BoundAccessContextError::Unavailable)
         ));
+
+        // Route-owned publishing must appear identically on the wire and in
+        // peer hashes, without depending on a builtin virtual-server entry.
+        let registry = crate::registry::build_default_registry();
+        let depot_service = registry.service("depot_publish").unwrap();
+        for (upstream, expose_tools, expected) in [
+            ("team-depot", true, true),
+            ("catalog-depot", true, false),
+            ("team-depot", false, false),
+        ] {
+            let mut team_config = config();
+            team_config.upstream[0].name = upstream.into();
+            team_config.loadouts[0].upstreams = vec![upstream.into()];
+            team_config.loadouts[0].expose_tools = expose_tools;
+            manager.try_seed_config(team_config).await.unwrap();
+            let core = bind_access_context(
+                &runtime,
+                &manager,
+                identity.clone(),
+                "project-route",
+                "https://mcp.example.com/project",
+                "bootstrap-default",
+            )
+            .await
+            .unwrap();
+            let current = SystemTime::now();
+            let expiry = current.duration_since(UNIX_EPOCH).unwrap().as_secs() + 600;
+            let transport = Arc::new(
+                TransportBoundAccessContext::new(
+                    core,
+                    validate_transport_credential_binding(
+                        "issuer",
+                        "team-parity",
+                        usize::try_from(expiry).unwrap(),
+                        current,
+                    )
+                    .unwrap(),
+                    current,
+                )
+                .unwrap(),
+            );
+            let shadow = ProjectDiscoveryShadow::Bound(&transport);
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(depot_service, current),
+                Some(expected)
+            );
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(
+                    depot_service,
+                    UNIX_EPOCH + std::time::Duration::from_secs(expiry),
+                ),
+                None,
+                "expired grants cannot advertise the route-owned shim"
+            );
+
+            let mut server = project_shadow_test_server();
+            server.route_scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "project-route",
+                [upstream],
+                ["fs", "setup"],
+                false,
+            );
+            let (io, _client) = tokio::io::duplex(64 * 1024);
+            let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+                server, io, None,
+            );
+            let mut context = project_shadow_context(
+                running.peer().clone(),
+                Some(ProjectAccessObservation::Bound(transport)),
+            );
+            context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap()
+                .extensions
+                .insert(identity.clone());
+            let descriptors = running
+                .service()
+                .peer_contract_for_request(&context)
+                .visible_tool_descriptors()
+                .await;
+            let wire = running
+                .service()
+                .list_tools_impl(None, context)
+                .await
+                .unwrap();
+            assert_eq!(wire.tools, descriptors, "descriptor parity for {upstream}");
+            assert_eq!(
+                wire.tools.iter().any(|tool| tool.name == "depot_publish"),
+                expected
+            );
+        }
 
         manager.try_seed_config(config()).await.unwrap();
         assert_eq!(first.route().resource(), "https://mcp.example.com/project");

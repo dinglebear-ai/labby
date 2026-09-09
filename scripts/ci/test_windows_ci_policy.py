@@ -34,12 +34,12 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertIn("--run-ignored ignored-only", block)
         self.assertNotIn("--no-tests pass", block)
 
-    def test_palette_windows_job_is_hosted_cached_and_bounded(self) -> None:
-        block = job_block(self.workflow, "palette-windows", "rust-coverage")
+    def test_desktop_windows_job_is_hosted_cached_and_bounded(self) -> None:
+        block = job_block(self.workflow, "desktop-windows", "rust-coverage")
         self.assertIn("runs-on: windows-latest", block)
         self.assertIn("timeout-minutes: 60", block)
         self.assertIn("Swatinem/rust-cache@", block)
-        self.assertIn("key: palette-tauri-windows-v1", block)
+        self.assertIn("key: labby-desktop-windows-v1", block)
         self.assertIn("cache-on-failure: true", block)
 
     def test_native_containment_is_not_replaced_by_unix_supervisor_checks(self) -> None:
@@ -56,14 +56,14 @@ class WindowsCiPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("continue-on-error: true", block)
 
-    def test_workspace_windows_job_is_required_and_palette_is_advisory(self) -> None:
+    def test_workspace_windows_job_is_required_and_desktop_is_advisory(self) -> None:
         windows = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn("if: ${{ needs.changes.outputs.rust_test == 'true' }}", windows)
         block = self.workflow[self.workflow.index("  ci-gate:\n") :]
         self.assertIn("      - test-windows\n", block)
-        self.assertNotIn("      - palette-windows\n", block)
+        self.assertNotIn("      - desktop-windows\n", block)
         self.assertIn("needs.test-windows.result", block)
-        self.assertNotIn("needs.palette-windows.result", block)
+        self.assertNotIn("needs.desktop-windows.result", block)
 
     def test_repository_workflows_use_hosted_runners(self) -> None:
         for path in WORKFLOW_DIR.glob("*.y*ml"):

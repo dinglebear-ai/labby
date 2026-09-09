@@ -23,7 +23,7 @@ use tokio::time::Instant;
 use tower::Service;
 use url::Url;
 
-use crate::config::depot::canonical_endpoint;
+use crate::config::depot::{canonical_endpoint, canonical_local_endpoint, valid_provider_id};
 
 pub const MAX_BODY: usize = 1024 * 1024;
 const MAX_HEADERS: usize = 32 * 1024;
@@ -54,6 +54,7 @@ pub enum NetworkError {
 #[derive(Clone)]
 pub struct Secret {
     endpoint: Url,
+    provider_id: Option<String>,
     value: HeaderValue,
 }
 
@@ -66,13 +67,38 @@ impl std::fmt::Debug for Secret {
 impl Secret {
     pub fn bearer(endpoint: &str, value: &str) -> Result<Self, NetworkError> {
         let endpoint = canonical_endpoint(endpoint).map_err(|_| NetworkError::InvalidEndpoint)?;
+        Self::bound(endpoint, None, value)
+    }
+
+    pub(super) fn local_bearer(
+        provider_id: &str,
+        endpoint: &str,
+        value: &str,
+    ) -> Result<Self, NetworkError> {
+        if !valid_provider_id(provider_id) {
+            return Err(NetworkError::CredentialBinding);
+        }
+        let endpoint =
+            canonical_local_endpoint(endpoint).map_err(|_| NetworkError::InvalidEndpoint)?;
+        Self::bound(endpoint, Some(provider_id.to_owned()), value)
+    }
+
+    fn bound(
+        endpoint: Url,
+        provider_id: Option<String>,
+        value: &str,
+    ) -> Result<Self, NetworkError> {
         if value.is_empty() || value.len() > 8192 {
             return Err(NetworkError::CredentialBinding);
         }
         let mut value = HeaderValue::from_str(&format!("Bearer {value}"))
             .map_err(|_| NetworkError::CredentialBinding)?;
         value.set_sensitive(true);
-        Ok(Self { endpoint, value })
+        Ok(Self {
+            endpoint,
+            provider_id,
+            value,
+        })
     }
 }
 
@@ -172,6 +198,7 @@ impl Operation {
 
 pub struct NetworkClient {
     endpoint: Url,
+    local: bool,
     secret: Option<Secret>,
     policy: NetworkPolicy,
     lease: Mutex<Option<Lease>>,
@@ -207,14 +234,40 @@ impl NetworkClient {
         policy: NetworkPolicy,
     ) -> Result<Self, NetworkError> {
         let endpoint = canonical_endpoint(endpoint).map_err(|_| NetworkError::InvalidEndpoint)?;
-        if secret
-            .as_ref()
-            .is_some_and(|secret| secret.endpoint != endpoint)
-        {
+        Self::bound(endpoint, secret, policy, None)
+    }
+
+    /// Host composition only. No caller-provided network policy can turn an
+    /// ordinary HTTPS provider into a local HTTP capability.
+    pub(super) fn local(
+        provider_id: &str,
+        endpoint: &str,
+        secret: Secret,
+    ) -> Result<Self, NetworkError> {
+        let endpoint =
+            canonical_local_endpoint(endpoint).map_err(|_| NetworkError::InvalidEndpoint)?;
+        Self::bound(
+            endpoint,
+            Some(secret),
+            NetworkPolicy::default(),
+            Some(provider_id),
+        )
+    }
+
+    fn bound(
+        endpoint: Url,
+        secret: Option<Secret>,
+        policy: NetworkPolicy,
+        provider_id: Option<&str>,
+    ) -> Result<Self, NetworkError> {
+        if secret.as_ref().is_some_and(|secret| {
+            secret.endpoint != endpoint || secret.provider_id.as_deref() != provider_id
+        }) {
             return Err(NetworkError::CredentialBinding);
         }
         Ok(Self {
             endpoint,
+            local: provider_id.is_some(),
             secret,
             policy,
             lease: Mutex::new(None),
@@ -338,8 +391,19 @@ impl NetworkClient {
             .endpoint
             .port_or_known_default()
             .ok_or(NetworkError::InvalidEndpoint)?;
-        let addresses = self.resolve(host, port).await?;
-        validate_addresses(host, &addresses, &self.policy)?;
+        let addresses = if self.local {
+            // Only the exact raw literal validated at construction reaches
+            // this branch. Never consult DNS, private-host grants or proxies.
+            vec![
+                host.trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .map_err(|_| NetworkError::InvalidEndpoint)?,
+            ]
+        } else {
+            let addresses = self.resolve(host, port).await?;
+            validate_addresses(host, &addresses, &self.policy)?;
+            addresses
+        };
         let resolver = PinnedResolver {
             host: Arc::from(host),
             addresses: addresses
@@ -351,8 +415,12 @@ impl NetworkClient {
         connector.enforce_http(false);
         connector.set_connect_timeout(Some(IO_TIMEOUT));
         let tls = self.tls()?;
-        let connector = tls
-            .https_only()
+        let schemes = if self.local {
+            tls.https_or_http()
+        } else {
+            tls.https_only()
+        };
+        let connector = schemes
             .enable_http1()
             .enable_http2()
             .wrap_connector(connector);

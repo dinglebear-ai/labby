@@ -254,10 +254,9 @@ async fn execute_with_deadline(
     for (name, value) in environment {
         command.env(name, value);
     }
-    tokio::time::timeout(deadline, command.output())
+    crate::live_labby::bounded_cli_output(&mut command, deadline)
         .await
-        .unwrap_or_else(|_| panic!("CLI child exceeded {:?}: {args:?}", deadline))
-        .unwrap_or_else(|error| panic!("CLI child failed to start for {args:?}: {error}"))
+        .unwrap_or_else(|error| panic!("CLI execution failed for {args:?}: {error}"))
 }
 
 fn record_success(key: &str, output: &Output, evidence: EvidenceLevel) {

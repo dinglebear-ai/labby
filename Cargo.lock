@@ -896,9 +896,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.8.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "const-oid 0.10.2",
  "pem-rfc7468 1.0.0",
@@ -2007,6 +2007,7 @@ dependencies = [
  "dotenvy",
  "ed25519-dalek",
  "fd-lock",
+ "flate2",
  "futures",
  "getrandom 0.4.2",
  "globset",
@@ -2048,6 +2049,7 @@ dependencies = [
  "sse-stream",
  "strip-ansi-escapes",
  "subtle",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2724,7 +2726,7 @@ version = "0.8.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "986d2e952779af96ea048f160fd9194e1751b4faea78bcf3ceb456efe008088e"
 dependencies = [
- "der 0.8.0",
+ "der 0.8.2",
  "spki 0.8.0-rc.4",
 ]
 
@@ -2744,7 +2746,7 @@ version = "0.11.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12922b6296c06eb741b02d7b5161e3aaa22864af38dfa025a1a3ba3f68c84577"
 dependencies = [
- "der 0.8.0",
+ "der 0.8.2",
  "spki 0.8.0-rc.4",
 ]
 
@@ -3152,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "3.1.4"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0665dcac527abd6828a6bdc805821e820841e491#0665dcac527abd6828a6bdc805821e820841e491"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=f94e8fabe0b4264db3e7f8771dd49d9ba31f4610#f94e8fabe0b4264db3e7f8771dd49d9ba31f4610"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -3187,7 +3189,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "3.1.4"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0665dcac527abd6828a6bdc805821e820841e491#0665dcac527abd6828a6bdc805821e820841e491"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=f94e8fabe0b4264db3e7f8771dd49d9ba31f4610#f94e8fabe0b4264db3e7f8771dd49d9ba31f4610"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -3776,7 +3778,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8baeff88f34ed0691978ec34440140e1572b68c7dd4a495fd14a3dc1944daa80"
 dependencies = [
  "base64ct",
- "der 0.8.0",
+ "der 0.8.2",
 ]
 
 [[package]]

@@ -489,10 +489,10 @@ runtime-current:
 check-gateway-slice:
     RUSTFLAGS="" cargo check -p labby --no-default-features --features gateway --all-targets
 
-# Launch the Labby desktop palette (apps/palette-tauri) in dev mode.
-palette-dev:
-    cd apps/palette-tauri && pnpm tauri dev
+# Launch the Labby desktop Control Plane shell in dev mode.
+desktop-dev:
+    cd apps/labby-desktop && pnpm tauri dev
 
-# Build the Labby desktop palette (apps/palette-tauri) release bundle.
-palette-build:
-    cd apps/palette-tauri && pnpm tauri build
+# Build the Labby desktop Control Plane shell release bundle.
+desktop-build:
+    cd apps/labby-desktop && pnpm tauri build

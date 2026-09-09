@@ -16,6 +16,11 @@ use crate::api::{
 use crate::dispatch::depot::admin::{AdminError, Mutation};
 use crate::dispatch::depot::discovery::{self, DiscoveryError, DiscoveryRequest};
 use crate::dispatch::depot::{DepotError, error_body};
+#[path = "depot_publish.rs"]
+mod publishing;
+#[path = "depot_read_access.rs"]
+mod read_access;
+use read_access::ReadAccess;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +66,14 @@ pub fn routes(_state: AppState) -> RouteGroup {
         .route(
             routes.next().expect("outcome descriptor"),
             get(provider_operation),
+        )
+        .route(
+            routes.next().expect("publish availability descriptor"),
+            get(publishing::availability),
+        )
+        .route(
+            routes.next().expect("publish descriptor"),
+            post(publishing::publish),
         )
 }
 
@@ -121,26 +134,46 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
             RouteAuth::V1,
         )
         .private_no_store(),
+        RouteDescriptor::new(
+            "GET",
+            "/publish",
+            "publish_availability",
+            "depot",
+            RouteAuth::V1,
+        )
+        .private_no_store(),
+        RouteDescriptor::new("POST", "/publish", "publish_skill", "depot", RouteAuth::V1)
+            .private_no_store()
+            .side_effects("delegated Skill archive publication"),
     ]
 }
 
 async fn discover(
     State(state): State<AppState>,
     Extension(authority): Extension<BrowserAuthority>,
+    auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<DiscoveryRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    discovery::discover(
+    let auth = auth.as_ref().map(|value| &value.0);
+    let identity = identity.as_ref().map(|value| &value.0);
+    let access = ReadAccess::begin(&state, &authority, auth, identity).await?;
+    let result = discovery::discover_with_access_epoch(
         &state.depot_manager,
         &authority,
         &request,
         tokio::time::Instant::now(),
+        access.epoch().as_deref(),
     )
     .await
     .and_then(|response| {
         serde_json::to_value(response).map_err(|_| DiscoveryError::InvalidProvider)
     })
     .map(Json)
-    .map_err(map_discovery_error)
+    .map_err(map_discovery_error);
+    access
+        .finish(&state, &authority, auth, identity, result)
+        .await
 }
 
 #[derive(Deserialize)]
@@ -153,9 +186,14 @@ struct DetailRequest {
 async fn detail(
     State(state): State<AppState>,
     Extension(authority): Extension<BrowserAuthority>,
+    auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<DetailRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    discovery::detail(
+    let auth = auth.as_ref().map(|value| &value.0);
+    let identity = identity.as_ref().map(|value| &value.0);
+    let access = ReadAccess::begin(&state, &authority, auth, identity).await?;
+    let result = discovery::detail(
         &state.depot_manager,
         &authority,
         &request.provider_id,
@@ -167,13 +205,21 @@ async fn detail(
         serde_json::to_value(response).map_err(|_| DiscoveryError::InvalidProvider)
     })
     .map(Json)
-    .map_err(map_discovery_error)
+    .map_err(map_discovery_error);
+    access
+        .finish(&state, &authority, auth, identity, result)
+        .await
 }
 
 async fn providers(
     State(state): State<AppState>,
     Extension(authority): Extension<BrowserAuthority>,
+    auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let auth = auth.as_ref().map(|value| &value.0);
+    let identity = identity.as_ref().map(|value| &value.0);
+    let access = ReadAccess::begin(&state, &authority, auth, identity).await?;
     let grant = authority.revalidate().await.map_err(|_| forbidden())?;
     if !grant.has_scope("lab:read") {
         return Err(forbidden());
@@ -190,12 +236,15 @@ async fn providers(
     } else {
         serde_json::to_value(state.depot_manager.status())
     };
-    value.map(Json).map_err(|_| {
+    let result = value.map(Json).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"kind":"internal","message":"provider status unavailable"})),
         )
-    })
+    });
+    access
+        .finish(&state, &authority, auth, identity, result)
+        .await
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -294,19 +343,27 @@ async fn provider_operation(
     State(state): State<AppState>,
     Path(operation_id): Path<String>,
     Extension(authority): Extension<BrowserAuthority>,
+    auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let auth = auth.as_ref().map(|value| &value.0);
+    let identity = identity.as_ref().map(|value| &value.0);
+    let access = ReadAccess::begin(&state, &authority, auth, identity).await?;
     let grant = authority.revalidate().await.map_err(|_| forbidden())?;
     if !grant.has_scope("lab:read") || !grant.has_scope("lab:admin") {
         return Err(forbidden());
     }
-    state
+    let result = state
         .depot_admin
         .as_ref()
         .ok_or_else(unavailable)?
         .operation(&operation_id)
         .await
         .map(|outcome| Json(json!(outcome)))
-        .map_err(map_admin_error)
+        .map_err(map_admin_error);
+    access
+        .finish(&state, &authority, auth, identity, result)
+        .await
 }
 
 async fn require_admin_mutation(
@@ -385,16 +442,26 @@ async fn status(
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_read(&authority).await?;
-    let actor = actor(auth, identity)?;
-    // Structured managed-projection readiness lives here, behind
-    // authentication; the public `/health` and `/ready` probes only carry
-    // the boolean.
-    Ok(Json(json!({
-        "depot": state.depot.status_for_actor(&actor).await,
-        "authority_projection":
-            crate::dispatch::depot::authority_projection::projection_readiness(),
-    })))
+    let access = ReadAccess::begin(
+        &state,
+        &authority,
+        auth.as_ref().map(|v| &v.0),
+        identity.as_ref().map(|v| &v.0),
+    )
+    .await?;
+    let actor = actor(auth.clone(), identity.clone())?;
+    let result = Ok(Json(
+        json!({"depot": state.depot.status_for_actor(&actor).await, "authority_projection": crate::dispatch::depot::authority_projection::projection_readiness()}),
+    ));
+    access
+        .finish(
+            &state,
+            &authority,
+            auth.as_ref().map(|v| &v.0),
+            identity.as_ref().map(|v| &v.0),
+            result,
+        )
+        .await
 }
 
 fn actor(
@@ -455,8 +522,15 @@ mod tests {
         }
     }
 
-    async fn browser_context(
+    pub(super) async fn browser_context(
         scopes: &[&str],
+    ) -> (TempDir, BrowserAuthority, AuthContext, VerifiedIdentity) {
+        browser_context_for_subject(scopes, "depot-route-subject").await
+    }
+
+    pub(super) async fn browser_context_for_subject(
+        scopes: &[&str],
+        subject: &str,
     ) -> (TempDir, BrowserAuthority, AuthContext, VerifiedIdentity) {
         let temp = tempfile::tempdir().unwrap();
         let store = SqliteStore::open(temp.path().join("auth.db"))
@@ -465,7 +539,7 @@ mod tests {
         let now = now_unix();
         let row = BrowserSessionRow {
             session_id: "depot-route-session".to_owned(),
-            subject: "depot-route-subject".to_owned(),
+            subject: subject.to_owned(),
             email: Some("operator@example.test".to_owned()),
             csrf_token: "depot-route-csrf".to_owned(),
             created_at: now,
@@ -788,7 +862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutation_with_admin_and_csrf_reaches_depot() {
+    async fn mutation_with_admin_and_csrf_still_cannot_fall_back_to_static_token() {
         let (base_url, calls) = upstream().await;
         let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
         let mut state = AppState::new();
@@ -810,8 +884,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -841,18 +915,26 @@ mod tests {
         assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        for _ in 0..2 {
-            let response = router
-                .clone()
-                .oneshot(destructive_operation_request(
-                    "depot.tokens.revoke",
-                    "revoke-token-1",
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let response = router
+            .clone()
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "revoke-token-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let retry = router
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "revoke-token-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -862,14 +944,29 @@ async fn session(
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_read(&authority).await?;
-    let actor = actor(auth, identity)?;
-    state
+    let access = ReadAccess::begin(
+        &state,
+        &authority,
+        auth.as_ref().map(|v| &v.0),
+        identity.as_ref().map(|v| &v.0),
+    )
+    .await?;
+    let actor = actor(auth.clone(), identity.clone())?;
+    let result = state
         .depot
         .session(&actor)
         .await
         .map(Json)
-        .map_err(map_error)
+        .map_err(map_error);
+    access
+        .finish(
+            &state,
+            &authority,
+            auth.as_ref().map(|v| &v.0),
+            identity.as_ref().map(|v| &v.0),
+            result,
+        )
+        .await
 }
 
 async fn operations(
@@ -878,14 +975,29 @@ async fn operations(
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_read(&authority).await?;
-    let actor = actor(auth, identity)?;
-    state
+    let access = ReadAccess::begin(
+        &state,
+        &authority,
+        auth.as_ref().map(|v| &v.0),
+        identity.as_ref().map(|v| &v.0),
+    )
+    .await?;
+    let actor = actor(auth.clone(), identity.clone())?;
+    let result = state
         .depot
         .operations(&actor)
         .await
         .map(Json)
-        .map_err(map_error)
+        .map_err(map_error);
+    access
+        .finish(
+            &state,
+            &authority,
+            auth.as_ref().map(|v| &v.0),
+            identity.as_ref().map(|v| &v.0),
+            result,
+        )
+        .await
 }
 
 async fn call(
@@ -896,8 +1008,14 @@ async fn call(
     headers: HeaderMap,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(Some(Extension(auth.clone())), identity)?;
-    require_read(&authority).await?;
+    let access = ReadAccess::begin(
+        &state,
+        &authority,
+        Some(&auth),
+        identity.as_ref().map(|v| &v.0),
+    )
+    .await?;
+    let actor = actor(Some(Extension(auth.clone())), identity.clone())?;
     let policy = state
         .depot
         .operation_policy(&request.operation, &actor)
@@ -916,7 +1034,7 @@ async fn call(
     } else {
         None
     };
-    state
+    let result = state
         .depot
         .call(
             &request.operation,
@@ -927,20 +1045,23 @@ async fn call(
         )
         .await
         .map(Json)
-        .map_err(map_error)
-}
-
-async fn require_read(authority: &BrowserAuthority) -> Result<(), (StatusCode, Json<Value>)> {
-    let grant = authority.revalidate().await.map_err(|_| forbidden())?;
-    grant
-        .has_scope("lab:read")
-        .then_some(())
-        .ok_or_else(forbidden)
+        .map_err(map_error);
+    access
+        .finish(
+            &state,
+            &authority,
+            Some(&auth),
+            identity.as_ref().map(|v| &v.0),
+            result,
+        )
+        .await
 }
 
 fn map_error(error: DepotError) -> (StatusCode, Json<Value>) {
     let status = match &error {
-        DepotError::Disabled | DepotError::Unconfigured => StatusCode::SERVICE_UNAVAILABLE,
+        DepotError::Disabled | DepotError::Unconfigured | DepotError::DelegationUnavailable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         DepotError::UnsupportedOperation => StatusCode::BAD_REQUEST,
         DepotError::InvalidCatalog => StatusCode::BAD_GATEWAY,
         DepotError::DestructiveIntentRequired => StatusCode::UNPROCESSABLE_ENTITY,

@@ -21,6 +21,7 @@ mod migrations;
 mod outbox;
 #[allow(unused_imports)]
 pub(crate) use outbox::{AuthorityAcknowledgement, OrganizationDelivery, PendingProjection};
+pub(crate) mod owner_link;
 #[cfg(test)]
 pub(crate) mod migration_fixture {
     pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;
@@ -73,6 +74,7 @@ mod task;
 pub(crate) use task::TaskRecord;
 mod team;
 pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
+mod team_provision;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod workflow;
@@ -171,6 +173,7 @@ pub(crate) use runtime::CredentialLifecycleError;
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
 };
+pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]
@@ -182,6 +185,7 @@ pub(crate) use team::{
     TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
     TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
+pub(crate) use team_provision::TeamMemberProvisionOutcome;
 #[allow(unused_imports)]
 pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
 

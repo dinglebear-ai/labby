@@ -3,9 +3,9 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-pub(crate) const EXPECTED_ACTIONS: usize = 277;
+pub(crate) const EXPECTED_ACTIONS: usize = 280;
 pub(crate) const EXPECTED_CLI_ACTIONS: usize = 76;
-pub(crate) const EXPECTED_MCP_ACTIONS: usize = 276;
+pub(crate) const EXPECTED_MCP_ACTIONS: usize = 279;
 pub(crate) const EXPECTED_API_ACTIONS: usize = 274;
 pub(crate) const EXPECTED_WEB_ACTIONS: usize = 122;
 pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 76;

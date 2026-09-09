@@ -28,6 +28,10 @@ pub(crate) struct ProjectAccessSnapshot {
     pub(crate) role: ProjectRole,
     pub(crate) loadout_name: String,
     pub(crate) global_revision: u64,
+    pub(crate) membership_epoch: u64,
+    pub(crate) organization_policy_epoch: u64,
+    pub(crate) project_policy_epoch: u64,
+    pub(crate) assignment_generation: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,7 +297,8 @@ pub(super) fn select_project_in_transaction(
     let principal = resolve_principal(&transaction, identity)?;
     let row = transaction
         .query_row(
-            "SELECT m.role, l.loadout_name, m.status, p.status, o.status
+            "SELECT m.role, l.loadout_name, m.status, p.status, o.status,
+                    m.updated_at, o.policy_epoch, p.project_policy_epoch, l.updated_at
              FROM project_memberships m
              JOIN projects p
                ON p.organization_id=m.organization_id AND p.project_id=m.project_id
@@ -310,6 +315,10 @@ pub(super) fn select_project_in_transaction(
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
                 ))
             },
         )
@@ -331,6 +340,16 @@ pub(super) fn select_project_in_transaction(
         role: ProjectRole::from_persisted(&row.0).ok_or(AccessStoreError::MalformedVocabulary)?,
         loadout_name,
         global_revision: revision,
+        membership_epoch: u64::try_from(row.5)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+        organization_policy_epoch: u64::try_from(row.6)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+        project_policy_epoch: u64::try_from(row.7)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?,
+        assignment_generation: u64::try_from(
+            row.8.ok_or(AccessStoreError::ProjectAccessUnavailable)?,
+        )
+        .map_err(|_| AccessStoreError::MalformedVocabulary)?,
     };
     Ok(snapshot)
 }

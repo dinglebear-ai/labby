@@ -847,6 +847,102 @@ mod tests {
     use axum::http::HeaderValue;
     use labby_auth::types::{BrowserSessionRow, ProjectSessionBinding};
 
+    #[tokio::test]
+    async fn viewer_domain_google_session_introspection_stays_authenticated_without_admin() {
+        use tower::ServiceExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some("https://lab.example.com".parse().unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth-key.pem"),
+            admin_email: "owner@different.example".into(),
+            viewer_email_domains: vec!["example.org".into()],
+            session_cookie_name: "__Host-labby-session".into(),
+            google: labby_auth::config::GoogleConfig {
+                client_id: "client".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(&"11".repeat(32)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let auth = labby_auth::state::AuthState::new(config.clone())
+            .await
+            .unwrap();
+        let session = labby_auth::session::create_bound_browser_session(
+            &auth,
+            "verified-viewer".into(),
+            Some("viewer@example.org".into()),
+            auth.inbound_provider_binding(),
+        )
+        .await
+        .unwrap();
+        auth.store
+            .upsert_bound_verified_inbound_identity(
+                &session.subject,
+                session.email.as_deref().unwrap(),
+                labby_auth::util::now_unix(),
+                auth.inbound_provider_binding(),
+            )
+            .await
+            .unwrap();
+        let state = AppState::new()
+            .with_auth_config(config)
+            .with_oauth_state(auth.clone());
+        let router = axum::Router::new()
+            .route("/auth/session", axum::routing::get(auth_session))
+            .with_state(state);
+        let mut baseline = None;
+        for _ in 0..3 {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/auth/session")
+                        .header(
+                            header::COOKIE,
+                            format!("__Host-labby-session={}", session.session_id),
+                        )
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert!(!response.headers().contains_key(header::LOCATION));
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+            let body = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["authenticated"], true);
+            assert_eq!(json["is_admin"], false);
+            assert_eq!(json["expires_at"], session.expires_at);
+            assert_eq!(json["csrf_token"], session.csrf_token);
+            if let Some(expected) = &baseline {
+                assert_eq!(&json, expected);
+            } else {
+                baseline = Some(json);
+            }
+        }
+        assert_eq!(
+            auth.store
+                .find_browser_session(&session.session_id)
+                .await
+                .unwrap(),
+            Some(session)
+        );
+    }
+
     #[test]
     fn reauthentication_requires_the_exact_configured_origin() {
         let config = labby_auth::config::AuthConfig {

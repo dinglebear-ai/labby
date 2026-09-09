@@ -52,6 +52,8 @@ pub mod types;
 pub mod upstream;
 pub mod util;
 mod verified_identity;
+#[cfg(all(test, feature = "http-axum"))]
+mod viewer_domain_tests;
 
 pub use verified_identity::{
     Authenticator, PrincipalLink, VerifiedIdentity, VerifiedIdentityError,

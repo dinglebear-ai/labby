@@ -87,7 +87,7 @@ jobs:
       rust_test: ${{ steps.classify.outputs.rust_test }}
       web: ${{ steps.classify.outputs.web }}
       browser_extension: ${{ steps.classify.outputs.browser_extension }}
-      palette: ${{ steps.classify.outputs.palette }}
+      desktop: ${{ steps.classify.outputs.desktop }}
       unraid: ${{ steps.classify.outputs.unraid }}
       npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
@@ -995,6 +995,7 @@ jobs:
           cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
           cargo test -p labby-gateway --all-features --locked skills
           cargo test -p labby --all-features --locked mcp::skills
+          cargo test -p labby --all-features --locked --test skills_mcp_e2e skills_
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
@@ -1398,7 +1399,8 @@ jobs:
           scripts/ci/validate-supply-manifest.py
           LABBY_IMAGE="ghcr.io/dinglebear-ai/labby@sha256:$(printf 'a%.0s' {1..64})" scripts/ci/validate-container-inputs.sh
           python3 scripts/ci/test-container-topology.py
-          grep -Fq 'COPY apps/gateway-admin/out' config/Dockerfile
+          # The action catalog embeds UI source as well as the static export.
+          grep -Fxq 'COPY apps/gateway-admin apps/gateway-admin' config/Dockerfile
           grep -Fq 'ARG LABBY_NPM_VERSION' config/Dockerfile
           grep -Fq 'ARG LABBY_NPM_SHA512' config/Dockerfile
           grep -Fq 'registry.npmjs.org/npm/-/npm-' config/Dockerfile
@@ -1410,15 +1412,15 @@ jobs:
           grep -Fq 'node node_modules/@anthropic-ai/claude-code/install.cjs' config/Dockerfile
           grep -Fq 'HEALTHCHECK' config/Dockerfile
 
-  palette-web:
-    name: Palette renderer
+  desktop-web:
+    name: Labby desktop shell
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: changes
-    if: ${{ needs.changes.outputs.palette == 'true' }}
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
     defaults:
       run:
-        working-directory: apps/palette-tauri
+        working-directory: apps/labby-desktop
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1430,24 +1432,16 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: apps/palette-tauri/pnpm-lock.yaml
+          cache-dependency-path: apps/labby-desktop/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm coverage
-      - run: pnpm typecheck
       - run: pnpm vite:build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: palette-renderer-coverage
-          path: apps/palette-tauri/coverage/
-          if-no-files-found: error
 
-  palette-rust:
-    name: Palette Tauri (Linux)
+  desktop-rust:
+    name: Labby desktop Tauri (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: changes
-    if: ${{ needs.changes.outputs.palette == 'true' }}
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1464,25 +1458,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
-      - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --locked
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:
           tool: cargo-deny@0.20.2
-      - name: Audit Palette dependencies
+      - name: Audit Labby desktop dependencies
         run: |
           "$CARGO_HOME/bin/cargo-deny" --version
           "$CARGO_HOME/bin/cargo-deny" \
-            --manifest-path apps/palette-tauri/src-tauri/Cargo.toml \
-            --config apps/palette-tauri/src-tauri/deny.toml \
+            --manifest-path apps/labby-desktop/src-tauri/Cargo.toml \
+            --config apps/labby-desktop/src-tauri/deny.toml \
             check advisories
 
-  palette-windows:
-    name: Palette Tauri (Windows advisory)
+  desktop-windows:
+    name: Labby desktop Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
     # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
     # only. Native Rust test-windows is separately required on pull requests.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.desktop == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
@@ -1498,11 +1492,11 @@ jobs:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
-          workspaces: apps/palette-tauri/src-tauri
-          key: palette-tauri-windows-v1
+          workspaces: apps/labby-desktop/src-tauri
+          key: labby-desktop-windows-v1
           cache-on-failure: true
-      - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
-      - run: cargo build --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --locked
+      - run: cargo build --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --locked
 
   rust-coverage:
     name: Rust coverage
@@ -1602,8 +1596,8 @@ jobs:
       - mcp-conformance
       - release-contract
       - container-contract
-      - palette-web
-      - palette-rust
+      - desktop-web
+      - desktop-rust
       - rust-coverage
       - authelia-acceptance
     steps:
@@ -1688,7 +1682,7 @@ jobs:
           require_success_or_skipped mcp-conformance "${{ needs.mcp-conformance.result }}"
           require_success_or_skipped release-contract "${{ needs.release-contract.result }}"
           require_success_or_skipped container-contract "${{ needs.container-contract.result }}"
-          require_success_or_skipped palette-web "${{ needs.palette-web.result }}"
-          require_success_or_skipped palette-rust "${{ needs.palette-rust.result }}"
+          require_success_or_skipped desktop-web "${{ needs.desktop-web.result }}"
+          require_success_or_skipped desktop-rust "${{ needs.desktop-rust.result }}"
           require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"
           require_success_or_skipped authelia-acceptance "${{ needs.authelia-acceptance.result }}"

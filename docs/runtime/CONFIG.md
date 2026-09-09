@@ -114,6 +114,65 @@ do not belong in TOML. HTTPS endpoints cannot contain credentials, queries, or
 fragments. Enabling a provider represents instance-shared read access, not
 acquisition or upstream mutation authority.
 
+For a gateway whose Depot services run on the same host, use host-owned local
+providers instead of weakening HTTPS or private-address policy:
+
+```toml
+[depot]
+read_project_id = "team-project"
+public_enabled = false
+
+[[depot.local_providers]]
+id = "team-local"
+name = "Team Library"
+endpoint = "http://127.0.0.1:4100/"
+bearer_token_env = "LABBY_DEPOT_TEAM_READ_TOKEN"
+```
+
+`read_project_id` selects one project for browser catalog reads, including
+cached discovery continuations; it is not selected by browser input. Every
+active member of that project, including Viewers, may read its catalog. Local
+providers require this explicit nonempty project binding and a nonempty,
+server-held **read-only** bearer token. Missing credentials or invalid local
+bindings prevent server startup. The host operator must provision the token's
+read-only authority in Depot; Labby never broadens it.
+
+Local entries accept only `id`, `name`, `endpoint`, and `bearer_token_env`, and
+are always enabled while configured. Endpoints must be exactly HTTP with
+literal `127.0.0.1` or `[::1]`, an explicit nonzero decimal port, and no path
+other than an optional `/`. Hostnames, alternate IP encodings, credentials,
+queries and fragments are rejected before URL normalization. This transport
+uses direct literal sockets without DNS, proxy discovery, redirects or public
+fallback, and retains the ordinary bounded HTTP response parser and deadlines.
+
+Local provider IDs and token references are reserved against browser edits,
+probes, replacement and removal. Status reports their actual local endpoints
+and `hostManaged: true`; tokens and token-reference names are not exposed.
+Changing a local provider's project, endpoint or credential replaces its
+immutable runtime and invalidates prior continuations. Configure at most 14
+local providers, reserving the Public and possible legacy slots within the
+overall limit of 16. Local and browser-editable entries cannot share IDs or
+credential references. Other providers still require HTTPS and the existing
+SSRF policy.
+
+Browser uploads have a separate, explicit server-owned target:
+
+```toml
+[depot.publish]
+route_id = "team-publish"
+project_id = "team-project"
+```
+
+There is no default publish target. The named protected route must be enabled,
+bound to that project and its currently assigned loadout, and expose Depot
+publishing. The browser cannot choose a different project or route. Every
+active project membership (including Viewer) may upload a new artifact through
+the narrow `ArtifactPublish` permission. This does not grant Viewer execution,
+project management, deletion, or owner-link authority. Existing Google session
+admission and the durable membership are revalidated before each upload/ingest
+operation. Owner-link approval remains a separate, administrator-only setup
+flow; already linked members do not need owner approval to publish.
+
 There are at most 16 provider slots including Public and legacy configuration.
 IDs are lowercase ASCII slugs of 1–64 bytes; `public`, `all`, and `legacy` are
 reserved. Names contain 1–128 Unicode characters. Invalid entries and every

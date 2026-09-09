@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { controlPlaneAction as sendControlPlaneAction, uploadArtifactBytes } from '@/lib/api/artifact-control-client'
+import { gatewayApi } from '@/lib/api/gateway-client'
 import { ArtifactUploadWorkflowError, runArtifactUpload } from '@/lib/api/artifact-upload-workflow'
 import { cn, getErrorMessage } from '@/lib/utils'
 
@@ -57,6 +58,37 @@ function itemId(item: JsonObject, ...keys: string[]) {
 }
 
 export function ArtifactControlPlane() {
+  const [availability, setAvailability] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void gatewayApi.supportedServices(controller.signal).then(services => {
+      if (controller.signal.aborted) return
+      const registered = new Set(services.map(service => service.key))
+      setAvailability(['artifacts', 'sources', 'jobs', 'uploads', 'bundles'].every(service => registered.has(service)) ? 'ready' : 'unavailable')
+    }).catch(() => {
+      if (!controller.signal.aborted) setAvailability('error')
+    })
+    return () => controller.abort()
+  }, [attempt])
+
+  if (availability === 'ready') return <AvailableArtifactControlPlane />
+
+  return <DashboardPanel title="Artifact Control Plane">
+    <p role="status" className="text-sm text-aurora-text-muted">
+      {availability === 'loading' ? 'Checking available Artifact services…' : availability === 'error'
+        ? 'Unable to check Artifact service availability. Check your connection and permissions, then retry.'
+        : 'Artifact Control Plane is not available on this gateway. It requires the built-in upstream API services for sources, jobs, uploads, and bundles. Review the gateway’s service settings and restart requirements before enabling them.'}
+    </p>
+    {availability !== 'loading' ? <div className="mt-4 flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" onClick={() => { setAvailability('loading'); setAttempt(value => value + 1) }}>Retry availability check</Button>
+      {availability === 'unavailable' ? <Button variant="outline" size="sm" asChild><a href="/settings/services">Service settings</a></Button> : null}
+    </div> : null}
+  </DashboardPanel>
+}
+
+function AvailableArtifactControlPlane() {
   const [sources, setSources] = useState<Source[]>([])
   const [jobs, setJobs] = useState<JsonObject[]>([])
   const [bundles, setBundles] = useState<JsonObject[]>([])

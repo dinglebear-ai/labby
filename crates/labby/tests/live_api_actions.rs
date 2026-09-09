@@ -517,6 +517,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             .expect("live API daemon");
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         seed_authority_fixtures(guard.root());
+        action_scenarios::initialize_browser_fixture(&guard.connection().base_url).await;
         let fixtures = action_scenarios::fixtures();
         let mut successes = BTreeSet::new();
         let mut structured_errors = BTreeSet::new();

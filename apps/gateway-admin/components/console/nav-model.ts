@@ -72,14 +72,6 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         capability: 'scope.manage',
       },
       {
-        id: 'Labby',
-        label: 'Labby',
-        href: '/gateway/?id=labby',
-        icon: Cable,
-        tooltipDetail: 'Labby gateway server',
-        capability: 'platform.manage',
-      },
-      {
         id: 'Browsers',
         label: 'Browsers',
         href: '/browsers',

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import unittest
 import tomllib
@@ -10,6 +11,35 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class McpConformanceScriptTests(unittest.TestCase):
+    def test_default_conformance_pin_accepts_production_manifest(self):
+        env = os.environ.copy()
+        env.pop("LABBY_RMCP_REPOSITORY", None)
+        env.pop("LABBY_RMCP_REVISION", None)
+        completed = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/mcp-conformance.sh"), "--check-sdk-pin"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_conformance_pin_check_rejects_revision_mismatch(self):
+        env = os.environ.copy()
+        env.pop("LABBY_RMCP_REPOSITORY", None)
+        env["LABBY_RMCP_REVISION"] = "0" * 40
+        completed = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/mcp-conformance.sh"), "--check-sdk-pin"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("immutable rmcp git revision", completed.stderr)
+
     def test_sdk_pin_is_semantic_not_dependent_on_toml_key_order(self):
         for declaration in [
             'rmcp = { git = "repo", rev = "revision", version = "=3.1.4" }',

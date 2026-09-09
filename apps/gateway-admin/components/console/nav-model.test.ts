@@ -120,3 +120,10 @@ test('workspace routes stay reachable for a plain member and admin routes do not
   for (const route of ['/', '/projects', '/stash', '/depot', '/library', '/agents', '/tasks', '/dev-containers']) assert.ok(reachable.includes(route), `${route} must be reachable for a member`)
   for (const route of ['/administration', '/settings', '/logs', '/browsers']) assert.ok(!reachable.includes(route), `${route} must not be reachable for a member`)
 })
+
+test('control-plane navigation excludes the redundant Labby settings shortcut', () => {
+  const controlPlane = consoleNavSections.find((section) => section.id === 'Control Plane')
+  assert.deepEqual(controlPlane?.items.map((item) => item.id), ['Overview', 'Gateway', 'Browsers'])
+  assert.equal(consoleNavItems.some((item) => item.id === 'Labby'), false)
+  assert.equal(consoleNavItems.some((item) => item.href === '/settings/surfaces'), false)
+})

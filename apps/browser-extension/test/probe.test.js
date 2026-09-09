@@ -91,26 +91,26 @@ test("tolerates a browser shipping the snake_case schema field", async () => {
 });
 
 test("carries tool annotations rather than dropping the safety hints", async () => {
-  const annotated = tool({annotations: {readOnlyHint: true, untrustedContentHint: true}});
+  const annotated = tool({annotations: {readOnlyHint: true, untrustedContentHint: true, consequentialHint: true}});
 
   await withModelContext({getTools: async () => [annotated]}, async () => {
     const {tools: [observed]} = await probeWebMcp();
-    assert.deepEqual(observed.annotations, {read_only_hint: true, untrusted_content_hint: true});
+    assert.deepEqual(observed.annotations, {read_only_hint: true, untrusted_content_hint: true, consequential_hint: true});
   });
 });
 
-test("defaults both hints to false, per the specification", async () => {
+test("defaults missing hints to false, per the specification", async () => {
   await withModelContext({getTools: async () => [tool({})]}, async () => {
     const {tools: [observed]} = await probeWebMcp();
-    assert.deepEqual(observed.annotations, {read_only_hint: false, untrusted_content_hint: false});
+    assert.deepEqual(observed.annotations, {read_only_hint: false, untrusted_content_hint: false, consequential_hint: false});
   });
 });
 
 test("treats a non-boolean hint as unset rather than truthy", async () => {
-  const shady = tool({annotations: {readOnlyHint: "yes", untrustedContentHint: 0}});
+  const shady = tool({annotations: {readOnlyHint: "yes", untrustedContentHint: 0, consequentialHint: "yes"}});
 
   await withModelContext({getTools: async () => [shady]}, async () => {
     const {tools: [observed]} = await probeWebMcp();
-    assert.deepEqual(observed.annotations, {read_only_hint: false, untrusted_content_hint: false});
+    assert.deepEqual(observed.annotations, {read_only_hint: false, untrusted_content_hint: false, consequential_hint: false});
   });
 });

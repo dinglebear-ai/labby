@@ -160,6 +160,9 @@ pub struct EnterpriseIssuerConfig {
 pub struct AuthConfig {
     pub mode: AuthMode,
     pub public_url: Option<Url>,
+    /// Explicit trusted Control Plane origin for desktop session handoff.
+    /// Defaults to the public issuer origin; never inferred from request headers.
+    pub desktop_origin: Option<Url>,
     pub sqlite_path: PathBuf,
     pub key_path: PathBuf,
     pub bootstrap_secret: Option<String>,
@@ -178,6 +181,9 @@ pub struct AuthConfig {
     ///
     /// Empty (the default) disables domain-based access entirely.
     pub allowed_email_domains: Vec<String>,
+    /// Exact verified-email domains admitted only as browser Viewers. Never
+    /// grants the legacy allowlist's administrative OAuth scopes. Default off.
+    pub viewer_email_domains: Vec<String>,
     /// Explicitly selected inbound identity provider. `None` preserves legacy
     /// Google inference when Google credentials are configured.
     pub inbound_provider: Option<InboundProviderKind>,
@@ -253,12 +259,14 @@ impl Default for AuthConfig {
         Self {
             mode: AuthMode::Bearer,
             public_url: None,
+            desktop_origin: None,
             sqlite_path: base_dir.join(DEFAULT_AUTH_DB_NAME),
             key_path: base_dir.join(DEFAULT_KEY_NAME),
             bootstrap_secret: None,
             allowed_client_redirect_uris: Vec::new(),
             admin_email: String::new(),
             allowed_email_domains: Vec::new(),
+            viewer_email_domains: Vec::new(),
             inbound_provider: None,
             google: GoogleConfig::default(),
             authelia: None,
@@ -296,6 +304,33 @@ impl Default for AuthConfig {
 }
 
 impl AuthConfig {
+    #[cfg(feature = "http-axum")]
+    pub(crate) fn viewer_domain_for_verified_email(
+        &self,
+        email: Option<&str>,
+        verified: Option<bool>,
+    ) -> Option<String> {
+        if verified != Some(true) {
+            return None;
+        }
+        let email = email?;
+        if email.len() > 320
+            || !email.is_ascii()
+            || email
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        {
+            return None;
+        }
+        let (local, domain) = email.split_once('@')?;
+        if local.is_empty() || domain.contains('@') || !valid_viewer_domain(domain) {
+            return None;
+        }
+        self.viewer_email_domains
+            .iter()
+            .find(|allowed| valid_viewer_domain(allowed) && allowed.eq_ignore_ascii_case(domain))
+            .map(|domain| domain.to_ascii_lowercase())
+    }
     pub fn inbound_provider_fingerprint(&self) -> Result<String, AuthError> {
         let selected = self.selected_inbound_provider()?;
         let (kind, issuer, client_id, callback) = match selected {
@@ -422,8 +457,30 @@ impl AuthConfig {
             }
         }
 
+        if self.viewer_email_domains.len() > 32
+            || self
+                .viewer_email_domains
+                .iter()
+                .any(|domain| !valid_viewer_domain(domain))
+        {
+            return Err(AuthError::Config(
+                "viewer email domains must be exact ASCII DNS domains".into(),
+            ));
+        }
+        if !self.viewer_email_domains.is_empty()
+            && (!matches!(self.mode, AuthMode::OAuth)
+                || !matches!(
+                    self.resolved_inbound_provider()?,
+                    InboundProviderKind::Google
+                ))
+        {
+            return Err(AuthError::Config(
+                "viewer email-domain admission currently requires Google OAuth".into(),
+            ));
+        }
         if matches!(self.mode, AuthMode::OAuth) {
             self.validate_oauth_public_url()?;
+            self.validate_desktop_origin()?;
             self.resolved_inbound_provider()?;
             if self.admin_email.is_empty() {
                 return Err(AuthError::Config(format!(
@@ -444,6 +501,29 @@ impl AuthConfig {
     }
 
     /// Validate before constructing issuer metadata or opening runtime stores.
+    fn validate_desktop_origin(&self) -> Result<(), AuthError> {
+        if let Some(url) = &self.desktop_origin
+            && (url.host().is_none()
+                || (url.scheme() != "https" && !is_loopback_http_url(url))
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.path() != "/"
+                || url.query().is_some()
+                || url.fragment().is_some())
+        {
+            return Err(AuthError::Config(format!(
+                "{}_AUTH_DESKTOP_ORIGIN must be an HTTPS origin without credentials, path, query or fragment (HTTP loopback is allowed)",
+                self.env_prefix
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "http-axum")]
+    pub(crate) fn desktop_origin(&self) -> Option<&Url> {
+        self.desktop_origin.as_ref().or(self.public_url.as_ref())
+    }
+
     pub(crate) fn validate_oauth_public_url(&self) -> Result<(), AuthError> {
         let prefix = &self.env_prefix;
         let Some(url) = self.public_url.as_ref() else {
@@ -566,6 +646,21 @@ impl AuthConfig {
         }
         Ok(())
     }
+}
+
+fn valid_viewer_domain(domain: &str) -> bool {
+    domain.len() <= 253
+        && domain.contains('.')
+        && domain.is_ascii()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 fn is_loopback_http_url(url: &Url) -> bool {
@@ -728,6 +823,7 @@ impl AuthConfigBuilder {
         let key_codex_issuer_compatibility = env_key(&prefix, "AUTH_CODEX_ISSUER_COMPATIBILITY");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
         let key_allowed_domains = env_key(&prefix, "AUTH_ALLOWED_EMAIL_DOMAINS");
+        let key_viewer_domains = env_key(&prefix, "AUTH_VIEWER_EMAIL_DOMAINS");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
         let key_machine_clients = env_key(&prefix, "AUTH_MACHINE_CLIENTS_JSON");
         let key_enterprise_issuers = env_key(&prefix, "AUTH_ENTERPRISE_ISSUERS_JSON");
@@ -776,6 +872,7 @@ impl AuthConfigBuilder {
         let config = AuthConfig {
             mode,
             public_url: read_url(&vars, &key_public_url)?,
+            desktop_origin: read_url(&vars, &env_key(&prefix, "AUTH_DESKTOP_ORIGIN"))?,
             sqlite_path: read_path(&vars, &key_db)
                 .unwrap_or_else(|| base_dir.join(DEFAULT_AUTH_DB_NAME)),
             key_path: read_path(&vars, &key_keypath)
@@ -783,6 +880,14 @@ impl AuthConfigBuilder {
             bootstrap_secret: read_string(&vars, &key_secret),
             allowed_client_redirect_uris: read_csv(&vars, &key_redirects).unwrap_or_default(),
             admin_email,
+            viewer_email_domains: read_csv(&vars, &key_viewer_domains)
+                .map(|domains| {
+                    domains
+                        .into_iter()
+                        .map(|domain| domain.trim().to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default(),
             allowed_email_domains: read_csv(&vars, &key_allowed_domains)
                 .map(|domains| {
                     domains
@@ -992,9 +1097,57 @@ mod tests {
     };
 
     #[test]
+    #[cfg(feature = "http-axum")]
+    fn viewer_domains_reject_invalid_configuration_and_unsupported_providers() {
+        let mut config = crate::authorize::tests::test_auth_config();
+        for domain in [
+            "*.lime-technology.com",
+            "@lime-technology.com",
+            "lime-technology.com.",
+            "localhost",
+            "lime-technоlogy.com",
+        ] {
+            config.viewer_email_domains = vec![domain.into()];
+            assert!(config.validate().is_err(), "{domain}");
+        }
+        config.viewer_email_domains = vec!["lime-technology.com".into()];
+        assert!(config.validate().is_ok());
+        config.mode = AuthMode::Bearer;
+        assert!(config.validate().is_err());
+        config.mode = AuthMode::OAuth;
+        config.inbound_provider = Some(InboundProviderKind::Authelia);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn bearer_mode_preserves_existing_http_token_behavior() {
         let cfg = AuthModeConfig::from_sources(fake_env_with("LAB_AUTH_MODE", "bearer")).unwrap();
         assert!(matches!(cfg.mode, AuthMode::Bearer));
+    }
+
+    #[test]
+    fn desktop_origin_rejects_unsafe_or_non_origin_urls() {
+        let mut config = AuthConfig::default();
+        for value in [
+            "http://remote.example",
+            "https://user:pass@example.com",
+            "https://example.com/path",
+            "https://example.com/?x=1",
+            "https://example.com/#fragment",
+            "file:///tmp/test",
+        ] {
+            config.desktop_origin = Some(value.parse().unwrap());
+            assert!(config.validate_desktop_origin().is_err(), "{value}");
+        }
+        for value in [
+            "https://desktop.example",
+            "http://localhost:8765",
+            "http://127.0.0.1:8765",
+            "http://[::1]:8765",
+        ] {
+            config.desktop_origin = Some(value.parse().unwrap());
+            assert!(config.validate_desktop_origin().is_ok(), "{value}");
+        }
     }
 
     #[test]

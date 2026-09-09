@@ -274,11 +274,23 @@ async fn concurrent_first_prepare_in_one_installation_has_one_owned_winner() {
 
 #[tokio::test]
 async fn credential_and_derived_session_expire_at_the_public_ttl() {
-    // Leave enough admission time for a loaded Windows runner to start the
-    // disposable server and consume the one-time proof before testing expiry.
-    let mut identity = LiveIdentity::bootstrap_with_ttl("expiry@example.test", 30)
+    // TTL begins before daemon readiness. Keep admission headroom on native
+    // Windows, then assert the published expiry instead of sleeping a new TTL.
+    const TTL_SECONDS: u64 = 60;
+    let before_prepare = u64::try_from(labby_auth::util::now_unix()).unwrap();
+    let mut identity = LiveIdentity::bootstrap_with_ttl("expiry@example.test", TTL_SECONDS)
         .await
         .unwrap();
+    let after_bootstrap = u64::try_from(labby_auth::util::now_unix()).unwrap();
+    assert_eq!(
+        identity.manifest()["ttl_seconds"].as_u64(),
+        Some(TTL_SECONDS)
+    );
+    assert!(
+        (before_prepare + TTL_SECONDS..=after_bootstrap + TTL_SECONDS)
+            .contains(&identity.identity.expires_at)
+    );
+    assert!(identity.identity.expires_at > after_bootstrap);
     identity.create_session().await.unwrap();
     assert!(identity.session.as_ref().unwrap().expires_at <= identity.identity.expires_at);
     let now = u64::try_from(labby_auth::util::now_unix()).unwrap();

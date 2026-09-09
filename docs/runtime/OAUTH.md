@@ -44,6 +44,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Additional users come from the SQLite-backed allowlist. |
 | `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Google authorization matches the provider-asserted `hd` claim; Authelia authorization matches the exact domain of its verified email claim. `email_verified` is enforced first. Empty (the default) disables domain-based access. |
+| `LABBY_AUTH_VIEWER_EMAIL_DOMAINS` | no | Separate, default-off browser Viewer admission policy. Matches the exact domain of a provider-verified email address, not a hosted-domain claim. Overrides `auth.viewer_email_domains`; requires an explicit host-configured `auth.viewer_project_id`. Does not grant admin or execution scope. See [automatic Viewer membership](../services/ACCESS.md#automatic-viewer-membership). |
 | `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
@@ -126,6 +127,50 @@ emergency way to invalidate residual access JWTs. If the Authelia client secret
 or private CA material is compromised, rotate it at Authelia, replace the
 server-held secret/file, and restart all Labby processes. Never put secrets in
 TOML, command lines, logs, or support bundles.
+
+## Native loopback callbacks
+
+At authorization, HTTP loopback redirects (`127.0.0.1`, `[::1]`, and
+`localhost`) may use an OS-assigned port different from the registered URI.
+This supports native clients such as `codex mcp login lab`, whose CIMD document
+registers a portless callback. Only the port may differ: scheme, host, path,
+and query remain exact, with no normalization or wildcard expansion. Other
+redirects still require an exact registered match. Authorization-code redemption
+continues to require the exact redirect URI used in that authorization request,
+including its selected port, together with the PKCE verifier.
+
+### Reverse-proxy requirements
+
+The reverse proxy must preserve the authorization response's `Location` URI,
+including the HTTP scheme for native loopback listeners. A generic rule such as
+`proxy_redirect http:// $scheme://;` can silently rewrite that callback to HTTPS.
+The browser then attempts TLS against an HTTP-only listener and times out before
+the client sends a token request to Labby.
+
+Disable redirect rewriting in the proxy locations serving authorization responses,
+or place narrowly scoped loopback-preserving rules before a generic rewrite. For
+SWAG configurations that include `proxy.conf`, these rules must precede that
+include in the affected OAuth location:
+
+```nginx
+proxy_redirect http://127.0.0.1: http://127.0.0.1:;
+proxy_redirect http://localhost: http://localhost:;
+proxy_redirect http://[::1]: http://[::1]:;
+include /config/nginx/proxy.conf;
+```
+
+These rules cover explicitly ported native callbacks. Apply the same preservation
+contract to the selected provider callback (`/auth/google/callback` or
+`/auth/oidc/callback`) and any authorization/consent route that returns a client
+redirect. Do not change unrelated proxy routes or disable browser TLS protections.
+Validate the proxy configuration before reloading it.
+
+Verify with a fresh browser login, a successful client token exchange, and an
+authenticated MCP call. A server-side callback log alone does not prove completion.
+If a callback stalls, compare the browser's full scheme/host/port with the requested
+redirect and check whether Labby received the subsequent `/token` request. Never
+copy authorization codes, state, or tokens into logs or support reports.
+
 ## Startup Behavior
 
 When OAuth mode is configured, `labby serve` performs these steps at startup:
@@ -1224,6 +1269,17 @@ A deployed server should be verified through its real public surface:
 Use focused integration tests for exact protocol/status/header assertions; do not copy historical Marketplace, Fleet/node, or Registry-browser endpoint checks into current deployment runbooks.
 
 ## Related Docs
+
+### Desktop Control Plane origin
+
+The native Control Plane uses a server-owned, single-use browser-session handoff.
+When the UI and OAuth issuer use different origins, set
+`LABBY_AUTH_DESKTOP_ORIGIN` to the exact trusted UI origin. This setting defaults
+to the `LABBY_PUBLIC_URL` origin and does not change the OAuth issuer, resource
+audience, or provider callback URL. HTTPS is required except for HTTP loopback
+development; credentials, paths, queries, and fragments are rejected. Desktop
+start and redemption require matching Origin and Host headers. Keep the provider
+callback configured separately when it is served at the UI origin.
 
 - [CONFIG.md](./CONFIG.md) — config loading and env var conventions
 - [TRANSPORT.md](../surfaces/TRANSPORT.md) — HTTP transport setup and middleware

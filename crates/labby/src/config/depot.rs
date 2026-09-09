@@ -58,6 +58,12 @@ impl From<OpaqueEpoch> for String {
 pub struct DepotPreferences {
     pub control_mode: DepotControlMode,
     pub managed_authority_kill_switch: bool,
+    /// Single host-selected project whose members may read these catalogs.
+    pub read_project_id: Option<String>,
+    /// Host-file-only loopback services. Never writable through provider APIs.
+    pub local_providers: Vec<LocalProviderConfig>,
+    /// Explicit server-owned browser publishing target; never selected by a request.
+    pub publish: Option<DepotPublishTarget>,
     pub public_enabled: bool,
     pub providers: Vec<toml::Value>,
     pub tombstones: BTreeSet<String>,
@@ -97,6 +103,9 @@ impl Default for DepotPreferences {
         Self {
             control_mode: DepotControlMode::Standalone,
             managed_authority_kill_switch: false,
+            read_project_id: None,
+            local_providers: Vec::new(),
+            publish: None,
             public_enabled: true,
             providers: Vec::new(),
             tombstones: BTreeSet::new(),
@@ -110,6 +119,22 @@ impl Default for DepotPreferences {
             extra: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepotPublishTarget {
+    pub route_id: String,
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub bearer_token_env: String,
 }
 
 impl std::fmt::Debug for DepotPreferences {
@@ -173,6 +198,10 @@ pub struct ProviderView {
     pub auth_mode: AuthMode,
     #[serde(skip)]
     pub bearer_token_env: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub host_managed: bool,
+    #[serde(skip)]
+    pub read_project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,9 +293,32 @@ impl DepotPreferences {
                 enabled: self.public_enabled,
                 auth_mode: AuthMode::Anonymous,
                 bearer_token_env: None,
+                host_managed: false,
+                read_project_id: None,
             }],
             diagnostics: Vec::new(),
         };
+        // A malformed host binding must never fall back to an unscoped catalog.
+        if self.validate_local_providers().is_err() {
+            result.providers.clear();
+            result.diagnostics.push(ConfigDiagnostic {
+                entry_index: 0,
+                kind: "invalid_local_provider_binding",
+            });
+            return result;
+        }
+        result
+            .providers
+            .extend(self.local_providers.iter().map(|p| ProviderView {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                endpoint: p.endpoint.clone(),
+                enabled: true,
+                auth_mode: AuthMode::Bearer,
+                bearer_token_env: Some(p.bearer_token_env.clone()),
+                host_managed: true,
+                read_project_id: self.read_project_id.clone(),
+            }));
         if self.tombstones.len() > MAX_TOMBSTONES {
             result.diagnostics.push(ConfigDiagnostic {
                 entry_index: 0,
@@ -284,7 +336,8 @@ impl DepotPreferences {
         let pending_legacy = !self.legacy_migrated
             && !self.tombstones.contains(LEGACY_ID)
             && (legacy.url.is_some() || legacy.enabled.is_some() || legacy.token_present);
-        let slots = MAX_PROVIDERS - 1 - usize::from(pending_legacy);
+        let slots = MAX_PROVIDERS
+            .saturating_sub(1 + self.local_providers.len() + usize::from(pending_legacy));
         for (index, raw) in self.providers.iter().take(MAX_PROVIDERS).enumerate() {
             let parsed = raw.clone().try_into::<ProviderConfig>();
             let checked = parsed.map_err(|_| "invalid_entry").and_then(|provider| {
@@ -349,6 +402,42 @@ impl DepotPreferences {
         }
         result
     }
+
+    pub fn validate_local_providers(&self) -> Result<(), &'static str> {
+        if self.local_providers.is_empty() {
+            return Ok(());
+        }
+        if self
+            .read_project_id
+            .as_deref()
+            .is_none_or(|id| id.trim().is_empty() || id.trim() != id)
+            || self.local_providers.len() > MAX_PROVIDERS - 2
+        {
+            return Err("invalid local Depot project binding");
+        }
+        let mut ids = BTreeSet::new();
+        let mut references = BTreeSet::new();
+        for local in &self.local_providers {
+            if !valid_provider_id(&local.id)
+                || matches!(local.id.as_str(), PUBLIC_ID | LEGACY_ID)
+                || !ids.insert(&local.id)
+                || !(1..=128).contains(&local.name.chars().count())
+                || canonical_local_endpoint(&local.endpoint).is_err()
+                || !allowed_secret_reference(&local.bearer_token_env)
+                || local.bearer_token_env == "LABBY_DEPOT_TOKEN"
+                || !references.insert(&local.bearer_token_env)
+                || self.tombstones.contains(&local.id)
+                || self.providers.iter().any(|raw| {
+                    raw.get("id").and_then(toml::Value::as_str) == Some(&local.id)
+                        || raw.get("bearer_token_env").and_then(toml::Value::as_str)
+                            == Some(&local.bearer_token_env)
+                })
+            {
+                return Err("invalid local Depot provider binding");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ProviderConfig {
@@ -378,6 +467,8 @@ impl From<ProviderConfig> for ProviderView {
             enabled: p.enabled,
             auth_mode: p.auth_mode,
             bearer_token_env: p.bearer_token_env,
+            host_managed: false,
+            read_project_id: None,
         }
     }
 }
@@ -422,6 +513,27 @@ pub fn canonical_endpoint(raw: &str) -> Result<url::Url, &'static str> {
     Ok(url)
 }
 
+/// Deliberately inspect the raw authority before URL normalization: alternate
+/// IPv4 encodings and IPv6 spellings must not acquire a loopback capability.
+pub fn canonical_local_endpoint(raw: &str) -> Result<url::Url, &'static str> {
+    let authority = raw
+        .strip_prefix("http://")
+        .ok_or("invalid_local_endpoint")?;
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    let port = authority
+        .strip_prefix("127.0.0.1:")
+        .or_else(|| authority.strip_prefix("[::1]:"))
+        .ok_or("invalid_local_endpoint")?;
+    if port.is_empty()
+        || !port.bytes().all(|c| c.is_ascii_digit())
+        || port.starts_with('0')
+        || port.parse::<u16>().ok().is_none_or(|port| port == 0)
+    {
+        return Err("invalid_local_endpoint");
+    }
+    url::Url::parse(raw).map_err(|_| "invalid_local_endpoint")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "ArtifactRefWire")]
 pub struct ArtifactRef {
@@ -456,4 +568,136 @@ impl ArtifactRef {
 
 pub fn safe_total(value: u64) -> Option<u64> {
     (value <= MAX_SAFE_INTEGER).then_some(value)
+}
+
+#[cfg(test)]
+mod publish_target_tests {
+    use super::*;
+    #[test]
+    fn publishing_has_no_default_target_and_round_trips_explicit_server_binding() {
+        assert!(DepotPreferences::default().publish.is_none());
+        let config: DepotPreferences =
+            toml::from_str("[publish]\nroute_id='team-publish'\nproject_id='team-project'\n")
+                .unwrap();
+        assert_eq!(config.publish.as_ref().unwrap().route_id, "team-publish");
+        let restored: DepotPreferences =
+            toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(config.publish, restored.publish);
+        assert!(
+            toml::from_str::<DepotPreferences>(
+                "[publish]\nroute_id='team'\nproject_id='project'\nprincipal_id='owner'\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn local_endpoint_accepts_only_exact_loopback_literals_and_explicit_ports() {
+        for valid in [
+            "http://127.0.0.1:4100",
+            "http://127.0.0.1:80/",
+            "http://[::1]:4101/",
+        ] {
+            assert!(canonical_local_endpoint(valid).is_ok(), "{valid}");
+            assert!(canonical_endpoint(valid).is_err());
+        }
+        for invalid in [
+            "http://localhost:4100",
+            "https://127.0.0.1:4100",
+            "http://127.0.0.1",
+            "http://127.0.0.2:4100",
+            "http://127.1:4100",
+            "http://2130706433:4100",
+            "http://0x7f000001:4100",
+            "http://0177.0.0.1:4100",
+            "http://127.000.000.001:4100",
+            "http://[0:0:0:0:0:0:0:1]:4100",
+            "http://[::ffff:127.0.0.1]:4100",
+            "http://[::1%25lo]:4100",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:04100",
+            "http://127.0.0.1:4100//",
+            "http://127.0.0.1:4100/api",
+            "http://127.0.0.1:4100/?x",
+            "http://127.0.0.1:4100/#x",
+            "http://x@127.0.0.1:4100",
+            " http://127.0.0.1:4100",
+            "http://127.0.0.1:4100\n",
+            "http://127.0.0.1:4100/../",
+            "http://127.0.0.1:4100\\",
+            "http://10.0.0.1:4100",
+            "http://169.254.169.254:80",
+        ] {
+            assert!(canonical_local_endpoint(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn local_config_requires_scope_and_reserves_ids_and_credentials() {
+        let mut config: DepotPreferences = toml::from_str(
+            r#"
+read_project_id = "team-project"
+[[local_providers]]
+id = "team-local"
+name = "Team"
+endpoint = "http://127.0.0.1:4100"
+bearer_token_env = "LABBY_DEPOT_TEAM_READ_TOKEN"
+"#,
+        )
+        .unwrap();
+        assert!(config.validate_local_providers().is_ok());
+        let resolved = config.resolve(&LegacyDepot::default());
+        assert!(resolved.providers[1].host_managed);
+        assert_eq!(
+            resolved.providers[1].read_project_id.as_deref(),
+            Some("team-project")
+        );
+        let public = serde_json::to_value(&resolved.providers[1]).unwrap();
+        assert!(public.get("bearerTokenEnv").is_none());
+        assert!(public.get("readProjectId").is_none());
+        config.read_project_id = None;
+        assert!(config.validate_local_providers().is_err());
+        assert!(config.resolve(&LegacyDepot::default()).providers.is_empty());
+        config.read_project_id = Some("team-project".into());
+        config
+            .providers
+            .push(toml::toml! { id = "team-local" }.into());
+        assert!(config.validate_local_providers().is_err());
+        config.providers.clear();
+        config
+            .local_providers
+            .push(config.local_providers[0].clone());
+        assert!(config.validate_local_providers().is_err());
+    }
+
+    #[test]
+    fn local_capacity_reserves_public_and_pending_legacy_slots() {
+        let mut config = DepotPreferences {
+            read_project_id: Some("team".into()),
+            ..Default::default()
+        };
+        for index in 0..14 {
+            config.local_providers.push(LocalProviderConfig {
+                id: format!("local-{index}"),
+                name: format!("Local {index}"),
+                endpoint: format!("http://127.0.0.1:{}", 4100 + index),
+                bearer_token_env: format!("LABBY_DEPOT_LOCAL_{index}_TOKEN"),
+            });
+        }
+        let legacy = LegacyDepot {
+            url: Some("https://legacy.example".into()),
+            enabled: Some(true),
+            token_present: true,
+        };
+        assert_eq!(config.resolve(&legacy).providers.len(), MAX_PROVIDERS);
+        config.local_providers.push(LocalProviderConfig {
+            id: "overflow".into(),
+            name: "Overflow".into(),
+            endpoint: "http://127.0.0.1:4200".into(),
+            bearer_token_env: "LABBY_DEPOT_OVERFLOW_TOKEN".into(),
+        });
+        assert!(config.validate_local_providers().is_err());
+        assert!(config.resolve(&legacy).providers.is_empty());
+    }
 }

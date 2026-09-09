@@ -29,7 +29,7 @@ runs:
         set -euo pipefail
         # Toolchain prerequisites shared by every Rust job. Deliberately no GTK,
         # WebKit, or other Tauri/GUI packages: this action runs on 16 jobs and
-        # only one of them (Palette Tauri (Linux)) builds a GUI, and that job
+        # only one of them (Labby desktop Tauri (Linux)) builds a GUI, and that job
         # installs its own desktop dependencies. Requiring them here made the
         # action non-portable across the runner images behind a single pool
         # label — `libwebkit2gtk-4.1-dev` does not exist on Ubuntu focal, so

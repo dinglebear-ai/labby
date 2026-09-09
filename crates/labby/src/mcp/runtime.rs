@@ -207,9 +207,17 @@ pub(crate) struct McpRouteRuntime {
     resources: RwLock<CatalogSnapshotStore<Resource>>,
     resource_templates: RwLock<CatalogSnapshotStore<ResourceTemplate>>,
     prompts: RwLock<CatalogSnapshotStore<Prompt>>,
+    depot: std::sync::OnceLock<Arc<crate::dispatch::depot::DepotClient>>,
 }
 
 impl McpRouteRuntime {
+    pub(crate) fn configure_depot(&self, depot: Arc<crate::dispatch::depot::DepotClient>) {
+        drop(self.depot.set(depot));
+    }
+
+    pub(crate) fn depot(&self) -> Option<&Arc<crate::dispatch::depot::DepotClient>> {
+        self.depot.get()
+    }
     pub(crate) async fn resource_snapshot(
         &self,
         audience: &str,

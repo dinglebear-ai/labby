@@ -565,24 +565,42 @@ fn normalize_text(field: &str, value: &str) -> anyhow::Result<String> {
 /// Load the one durable installation identity. Daemon callers hold the existing
 /// installation lifecycle lock; atomic publication also handles concurrent creators.
 pub(crate) fn installation_id(paths: &InstallationPaths) -> anyhow::Result<String> {
-    let path = paths.root().join(INSTALLATION_ID_FILE);
     match existing_installation_id(paths) {
         Ok(value) => Ok(value),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let id = ulid::Ulid::new().to_string();
-            match publish_new(&path, id.as_bytes()) {
-                Ok(_) => Ok(id),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    existing_installation_id(paths).map_err(Into::into)
-                }
-                Err(error) => Err(error.into()),
-            }
+            publish_installation_id(paths, id)
         }
         Err(error) => Err(error.into()),
     }
 }
 
-fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
+fn publish_installation_id(paths: &InstallationPaths, id: String) -> anyhow::Result<String> {
+    let path = paths.root().join(INSTALLATION_ID_FILE);
+    match publish_new(&path, id.as_bytes()) {
+        Ok(_) => Ok(id),
+        // Windows no-clobber rename can report a sharing violation while a
+        // concurrent winner is held open for verification, not AlreadyExists.
+        // Accept only a complete winner through the same owner/ACL/type and
+        // content validation as a normal read. Otherwise retain the write error.
+        Err(error) => recover_identity_publication(paths, error),
+    }
+}
+
+fn recover_identity_publication(
+    paths: &InstallationPaths,
+    error: std::io::Error,
+) -> anyhow::Result<String> {
+    if error.kind() == std::io::ErrorKind::AlreadyExists
+        || (cfg!(windows) && error.raw_os_error() == Some(32))
+    {
+        existing_installation_id(paths).map_err(|_| error.into())
+    } else {
+        Err(error.into())
+    }
+}
+
+pub(super) fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
     let bytes = read_private(&paths.root().join(INSTALLATION_ID_FILE))?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| std::io::Error::other("installation ID is not UTF-8"))?
@@ -775,6 +793,51 @@ mod tests {
         assert!(identities.iter().all(|identity| identity == &identities[0]));
         assert_eq!(installation_id(&paths).unwrap(), identities[0]);
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn losing_identity_publication_reads_open_winner_without_replacing_it() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        let winner = installation_id(&paths).unwrap();
+        let path = paths.root().join(INSTALLATION_ID_FILE);
+        #[cfg(windows)]
+        let _reader = labby_winjob::fs::open_read(&path, false).unwrap();
+        #[cfg(not(windows))]
+        let _reader = fs::File::open(&path).unwrap();
+        assert_eq!(
+            publish_installation_id(&paths, "loser".into()).unwrap(),
+            winner
+        );
+        assert_eq!(existing_installation_id(&paths).unwrap(), winner);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn losing_identity_publication_does_not_accept_invalid_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        let path = paths.root().join(INSTALLATION_ID_FILE);
+        publish_new(&path, b"invalid identity").unwrap();
+        assert!(publish_installation_id(&paths, "loser".into()).is_err());
+        assert_eq!(read_private(&path).unwrap(), b"invalid identity");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn identity_publication_preserves_non_collision_error_with_readable_file() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        installation_id(&paths).unwrap();
+        let error = recover_identity_publication(
+            &paths,
+            std::io::Error::other("directory synchronization failed"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "directory synchronization failed");
     }
 
     #[test]

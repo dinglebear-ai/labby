@@ -22,7 +22,7 @@
  * `tsconfig.json`): if upstream renames a field this reads, the build fails
  * instead of the probe quietly reporting an empty catalog on every page.
  *
- * @returns {Promise<{supported: boolean, tools: Array<{name: string, title: string, description: string, input_schema: unknown, origin: string, annotations: {read_only_hint: boolean, untrusted_content_hint: boolean}}>}>}
+ * @returns {Promise<{supported: boolean, tools: Array<{name: string, title: string, description: string, input_schema: unknown, origin: string, annotations: {read_only_hint: boolean, untrusted_content_hint: boolean, consequential_hint: boolean}}>}>}
  */
 export async function probeWebMcp() {
   const context = document.modelContext;
@@ -49,9 +49,9 @@ export async function probeWebMcp() {
       const annotations = tool.annotations ?? {};
       // `origin` is the origin of the document that *registered* the tool,
       // which is only meaningful when it differs from the page's own. A
-      // cross-origin frame can expose tools into this document via
-      // `exposedTo`, and without carrying this they would reach an MCP client
-      // attributed to the page rather than to whoever actually wrote them.
+      // future explicitly selected origin must not reach an MCP client
+      // attributed to the page rather than to whoever actually wrote it.
+      // The current probe requests only the API's same-origin default catalog.
       return [{
         name: tool.name,
         title: typeof tool.title === "string" ? tool.title : "",
@@ -60,7 +60,8 @@ export async function probeWebMcp() {
         origin: typeof tool.origin === "string" ? tool.origin : "",
         annotations: {
           read_only_hint: (annotations.readOnlyHint ?? /** @type {Record<string, unknown>} */ (annotations).read_only_hint) === true,
-          untrusted_content_hint: (annotations.untrustedContentHint ?? /** @type {Record<string, unknown>} */ (annotations).untrusted_content_hint) === true
+          untrusted_content_hint: (annotations.untrustedContentHint ?? /** @type {Record<string, unknown>} */ (annotations).untrusted_content_hint) === true,
+          consequential_hint: (/** @type {Record<string, unknown>} */ (annotations).consequentialHint ?? /** @type {Record<string, unknown>} */ (annotations).consequential_hint) === true
         }
       }];
     });
@@ -93,12 +94,14 @@ export async function probeWebMcp() {
 export async function invokeWebMcp(toolName, input, callId, expectedCatalog, transportEnvelope = false) {
   try {
   const calls = globalThis.__webbyToolCalls ??= new Map();
+  if (globalThis.__webbyToolCallsSaturated) throw new Error("browser_call_capacity_exhausted: reload this page before invoking another tool");
   const prior = calls.get(callId);
   if (prior?.cancelled) {
     calls.delete(callId);
     throw new Error("AbortError");
   }
   if (prior) throw new Error("duplicate_call_id");
+  if (calls.size >= 1024) throw new Error("browser_call_capacity_exhausted: reload this page before invoking another tool");
   const state = {cancelled: false, controller: new AbortController()};
   calls.set(callId, state);
   try {
@@ -114,16 +117,14 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
     // which is exactly the call below. The published `webmcp-types` (0.1.3)
     // predates that and does not declare it yet, so the cast stays until the
     // definitions catch up -- the `webmcp-types` contract will report that
-    // version bump. Feature detection stays regardless: no browser implements it
-    // yet, and per section 21 an unimplemented API must be reported as
-    // unsupported rather than simulated.
+    // version bump. Feature detection stays regardless: an unavailable API is
+    // reported as unsupported rather than simulated.
     const executeTool = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (context)).executeTool;
     if (typeof executeTool !== "function") throw new Error("webmcp_unavailable");
 
-    // `getTools()` is called without `fromOrigins` deliberately: restricting to
-    // same-origin would silently drop tools a page intentionally exposed from a
-    // frame. They are carried, with their origin recorded, so the decision is
-    // visible rather than made here.
+    // The default catalog contains same-origin tools. Cross-origin discovery
+    // additionally requires explicit fromOrigins selection, which this bridge
+    // does not authorize or infer from a page's exposedTo declarations.
     const tools = Array.from(await context.getTools() ?? []);
     if (state.cancelled) throw new Error("AbortError");
 
@@ -143,7 +144,8 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
         origin: typeof tool.origin === "string" ? tool.origin.slice(0, 256) : "",
         annotations: {
           read_only_hint: (annotations.readOnlyHint ?? /** @type {Record<string, unknown>} */ (annotations).read_only_hint) === true,
-          untrusted_content_hint: (annotations.untrustedContentHint ?? /** @type {Record<string, unknown>} */ (annotations).untrusted_content_hint) === true
+          untrusted_content_hint: (annotations.untrustedContentHint ?? /** @type {Record<string, unknown>} */ (annotations).untrusted_content_hint) === true,
+          consequential_hint: (/** @type {Record<string, unknown>} */ (annotations).consequentialHint ?? /** @type {Record<string, unknown>} */ (annotations).consequential_hint) === true
         }
       }];
     }).sort((left, right) => left.name.localeCompare(right.name));
@@ -193,6 +195,12 @@ export function cancelWebMcp(callId) {
   const calls = globalThis.__webbyToolCalls ??= new Map();
   const state = calls.get(callId);
   if (!state) {
+    // Do not evict cancellation evidence: a delayed invocation may still arrive.
+    // Once full, reject every new invocation until this document is reloaded.
+    if (calls.size >= 1024) {
+      globalThis.__webbyToolCallsSaturated = true;
+      return true;
+    }
     calls.set(callId, {cancelled: true, controller: null});
     return true;
   }

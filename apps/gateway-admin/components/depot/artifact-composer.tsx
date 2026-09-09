@@ -22,6 +22,8 @@ import {
 } from '@/lib/editor/artifact-standards'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import { consumeOwnerLinkApproval, depotPublishCapability, publishDepotSkill, type DepotPublishCapability } from '@/lib/api/depot-client'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 
 const STARTER_BODY = `## When to use
 
@@ -47,10 +49,79 @@ export function ArtifactComposer() {
   const [content, setContent] = React.useState(STARTER_BODY)
   const [frontmatterOpen, setFrontmatterOpen] = React.useState(false)
   const [workspaceMode, setWorkspaceMode] = React.useState<'artifact' | 'bundle'>('artifact')
+  const [publishCapability, setPublishCapability] = React.useState<DepotPublishCapability | null>(null)
+  const [publishing, setPublishing] = React.useState(false)
+  const publishingRef = React.useRef(false)
+  const [linkingOwner, setLinkingOwner] = React.useState(false)
+  const linkingOwnerRef = React.useRef(false)
+  const [publishMessage, setPublishMessage] = React.useState('')
+  const [publishError, setPublishError] = React.useState('')
+  const sessionEpoch = React.useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
+  React.useEffect(() => {
+    const controller = new AbortController()
+    setPublishCapability(null)
+    setPublishMessage('')
+    setPublishError('')
+    void depotPublishCapability(controller.signal).then((capability) => {
+      if (!controller.signal.aborted) setPublishCapability(capability)
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setPublishError(error instanceof Error ? error.message : 'Could not check publishing access.')
+    })
+    return () => controller.abort()
+  }, [sessionEpoch])
 
   const source = React.useMemo(() => composeArtifactSource(kind, metadata, content), [content, kind, metadata])
   const issues = React.useMemo(() => validateArtifactDraft(kind, metadata, content), [content, kind, metadata])
   const errors = issues.filter((entry) => entry.severity === 'error')
+  const unavailableReason = publishCapability?.reason === 'project_session_required'
+    ? 'Open an authenticated team project session to publish. Your current sign-in has no project publishing authority.'
+    : publishCapability?.reason
+  const canPublish = publishCapability?.available === true && kind === 'Skill' && workspaceMode === 'artifact' && errors.length === 0
+  const ownerLinkPending = publishCapability?.reason === 'owner_link_approval_pending'
+  const confirmOwnerLink = async () => {
+    if (!ownerLinkPending || linkingOwnerRef.current) return
+    linkingOwnerRef.current = true
+    setLinkingOwner(true)
+    setPublishError('')
+    const linkingSessionEpoch = getBrowserSessionEpoch()
+    try {
+      await consumeOwnerLinkApproval()
+      if (linkingSessionEpoch !== getBrowserSessionEpoch()) return
+      const capability = await depotPublishCapability()
+      if (linkingSessionEpoch !== getBrowserSessionEpoch()) return
+      setPublishCapability(capability)
+      toast.success('Your account is linked to the existing team owner')
+    } catch (error) {
+      if (linkingSessionEpoch === getBrowserSessionEpoch()) {
+        setPublishError(`${error instanceof Error ? error.message : 'Could not confirm the owner link.'} Refresh this page to check the current link before retrying.`)
+      }
+    } finally {
+      linkingOwnerRef.current = false
+      setLinkingOwner(false)
+    }
+  }
+  const publish = async () => {
+    if (!canPublish || publishingRef.current) return
+    publishingRef.current = true
+    setPublishing(true)
+    setPublishError('')
+    setPublishMessage('')
+    const submittingSessionEpoch = getBrowserSessionEpoch()
+    try {
+      const receipt = await publishDepotSkill(metadata.name, source)
+      if (submittingSessionEpoch !== getBrowserSessionEpoch()) return
+      const message = `Publishing accepted. Job ${receipt.jobId}: ${receipt.status}. Check Depot jobs for the final result.`
+      setPublishMessage(message)
+      toast.success('Skill submitted to Team Depot')
+    } catch (error) {
+      if (submittingSessionEpoch === getBrowserSessionEpoch()) {
+        setPublishError(error instanceof Error ? error.message : 'Publishing failed. Check Depot jobs before retrying.')
+      }
+    } finally {
+      publishingRef.current = false
+      setPublishing(false)
+    }
+  }
 
   const updateMetadata = (field: keyof ArtifactMetadata) => (value: string) => setMetadata((current) => ({ ...current, [field]: value }))
   const copySource = React.useCallback(async () => {
@@ -76,7 +147,7 @@ export function ArtifactComposer() {
             {ARTIFACT_KINDS.map((option) => <DropdownMenuItem key={option} onSelect={() => setKind(option)}>{option === kind ? <Check /> : <span className="size-4" />}{option}</DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button variant="outline" size="sm" asChild><a href="/administration/">Depot operations</a></Button>
+        <Button size="sm" disabled={!canPublish || publishing} onClick={() => void publish()}>{publishing ? 'Submitting…' : 'Publish skill'}</Button>
         <DropdownMenu>
           <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" aria-label="More artifact actions"><MoreHorizontal /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
           <DropdownMenuContent align="end" className="min-w-52 border-aurora-border-strong bg-aurora-panel-strong">
@@ -91,6 +162,9 @@ export function ArtifactComposer() {
 
   const bundleGroups = [['Agent',['rust-reviewer']],['Command',['/ship','/scope-audit']],['Skill',['repo-triage','changelog-writer']],['Hook',['pre-commit-guard']],['MCP',['labby','axon']],['Prompt',[]]] as const
   return <>
+    <div className="px-space-5 py-space-2 text-sm text-aurora-text-muted" aria-live="polite">
+      {publishError ? <p role="alert" className="text-aurora-error">{publishError}</p> : ownerLinkPending ? <div className="flex flex-wrap items-center gap-space-4"><p>An operator approved linking this signed-in account to the existing team owner. Existing owner logins will be preserved.</p><Button variant="outline" size="sm" disabled={linkingOwner} onClick={() => void confirmOwnerLink()}>{linkingOwner ? 'Confirming owner link…' : 'Confirm owner link'}</Button></div> : publishMessage ? <p>{publishMessage} <a className="underline" href="/administration/">Open Depot operations</a></p> : kind !== 'Skill' || workspaceMode !== 'artifact' ? <p>Publishing supports skills. Other artifact types and bundles remain editable previews.</p> : publishCapability?.available ? <p>Publish to Team Depot{publishCapability.projectId ? ` · ${publishCapability.projectId}` : ''}.</p> : <p>{unavailableReason ?? (publishCapability ? 'Publishing is unavailable for this session.' : 'Checking publishing access…')}</p>}
+    </div>
     <AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Create' }]} actions={headerActions} />
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={cn(AURORA_PAGE_FRAME, 'min-h-[calc(100vh-5.5rem)]')}>
       <ConsoleHero

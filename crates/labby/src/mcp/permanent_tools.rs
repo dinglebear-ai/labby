@@ -218,7 +218,7 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
             (false, derived_destructive, false, false)
         }
         "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
-        | "sources" | "uploads" => (false, derived_destructive, false, true),
+        | "sources" | "uploads" | "depot_publish" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
         // would bypass the conservative next-hop gate described above.
         SERVER_LOGS_TOOL_NAME => (false, true, false, false),
@@ -706,6 +706,7 @@ mod tests {
         ("dev_containers", false, true, false, false),
         ("projects", false, false, false, false),
         ("doctor", false, false, true, true),
+        ("depot_publish", false, false, false, true),
         ("artifacts", false, true, false, true),
         ("browser", false, false, false, true),
         ("bundles", false, true, false, true),
@@ -984,6 +985,7 @@ mod tests {
             "access",
             "agents",
             "browser",
+            "depot_publish",
             "doctor",
             "fs",
             "jobs",

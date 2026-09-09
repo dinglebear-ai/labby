@@ -312,7 +312,11 @@ fn invalid_overlay_changes_produce_actionable_failures() {
             .any(|error| error.contains("named hermetic recipe"))
     );
 
-    let mut impossible = intents()[0].clone();
+    let mut impossible = intents()
+        .iter()
+        .find(|intent| intent.required)
+        .expect("matrix contains a required intent")
+        .clone();
     impossible.required = false;
     assert!(
         validate_intent_shape(&impossible)
@@ -475,6 +479,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "access",
         "agents",
         "dev_containers",
+        "depot_publish",
         "projects",
         "doctor",
         "server_logs",
@@ -488,6 +493,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         "agents",
         "browser",
         "bundles",
+        "depot_publish",
         "doctor",
         "dev_containers",
         "gateway",
@@ -513,6 +519,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "dev_containers",
+                "depot_publish",
                 "doctor",
                 "fs",
                 "projects",
@@ -529,6 +536,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "bundles",
+                "depot_publish",
                 "doctor",
                 "dev_containers",
                 "jobs",
@@ -547,6 +555,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "access",
                 "agents",
                 "dev_containers",
+                "depot_publish",
                 "doctor",
                 "lab_admin",
                 "projects",
@@ -562,6 +571,7 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "browser",
                 "access",
                 "agents",
+                "depot_publish",
                 "doctor",
                 "dev_containers",
                 "fs",

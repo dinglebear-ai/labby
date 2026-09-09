@@ -1,7 +1,7 @@
 //! Guard against source files that exist on disk but are unreachable.
 //!
 //! Scope: every `.rs` file under `crates/*/src`. Rust crates outside `crates/`
-//! (notably `apps/palette-tauri/src-tauri`) are not walked.
+//! (notably `apps/labby-desktop/src-tauri`) are not walked.
 //!
 //! Rust compiles a file only when some parent declares it with `mod`. A file
 //! whose declaration is dropped stays on disk, compiles nowhere, and produces

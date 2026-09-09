@@ -3472,6 +3472,92 @@
     "builtin": true
   },
   {
+    "service": "depot_publish",
+    "action": "depot.publish_skill_archive",
+    "description": "Publish a skill archive to the authenticated team's Depot",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "filename",
+        "ty": "string",
+        "required": true,
+        "description": "Archive filename ending in .zip, .tar.gz, or .tgz"
+      },
+      {
+        "name": "archive_base64",
+        "ty": "string",
+        "required": true,
+        "description": "Base64 encoded skill archive bytes"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": false,
+        "description": "Optional Team Depot namespace"
+      }
+    ],
+    "returns": "IngestJobReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "depot_publish",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "depot_publish",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": false,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "doctor",
     "action": "access.check",
     "description": "Inspect access-control store readiness and safety without modifying it",

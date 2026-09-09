@@ -66,7 +66,10 @@ pub(super) struct AuthenticatedProtectedRoute {
     pub(super) identity: Option<labby_auth::VerifiedIdentity>,
     pub(super) transport: Option<crate::mcp::bound_access::TransportCredentialBinding>,
     pub(super) product_bound: Option<BoundAccessGrant>,
+    pub(super) oauth_delegation: Option<OAuthDelegationCredential>,
 }
+
+use crate::mcp::bound_access::OAuthDelegationCredential;
 
 pub(super) async fn authenticate_protected_route_request(
     request: &mut Request<Body>,
@@ -188,6 +191,7 @@ pub(super) async fn authenticate_protected_route_request(
                 identity: Some(identity),
                 transport: Some(transport),
                 product_bound: Some(bound),
+                oauth_delegation: None,
             });
         }
         ProductCredentialSelection::NotProductCredential => {}
@@ -328,9 +332,17 @@ pub(super) async fn authenticate_protected_route_request(
                 &route.scopes,
             )
         })?;
+    let oauth_delegation = requires_project_binding.then(|| OAuthDelegationCredential {
+        issuer: claims.iss.clone(),
+        subject: claims.sub.clone(),
+        credential_id: claims.jti.clone(),
+        scopes: granted.iter().map(|scope| (*scope).to_owned()).collect(),
+        expires_at: u64::try_from(claims.exp).unwrap_or_default(),
+    });
     Ok(AuthenticatedProtectedRoute {
         identity,
         transport,
         product_bound: None,
+        oauth_delegation,
     })
 }

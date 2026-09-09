@@ -109,6 +109,15 @@
   },
   {
     "service": "auth",
+    "env_var": "LABBY_AUTH_DESKTOP_ORIGIN",
+    "required": false,
+    "secret": false,
+    "description": "Trusted Control Plane origin for desktop browser-session handoff; defaults to public URL origin",
+    "example": "https://lab.example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
     "required": false,
     "secret": true,
@@ -204,6 +213,15 @@
     "secret": false,
     "description": "Per-IP token and revocation endpoint rate limit",
     "example": "120",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_VIEWER_EMAIL_DOMAINS",
+    "required": false,
+    "secret": false,
+    "description": "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes",
+    "example": "example.com",
     "default_port": null
   },
   {

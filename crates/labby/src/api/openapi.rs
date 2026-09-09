@@ -1652,22 +1652,25 @@ struct ApiDoc;
 pub fn build_openapi_spec(
     services: &[RegisteredService],
 ) -> Result<Arc<String>, serde_json::Error> {
-    // Only services the router mounts as a `POST` dispatch route are
-    // documented as such: `fs` serves dedicated GET routes and `lab_admin` is
-    // MCP-only, so neither gets a fictitious `/v1/{service}` entry.
+    let http_services: Vec<RegisteredService> = services
+        .iter()
+        .filter(|service| super::route_registry::service_has_http_surface(service.name))
+        .cloned()
+        .collect();
+    // Dedicated GET surfaces such as fs must not acquire fictitious POST routes.
     let mounted: std::collections::BTreeSet<String> =
         crate::api::route_registry::build_route_descriptors()
             .into_iter()
             .filter(|route| route.method == "POST")
             .map(|route| route.path)
             .collect();
-    let service_names: Vec<String> = services
+    let service_names: Vec<String> = http_services
         .iter()
-        .map(|s| s.name.to_string())
+        .map(|service| service.name.to_string())
         .filter(|name| mounted.contains(&crate::api::router::service_dispatch_path(name)))
         .collect();
 
-    let injector = ActionSchemaInjector::new(services);
+    let injector = ActionSchemaInjector::new(&http_services);
 
     let mut spec = ApiDoc::openapi();
 
@@ -2154,6 +2157,19 @@ mod tests {
             .expect("paths should be an object");
         assert!(paths.contains_key("/health"), "missing /health path");
         assert!(paths.contains_key("/ready"), "missing /ready path");
+        assert!(
+            !paths.contains_key("/v1/depot_publish"),
+            "MCP-only Depot publishing must not be advertised as an HTTP route"
+        );
+        let schemas = spec["components"]["schemas"]
+            .as_object()
+            .expect("component schemas should be an object");
+        assert!(
+            schemas
+                .keys()
+                .all(|name| !name.starts_with("Depot_publish")),
+            "MCP-only Depot publishing must not inject unreachable HTTP schemas"
+        );
         assert!(
             paths.contains_key(APPS_MANIFEST_API_ROUTE),
             "missing {APPS_MANIFEST_API_ROUTE} path"

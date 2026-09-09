@@ -13,6 +13,16 @@ use tokio::process::{Child, Command as TokioCommand};
 
 use super::evidence::{EvidenceKind, RunEvidence, sanitize};
 
+#[path = "live_labby/cli_output.rs"]
+mod cli_output;
+// This harness is compiled into several integration binaries; only CLI callers
+// use these exports, while browser-only fixtures still share its lifecycle.
+#[allow(unused_imports)]
+pub(crate) use cli_output::bounded_cli_output;
+#[cfg(windows)]
+#[allow(unused_imports)]
+pub(crate) use cli_output::bounded_cli_output_after_admission;
+
 #[cfg(not(windows))]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
 #[cfg(windows)]

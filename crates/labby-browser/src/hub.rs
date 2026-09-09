@@ -30,6 +30,19 @@ pub struct BrowserConnection {
     /// Opaque identity used to avoid an old socket disconnecting its replacement.
     pub connection_id: String,
     pub receiver: mpsc::Receiver<BrowserEvent>,
+    owner: BrowserBridge,
+}
+
+impl Drop for BrowserConnection {
+    fn drop(&mut self) {
+        // Cancellation may bypass the adapter's explicit shutdown path.
+        if let Err(error) = self.owner.disconnect(&self.browser_id, &self.connection_id) {
+            tracing::warn!(
+                error_kind = error.kind(),
+                "browser connection cleanup failed"
+            );
+        }
+    }
 }
 
 struct LiveConnection {
@@ -67,7 +80,7 @@ impl Drop for CallGuard {
         if !self.armed {
             return;
         }
-        if let Err(error) = self.bridge.remove_pending(&self.call_id, self.generation) {
+        if let Err(error) = self.bridge.cancel_pending(&self.call_id, self.generation) {
             tracing::warn!(
                 call_id = self.call_id,
                 error_kind = error.kind(),
@@ -236,6 +249,7 @@ impl BrowserBridge {
             browser_id: browser.id,
             connection_id: generation.to_string(),
             receiver,
+            owner: self.clone(),
         };
         drop(state);
         Ok(connection)
@@ -492,6 +506,30 @@ impl BrowserBridge {
         Ok(browser)
     }
 
+    fn cancel_pending(&self, call_id: &str, generation: Uuid) -> Result<()> {
+        let mut state = self.lock_state()?;
+        if state
+            .pending
+            .get(call_id)
+            .is_some_and(|call| call.generation == generation)
+            && let Some(call) = state.pending.remove(call_id)
+            && let Some(connection) = state.connections.get(&call.browser_id)
+            && connection.generation == generation
+            && connection
+                .sender
+                .try_send(BrowserEvent(BrowserEnvelope::new(
+                    None,
+                    BrowserMessage::ToolCancel {
+                        call_id: call_id.to_string(),
+                    },
+                )))
+                .is_err()
+        {
+            tracing::warn!(call_id, "browser caller cancellation delivery failed");
+        }
+        Ok(())
+    }
+
     fn remove_pending(&self, call_id: &str, generation: Uuid) -> Result<()> {
         let mut state = self.lock_state()?;
         if state
@@ -561,6 +599,67 @@ mod tests {
     use ed25519_dalek::{Signer as _, SigningKey};
 
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+
+    #[tokio::test]
+    async fn dropping_transport_owner_removes_its_exact_connection() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        assert_eq!(
+            bridge.connected_browser_ids().unwrap(),
+            vec![connection.browser_id.clone()]
+        );
+        drop(connection);
+        assert!(bridge.connected_browser_ids().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_reaches_the_exact_page_call() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
+        enable_tool(
+            &bridge,
+            &connection.browser_id,
+            &connection.connection_id,
+            1,
+            1,
+            "slow",
+        )
+        .await;
+        let task_bridge = bridge.clone();
+        let browser_id = connection.browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &browser_id,
+                    1,
+                    "doc".into(),
+                    1,
+                    "slow".into(),
+                    Value::Null,
+                    None,
+                )
+                .await
+        });
+        let event = tokio::time::timeout(Duration::from_secs(2), connection.receiver.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .0;
+        let call_id = match event.message {
+            BrowserMessage::ToolCall { call_id, .. } => Some(call_id),
+            _ => None,
+        }
+        .expect("expected call");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let event = tokio::time::timeout(Duration::from_secs(2), connection.receiver.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(event.message, BrowserMessage::ToolCancel { call_id });
+        assert!(bridge.lock_state().unwrap().pending.is_empty());
+    }
 
     async fn pair_and_authenticate(bridge: &BrowserBridge) -> BrowserConnection {
         let signing = SigningKey::from_bytes(&[9; 32]);

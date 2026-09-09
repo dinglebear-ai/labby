@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for the Labby Control Plane window",
+  "windows": ["control-plane"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-center",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
+  ]
+}

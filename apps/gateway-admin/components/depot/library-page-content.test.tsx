@@ -41,6 +41,7 @@ async function renderLibrary(depot: Record<string, unknown>) {
     const path = new URL(String(input), 'http://labby.test').pathname
     requested.push(path)
     if (path === '/v1/depot/status') return Response.json({ depot })
+    if (path === '/v1/depot/publish') return Response.json({ available: depot.enabled === true && depot.authority === 'write' })
     return Response.json({ artifacts: [], total: 0 })
   }) as typeof globalThis.fetch
   const [{ LibraryPageContent }, { renderClient }] = await Promise.all([
@@ -61,20 +62,19 @@ async function renderLibrary(depot: Record<string, unknown>) {
 }
 
 /**
- * The Authority stat and the live/unavailable pulse used to be rendered from a
- * hardcoded `DepotStatus` literal, which reported every installation as a
- * healthy read-only catalog regardless of what the server projected. They
- * must come from the server's `/v1/depot/status` projection.
+ * The access stat and the live/unavailable pulse must not be rendered from a
+ * hardcoded capability or `DepotStatus` literal. They must reflect the
+ * server's `/v1/depot/publish` and `/v1/depot/status` projections.
  */
-test('the Library authority stat and pulse come from the server Depot status, not a constant', async () => {
+test('the Library access and pulse come from current server projections', async () => {
   const write = await renderLibrary({ configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(write.view.container, 'Authority'), 'Read + write'))
+  await waitFor(() => assert.equal(statValue(write.view.container, 'Your access'), 'Read + publish'))
   assert.ok(write.requested.includes('/v1/depot/status'), 'the page must ask the server for the Depot status')
   assert.match(write.view.container.textContent ?? '', /live catalog/)
   await write.view.unmount()
 
   const disabled = await renderLibrary({ configured: true, enabled: false, authority: 'read', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(disabled.view.container, 'Authority'), 'Read only'))
+  await waitFor(() => assert.equal(statValue(disabled.view.container, 'Your access'), 'Read only'))
   assert.match(disabled.view.container.textContent ?? '', /Depot unavailable/)
   assert.doesNotMatch(disabled.view.container.textContent ?? '', /live catalog/)
   await disabled.view.unmount()
@@ -83,7 +83,7 @@ test('the Library authority stat and pulse come from the server Depot status, no
 test('a Depot status the browser cannot validate is surfaced as an error instead of a fabricated authority', async () => {
   const broken = await renderLibrary({ configured: true, enabled: true, authority: 'root', maxResponseBytes: 1 })
   await waitFor(() => assert.match(broken.view.container.textContent ?? '', /incompatible status response/))
-  assert.notEqual(statValue(broken.view.container, 'Authority'), 'Read + write')
-  assert.notEqual(statValue(broken.view.container, 'Authority'), 'Read only')
+  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read + publish')
+  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read only')
   await broken.view.unmount()
 })

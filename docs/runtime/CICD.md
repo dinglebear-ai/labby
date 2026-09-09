@@ -148,8 +148,8 @@ jobs when their changed-path category is enabled:
 | Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
-| Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
-| Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Labby desktop shell | `desktop` | frozen install and static loader build |
+| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
@@ -167,6 +167,18 @@ boundaries. Release binaries, the production container, and the Incus image
 each run a packaged-artifact smoke that proves the Skills CLI surface exists.
 The standalone Skills job runs the `skills::` test filter, covering shared
 registry/provider behavior as well as MCP adapters without gateway support.
+The focused MCP job also runs `skills_mcp_e2e` cases prefixed `skills_`:
+real Labby processes serve and federate native Skills over HTTP and stdio,
+using legacy initialization and modern discovery. The HTTP cases exercise
+the production body-capped client, including its OAuth wrapper. A controlled
+authorization-server case drives the production OAuth manager through metadata
+discovery, code exchange, PKCE verifier validation, and proactive token refresh
+before reading Skills from a real Labby server without a static client bearer.
+Consent is simulated; this is not browser or external-provider acceptance.
+These cases check list/get/read, entrypoint digests,
+unknown-skill errors, and process cleanup. Live trust-policy cases also verify
+that disabled Skills proxying and restrictive allowlists block both native
+skill lookup and direct resource reads without hiding the gateway's own skill.
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 

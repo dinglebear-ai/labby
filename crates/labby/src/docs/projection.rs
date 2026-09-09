@@ -17,6 +17,7 @@ use crate::registry::{RegisteredService, build_docs_registry};
 
 #[cfg(feature = "api-docs")]
 use crate::api::openapi::build_openapi_spec;
+use crate::api::route_registry::service_has_http_surface;
 
 const LABBY_CRATE: &str = "labby";
 const LABBY_APIS_CRATE: &str = "labby-apis";
@@ -187,6 +188,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         core_env("LABBY_MCP_GATEWAY_URL", false, false, "https://mcp.example.com", "Canonical public MCP gateway URL"),
         auth_env("LABBY_AUTH_MODE", false, false, "bearer", "Inbound authentication mode: bearer or oauth"),
         auth_env("LABBY_PUBLIC_URL", true, false, "https://lab.example.com", "Canonical public application URL and OAuth issuer"),
+        auth_env("LABBY_AUTH_DESKTOP_ORIGIN", false, false, "https://lab.example.com", "Trusted Control Plane origin for desktop browser-session handoff; defaults to public URL origin"),
         auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier used in oauth mode"),
         auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret used in oauth mode"),
         auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Active inbound identity provider: google or authelia"),
@@ -198,6 +200,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Bootstrap administrator email required in oauth mode"),
         auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
         auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
+        auth_env("LABBY_AUTH_VIEWER_EMAIL_DOMAINS", false, false, "example.com", "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes"),
         auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "~/.labby/auth.db", "OAuth authorization-state SQLite database path"),
         auth_env("LABBY_AUTH_KEY_PATH", false, true, "~/.labby/auth-jwt.pem", "OAuth JWT signing-key path"),
         auth_env("LABBY_MCP_HTTP_TOKEN", false, true, "<labby_mcp_http_token>", "Static bearer token for protected HTTP routes in bearer mode"),
@@ -803,9 +806,9 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "fs" | "stash"),
+        cli: !matches!(service, "fs" | "stash" | "depot_publish"),
         mcp: true,
-        api: service != "lab_admin",
+        api: service_has_http_surface(service),
         web_ui: matches!(
             service,
             "gateway"
@@ -1080,6 +1083,7 @@ mod tests {
                 "LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE",
                 "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
                 "LABBY_AUTH_CODE_TTL_SECS",
+                "LABBY_AUTH_DESKTOP_ORIGIN",
                 "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
                 "LABBY_AUTH_KEY_PATH",
                 "LABBY_AUTH_MACHINE_CLIENTS_JSON",
@@ -1091,6 +1095,7 @@ mod tests {
                 "LABBY_AUTH_SCOPES_SUPPORTED",
                 "LABBY_AUTH_SQLITE_PATH",
                 "LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE",
+                "LABBY_AUTH_VIEWER_EMAIL_DOMAINS",
                 "LABBY_AUTHELIA_CLIENT_ID",
                 "LABBY_AUTHELIA_CLIENT_SECRET",
                 "LABBY_AUTHELIA_CA_CERT_PATH",

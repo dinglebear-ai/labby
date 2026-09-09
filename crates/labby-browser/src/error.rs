@@ -51,12 +51,26 @@ impl BrowserError {
             Self::InvalidRequest(_) => "invalid_request",
             Self::NotFound => "not_found",
             Self::AuthenticationFailed => "auth_failed",
-            Self::BrowserOffline => "browser_offline",
+            Self::BrowserOffline | Self::ConnectionClosed => "browser_offline",
             Self::ServerBusy => "server_busy",
             Self::ToolTimeout => "tool_timeout",
             Self::Cancelled => "cancelled",
             Self::StaleDocument => "stale_document",
-            Self::Store(_) | Self::Json(_) | Self::ConnectionClosed => "internal_error",
+            Self::Store(_) | Self::Json(_) => "internal_error",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserError;
+
+    #[test]
+    fn closed_transport_is_offline_but_persistence_failure_remains_internal() {
+        assert_eq!(BrowserError::ConnectionClosed.kind(), "browser_offline");
+        assert_eq!(
+            BrowserError::Store(rusqlite::Error::InvalidQuery).kind(),
+            "internal_error"
+        );
     }
 }

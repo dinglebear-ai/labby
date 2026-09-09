@@ -138,136 +138,146 @@ impl UpstreamPool {
     }
 
     /// Ensure one upstream has discovered tools, connecting it lazily when needed.
-    pub async fn ensure_tools_for_upstream(
+    ///
+    /// Keep the cold-connect future boxed so it does not inflate the parent
+    /// Skills and Code Mode futures. This spawns no task and allocates once,
+    /// including for a healthy or disabled upstream.
+    pub fn ensure_tools_for_upstream(
         &self,
         config: &UpstreamConfig,
         oauth_subject: Option<&str>,
         runtime_owner: Option<&UpstreamRuntimeOwner>,
-    ) -> anyhow::Result<bool> {
-        if !config.enabled {
-            return Ok(false);
-        }
-        // OAuth tool discovery is identity-scoped. Keep its peer and tool list
-        // in the per-(upstream, subject) cache; publishing either into the
-        // process-global connection/catalog maps lets the first authenticated
-        // caller shape every later caller's view.
-        if config.oauth.is_some()
-            && let Some(subject) = oauth_subject
-        {
-            let started = Instant::now();
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send {
+        Box::pin(async move {
+            if !config.enabled {
+                return Ok(false);
+            }
+            // OAuth tool discovery is identity-scoped. Keep its peer and tool list
+            // in the per-(upstream, subject) cache; publishing either into the
+            // process-global connection/catalog maps lets the first authenticated
+            // caller shape every later caller's view.
+            if config.oauth.is_some()
+                && let Some(subject) = oauth_subject
+            {
+                let started = Instant::now();
+                self.ensure_lazy_upstream_entry(config).await;
+                let (_peer, tools) = self.acquire_or_connect_subject(config, subject).await?;
+                self.record_success_for(&config.name, UpstreamCapability::Tools)
+                    .await;
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "upstream.subject.ensure",
+                    event = "finish",
+                    operation = "connection.acquire",
+                    upstream = %config.name,
+                    tool_count = tools.len(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "subject-scoped upstream tools ready"
+                );
+                return Ok(true);
+            }
+            let lifecycle_epoch = config
+                .oauth
+                .as_ref()
+                .and_then(|_| self.oauth_lifecycle_epoch());
+            if self.has_healthy_tools_for_upstream(&config.name).await {
+                self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                    .await;
+                return Ok(false);
+            }
+
+            let connect_lock = self.lazy_connect_lock(&config.name).await;
+            let _connect_guard = connect_lock.lock().await;
+            if self.has_healthy_tools_for_upstream(&config.name).await {
+                self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                    .await;
+                return Ok(false);
+            }
+
             self.ensure_lazy_upstream_entry(config).await;
-            let (_peer, tools) = self.acquire_or_connect_subject(config, subject).await?;
+            let stale_connection = self.remove_connection_binding(&config.name).await;
+            if let Some(connection) = stale_connection {
+                connection
+                    .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
+                    .await;
+            }
+
+            let started = Instant::now();
+            let subject = config.oauth.as_ref().and(oauth_subject);
+            let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
+            let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
+            let connect_result = tokio::time::timeout(
+                discovery_timeout,
+                connect_upstream_with_client(
+                    config,
+                    subject,
+                    self.oauth_client_cache.as_ref(),
+                    self.runtime_origin.as_deref(),
+                    runtime_owner,
+                    Some(&self.shared_http_client),
+                ),
+            )
+            .await;
+            let (conn, tools) = match connect_result {
+                Ok(Ok(connected)) => connected,
+                Ok(Err(error)) => {
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        format!("lazy upstream connect failed: {error}"),
+                    )
+                    .await;
+                    return Err(error);
+                }
+                Err(_) => {
+                    let error = anyhow::anyhow!(
+                        "lazy upstream connect timed out after {}s waiting for {} MCP list_tools response from {}",
+                        discovery_timeout.as_secs(),
+                        upstream_transport(config),
+                        upstream_target_redacted(config)
+                    );
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        error.to_string(),
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
+            let tool_count = tools.len();
+            let supports_skills = peer_declares_skills(&conn.peer);
+            let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
+            self.install_connected_tools(config, conn, tools, Some(supports_skills))
+                .await?;
+            if let Some(subject) = subject {
+                self.generic_oauth_subjects
+                    .write()
+                    .await
+                    .insert(config.name.clone(), subject.to_string());
+            } else {
+                self.generic_oauth_subjects
+                    .write()
+                    .await
+                    .remove(&config.name);
+            }
             self.record_success_for(&config.name, UpstreamCapability::Tools)
                 .await;
+            self.refresh_capability_caches_after_connect(config).await;
             tracing::info!(
                 surface = "dispatch",
                 service = "upstream.pool",
-                action = "upstream.subject.ensure",
+                action = "upstream.lazy.ensure",
                 event = "finish",
                 operation = "connection.acquire",
                 upstream = %config.name,
-                tool_count = tools.len(),
+                tool_count,
                 elapsed_ms = started.elapsed().as_millis(),
-                "subject-scoped upstream tools ready"
+                "lazy upstream tools connected"
             );
-            return Ok(true);
-        }
-        let lifecycle_epoch = config
-            .oauth
-            .as_ref()
-            .and_then(|_| self.oauth_lifecycle_epoch());
-        if self.has_healthy_tools_for_upstream(&config.name).await {
-            self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                .await;
-            return Ok(false);
-        }
-
-        let connect_lock = self.lazy_connect_lock(&config.name).await;
-        let _connect_guard = connect_lock.lock().await;
-        if self.has_healthy_tools_for_upstream(&config.name).await {
-            self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                .await;
-            return Ok(false);
-        }
-
-        self.ensure_lazy_upstream_entry(config).await;
-        let stale_connection = self.remove_connection_binding(&config.name).await;
-        if let Some(connection) = stale_connection {
-            connection
-                .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
-                .await;
-        }
-
-        let started = Instant::now();
-        let subject = config.oauth.as_ref().and(oauth_subject);
-        let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
-        let connect_result = tokio::time::timeout(
-            discovery_timeout,
-            connect_upstream_with_client(
-                config,
-                subject,
-                self.oauth_client_cache.as_ref(),
-                self.runtime_origin.as_deref(),
-                runtime_owner,
-                Some(&self.shared_http_client),
-            ),
-        )
-        .await;
-        let (conn, tools) = match connect_result {
-            Ok(Ok(connected)) => connected,
-            Ok(Err(error)) => {
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Tools,
-                    format!("lazy upstream connect failed: {error}"),
-                )
-                .await;
-                return Err(error);
-            }
-            Err(_) => {
-                let error = anyhow::anyhow!(
-                    "lazy upstream connect timed out after {}s waiting for {} MCP list_tools response from {}",
-                    discovery_timeout.as_secs(),
-                    upstream_transport(config),
-                    upstream_target_redacted(config)
-                );
-                self.record_failure_for(&config.name, UpstreamCapability::Tools, error.to_string())
-                    .await;
-                return Err(error);
-            }
-        };
-        let tool_count = tools.len();
-        let supports_skills = peer_declares_skills(&conn.peer);
-        let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
-        self.install_connected_tools(config, conn, tools, Some(supports_skills))
-            .await?;
-        if let Some(subject) = subject {
-            self.generic_oauth_subjects
-                .write()
-                .await
-                .insert(config.name.clone(), subject.to_string());
-        } else {
-            self.generic_oauth_subjects
-                .write()
-                .await
-                .remove(&config.name);
-        }
-        self.record_success_for(&config.name, UpstreamCapability::Tools)
-            .await;
-        self.refresh_capability_caches_after_connect(config).await;
-        tracing::info!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.lazy.ensure",
-            event = "finish",
-            operation = "connection.acquire",
-            upstream = %config.name,
-            tool_count,
-            elapsed_ms = started.elapsed().as_millis(),
-            "lazy upstream tools connected"
-        );
-        Ok(true)
+            Ok(true)
+        })
     }
 
     #[cfg(test)]

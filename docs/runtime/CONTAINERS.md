@@ -51,6 +51,31 @@ and Node and uv archives are versioned and digest checked. CI validates the
 machine-consumed manifest before passing every value into the build and retains
 its canonical identity with release qualification evidence.
 
+### Off-host x86_64 builds
+
+An operator on macOS can move the expensive Rust and Gateway Admin compilation
+off a small deployment VM without changing the running gateway. The TOOTIE
+helper compiles an exact Git revision as the unprivileged `labby` user in an
+isolated directory inside the existing `labby-gateway` Incus container:
+
+```bash
+scripts/build-on-tootie-incus.sh <git-revision> \
+  --base-image <qualified-labby-image@sha256:digest> \
+  --output target/tootie-build/labby-linux-amd64.docker.tar
+```
+
+The base image must be a digest-pinned Labby runtime image (or a local
+`sha256:...` image ID) that already satisfies the runtime dependency contract.
+The helper replaces only `/usr/local/bin/labby`, labels the source revision, and
+exports a checksummed `docker save` archive. Load that archive on the target with
+`docker load --input <archive>`.
+
+The helper discovers TOOTIE's active Incus socket, verifies that the named
+container is already running and x86_64, and does not initialize Incus or
+start, stop, restart, snapshot, or reconfigure the container. Use
+`--keep-workspace` only when build-debug evidence is needed; otherwise the
+isolated source tree is removed automatically.
+
 The image health helper records only timestamps, counters, delays, and recovery
 events in the persistent Labby state volume. On the third failure it asks PID 1
 to terminate; Compose is the sole restart owner. Repeated requests back off at

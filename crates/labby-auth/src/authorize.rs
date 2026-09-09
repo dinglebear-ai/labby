@@ -51,10 +51,12 @@ impl<S: Send + Sync> FromRequestParts<S> for RemoteAddr {
     }
 }
 
+mod desktop_handoff;
 mod entrypoints;
 mod policy;
 mod redirect;
 mod response;
+pub use desktop_handoff::{desktop_authorize, desktop_poll, desktop_redeem, desktop_start};
 pub use entrypoints::{browser_login, register_client};
 use policy::validate_response_type;
 pub(crate) use policy::{check_email_allowlist, validate_resource, validate_scope};
@@ -102,7 +104,7 @@ pub async fn authorize(
     if !client
         .redirect_uris
         .iter()
-        .any(|uri| uri == &query.redirect_uri)
+        .any(|uri| redirect::registered_redirect_matches(uri, &query.redirect_uri))
     {
         warn!(
             client_id = %fingerprint(&query.client_id),
@@ -326,6 +328,61 @@ fn sanitized_authorization_endpoint(location: &url::Url) -> String {
     endpoint.to_string()
 }
 
+/// Browser and desktop logins share admission and verified identity persistence.
+/// This deliberately does not use the OAuth-client grant's admin elevation.
+async fn create_admitted_browser_session(
+    state: &AuthState,
+    identity: crate::oauth_provider::ProviderExchange,
+    binding: crate::types::ProviderBinding,
+) -> Result<crate::types::BrowserSessionRow, AuthError> {
+    if binding != state.inbound_provider_binding() {
+        return Err(AuthError::InvalidGrant(
+            "browser login provider changed during authorization".into(),
+        ));
+    }
+    let allowed = state.resolve_allowed_emails().await?;
+    let authelia_domain = matches!(
+        state.inbound_provider.kind(),
+        crate::config::InboundProviderKind::Authelia
+    )
+    .then(|| {
+        identity
+            .email
+            .as_deref()?
+            .rsplit_once('@')
+            .map(|(_, domain)| domain)
+    })
+    .flatten();
+    if state
+        .config
+        .viewer_domain_for_verified_email(identity.email.as_deref(), identity.email_verified)
+        .is_none()
+    {
+        check_email_allowlist(
+            identity.email.as_deref(),
+            identity.email_verified,
+            identity.hosted_domain.as_deref().or(authelia_domain),
+            &allowed,
+            &state.config.allowed_email_domains,
+        )?;
+    }
+    if identity.email_verified == Some(true)
+        && let Some(email) = identity.email.as_deref()
+    {
+        state
+            .store
+            .upsert_bound_verified_inbound_identity(
+                &identity.subject,
+                email,
+                now_unix(),
+                binding.clone(),
+            )
+            .await?;
+    }
+    crate::session::create_bound_browser_session(state, identity.subject, identity.email, binding)
+        .await
+}
+
 pub async fn callback(
     State(state): State<AuthState>,
     headers: HeaderMap,
@@ -361,6 +418,9 @@ pub async fn callback(
     {
         return Ok(Redirect::to(crate::reauth_browser::RETURN_PATH).into_response());
     }
+    if let Some(response) = desktop_handoff::complete_provider_callback(&state, &query).await? {
+        return Ok(response);
+    }
     if let Some(bound_login) = state
         .store
         .take_bound_browser_login_state(&query.state)
@@ -394,33 +454,7 @@ pub async fn callback(
                 &query.state,
             )
             .await?;
-        let allowed = state.resolve_allowed_emails().await?;
-        let authelia_domain = matches!(
-            state.inbound_provider.kind(),
-            crate::config::InboundProviderKind::Authelia
-        )
-        .then(|| {
-            google
-                .email
-                .as_deref()?
-                .rsplit_once('@')
-                .map(|(_, domain)| domain)
-        })
-        .flatten();
-        check_email_allowlist(
-            google.email.as_deref(),
-            google.email_verified,
-            google.hosted_domain.as_deref().or(authelia_domain),
-            &allowed,
-            &state.config.allowed_email_domains,
-        )?;
-        let session = crate::session::create_bound_browser_session(
-            &state,
-            google.subject,
-            google.email,
-            bound_login.binding,
-        )
-        .await?;
+        let session = create_admitted_browser_session(&state, google, bound_login.binding).await?;
         let mut response = Redirect::to(&login.return_to).into_response();
         append_set_cookie(
             &mut response,
@@ -569,13 +603,32 @@ pub async fn callback(
             .map(|(_, domain)| domain)
     })
     .flatten();
-    if let Err(denial) = check_email_allowlist(
-        google.email.as_deref(),
-        google.email_verified,
-        google.hosted_domain.as_deref().or(authelia_domain),
-        &allowed,
-        &state.config.allowed_email_domains,
-    ) {
+    // Viewer-domain admission is browser-only. In particular an alias whose
+    // Google `hd` matches a legacy administrative domain must not acquire the
+    // unconditional admin elevation used by this OAuth-client grant flow.
+    let domain_only_viewer = state
+        .config
+        .viewer_domain_for_verified_email(google.email.as_deref(), google.email_verified)
+        .is_some()
+        && !google.email.as_deref().is_some_and(|email| {
+            allowed
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(email.trim()))
+        });
+    let admission = if domain_only_viewer {
+        Err(AuthError::AuthFailed(
+            "domain Viewer admission is limited to browser sessions".into(),
+        ))
+    } else {
+        check_email_allowlist(
+            google.email.as_deref(),
+            google.email_verified,
+            google.hosted_domain.as_deref().or(authelia_domain),
+            &allowed,
+            &state.config.allowed_email_domains,
+        )
+    };
+    if let Err(denial) = admission {
         let mut redirect_target = callback_try!(
             url::Url::parse(&request.redirect_uri).map_err(|error| {
                 // Unreachable in practice: redirect_uri was validated against the
@@ -1025,6 +1078,7 @@ pub mod tests {
     use axum::Router;
     use axum::extract::connect_info::MockConnectInfo;
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     fn native_poll_token_hash_for(token: &str) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
@@ -1222,15 +1276,12 @@ pub mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let logs = crate::test_support::captured_logs(buf);
-        assert!(
-            !logs.contains(secret),
-            "redirect query leaked into logs: {logs}"
-        );
+        assert!(!logs.contains(secret), "redirect query leaked into logs");
         assert!(
             !logs.contains("redirect_uris"),
-            "redirect URI list entered logs: {logs}"
+            "redirect URI list entered logs"
         );
-        assert!(logs.contains("\"redirect_uri_count\":1"), "{logs}");
+        assert!(logs.contains("\"redirect_uri_count\":1"));
     }
 
     #[tokio::test]
@@ -1881,22 +1932,22 @@ pub mod tests {
         ] {
             assert!(
                 !logs.contains(secret),
-                "OAuth authorization secret leaked into logs: {secret}\n{logs}"
+                "OAuth authorization secret leaked into logs"
             );
             let encoded: String = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect();
             assert!(
                 !logs.contains(&encoded),
-                "encoded OAuth authorization secret leaked into logs: {encoded}\n{logs}"
+                "encoded OAuth authorization secret leaked into logs"
             );
         }
         assert!(
             logs.contains(
                 "\"provider_authorization_endpoint\":\"https://accounts.google.com/o/oauth2/v2/auth\""
             ),
-            "{logs}"
+            "provider authorization endpoint missing from logs"
         );
-        assert!(logs.contains("\"oauth_state_id\":"), "{logs}");
-        assert!(!logs.contains("\"location\":"), "{logs}");
+        assert!(logs.contains("\"oauth_state_id\":"));
+        assert!(!logs.contains("\"location\":"));
     }
 
     #[tokio::test]
@@ -2203,7 +2254,7 @@ pub mod tests {
         let logs = crate::test_support::captured_logs(buf);
         assert!(
             !logs.contains(return_to_secret),
-            "browser return_to query leaked into logs: {logs}"
+            "browser return_to query leaked into logs"
         );
     }
 
@@ -2614,7 +2665,7 @@ pub mod tests {
                 .unwrap()
         });
         tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            Duration::from_secs(2),
             super::CALLBACK_CAS_OBSERVED.acquire(),
         )
         .await
@@ -2738,6 +2789,420 @@ pub mod tests {
             .find_map(|value| value.to_str().ok())
             .unwrap();
         assert!(cookie.contains("lab_session="));
+    }
+
+    #[tokio::test]
+    async fn desktop_browser_handoff_completes_once_without_exposing_session() {
+        assert_desktop_browser_handoff(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_domain_viewer_handoff_preserves_browser_admission() {
+        assert_desktop_browser_handoff(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_handoff_supports_distinct_control_plane_and_issuer_origins() {
+        assert_desktop_browser_handoff(true, true).await;
+    }
+
+    async fn assert_desktop_browser_handoff(viewer: bool, split_origin: bool) {
+        let mut state = test_auth_state_with_mock_google().await;
+        if split_origin {
+            std::sync::Arc::make_mut(&mut state.config).public_url =
+                Some(Url::parse("https://issuer.example.com").unwrap());
+            std::sync::Arc::make_mut(&mut state.config).desktop_origin =
+                Some(Url::parse("https://lab.example.com").unwrap());
+        }
+        if viewer {
+            let config = std::sync::Arc::make_mut(&mut state.config);
+            config.admin_email = "admin@elsewhere.example".into();
+            config.viewer_email_domains = vec!["example.com".into()];
+        }
+        let app =
+            router(state.clone()).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))));
+        let verifier = "desktop-verifier-with-at-least-forty-three-characters";
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/start")
+                    .header(header::ORIGIN, "https://attacker.invalid")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"code_challenge":challenge}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(denied.status().is_client_error());
+        let start = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/start")
+                    .header(header::ORIGIN, "https://lab.example.com")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"code_challenge":challenge,"return_to":"/gateways/"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start.status(), StatusCode::CREATED);
+        assert_eq!(
+            start.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let start: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(start.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let authorization_url = Url::parse(start["authorization_url"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            authorization_url.origin().ascii_serialization(),
+            "https://lab.example.com"
+        );
+        let launch_state = authorization_url
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let launch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/auth/desktop/authorize?state={launch_state}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let provider = Url::parse(
+            launch
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_state = provider
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let wrong_phase = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/auth/desktop/authorize?state={provider_state}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(wrong_phase.status().is_client_error());
+        let pending = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/poll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"poll_token":start["poll_token"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pending.status(), StatusCode::ACCEPTED);
+        let pending: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(pending.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pending["ready"], false);
+        assert_eq!(pending["expires_at"], start["expires_at"]);
+        let callback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/auth/google/callback?state={provider_state}&code=upstream-code"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(callback.status(), StatusCode::OK);
+        assert!(callback.headers().get(header::SET_COOKIE).is_none());
+        let poll = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/poll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"poll_token":start["poll_token"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(poll.status(), StatusCode::OK);
+        assert_eq!(
+            poll.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let poll_body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(poll.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(poll_body["ready"], true);
+        assert_eq!(poll_body["expires_at"], start["expires_at"]);
+        let redeem_body =
+            serde_json::json!({"redeem_code":start["redeem_code"],"code_verifier":verifier})
+                .to_string();
+        let denied_redeem = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/redeem")
+                    .header(header::ORIGIN, "https://attacker.invalid")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(redeem_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(denied_redeem.status().is_client_error());
+        let redeem = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/redeem")
+                    .header(header::ORIGIN, "https://lab.example.com")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(redeem_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redeem.status(), StatusCode::NO_CONTENT);
+        let cookie = redeem
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cookie.contains("HttpOnly"));
+        let session_id = cookie.split(';').next().unwrap().split_once('=').unwrap().1;
+        if viewer {
+            let session = state
+                .store
+                .find_bound_browser_session(session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                state
+                    .verified_viewer_domain_for_session(&session)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(
+            state
+                .store
+                .find_browser_session(session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/redeem")
+                    .header(header::ORIGIN, "https://lab.example.com")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(redeem_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(replay.status().is_client_error());
+        let terminal_poll = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/poll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"poll_token":start["poll_token"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let terminal: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(terminal_poll.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(terminal["expires_at"], 0);
+    }
+
+    #[tokio::test]
+    async fn desktop_poll_stays_pending_while_provider_exchange_is_in_flight() {
+        let (state, provider_server) =
+            test_auth_state_with_mock_google_delay(Some(Duration::from_millis(250))).await;
+        let app = router(state);
+        let verifier = "desktop-verifier-with-at-least-forty-three-characters";
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let start = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/desktop/start")
+                    .header(header::ORIGIN, "https://lab.example.com")
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"code_challenge": challenge}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start.status(), StatusCode::CREATED);
+        let start: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(start.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let authorization_url = Url::parse(start["authorization_url"].as_str().unwrap()).unwrap();
+        let launch_state = authorization_url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let authorize = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/auth/desktop/authorize?state={launch_state}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let provider_url = Url::parse(
+            authorize
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_state = provider_url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+
+        let callback_app = app.clone();
+        let callback = tokio::spawn(async move {
+            callback_app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/auth/google/callback?state={provider_state}&code=upstream-code"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let requests = provider_server.received_requests().await.unwrap();
+                if requests.iter().any(|request| {
+                    request.method.as_str() == "POST" && request.url.path() == "/token"
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("provider token exchange should start");
+
+        let poll_request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/auth/desktop/poll")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"poll_token": start["poll_token"]}).to_string(),
+                ))
+                .unwrap()
+        };
+        let pending = app.clone().oneshot(poll_request()).await.unwrap();
+        assert_eq!(pending.status(), StatusCode::ACCEPTED);
+        let pending: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(pending.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pending["ready"], false);
+        assert_eq!(pending["expires_at"], start["expires_at"]);
+
+        assert_eq!(callback.await.unwrap().status(), StatusCode::OK);
+        let ready = app.oneshot(poll_request()).await.unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        let ready: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(ready.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ready["ready"], true);
+        assert_eq!(ready["expires_at"], start["expires_at"]);
     }
 
     #[tokio::test]
@@ -3060,6 +3525,52 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn authorize_accepts_cimd_loopback_ephemeral_port() {
+        let state = test_auth_state_with_registered_client().await;
+        let client_id = "https://chatgpt.com/oauth/codex/client.json";
+        let mut client = state.store.find_client("client").await.unwrap().unwrap();
+        client.client_id = client_id.to_string();
+        client.redirect_uris = vec!["http://127.0.0.1/callback".to_string()];
+        state
+            .cimd_cache
+            .insert(client_id.to_string(), (client, now_unix() + 60));
+        let response = router(state.clone()).oneshot(
+            Request::builder()
+                .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Fcodex%2Fclient.json&redirect_uri=http%3A%2F%2F127.0.0.1%3A56505%2Fcallback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = Url::parse(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let provider_state = location
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let pending = state
+            .store
+            .take_bound_authorization_request(&provider_state)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.value.redirect_uri,
+            "http://127.0.0.1:56505/callback"
+        );
+        assert_eq!(pending.value.client_id, client_id);
+        assert_eq!(pending.value.client_state, "abc");
+        assert_eq!(pending.value.code_challenge, "pkce");
+        assert_eq!(pending.value.code_challenge_method, "S256");
+    }
+
+    #[tokio::test]
     async fn authorize_rejects_nonidentical_registered_redirect_without_redirecting() {
         let app = router(test_auth_state_with_registered_client().await);
         let response = app
@@ -3210,16 +3721,26 @@ pub mod tests {
     }
 
     pub(crate) async fn test_auth_state_with_mock_google() -> AuthState {
+        test_auth_state_with_mock_google_delay(None).await.0
+    }
+
+    async fn test_auth_state_with_mock_google_delay(
+        token_delay: Option<Duration>,
+    ) -> (AuthState, &'static MockServer) {
         let state = test_auth_state_with_registered_client().await;
         let server = Box::leak(Box::new(MockServer::start().await));
+        let mut token_response = ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "google-access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 3600,
+            "id_token": signed_test_id_token(),
+        }));
+        if let Some(delay) = token_delay {
+            token_response = token_response.set_delay(delay);
+        }
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": "google-access-token",
-                "refresh_token": "refresh-token",
-                "expires_in": 3600,
-                "id_token": signed_test_id_token(),
-            })))
+            .respond_with(token_response)
             .mount(server)
             .await;
         Mock::given(method("GET"))
@@ -3256,11 +3777,14 @@ pub mod tests {
             server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
         )
         .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
-        AuthState::for_tests(
-            (*state.config).clone(),
-            state.store.clone(),
-            (*state.signing_keys).clone(),
-            google,
+        (
+            AuthState::for_tests(
+                (*state.config).clone(),
+                state.store.clone(),
+                (*state.signing_keys).clone(),
+                google,
+            ),
+            server,
         )
     }
 
@@ -3364,12 +3888,25 @@ pub mod tests {
     }
 
     pub(crate) fn signed_test_id_token() -> String {
+        signed_test_id_token_with_email("user@example.com", true)
+    }
+
+    pub(crate) fn signed_test_id_token_with_email(email: &str, verified: bool) -> String {
+        signed_test_id_token_with_email_and_hosted_domain(email, verified, None)
+    }
+
+    pub(crate) fn signed_test_id_token_with_email_and_hosted_domain(
+        email: &str,
+        verified: bool,
+        hosted_domain: Option<&str>,
+    ) -> String {
         let claims = json!({
             "iss": "https://accounts.google.com",
             "aud": "client-id",
             "sub": "google-subject-123",
-            "email": "user@example.com",
-            "email_verified": true,
+            "email": email,
+            "email_verified": verified,
+            "hd": hosted_domain,
             "iat": now_unix() as usize,
             "exp": (now_unix() + 3600) as usize,
         });
@@ -3643,7 +4180,7 @@ pub mod tests {
             let params: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
             assert!(
                 params.contains_key("code"),
-                "expected code in redirect: {redirect}"
+                "expected authorization code in redirect"
             );
             assert_eq!(
                 params.get("state").map(|value| value.as_ref()),
@@ -3655,7 +4192,7 @@ pub mod tests {
             );
             assert!(
                 !params.contains_key("error"),
-                "unexpected error in redirect: {redirect}"
+                "unexpected error in redirect"
             );
         }
 
@@ -3689,10 +4226,10 @@ pub mod tests {
             ] {
                 assert!(
                     !logs.contains(secret),
-                    "OAuth redirect secret leaked into debug logs: {secret}\n{logs}"
+                    "OAuth redirect secret leaked into debug logs"
                 );
             }
-            assert!(logs.contains("\"redirect_path\":\"/callback\""), "{logs}");
+            assert!(logs.contains("\"redirect_path\":\"/callback\""));
         }
 
         /// Email not in admin or allowed_users must be rejected in the browser-login

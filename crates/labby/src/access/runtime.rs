@@ -118,6 +118,23 @@ pub(crate) enum CredentialLifecycleError {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum TeamMemberProvisionError {
+    #[error("team admission is not authorized")]
+    NotAuthorized,
+    #[error("team admission is unavailable")]
+    Unavailable,
+}
+
+impl From<AccessStoreError> for TeamMemberProvisionError {
+    fn from(error: AccessStoreError) -> Self {
+        match error {
+            AccessStoreError::NotAuthorized => Self::NotAuthorized,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
 enum RuntimeState {
     SetupRequired(AccessSetupReason),
     Prepared,
@@ -189,6 +206,36 @@ pub(crate) struct AccessRuntime {
 }
 
 impl AccessRuntime {
+    pub(crate) async fn provision_team_member(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> Result<super::TeamMemberProvisionOutcome, TeamMemberProvisionError> {
+        let _writer = self
+            .acquire_bootstrap_writer()
+            .await
+            .map_err(|_| TeamMemberProvisionError::Unavailable)?;
+        self.security_store()
+            .await
+            .map_err(|_| TeamMemberProvisionError::Unavailable)?
+            .provision_team_member(identity, project_id)
+            .await
+            .map_err(TeamMemberProvisionError::from)
+    }
+
+    pub(crate) async fn provision_team_viewer(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
+        let _writer = self.acquire_bootstrap_writer().await?;
+        self.security_store()
+            .await?
+            .provision_team_viewer(identity, project_id)
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
         match &*self.state.lock().await {
             RuntimeState::Ready { store, .. } => Ok(store.clone()),
@@ -946,6 +993,25 @@ mod tests {
     }
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_primitives::access::{Capability, OwnerScope, TeamId};
+
+    #[test]
+    fn team_admission_preserves_denial_vs_store_failure() {
+        assert_eq!(
+            TeamMemberProvisionError::from(AccessStoreError::NotAuthorized),
+            TeamMemberProvisionError::NotAuthorized
+        );
+        for error in [
+            AccessStoreError::Locked,
+            AccessStoreError::DiskFull,
+            AccessStoreError::ReadOnly,
+            AccessStoreError::Corrupt,
+        ] {
+            assert_eq!(
+                TeamMemberProvisionError::from(error),
+                TeamMemberProvisionError::Unavailable
+            );
+        }
+    }
 
     fn secure_test_path(directory: &tempfile::TempDir) -> PathBuf {
         #[cfg(unix)]
