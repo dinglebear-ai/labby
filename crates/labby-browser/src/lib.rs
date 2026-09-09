@@ -14,6 +14,6 @@ pub use error::{BrowserError, Result};
 pub use hub::{BrowserBridge, BrowserConnection, BrowserEvent};
 pub use protocol::{BrowserEnvelope, BrowserMessage, CatalogObservation, ToolDescriptor};
 pub use store::{
-    BrowserRecord, DocumentSession, DocumentSessionSummary, PairingRequest, PairingStatus,
-    SessionPage, Store,
+    BrowserRecord, BrowserStorageLock, DocumentSession, DocumentSessionSummary, PairingRequest,
+    PairingStatus, SessionPage, Store,
 };

@@ -6473,3 +6473,36 @@ async fn settings_mutations_use_the_setup_destructive_policy() {
             .await
     );
 }
+
+#[tokio::test]
+async fn browser_callbacks_remain_destructive_despite_page_annotations() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+    for (action, destructive) in [
+        ("browser.call", true),
+        ("browser.session.get", false),
+        ("help", false),
+    ] {
+        let request = CallToolRequestParams::new("browser").with_arguments(
+            serde_json::json!({"action": action, "annotations": {"destructiveHint": false, "readOnlyHint": true}})
+                .as_object().expect("object").clone(),
+        );
+        assert_eq!(
+            running
+                .service()
+                .tool_request_is_destructive(&request, &context)
+                .await,
+            destructive,
+            "policy for {action}"
+        );
+    }
+}
