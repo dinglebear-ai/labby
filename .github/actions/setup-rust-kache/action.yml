@@ -47,15 +47,24 @@ runs:
         if [ "$need_install" = false ]; then
           exit 0
         fi
-        if [ "$(id -u)" = "0" ]; then
-          apt-get update
-          # shellcheck disable=SC2086
-          apt-get install -y $packages
-        else
-          sudo apt-get update
-          # shellcheck disable=SC2086
-          sudo apt-get install -y $packages
+        # `apt-get update` exits 100 if ANY configured index fails to
+        # download, including third-party lists the runner image ships that
+        # none of these packages come from. A broken
+        # dl.google.com/linux/chrome-stable index (Hash Sum mismatch) killed
+        # every Rust job in setup while the Ubuntu archive it actually needs
+        # had fetched fine. Refreshing indexes is best effort for that reason;
+        # `apt-get install` stays fatal, so a genuinely unusable archive still
+        # fails the step loudly rather than silently installing nothing.
+        sudo_prefix=""
+        if [ "$(id -u)" != "0" ]; then
+          sudo_prefix="sudo"
         fi
+        # shellcheck disable=SC2086
+        if ! $sudo_prefix apt-get update; then
+          echo "::warning::apt-get update reported a failing index; continuing to install because the required packages may still resolve."
+        fi
+        # shellcheck disable=SC2086
+        $sudo_prefix apt-get install -y $packages
 
     - name: Select writable Rust homes
       if: runner.os != 'Windows'
