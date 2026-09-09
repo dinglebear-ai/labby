@@ -252,7 +252,11 @@ pub(super) fn verify_private_windows_acl(path: &Path) -> Result<()> {
     if path.is_dir() {
         labby_winjob::fs::verify_private_directory_dacl(&file)?;
     } else {
-        labby_winjob::fs::verify_private_acl(&file)?;
+        // Restricted-file hardening preserves ownership, including the default
+        // Administrators owner of files created by an elevated Windows token.
+        // Privacy is enforced by its protected current-user-only DACL; the
+        // containing directory separately requires current-user ownership.
+        labby_winjob::fs::verify_current_user_only_dacl(&file)?;
     }
     Ok(())
 }

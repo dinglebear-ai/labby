@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 const MAX_GOOGLE_REFRESH_LOCKS: usize = 2_048;
 
+#[derive(Default)]
 struct GoogleRefreshLocks {
     locks: DashMap<String, Arc<Mutex<()>>>,
     overflow: Arc<Mutex<()>>,
@@ -183,11 +184,13 @@ where
 /// explicit revocation all use this same lock so one central refresh credential
 /// is never refreshed or deleted concurrently by separate product surfaces.
 pub(crate) fn lock(subject: &str) -> Arc<Mutex<()>> {
-    let registry = GOOGLE_PROVIDER_REFRESH_LOCKS.get_or_init(|| GoogleRefreshLocks {
-        locks: DashMap::new(),
-        overflow: Arc::new(Mutex::new(())),
-        maintenance: std::sync::Mutex::new(()),
-    });
+    lock_in_registry(
+        GOOGLE_PROVIDER_REFRESH_LOCKS.get_or_init(GoogleRefreshLocks::default),
+        subject,
+    )
+}
+
+fn lock_in_registry(registry: &GoogleRefreshLocks, subject: &str) -> Arc<Mutex<()>> {
     let _maintenance = registry
         .maintenance
         .lock()
@@ -267,7 +270,7 @@ pub(crate) fn clear_transient_failure(state: &crate::state::AuthState, subject: 
 mod tests {
     use std::sync::Arc;
 
-    use super::lock;
+    use super::{GoogleRefreshLocks, lock_in_registry};
 
     #[cfg(feature = "http-axum")]
     fn exchange() -> crate::google::GoogleExchange {
@@ -289,11 +292,14 @@ mod tests {
         }
     }
 
+    // Capacity tests must not force unrelated parallel auth tests onto the
+    // process-wide overflow lock. Exercise the same logic with local registries.
     #[test]
     fn lock_is_shared_per_google_subject() {
-        let left = lock("google-subject-lock-test");
-        let right = lock("google-subject-lock-test");
-        let other = lock("different-google-subject-lock-test");
+        let registry = GoogleRefreshLocks::default();
+        let left = lock_in_registry(&registry, "google-subject-lock-test");
+        let right = lock_in_registry(&registry, "google-subject-lock-test");
+        let other = lock_in_registry(&registry, "different-google-subject-lock-test");
 
         assert!(Arc::ptr_eq(&left, &right));
         assert!(!Arc::ptr_eq(&left, &other));
@@ -301,14 +307,12 @@ mod tests {
 
     #[test]
     fn active_subjects_use_bounded_overflow_lock_after_registry_cap() {
+        let registry = GoogleRefreshLocks::default();
         let held = (0..super::MAX_GOOGLE_REFRESH_LOCKS)
-            .map(|index| lock(&format!("bounded-subject-{index}")))
+            .map(|index| lock_in_registry(&registry, &format!("bounded-subject-{index}")))
             .collect::<Vec<_>>();
-        let overflow_one = lock("bounded-overflow-one");
-        let overflow_two = lock("bounded-overflow-two");
-        let registry = super::GOOGLE_PROVIDER_REFRESH_LOCKS
-            .get()
-            .expect("refresh registry initialized");
+        let overflow_one = lock_in_registry(&registry, "bounded-overflow-one");
+        let overflow_two = lock_in_registry(&registry, "bounded-overflow-two");
         assert!(registry.locks.len() <= super::MAX_GOOGLE_REFRESH_LOCKS);
         assert!(Arc::ptr_eq(&overflow_one, &overflow_two));
         drop(held);
