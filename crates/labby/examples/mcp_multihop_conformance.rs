@@ -626,7 +626,15 @@ fn config_path(home: &Path) -> PathBuf {
 
 fn write_config(home: &Path, upstream: UpstreamConfig) -> Result<()> {
     let path = config_path(home);
-    std::fs::create_dir_all(path.parent().context("config parent")?)?;
+    let state_root = path.parent().context("config parent")?;
+    std::fs::create_dir_all(state_root)?;
+    // This is also LABBY_HOME: the durable access store requires its existing
+    // parent to be private, just as the live daemon fixture does.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700))?;
+    }
     let config = LabConfig {
         gateway: GatewayPreferences {
             disable_spawn_guard: true,
