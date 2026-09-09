@@ -1,0 +1,44 @@
+{
+  "claims": {
+    "account_id": "a1",
+    "aud": "depot",
+    "capabilities": [
+      "scope.read"
+    ],
+    "delegation_chain": [
+      "labby"
+    ],
+    "deployment_id": "d1",
+    "epochs": {
+      "authority_schema": 1,
+      "global_revision": 1,
+      "organization_policy": 1,
+      "project_membership": 1,
+      "project_policy": 1,
+      "team_membership": 1,
+      "team_policy": 1
+    },
+    "exp": 40,
+    "iat": 10,
+    "intent_id": "i1",
+    "iss": "labby",
+    "jti": "j1",
+    "method": "GET",
+    "nbf": 10,
+    "operation": "depot.artifacts.list",
+    "organization_id": "o1",
+    "principal_id": "p1",
+    "project_id": "pr1",
+    "resource": "/api/artifacts",
+    "scopes": [
+      "skills:read"
+    ],
+    "sub": "p1",
+    "team_id": "t1"
+  },
+  "depot_revision": "db6a2df83460948ac6e5a029b16dd4bfb6c563d5",
+  "now": 20,
+  "public_key_base64url": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg",
+  "token": "eyJ0eXAiOiJsYWJieStkZXBvdC1kZWxlZ2F0aW9uK2p3dCIsImFsZyI6IkVkRFNBIiwia2lkIjoiY3VycmVudCJ9.eyJpc3MiOiJsYWJieSIsInN1YiI6InAxIiwiYXVkIjoiZGVwb3QiLCJpYXQiOjEwLCJuYmYiOjEwLCJleHAiOjQwLCJqdGkiOiJqMSIsImRlcGxveW1lbnRfaWQiOiJkMSIsImFjY291bnRfaWQiOiJhMSIsIm9yZ2FuaXphdGlvbl9pZCI6Im8xIiwidGVhbV9pZCI6InQxIiwicHJvamVjdF9pZCI6InByMSIsInByaW5jaXBhbF9pZCI6InAxIiwibWV0aG9kIjoiR0VUIiwicmVzb3VyY2UiOiIvYXBpL2FydGlmYWN0cyIsIm9wZXJhdGlvbiI6ImRlcG90LmFydGlmYWN0cy5saXN0IiwiaW50ZW50X2lkIjoiaTEiLCJzY29wZXMiOlsic2tpbGxzOnJlYWQiXSwiY2FwYWJpbGl0aWVzIjpbInNjb3BlLnJlYWQiXSwiZXBvY2hzIjp7ImF1dGhvcml0eV9zY2hlbWEiOjEsIm9yZ2FuaXphdGlvbl9wb2xpY3kiOjEsInRlYW1fbWVtYmVyc2hpcCI6MSwidGVhbV9wb2xpY3kiOjEsInByb2plY3RfbWVtYmVyc2hpcCI6MSwicHJvamVjdF9wb2xpY3kiOjEsImdsb2JhbF9yZXZpc2lvbiI6MX0sImRlbGVnYXRpb25fY2hhaW4iOlsibGFiYnkiXX0.l9Ycoewi-RdW_0lxWihWHV2drvzXvBsPS1MYUZFiywvho-pQTmvKok1lkqkZ0DnHhMJj0B2vEZ4XwOwHDNjtDQ",
+  "fixture_note": "Synthetic wire-only test vector; signing seed is 32 repeated 0x09 bytes. Not a service credential or authorization grant. Project fields are preserved, not converted into an owner."
+}
