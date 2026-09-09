@@ -152,6 +152,8 @@ impl ContainerRuntime for DisabledContainerRuntime {
 pub enum RuntimeError<E> {
     #[error("Dev Container authority lease is no longer valid")]
     Authority(#[source] AuthorityLeaseError),
+    #[error("Dev Container authority could not be refreshed")]
+    AuthorityUnavailable,
     #[error("Dev Container launch was denied by its approved template")]
     Admission(#[source] crate::dev_container::DevContainerAdmissionError),
     #[error("container runtime operation failed")]
@@ -208,30 +210,48 @@ pub async fn create<E: ContainerRuntime + ?Sized>(
     engine.create(request).await.map_err(RuntimeError::Engine)
 }
 
-pub async fn reconcile<E: ContainerRuntime + ?Sized>(
+/// Re-read both policy and time before inspection and again after inspection,
+/// immediately before a mutating engine call.
+pub async fn reconcile<E, F, Fut>(
     engine: &E,
     lease: &AuthorityLease,
-    epochs: &AuthorityEpochVector,
-    now_millis: u64,
+    mut current_authority: F,
     handle: &EngineHandle,
     intent: DurableIntent,
-) -> Result<RecoveryAction, RuntimeError<E::Error>> {
+) -> Result<RecoveryAction, RuntimeError<E::Error>>
+where
+    E: ContainerRuntime + ?Sized,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(AuthorityEpochVector, u64), RuntimeError<E::Error>>>,
+{
+    let (epochs, now_millis) = current_authority().await?;
     lease
         .validate_at(
             AuthoritySafeBoundary::BeforeExternalEffect,
             now_millis,
-            epochs,
+            &epochs,
         )
         .map_err(RuntimeError::Authority)?;
     let action = recovery_action(
         intent,
         engine.inspect(handle).await.map_err(RuntimeError::Engine)?,
     );
+    if matches!(action, RecoveryAction::None | RecoveryAction::MarkFailed) {
+        return Ok(action);
+    }
+    let (epochs, now_millis) = current_authority().await?;
+    lease
+        .validate_at(
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            now_millis,
+            &epochs,
+        )
+        .map_err(RuntimeError::Authority)?;
     match action {
         RecoveryAction::Start => engine.start(handle).await,
         RecoveryAction::Stop => engine.stop(handle).await,
         RecoveryAction::Destroy => engine.destroy(handle).await,
-        RecoveryAction::None | RecoveryAction::MarkFailed => return Ok(action),
+        RecoveryAction::None | RecoveryAction::MarkFailed => unreachable!(),
     }
     .map_err(RuntimeError::Engine)?;
     Ok(action)
@@ -382,8 +402,7 @@ mod tests {
             reconcile(
                 &engine,
                 &lease,
-                &epochs,
-                200,
+                || std::future::ready(Ok((epochs.clone(), 200))),
                 &handle(),
                 DurableIntent::Running
             )
@@ -395,8 +414,7 @@ mod tests {
             reconcile(
                 &engine,
                 &lease,
-                &epochs,
-                200,
+                || std::future::ready(Ok((epochs.clone(), 200))),
                 &handle(),
                 DurableIntent::Deleted
             )
@@ -408,8 +426,7 @@ mod tests {
             reconcile(
                 &engine,
                 &lease,
-                &epochs,
-                200,
+                || std::future::ready(Ok((epochs.clone(), 200))),
                 &handle(),
                 DurableIntent::Deleted
             )
@@ -418,6 +435,38 @@ mod tests {
             RecoveryAction::None
         );
         assert_eq!(*engine.calls.lock().unwrap(), vec!["start", "destroy"]);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_rechecks_revocation_and_expiry_after_inspection() {
+        for expire in [false, true] {
+            let engine = FakeEngine {
+                state: Mutex::new(EngineState::Stopped),
+                calls: Mutex::new(vec![]),
+            };
+            let (lease, epochs) = authority();
+            let mut checks = 0;
+            let result = reconcile(
+                &engine,
+                &lease,
+                || {
+                    checks += 1;
+                    std::future::ready(if checks == 2 && !expire {
+                        Err(RuntimeError::Authority(
+                            AuthorityLeaseError::AuthorityChanged,
+                        ))
+                    } else {
+                        Ok((epochs.clone(), if checks == 2 { 1_000 } else { 200 }))
+                    })
+                },
+                &handle(),
+                DurableIntent::Running,
+            )
+            .await;
+            assert!(matches!(result, Err(RuntimeError::Authority(_))));
+            assert_eq!(checks, 2);
+            assert!(engine.calls.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]

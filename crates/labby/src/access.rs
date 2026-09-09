@@ -115,7 +115,7 @@ pub(crate) struct ActiveFileStashPrincipalLease {
 #[allow(unused_imports)]
 pub(crate) use authority::{
     ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
-    refresh_authority_epochs, resolve_personal_owner,
+    refresh_agent_authority_epochs, refresh_authority_epochs, resolve_personal_owner,
 };
 #[allow(unused_imports)]
 pub(crate) use authorization::{

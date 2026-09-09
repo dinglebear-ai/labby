@@ -3,7 +3,7 @@
 use crate::{
     access::{
         AccessStoreError, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
-        authorize_action, refresh_authority_epochs,
+        authorize_action, refresh_agent_authority_epochs, refresh_authority_epochs,
     },
     dispatch::{access_errors::map_store_error, error::ToolError},
 };
@@ -347,6 +347,7 @@ pub(crate) async fn dispatch(
                     store: context.store.clone(),
                     identity: context.identity.clone(),
                     owner: definition.owner.clone(),
+                    definition: definition.clone(),
                 },
                 &DisabledExecutor,
                 request,
@@ -419,17 +420,23 @@ pub(crate) struct LiveExecutionAuthority {
     pub(crate) store: crate::access::AccessStore,
     pub(crate) identity: VerifiedIdentity,
     pub(crate) owner: OwnerScope,
+    pub(crate) definition: AgentDefinition,
 }
 impl AgentAuthority for LiveExecutionAuthority {
     async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
-        refresh_authority_epochs(
+        refresh_agent_authority_epochs(
             &self.store,
             self.identity.clone(),
             self.owner.clone(),
-            Capability::ScopeOperate,
+            self.definition.clone(),
         )
         .await
-        .map_err(|_| AgentRuntimeError::AuthorityUnavailable)
+        .map_err(|error| match error {
+            AccessStoreError::NotAuthorized
+            | AccessStoreError::IdentityUnavailable
+            | AccessStoreError::ProjectAccessUnavailable => AgentRuntimeError::Revoked,
+            _ => AgentRuntimeError::AuthorityUnavailable,
+        })
     }
 }
 /// Placeholder executor shared by `agents.run` and `tasks.queue` until a real
@@ -940,6 +947,93 @@ mod tests {
             "update must not reactivate"
         );
         assert_eq!((next.authority_epoch, next.publication_epoch), (7, 2));
+    }
+
+    #[tokio::test]
+    async fn team_derived_project_agents_are_listed_and_disappear_on_suspension() {
+        let (_dir, store, owner) = fixture().await;
+        store.execute_test_statement(
+            "INSERT INTO principals VALUES('team-reader','bootstrap-local','user','active',NULL,2,2);
+             INSERT INTO principal_links VALUES('team-reader-link','team-reader','external','https://accounts.google.com','team-reader',NULL,'active',1,1,2,2);"
+        ).await.unwrap();
+        store
+            .add_team_member(
+                crate::access::AddTeamMemberInput::new(
+                    owner.clone(),
+                    "bootstrap-initial-team",
+                    "team-reader",
+                    crate::access::TeamRole::Member,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .assign_team_project(
+                crate::access::AssignTeamProjectInput::new(
+                    owner.clone(),
+                    "bootstrap-initial-team",
+                    "bootstrap-default",
+                    crate::access::ProjectRole::Viewer,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut params = agent_params("project-agent");
+        params["owner_kind"] = json!("project");
+        params["owner_id"] = json!("bootstrap-default");
+        dispatch(agent_context(&store, &owner), "agents.create", params)
+            .await
+            .unwrap();
+        let reader = agent_context(&store, &browser("team-reader"));
+        let listed = dispatch(reader.clone(), "agents.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["agents"][0]["agent_id"], "project-agent");
+        store
+            .suspend_team(owner, "bootstrap-initial-team".into())
+            .await
+            .unwrap();
+        let listed = dispatch(reader, "agents.list", json!({})).await.unwrap();
+        assert!(listed["agents"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_execution_rejects_a_suspended_pinned_definition() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("running-agent"),
+        )
+        .await
+        .unwrap();
+        let definition = store
+            .get_agent_definition("running-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let authority = LiveExecutionAuthority {
+            store: store.clone(),
+            identity: owner,
+            owner: definition.owner.clone(),
+            definition,
+        };
+        assert!(authority.current_epochs().await.is_ok());
+        dispatch(
+            context,
+            "agents.suspend",
+            json!({"agent_id":"running-agent"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            authority.current_epochs().await.unwrap_err(),
+            AgentRuntimeError::Revoked
+        );
     }
 
     #[tokio::test]

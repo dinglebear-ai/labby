@@ -298,7 +298,7 @@ async fn create_instance(
         context.access_runtime.dev_container_runtime().as_ref(),
         &lease,
         &epochs,
-        now,
+        now_millis()?,
         &created.template,
         EngineCreateRequest {
             handle: EngineHandle {
@@ -377,17 +377,31 @@ async fn lifecycle(
         lifecycle_nonce: LifecycleNonce::new(record.lifecycle_nonce.clone())
             .map_err(|_| stored_vocabulary_error(instance_id, "lifecycle_nonce"))?,
     };
-    // Desired-state persistence is not authority for a later host effect.
-    // Re-read epochs at the final boundary so revocation invalidates the lease.
-    let epochs =
-        crate::access::refresh_authority_epochs(store, context.identity.clone(), owner, capability)
-            .await
-            .map_err(store_error)?;
+    // Refresh after every asynchronous engine boundary, including inspection.
     let result = reconcile(
         context.access_runtime.dev_container_runtime().as_ref(),
         &lease,
-        &epochs,
-        now,
+        || async {
+            let epochs = crate::access::refresh_authority_epochs(
+                store,
+                context.identity.clone(),
+                owner.clone(),
+                capability,
+            )
+            .await
+            .map_err(|error| {
+                let mapped = store_error(error);
+                if mapped.kind() == "forbidden" {
+                    RuntimeError::Authority(
+                        labby_runtime::authority::AuthorityLeaseError::AuthorityChanged,
+                    )
+                } else {
+                    RuntimeError::AuthorityUnavailable
+                }
+            })?;
+            let now = now_millis().map_err(|_| RuntimeError::AuthorityUnavailable)?;
+            Ok((epochs, now))
+        },
         &handle,
         intent,
     )
@@ -604,6 +618,15 @@ fn runtime_error<E: std::error::Error>(instance_id: &str, error: RuntimeError<E>
                 "Dev Container authority lease rejected before external effect"
             );
             denied()
+        }
+        RuntimeError::AuthorityUnavailable => {
+            tracing::warn!(
+                service = SERVICE,
+                instance_id,
+                kind = "service_unavailable",
+                "Dev Container authority refresh failed before external effect"
+            );
+            unavailable()
         }
         RuntimeError::Admission(cause) => match cause {
             DevContainerAdmissionError::QuotaExceeded => ToolError::Sdk {

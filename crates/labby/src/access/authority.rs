@@ -255,6 +255,46 @@ pub(crate) async fn refresh_authority_epochs(
         .await
 }
 
+/// Resolve the pinned executable and its authority in one durable snapshot.
+/// Definition mutations do not advance owner epochs, so separate reads could
+/// otherwise accept a definition revoked between those reads.
+pub(crate) async fn refresh_agent_authority_epochs(
+    store: &AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+    definition: labby_primitives::agent::AgentDefinition,
+) -> AccessStoreResult<AuthorityEpochVector> {
+    store
+        .with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(map_sqlite_error)?;
+            let current = transaction
+                .query_row(
+                    "SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM agent_definitions WHERE agent_id=?1 AND state!='deleted'",
+                    [&definition.id],
+                    super::agent::decode,
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            if current.as_ref() != Some(&definition)
+                || definition.state != labby_primitives::agent::AgentState::Active
+                || definition.owner != owner
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            let resolved = resolve_authority(
+                &transaction,
+                &identity,
+                &owner,
+                Capability::ScopeOperate,
+            )?;
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(resolved.epochs)
+        })
+        .await
+}
+
 /// Resolve the caller's personal owner scope from verified durable identity facts. This avoids
 /// accepting a principal identifier from an untrusted adapter payload.
 pub(crate) async fn resolve_personal_owner(
@@ -478,8 +518,8 @@ fn resolve_authority(
     })
 }
 
-struct EffectiveProjectRole {
-    role: ProjectRole,
+pub(super) struct EffectiveProjectRole {
+    pub(super) role: ProjectRole,
     /// Every active Team assignment that contributed to the decision.
     team_epochs: Vec<TeamMembershipEpoch>,
     /// Direct membership epoch when a direct membership contributed.
@@ -490,7 +530,7 @@ struct EffectiveProjectRole {
 /// role and every active Team-derived assignment role, exactly as the read
 /// surfaces report it. Every contributing membership's epoch joins the vector
 /// so a downgrade on any path invalidates the lease.
-fn effective_project_role(
+pub(super) fn effective_project_role(
     transaction: &Transaction<'_>,
     principal_id: &str,
     organization_id: &str,

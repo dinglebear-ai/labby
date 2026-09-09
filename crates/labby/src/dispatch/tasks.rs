@@ -482,6 +482,7 @@ async fn execute_queued(
             store: context.store.clone(),
             identity: context.identity.clone(),
             owner: record.intent.owner.clone(),
+            definition,
         },
         &DisabledExecutor,
         task,
