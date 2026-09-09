@@ -1,5 +1,10 @@
 import { getBrowserSessionEpoch } from '../auth/session-store.ts'
 
+export const DISCOVERY_KINDS = [
+  'skill', 'prompt', 'agent-definition', 'agent-runtime', 'mcp-server', 'mcp-config',
+  'agent-plugin', 'apm-package', 'package', 'agent', 'mcp', 'repository', 'command', 'hook',
+] as const
+
 export const artifactKey = (providerId: string, artifactId: string) => JSON.stringify([providerId, artifactId])
 export function parseArtifactKey(value: string): [string, string] | null {
   try {
@@ -8,10 +13,11 @@ export function parseArtifactKey(value: string): [string, string] | null {
   } catch { return null }
 }
 
-export function discoveryUrl(input: { provider?: string; query?: string; artifactProvider?: string; artifact?: string }) {
+export function discoveryUrl(input: { provider?: string; query?: string; kind?: string; artifactProvider?: string; artifact?: string }) {
   const params = new URLSearchParams()
   if (input.provider) params.set('provider', input.provider)
   if (input.query) params.set('query', input.query)
+  if (input.kind && input.kind !== 'all') params.set('kind', input.kind)
   if (input.artifactProvider !== undefined && input.artifact !== undefined) {
     params.set('artifactProvider', input.artifactProvider)
     params.set('artifact', input.artifact)

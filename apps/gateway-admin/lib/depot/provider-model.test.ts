@@ -13,3 +13,9 @@ test('URLSearchParams round trips exact artifact IDs once', () => {
   assert.equal(params.get('artifact'), raw)
   assert.equal(params.get('artifactProvider'), 'public')
 })
+
+
+test('kind is retained in discovery URL state and all is omitted', () => {
+  assert.equal(new URLSearchParams(discoveryUrl({ kind: 'skill' })).get('kind'), 'skill')
+  assert.equal(new URLSearchParams(discoveryUrl({ kind: 'all' })).has('kind'), false)
+})

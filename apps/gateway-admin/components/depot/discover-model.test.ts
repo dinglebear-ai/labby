@@ -8,14 +8,14 @@ const rows = [
   { providerId: 'catalog', artifactId: 'a', descriptor: { kind: 'agent', title: 'Alpha' }, currentRevision: { authoredAt: '2026-09-08T00:00:00Z' } },
 ] as FederatedArtifact[]
 
-test('kind filters include descriptor metadata and do not mutate catalog ordering', () => {
-  assert.deepEqual(selectDiscoveryResults(rows, 'agent', 'catalog').map(row => row.artifactId), ['a'])
-  assert.deepEqual(selectDiscoveryResults(rows, 'all', 'name').map(row => row.artifactId), ['a', 'b'])
+test('presentation ordering preserves every server-filtered row and does not mutate input', () => {
+  assert.deepEqual(selectDiscoveryResults(rows, 'catalog').map(row => row.artifactId), ['b', 'a'])
+  assert.deepEqual(selectDiscoveryResults(rows, 'name').map(row => row.artifactId), ['a', 'b'])
   assert.deepEqual(rows.map(row => row.artifactId), ['b', 'a'])
 })
 
 test('newest ordering puts undated artifacts last without inventing dates', () => {
-  assert.deepEqual(selectDiscoveryResults(rows, 'all', 'newest').map(row => row.artifactId), ['a', 'b'])
+  assert.deepEqual(selectDiscoveryResults(rows, 'newest').map(row => row.artifactId), ['a', 'b'])
 })
 
 test('revision ages use real timestamps with deterministic server and future-date fallbacks', () => {

@@ -433,3 +433,24 @@ test('provider mutations never refresh or replay after a CSRF rejection', async 
   }
   assert.deepEqual(urls, ['/v1/depot/providers'])
 })
+
+
+test('kind filter is validated and sent with cursor before accepting typed results', async () => {
+  const original = globalThis.fetch
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = (async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)))
+    return json({ ...v2Page, items: [{ ...v2Page.items[0], kind: 'skill' }] })
+  }) as typeof fetch
+  try {
+    await listArtifacts({ query: 'python', kind: 'skill', cursor: 'a'.repeat(43) })
+    assert.deepEqual(requests[0], { provider: null, query: 'python', kind: 'skill', limit: 50, cursor: 'a'.repeat(43) })
+    await assert.rejects(listArtifacts({ kind: 'unknown-kind' }), /Unsupported Artifact kind/)
+    assert.equal(requests.length, 1)
+    await listArtifacts({ kind: 'all' })
+    assert.equal('kind' in requests[1]!, false)
+  } finally { globalThis.fetch = original }
+  await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], kind: 'mcp' }] }), async () => {
+    await assert.rejects(listArtifacts({ kind: 'skill' }), /wrong kind/)
+  })
+})

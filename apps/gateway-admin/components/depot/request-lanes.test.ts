@@ -21,3 +21,10 @@ describe('RequestLanes', () => {
     assert.equal(lanes.isCurrent('detail', detail), true)
   })
 })
+
+it('context changes invalidate in-flight pagination, details and import preparation immediately', () => {
+  const lanes = new RequestLanes()
+  const pending = (['list', 'detail', 'import'] as const).map(lane => [lane, lanes.begin(lane)] as const)
+  lanes.invalidateContext()
+  for (const [lane, generation] of pending) assert.equal(lanes.isCurrent(lane, generation), false)
+})
