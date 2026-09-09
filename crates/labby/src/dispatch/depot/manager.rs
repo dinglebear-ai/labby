@@ -33,9 +33,9 @@ impl SecretSnapshot {
                 keys.insert(key);
             }
         }
-        for local in config.local_providers.iter().take(16) {
-            if allowed_secret_reference(&local.bearer_token_env) {
-                keys.insert(&local.bearer_token_env);
+        for (_, _, key) in config.host_read_bindings().take(16) {
+            if allowed_secret_reference(key) {
+                keys.insert(key);
             }
         }
         Self::from_values(
@@ -68,12 +68,12 @@ impl SecretSnapshot {
         config: &DepotPreferences,
     ) -> Result<(), &'static str> {
         config.validate_local_providers()?;
-        for local in &config.local_providers {
+        for (id, endpoint, key) in config.host_read_bindings() {
             let value = self
                 .0
-                .get(&local.bearer_token_env)
+                .get(key)
                 .ok_or("local Depot read credential required")?;
-            super::network::Secret::local_bearer(&local.id, &local.endpoint, value)
+            super::network::Secret::local_bearer(id, endpoint, value)
                 .map_err(|_| "invalid local Depot read credential")?;
             if value.trim().is_empty() {
                 return Err("local Depot read credential required");

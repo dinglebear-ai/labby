@@ -4,6 +4,8 @@ pub mod admin;
 #[cfg(test)]
 mod admin_tests;
 pub(crate) mod authority_projection;
+#[cfg(feature = "skills")]
+pub(crate) mod catalog_binding;
 pub mod cursor;
 #[cfg(test)]
 mod cursor_tests;

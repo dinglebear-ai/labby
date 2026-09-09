@@ -107,6 +107,50 @@ quarantined virtual servers are serialized alongside those sections.
 its display name is Public Depot, and its fixed endpoint is
 `https://depot.dinglebear.ai`. Configuration resolution performs no network I/O.
 
+For authenticated access to a self-hosted catalog while retaining the built-in
+`public` identity, configure a trusted read binding and a matching exact acquisition
+connection. This is host configuration; the provider API cannot create or edit it.
+
+```toml
+[depot]
+read_project_id = "catalog-project"
+public_enabled = true
+
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog-depot"
+
+[[artifacts.sources]]
+id = "public"
+kind = "depot"
+endpoint = "https://catalog.example/api/artifacts/exact"
+control_plane_url = "https://catalog.example"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+```
+
+The required project must already exist. Browser discovery and details require a
+verified authenticated member with `AssetDiscover`; revocation also invalidates
+cached continuations. The internal endpoint accepts only an explicit loopback
+HTTP origin, and the protected credential must exist at startup. Invalid bindings
+fail closed. There is no anonymous fallback, duplicate catalog entry, or browser
+credential exposure. `public_enabled` still controls whether this provider participates.
+Without `public_read_binding`, Public Depot retains its existing anonymous behavior.
+External Depot anonymous publication policy is unchanged.
+
+The `public` acquisition source must use Depot's exact endpoint and the same
+credential reference. Before and after acquisition, Labby checks that its internal
+and public HTTPS routes have the configured deployment ID and matching deployment
+and authority epochs. A missing connection, mismatched catalog, or changed authority
+fails the import. Acquisition retains exact Artifact/revision validation and its
+separate `AssetUse` permission; discovery access alone does not grant import or publish.
+Protected catalog imports must target the configured `read_project_id`. Labby checks
+`AssetUse` in that project before fetching any bytes, after acquisition, and at the
+existing import commit boundary. This also applies to every item in a batch; an
+unrelated destination project cannot authorize use of the protected catalog bearer.
+Binding and credential changes replace discovery runtimes and invalidate old cursors;
+restart the gateway to apply host acquisition configuration or credentials.
+
 Named providers use `[[depot.providers]]` with `id`, `name`, `endpoint`,
 `enabled`, and `auth_mode` (`anonymous` or `bearer`). Bearer providers reference
 a server-held `LABBY_DEPOT_*_TOKEN` key through `bearer_token_env`; secret values

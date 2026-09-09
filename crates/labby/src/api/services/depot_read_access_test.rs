@@ -321,3 +321,124 @@ async fn unset_read_project_preserves_existing_instance_read_behavior() {
         .unwrap();
     assert!(access.epoch().is_none());
 }
+
+#[tokio::test]
+async fn bound_public_search_and_detail_use_project_gate_and_protected_credential() {
+    use wiremock::matchers::{header, path};
+    let (_directory, mut state, store, authority, auth, identity) = fixture().await;
+    let upstream = MockServer::start().await;
+    let preferences: crate::config::depot::DepotPreferences = toml::from_str(&format!(
+        r#"
+read_project_id = "bootstrap-default"
+[public_read_binding]
+endpoint = "{}"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog"
+"#,
+        upstream.uri()
+    ))
+    .unwrap();
+    Arc::make_mut(&mut state.config).depot = preferences.clone();
+    state.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+        &preferences,
+        crate::dispatch::depot::manager::SecretSnapshot::from_values(
+            std::collections::BTreeMap::from([(
+                "LABBY_DEPOT_CATALOG_READ_TOKEN".into(),
+                "protected-read".into(),
+            )]),
+        ),
+        Default::default(),
+    ));
+    let metadata = json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"private-read","listingEpoch":"1","snapshotContinuations":true,"maxPageSize":200});
+    Mock::given(path("/api/discovery"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(metadata.clone()))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut listing = metadata.clone();
+    listing["result"] = json!({"artifacts":[{"id":"private-skill","kind":"skill","name":"Python","currentRevisionId":"revision-exact"}],"total":1});
+    Mock::given(path("/api/discovery/list"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(listing))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut artifact = metadata;
+    artifact["result"] = json!({"artifact":{"descriptor":{"id":"private-skill","kind":"skill","name":"Python"},"currentRevisionId":"revision-exact","currentRevision":{"id":"revision-exact","contentDigest":"sha256:known"}}});
+    Mock::given(path("/api/discovery/get"))
+        .and(header("authorization", "Bearer protected-read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(artifact))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let request = || {
+        serde_json::from_value(json!({"provider":"public","query":"python","limit":20})).unwrap()
+    };
+    assert!(
+        discover(
+            State(state.clone()),
+            Extension(authority.clone()),
+            None,
+            None,
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    let result = discover(
+        State(state.clone()),
+        Extension(authority.clone()),
+        Some(Extension(auth.clone())),
+        Some(Extension(identity.clone())),
+        Json(request()),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(result["items"][0]["providerId"], "public");
+    assert_eq!(result["items"][0]["currentRevisionId"], "revision-exact");
+    assert!(!result.to_string().contains("protected-read"));
+    let result = detail(
+        State(state.clone()),
+        Extension(authority.clone()),
+        Some(Extension(auth.clone())),
+        Some(Extension(identity.clone())),
+        Json(DetailRequest {
+            provider_id: "public".into(),
+            artifact_id: "private-skill".into(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(result["artifact"]["currentRevisionId"], "revision-exact");
+    store
+        .execute_test_statement("UPDATE project_memberships SET status='disabled'")
+        .await
+        .unwrap();
+    assert!(
+        discover(
+            State(state.clone()),
+            Extension(authority.clone()),
+            Some(Extension(auth)),
+            Some(Extension(identity)),
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    Arc::make_mut(&mut state.config).depot.read_project_id = None;
+    assert!(
+        discover(
+            State(state),
+            Extension(authority),
+            None,
+            None,
+            Json(request())
+        )
+        .await
+        .is_err()
+    );
+    upstream.verify().await;
+}

@@ -166,3 +166,125 @@ fn credential_references_and_endpoint_authority_are_constrained() {
         canonical_endpoint("https://example.com/b").unwrap()
     );
 }
+
+#[test]
+fn trusted_public_read_binding_reuses_public_identity_and_requires_project() {
+    let mut config: LabConfig = toml::from_str(
+        r#"
+[depot]
+read_project_id = "catalog-project"
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog-depot"
+"#,
+    )
+    .unwrap();
+    let resolved = config.depot.resolve(&Default::default());
+    assert_eq!(resolved.providers.len(), 1);
+    let public = &resolved.providers[0];
+    assert_eq!(public.id, "public");
+    assert_eq!(public.name, "Public Depot");
+    assert!(public.host_managed);
+    assert_eq!(public.endpoint, "http://127.0.0.1:4101/");
+    assert_eq!(public.auth_mode, super::depot::AuthMode::Bearer);
+    assert_eq!(public.read_project_id.as_deref(), Some("catalog-project"));
+    let wire = serde_json::to_string(public).unwrap();
+    assert!(!wire.contains("CATALOG_READ_TOKEN"));
+    config.depot.public_enabled = false;
+    assert!(!config.depot.resolve(&Default::default()).providers[0].enabled);
+    config.depot.read_project_id = None;
+    assert!(config.depot.validate_local_providers().is_err());
+    assert!(
+        config
+            .depot
+            .resolve(&Default::default())
+            .providers
+            .is_empty()
+    );
+}
+
+#[test]
+fn public_binding_rejects_unsafe_endpoints_and_requires_matching_acquisition() {
+    let template = r#"
+[depot]
+read_project_id = "catalog-project"
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+deployment_id = "catalog-depot"
+[[artifacts.sources]]
+id = "public"
+kind = "depot"
+endpoint = "https://catalog.example/api/artifacts/exact"
+control_plane_url = "https://catalog.example"
+bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+"#;
+    let valid: LabConfig = toml::from_str(template).unwrap();
+    assert!(
+        valid
+            .depot
+            .validate_public_acquisition(&valid.artifacts)
+            .is_ok()
+    );
+    for endpoint in [
+        "http://localhost:4101",
+        "http://127.0.0.2:4101",
+        "https://example.com",
+        "http://127.0.0.1:4101/path",
+    ] {
+        let mut invalid = valid.clone();
+        invalid.depot.public_read_binding.as_mut().unwrap().endpoint = endpoint.into();
+        assert!(
+            invalid
+                .depot
+                .resolve(&Default::default())
+                .providers
+                .is_empty()
+        );
+    }
+    for kind in [
+        super::ArtifactSourceKind::Depot,
+        super::ArtifactSourceKind::Repository,
+    ] {
+        let mut invalid = valid.clone();
+        let mut alias = valid.artifacts.sources[0].clone();
+        alias.id = "catalog-alias".into();
+        alias.kind = kind;
+        invalid.artifacts.sources.push(alias);
+        assert!(
+            invalid
+                .depot
+                .validate_public_acquisition(&invalid.artifacts)
+                .is_err()
+        );
+    }
+    for change in 0..5 {
+        let mut invalid = valid.clone();
+        match change {
+            0 => invalid.artifacts.sources.clear(),
+            1 => {
+                invalid.artifacts.sources[0].bearer_token_env =
+                    Some("LABBY_DEPOT_OTHER_TOKEN".into())
+            }
+            2 => invalid.artifacts.sources[0].id = "catalog-local".into(),
+            3 => {
+                invalid.artifacts.sources[0].control_plane_url =
+                    Some("https://other.example".into())
+            }
+            _ => invalid.artifacts.sources[0].endpoint = "https://catalog.example/wrong".into(),
+        }
+        assert!(
+            invalid
+                .depot
+                .validate_public_acquisition(&invalid.artifacts)
+                .is_err()
+        );
+    }
+    assert!(
+        toml::from_str::<LabConfig>(
+            &template.replace("deployment_id = \"catalog-depot\"", "deployment_id = \"\"")
+        )
+        .is_err()
+    );
+}

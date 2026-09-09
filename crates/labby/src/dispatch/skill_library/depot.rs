@@ -68,6 +68,7 @@ impl DepotExactProvider for RuntimeDepot {
 /// Server-held Depot authority. Selectors never contain credentials, endpoints, or paths.
 #[derive(Clone)]
 pub(crate) struct DepotConnection {
+    catalog_binding: Option<Arc<crate::dispatch::depot::catalog_binding::CatalogBinding>>,
     provider: Arc<dyn DepotExactProvider>,
     source_id: String,
     source: ExactArtifactSource,
@@ -103,6 +104,7 @@ impl DepotConnection {
             source,
         };
         Ok(Self {
+            catalog_binding: None,
             provider: Arc::new(runtime),
             source_id,
             source,
@@ -115,10 +117,28 @@ impl DepotConnection {
         source_id: impl Into<String>,
     ) -> Self {
         Self {
+            catalog_binding: None,
             provider,
             source_id: source_id.into(),
             source: ExactArtifactSource::Depot,
         }
+    }
+
+    pub(crate) fn bind_catalog(
+        &mut self,
+        binding: &crate::config::depot::PublicReadBinding,
+        acquisition_endpoint: &str,
+        token: &str,
+    ) -> Result<(), ArtifactError> {
+        self.catalog_binding = Some(Arc::new(
+            crate::dispatch::depot::catalog_binding::CatalogBinding::new(
+                binding,
+                acquisition_endpoint,
+                token,
+            )
+            .map_err(ArtifactError::Conflict)?,
+        ));
+        Ok(())
     }
 
     pub(crate) async fn acquire_exact(
@@ -127,10 +147,20 @@ impl DepotConnection {
         revision_id: String,
         headers: RequestHeaders,
     ) -> Result<ArtifactAcquisition, ArtifactError> {
+        let authority = match &self.catalog_binding {
+            Some(binding) => Some(binding.verify().await.map_err(ArtifactError::Conflict)?),
+            None => None,
+        };
         let acquisition = self
             .provider
             .acquire(artifact_id.clone(), revision_id.clone(), headers)
             .await?;
+        if let (Some(binding), Some(expected)) = (&self.catalog_binding, authority) {
+            let current = binding.verify().await.map_err(ArtifactError::Conflict)?;
+            if !expected.same_authority(&current) {
+                return Err(ArtifactError::Conflict("catalog_authority_changed"));
+            }
+        }
         acquisition.validate()?;
         let provenance_matches = match self.source {
             ExactArtifactSource::Depot => {
@@ -214,6 +244,80 @@ mod tests {
                 path: "SKILL.md".to_owned(),
                 bytes: content.as_bytes().to_vec(),
             }],
+        }
+    }
+
+    #[tokio::test]
+    async fn public_exact_acquisition_checks_authority_before_and_after_fetch() {
+        use crate::dispatch::depot::catalog_binding::CatalogBinding;
+        use serde_json::json;
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+        struct ChangingDepot {
+            value: ArtifactAcquisition,
+            authority: Arc<MockServer>,
+        }
+        impl DepotExactProvider for ChangingDepot {
+            fn acquire(&self, _: String, _: String, _: RequestHeaders) -> DepotFuture<'_> {
+                Box::pin(async move {
+                    self.authority.reset().await;
+                    Mock::given(any())
+                        .respond_with(ResponseTemplate::new(403))
+                        .mount(&self.authority)
+                        .await;
+                    Ok(self.value.clone())
+                })
+            }
+        }
+        let identity = json!({"contractVersion":"depot.discovery/v1","deploymentId":"catalog","deploymentEpoch":"boot","authorityEpoch":"read","listingEpoch":"1","snapshotContinuations":true,"maxPageSize":200});
+        for mode in 0..3 {
+            let internal = MockServer::start().await;
+            let external = Arc::new(MockServer::start().await);
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(identity.clone()))
+                .mount(&internal)
+                .await;
+            let mut other = identity.clone();
+            if mode == 1 {
+                other["deploymentId"] = json!("wrong-catalog");
+            }
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(other))
+                .mount(&external)
+                .await;
+            let mut expected = acquisition();
+            expected.interchange.provenance.registry = Some("public".into());
+            let fake = Arc::new(FakeDepot {
+                acquisition: expected.clone(),
+                calls: AtomicUsize::new(0),
+                denied: false,
+            });
+            let provider: Arc<dyn DepotExactProvider> = if mode == 2 {
+                Arc::new(ChangingDepot {
+                    value: expected.clone(),
+                    authority: external.clone(),
+                })
+            } else {
+                fake.clone()
+            };
+            let mut connection = DepotConnection::fake(provider, "public");
+            connection.catalog_binding = Some(Arc::new(CatalogBinding::test_origins(
+                &internal.uri(),
+                &external.uri(),
+            )));
+            let result = connection
+                .acquire_exact(
+                    expected.interchange.descriptor.id.clone(),
+                    expected.interchange.revision.id.clone(),
+                    None,
+                )
+                .await;
+            assert_eq!(result.is_ok(), mode == 0);
+            if mode == 0 {
+                assert_eq!(result.unwrap(), expected);
+            }
+            if mode == 1 {
+                assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+            }
         }
     }
 

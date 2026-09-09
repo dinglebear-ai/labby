@@ -22,6 +22,11 @@ impl ReadAccess {
         identity: Option<&VerifiedIdentity>,
     ) -> Result<Self, (StatusCode, Json<Value>)> {
         require_read(authority).await?;
+        state
+            .config
+            .depot
+            .validate_local_providers()
+            .map_err(|_| forbidden())?;
         let Some(project) = state.config.depot.read_project_id.as_ref() else {
             return Ok(Self(None));
         };
