@@ -878,6 +878,18 @@ impl ServerHandler for LabMcpServer {
         mut request: CallToolRequestParams,
         mut context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        #[cfg(feature = "proxy-testkit")]
+        if crate::mcp::context::verified_identity_from_extensions(&context.extensions).is_none()
+            && let Some(identity) = crate::testkit::local_stdio_fixture_identity(
+                &self.access_runtime,
+                self.transport_label,
+                std::env::var_os("LABBY_E2E_BOOTSTRAP_STATIC_OWNER").as_deref()
+                    == Some(std::ffi::OsStr::new("1")),
+            )
+            .await
+        {
+            context.extensions.insert(identity);
+        }
         let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         context
             .extensions

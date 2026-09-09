@@ -1,7 +1,7 @@
 //! Labby-native MCP multi-hop conformance driver.
 //!
 //! The driver launches this process as a synthetic leaf behind two real Labby
-//! gateways (the root stdio client bridges to its authenticated daemon):
+//! gateways (a local stdio root and an authenticated HTTP middle):
 //!
 //! client -> root Labby -> middle Labby -> synthetic leaf
 
@@ -975,35 +975,6 @@ async fn run_driver() -> Result<()> {
     )?;
     force_full_reload_on_next_request(&root_home, 500)?;
 
-    // Gateway management requires durable authority. Keep the stdio client hop,
-    // but let its supported live-daemon bridge authenticate to the isolated root.
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    let root_port = listener.local_addr()?.port();
-    drop(listener);
-    let root_base_url = format!("http://127.0.0.1:{root_port}");
-    let root_token = "multihop-root-conformance-owner-token";
-    let mut root_child = Command::new(&labby_bin)
-        .current_dir(&child_cwd)
-        .arg("serve")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(root_port.to_string())
-        .env("HOME", &root_home)
-        .env("LABBY_HOME", root_home.join(".config/labby"))
-        .env("LABBY_AUTH_MODE", "bearer")
-        .env("LABBY_MCP_HTTP_TOKEN", root_token)
-        .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
-        .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
-        .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
-        .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
-        .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()?;
-    wait_for_http_ready(&root_base_url).await?;
-
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
             // Keep process-relative fixture operations inside the isolated home.
@@ -1013,9 +984,9 @@ async fn run_driver() -> Result<()> {
             .arg("--stdio")
             .env("HOME", &root_home)
             .env("LABBY_HOME", root_home.join(".config/labby"))
-            .env("LABBY_SERVER_URL", &root_base_url)
+            .env_remove("LABBY_SERVER_URL")
             .env_remove("CLAUDE_PLUGIN_OPTION_SERVER_URL")
-            .env("LABBY_MCP_HTTP_TOKEN", root_token)
+            .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
@@ -1381,8 +1352,6 @@ async fn run_driver() -> Result<()> {
     );
 
     service.cancel().await?;
-    root_child.kill().await.ok();
-    root_child.wait().await.ok();
     middle_child.kill().await.ok();
     middle_child.wait().await.ok();
     println!("Labby multi-hop conformance passed");
