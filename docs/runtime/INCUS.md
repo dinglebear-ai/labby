@@ -357,6 +357,60 @@ It also applies hardening such as `ProtectSystem=strict`,
 `NoNewPrivileges=true`, `PrivateTmp=true`, restricted address families, and
 explicit `ReadWritePaths` for the `labby` user's runtime state.
 
+### Service resources and writable home
+
+For an operator-owned gateway that runs development tools, the Unraid Incus
+initializer accepts these settings in `/boot/config/plugins/labby/labby.cfg`:
+
+```sh
+LABBY_SERVICE_MEMORY_HIGH="12G"
+LABBY_SERVICE_MEMORY_MAX="16G"
+LABBY_SERVICE_WRITABLE_HOME="true"
+```
+
+Memory limits are ceilings, not reservations; size them for the host. Without
+these overrides, the Incus service retains its 7/8 GiB limits and restricted
+home-directory policy. The writable-home option permits writes throughout
+`/home/labby`, subject to ownership, while retaining the system filesystem's
+read-only mounts. It does not clear other hardening such as `InaccessiblePaths`.
+The resource policy also masks `/run/user` to deny access to user-session
+systemd managers. Masking the stable parent covers user runtime directories
+created after gateway startup; an optional mask of a missing per-user directory
+would not provide that protection.
+Check effective properties with `systemctl show labby.service`: container-level
+systemd overrides can alter settings requested by the base unit.
+
+The initializer reapplies these settings before the provisioning fast path and
+after first-time setup. Changed service settings trigger a restart even when
+the provisioning sentinel matches. An unchanged policy does not request an
+additional restart.
+
+### Legacy worker-profile rejection
+
+`LABBY_SERVICE_WORKERS_ENABLED=true` is rejected. The earlier experimental
+profile exposed the `labby` systemd user-manager socket to upstream tools.
+That socket could launch services outside the gateway filesystem restrictions
+and worker resource limits. It is not a supported isolation mechanism.
+Setting the flag to false does not repair an existing installation: the
+initializer also rejects a residual `workers.conf` drop-in, a loaded runtime
+directory bind, or a user-manager socket still visible in the running gateway
+namespace. It fails closed when it cannot inspect the guest. Removing a drop-in
+and reloading systemd does not replace a running process's mount namespace.
+
+For a previously configured guest, back up the upstream definitions and service
+configuration, then restore each original upstream command and argument list.
+Only after those definitions no longer use `/usr/local/bin/labby-worker`, stop
+the old worker slice as part of a coordinated gateway restart, remove
+`/etc/systemd/system/labby.service.d/workers.conf`, and reload systemd. Verify
+that the restarted gateway cannot access the user-manager socket and that real
+upstream tool calls still succeed. Remove the unused launcher and slice after
+confirming no retained process or definition needs them. Do not stop a shared
+user manager or disable lingering without checking other owners.
+
+The supported configuration currently charges stdio tools and their descendants
+to the gateway service. Resource separation needs a separately reviewed worker
+mechanism; the memory and writable-home settings above do not provide it.
+
 Readiness requires both an active `labby.service` unit and a successful loopback
 `/ready` response. This prevents stale processes from masking failed service
 restarts.

@@ -23,6 +23,9 @@ LABBY_SERVICE_DROPIN_DIR="${LABBY_SERVICE_DROPIN_DIR:-/etc/systemd/system/labby.
 LABBY_SERVICE_TASKS_MAX="4096"
 LABBY_SERVICE_MEMORY_HIGH="7G"
 LABBY_SERVICE_MEMORY_MAX="8G"
+LABBY_SERVICE_WRITABLE_HOME="false"
+LABBY_SERVICE_WORKERS_ENABLED="false"
+LABBY_SERVICE_RESTART_REQUIRED="false"
 TS_AUTHKEY_PATH="/run/labby-ts-authkey"
 TS_AUTHKEY_STORE="${PLUGIN_STATE_DIR}/incus-ts-authkey"
 IMAGE_PROP_VERSION="labby.image_version"
@@ -612,9 +615,14 @@ ensure_service_active() {
 }
 
 ensure_service_resource_limits() {
+    local result
+    case "$LABBY_SERVICE_WRITABLE_HOME" in
+        true|false) ;;
+        *) fail "LABBY_SERVICE_WRITABLE_HOME must be true or false" ;;
+    esac
     # This script is intentionally evaluated inside the Incus guest.
     # shellcheck disable=SC2016
-    incus_exec 30 sh -c '
+    result=$(incus_exec 30 sh -c '
         set -eu
         dropin_dir="$1"
         dropin_path="${dropin_dir}/resource-limits.conf"
@@ -626,11 +634,18 @@ ensure_service_resource_limits() {
             "TasksMax=$2" \
             "MemoryHigh=$3" \
             "MemoryMax=$4" > "$tmp_path"
+        if [ "$5" = true ]; then
+            printf "%s\n" "ReadWritePaths=/home/labby" >> "$tmp_path"
+        fi
+        # Mask the stable parent: logind may remove a per-user directory and
+        # recreate it later, after an optional per-user mask was skipped.
+        printf "%s\n" "InaccessiblePaths=/run/user" >> "$tmp_path"
         chmod 0644 "$tmp_path"
         if [ -f "$dropin_path" ] && cmp -s "$tmp_path" "$dropin_path"; then
             rm -f "$tmp_path"
         else
             mv -f "$tmp_path" "$dropin_path"
+            echo changed
         fi
         systemctl daemon-reload
     ' sh \
@@ -638,7 +653,47 @@ ensure_service_resource_limits() {
         "$LABBY_SERVICE_TASKS_MAX" \
         "$LABBY_SERVICE_MEMORY_HIGH" \
         "$LABBY_SERVICE_MEMORY_MAX" \
+        "$LABBY_SERVICE_WRITABLE_HOME") \
         || fail "failed to converge labby.service resource limits"
+    if [ "$result" = changed ]; then
+        LABBY_SERVICE_RESTART_REQUIRED=true
+    fi
+}
+
+ensure_service_worker_profile() {
+    local properties main_pid
+    case "$LABBY_SERVICE_WORKERS_ENABLED" in
+        false) ;;
+        true)
+            fail "LABBY_SERVICE_WORKERS_ENABLED=true is unsupported: the user-manager socket lets upstreams bypass service filesystem restrictions; restore the original upstream commands before removing the legacy workers.conf drop-in"
+            ;;
+        *) fail "LABBY_SERVICE_WORKERS_ENABLED must be true or false" ;;
+    esac
+    # False must not silently retain a previously installed socket exposure.
+    # Query failure is also unsafe: never interpret an unreachable guest as an
+    # absent drop-in. Do not remove it here; wrapped upstreams need migration first.
+    incus_exec 10 sh -c '[ ! -e /etc/systemd/system/labby.service.d/workers.conf ]' \
+        || fail "cannot confirm the legacy worker profile is absent; restore the original upstream commands, remove /etc/systemd/system/labby.service.d/workers.conf, reload systemd and restart the gateway, then retry"
+    properties=$(incus_exec 10 systemctl show labby.service --property=MainPID --property=BindPaths) \
+        || fail "cannot inspect loaded gateway worker policy; retry after restoring guest access"
+    case "$properties" in
+        */run/user/*) fail "loaded gateway policy still exposes the user manager; reload systemd and restart the gateway after restoring the original upstream commands" ;;
+    esac
+    main_pid=$(printf '%s\n' "$properties" | sed -n 's/^MainPID=//p')
+    case "$main_pid" in
+        0) return 0 ;;
+        ''|*[!0-9]*) fail "cannot identify the running gateway to inspect its worker socket exposure" ;;
+    esac
+    # daemon-reload does not change the mount namespace of an existing process.
+    # Check that namespace through procfs; a disappeared PID requires a retry.
+    # shellcheck disable=SC2016
+    incus_exec 10 sh -c '
+        for candidate in /proc/"$1"/root/run/user/*/bus /proc/"$1"/root/run/user/*/systemd/private; do
+            [ ! -S "$candidate" ] || exit 1
+        done
+        [ -d "/proc/$1/root/run" ]
+    ' sh "$main_pid" \
+        || fail "cannot confirm the running gateway has no user-manager socket; restart the gateway after restoring its original upstream commands and safe unit policy, then retry"
 }
 
 tailscale_has_ip() {
@@ -794,11 +849,17 @@ write_sentinel() {
 converge_provisioning() {
     local labby_version
 
+    ensure_service_worker_profile
     ensure_service_resource_limits
     labby_version="$(container_labby_version)"
     [ -n "$labby_version" ] || fail "could not determine baked labby binary version inside ${INCUS_CONTAINER_NAME}"
 
     if container_ready && sentinel_matches "$labby_version"; then
+        if [ "$LABBY_SERVICE_RESTART_REQUIRED" = true ]; then
+            incus_exec 120 systemctl restart labby.service \
+                || fail "failed to apply changed service policy"
+            wait_for_ready
+        fi
         ensure_service_active
         log "${INCUS_CONTAINER_NAME} is already running, ready, and provision sentinel matches; skipping labby setup --provision --yes"
         return 0
@@ -817,6 +878,7 @@ converge_provisioning() {
         log "running labby setup --provision --yes inside ${INCUS_CONTAINER_NAME}"
         incus_exec 900 labby setup --provision --yes \
             || fail "labby setup --provision --yes failed inside ${INCUS_CONTAINER_NAME}"
+        ensure_service_worker_profile
         ensure_service_resource_limits
         incus_exec 120 systemctl enable --now labby.service \
             || fail "failed to enable/start labby.service inside ${INCUS_CONTAINER_NAME}"
