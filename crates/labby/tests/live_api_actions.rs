@@ -810,6 +810,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             "every API service needs an invalid/error path"
         );
         let required_destructive_denials = BTreeSet::from([
+            "browser".into(),
             "dev_containers".into(),
             "gateway".into(),
             "setup".into(),
