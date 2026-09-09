@@ -382,6 +382,11 @@ pub(crate) fn dedicated_contract_reason_for(key: &str, surface: Surface) -> Opti
 
 fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
+        // The real signed-socket workflow lives in live_browser_bridge; generic
+        // matrix fixtures deliberately have no observed, consented document.
+        "browser:browser.call" => {
+            Some(("requires_live_consented_browser_document", "stale_document"))
+        }
         "bundles:bundles.delete" => {
             Some(("requires_authorized_artifact_project_context", "forbidden"))
         }

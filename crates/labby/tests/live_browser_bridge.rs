@@ -72,6 +72,9 @@ async fn failure(request: reqwest::RequestBuilder, status: reqwest::StatusCode, 
 
 #[tokio::test]
 async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http_dispatch() {
+    let page_state = tempfile::tempdir().expect("owned page callback state");
+    let page_record = page_state.path().join("page-record.txt");
+    std::fs::write(&page_record, "before callback").unwrap();
     let token = uuid::Uuid::new_v4().to_string();
     let guard = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_MCP_HTTP_TOKEN", &token)
@@ -210,12 +213,16 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     assert_eq!(call["document_id"], "document-one");
     assert_eq!(call["catalog_fingerprint"], "fixture-fingerprint");
     assert_eq!(call["arguments"], json!({"text":"accepted"}));
+    // The isolated page callback mutates durable state only after the real
+    // authenticated dispatch delivers its exact, consented invocation.
+    std::fs::write(&page_record, call["arguments"]["text"].as_str().unwrap()).unwrap();
     send(
         &mut socket,
         json!({"type":"tool_result","call_id":call["call_id"],"result":{"echo":"accepted"}}),
     )
     .await;
     assert_eq!(pending_call.await.unwrap(), json!({"echo":"accepted"}));
+    assert_eq!(std::fs::read_to_string(&page_record).unwrap(), "accepted");
     assert_eq!(receive(&mut socket).await["type"], "acknowledged");
 
     // The peer repeats its claimed revision and fingerprint but changes the
@@ -290,6 +297,22 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         "browser gateway cleanup: {:?}",
         cleanup.failures
     );
+    assert_eq!(std::fs::read_to_string(&page_record).unwrap(), "accepted");
+    page_state
+        .close()
+        .expect("remove owned page callback state");
+    action_scenarios::ActionOutcome {
+        key: "browser:browser.call".into(),
+        surface: action_matrix::Surface::Api,
+        disposition: action_scenarios::Disposition::IsolatedWorkflow,
+        evidence: action_matrix::EvidenceLevel::LiveStateTransition,
+        owner: action_matrix::ScenarioOwner::StatefulWorkflowRunner,
+        outcome_kind: "consented_socket_callback_persisted_page_state".into(),
+        recovery: "none_required".into(),
+        side_effects: "owned_page_state_read_back_and_removed".into(),
+        canary_free: true,
+    }
+    .record();
 }
 
 #[tokio::test]
