@@ -1140,6 +1140,19 @@ pub(crate) fn decode_public_key(value: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+pub(crate) fn private_test_directory() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    storage::protect_new_windows_directory(directory.path()).unwrap();
+    directory
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1516,17 +1529,4 @@ mod tests {
         let detail = store.session(&first.sessions[0].id).await.unwrap();
         assert_eq!(detail.tools.len(), 1);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn private_test_directory() -> tempfile::TempDir {
-    let directory = tempfile::tempdir().unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    #[cfg(windows)]
-    storage::protect_new_windows_directory(directory.path()).unwrap();
-    directory
 }
