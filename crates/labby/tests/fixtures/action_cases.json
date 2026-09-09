@@ -62,24 +62,25 @@
     "canonical_action": null,
     "applicable_surfaces": ["mcp", "api"],
     "applicable_features": ["all", "default", "gateway-host"],
-    "scenario_kind": "live_invoke",
-    "scenario_id": "live_invoke::browser::browser_call",
-    "minimum_evidence": "live_error_path",
+    "scenario_kind": "destructive_isolated",
+    "scenario_id": "destructive_isolated::browser::browser_call",
+    "minimum_evidence": "live_state_transition",
     "setup_ref": "disposable-home",
     "fixture_params": {
-      "fixture": "isolated_browser_readonly",
+      "fixture": "isolated_browser_destructive",
       "parameters": {
         "browser_id": "$fixture.browser_id",
         "tab_id": "$fixture.tab_id",
         "document_id": "$fixture.document_id",
         "catalog_revision": "$fixture.catalog_revision",
+        "catalog_digest": "$fixture.catalog_digest",
         "tool_name": "$fixture.tool_name"
       }
     },
     "required": true,
     "exclusion_reason": null,
-    "persistence_class": "none",
-    "scenario_owner": "surface_action_runner"
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
   },
   {
     "service": "browser",
@@ -155,7 +156,7 @@
     "scenario_id": "live_invoke::browser::browser_session_enable",
     "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
-    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"session_id": "$fixture.session_id", "enabled": "$fixture.enabled"}},
+    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"session_id": "$fixture.session_id", "enabled": "$fixture.enabled", "catalog_digest": "$fixture.catalog_digest"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
