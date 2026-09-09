@@ -5,6 +5,9 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 const BOOTSTRAP_WRITER_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
+// Credential admission shares this writer with audit and policy persistence.
+// Give normal concurrent requests the same bounded wait as credential reads.
+const SECURITY_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
 
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 use super::credential_verifier::{AccessCredentialAdapter, CredentialReadPool, LiveAuthority};
@@ -266,7 +269,7 @@ impl AccessRuntime {
         window_seconds: i64,
         limit: i64,
     ) -> Result<bool, AccessRuntimeError> {
-        let _writer = self.acquire_bootstrap_writer().await?;
+        let _writer = self.acquire_writer(SECURITY_ADMISSION_DEADLINE).await?;
         self.security_store()
             .await?
             .admit_security_operation(class, bucket, now, window_seconds, limit)
@@ -674,13 +677,17 @@ impl AccessRuntime {
     pub(crate) async fn acquire_bootstrap_writer(
         &self,
     ) -> Result<OwnedSemaphorePermit, AccessRuntimeError> {
-        tokio::time::timeout(
-            BOOTSTRAP_WRITER_DEADLINE,
-            Arc::clone(&self.bootstrap_writer).acquire_owned(),
-        )
-        .await
-        .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?
-        .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+        self.acquire_writer(BOOTSTRAP_WRITER_DEADLINE).await
+    }
+
+    async fn acquire_writer(
+        &self,
+        deadline: std::time::Duration,
+    ) -> Result<OwnedSemaphorePermit, AccessRuntimeError> {
+        tokio::time::timeout(deadline, Arc::clone(&self.bootstrap_writer).acquire_owned())
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
 
     /// Consume the sole prepared proof without exposing general store access
@@ -1034,6 +1041,31 @@ mod tests {
             "Default",
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn credential_admission_waits_for_concurrent_writer_without_bypassing_limits() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        let writer = runtime.acquire_bootstrap_writer().await.unwrap();
+        let pending =
+            runtime.admit_security_operation("credential_peer".into(), [7; 32], 100, 60, 1);
+        let release = async {
+            tokio::time::sleep(BOOTSTRAP_WRITER_DEADLINE * 2).await;
+            drop(writer);
+        };
+        let (admitted, ()) = tokio::join!(pending, release);
+        assert!(admitted.unwrap());
+        assert!(
+            !runtime
+                .admit_security_operation("credential_peer".into(), [7; 32], 100, 60, 1)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
