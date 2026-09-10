@@ -62,7 +62,7 @@ pub(crate) fn public_descriptors() -> Vec<RouteDescriptor> {
             "browser",
             RouteAuth::Public,
         )
-        .side_effects("loopback browser-extension WebSocket upgrade"),
+        .side_effects("browser-extension WebSocket upgrade"),
     ]
 }
 
@@ -101,23 +101,16 @@ async fn handle_action(
     .await
 }
 
-async fn upgrade(
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
-    headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
-) -> Result<Response, ApiError> {
-    let loopback = peer
-        .as_ref()
-        .is_some_and(|Extension(ConnectInfo(address))| address.ip().is_loopback());
+async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
     let extension_id = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|value| value.to_str().ok())
         .and_then(|origin| origin.strip_prefix("chrome-extension://"))
         .filter(|id| id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte)))
         .map(str::to_string);
-    if !loopback || extension_id.is_none() {
+    if extension_id.is_none() {
         return Err(ApiError::new(ToolError::Forbidden {
-            message: "browser bridge accepts only loopback extension connections".to_string(),
+            message: "browser bridge accepts only browser-extension origins".to_string(),
             required_scopes: Vec::new(),
         }));
     }

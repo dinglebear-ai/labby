@@ -3,7 +3,7 @@ import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
-import {parseLoopbackBaseUrl} from "./base_url.js";
+import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
 
@@ -82,7 +82,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function initialize() {
   await chrome.alarms.create("labby-periodic-scan", {periodInMinutes: 1});
   const settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
-  try { settings.baseUrl = parseLoopbackBaseUrl(settings.baseUrl); } catch {
+  try { settings.baseUrl = parseBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
   }

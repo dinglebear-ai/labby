@@ -1,5 +1,5 @@
 import {BROAD_ORIGINS, disableAllTabs, enableAllTabs} from "./permissions.js";
-import {parseLoopbackBaseUrl} from "./base_url.js";
+import {parseBaseUrl} from "./base_url.js";
 
 /**
  * Every element below is declared in popup.html. Failing loudly on a missing
@@ -43,9 +43,9 @@ function renderBridgeStatus(bridgeStatus) {
 required("#save").addEventListener("click", async () => {
   let normalizedBaseUrl;
   try {
-    normalizedBaseUrl = parseLoopbackBaseUrl(baseUrl.value);
+    normalizedBaseUrl = parseBaseUrl(baseUrl.value);
   } catch {
-    status.textContent = "Labby must use a loopback URL such as http://127.0.0.1:8765.";
+    status.textContent = "Enter a Labby origin such as http://127.0.0.1:8765 or https://labby.example.com. Remote services require HTTPS.";
     return;
   }
   if (mode.value === "all_tabs") {

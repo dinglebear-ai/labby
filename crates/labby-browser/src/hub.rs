@@ -175,7 +175,7 @@ impl BrowserBridge {
         &self.store
     }
 
-    /// Accept an unauthenticated pairing request from a loopback-gated adapter.
+    /// Accept an unauthenticated pairing request from a validated browser-extension adapter.
     pub async fn request_pairing(
         &self,
         display_name: &str,

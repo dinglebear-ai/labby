@@ -19,6 +19,7 @@ mod storage_tests;
 pub use storage::BrowserStorageLock;
 
 const PAIRING_TTL_SECONDS: i64 = 300;
+const MAX_PENDING_PAIRINGS: i64 = 64;
 const CHALLENGE_TTL_SECONDS: i64 = 60;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 32;
@@ -450,17 +451,45 @@ impl BlockingStore {
         validate_pairing_input(display_name, extension_id, &public_key)?;
         let now = now_seconds()?;
         let expires_at = now + PAIRING_TTL_SECONDS;
-        let id = Uuid::new_v4().to_string();
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE extension_id=?2 AND status='pending'",
-            params![now, extension_id],
+            "DELETE FROM browser_pairing_requests WHERE status='expired' AND resolved_at IS NOT NULL AND resolved_at<=?1",
+            params![now - PAIRING_TTL_SECONDS],
         )?;
         transaction.execute(
-            "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
-            params![id, display_name, extension_id, public_key, expires_at, now],
+            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE status='pending' AND expires_at<=?1",
+            params![now],
         )?;
+        let existing_id = transaction
+            .query_row(
+                "SELECT id FROM browser_pairing_requests WHERE extension_id=?1 AND status='pending' LIMIT 1",
+                params![extension_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let id = if let Some(id) = existing_id {
+            transaction.execute(
+                "UPDATE browser_pairing_requests SET display_name=?1,public_key=?2,expires_at=?3,created_at=?4 WHERE id=?5",
+                params![display_name, public_key, expires_at, now, id],
+            )?;
+            id
+        } else {
+            let pending: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM browser_pairing_requests WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )?;
+            if pending >= MAX_PENDING_PAIRINGS {
+                return Err(BrowserError::ServerBusy);
+            }
+            let id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
+                params![id, display_name, extension_id, public_key, expires_at, now],
+            )?;
+            id
+        };
         transaction.commit()?;
         drop(connection);
         self.pairing(&id)?.ok_or(BrowserError::NotFound)
@@ -1170,6 +1199,48 @@ mod tests {
         let browser = store.approve_pairing(&request.id).unwrap();
         assert_eq!(browser.extension_id, extension_id());
         assert!(store.approve_pairing(&request.id).is_err());
+    }
+
+    fn extension_id_for(index: usize) -> String {
+        let hi = char::from(97 + ((index / 16) % 16) as u8);
+        let lo = char::from(97 + (index % 16) as u8);
+        format!("{}{}{}", "a".repeat(30), hi, lo)
+    }
+
+    #[test]
+    fn pairing_refresh_reuses_the_pending_slot() {
+        let store = BlockingStore::memory().unwrap();
+        let first = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let refreshed = store
+            .request_pairing("Chrome refreshed", extension_id(), vec![8; 32])
+            .unwrap();
+        assert_eq!(refreshed.id, first.id);
+        assert_eq!(refreshed.display_name, "Chrome refreshed");
+        assert_eq!(store.pending_pairings().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_pairing_capacity_is_bounded() {
+        let store = BlockingStore::memory().unwrap();
+        for index in 0..MAX_PENDING_PAIRINGS as usize {
+            store
+                .request_pairing("Chrome", &extension_id_for(index), vec![7; 32])
+                .unwrap();
+        }
+        let error = store
+            .request_pairing(
+                "One too many",
+                &extension_id_for(MAX_PENDING_PAIRINGS as usize),
+                vec![7; 32],
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), "server_busy");
+        assert_eq!(
+            store.pending_pairings().unwrap().len(),
+            MAX_PENDING_PAIRINGS as usize
+        );
     }
 
     #[test]
