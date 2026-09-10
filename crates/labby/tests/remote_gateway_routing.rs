@@ -23,6 +23,29 @@ async fn mock_detectable_daemon() -> MockServer {
     server
 }
 
+/// Fault the `labby` binary image into the page cache before a test measures
+/// how quickly a command completes.
+///
+/// The deadlines in this file are meant to bound *product* behavior. They
+/// cannot do that while they also pay for the loader: the all-features debug
+/// binary is a few hundred megabytes, and its first execution costs several
+/// seconds of page-in plus code-signature validation on macOS. `cargo nextest`
+/// runs each test in its own process and executes every other test binary in
+/// the run, which evicts that image, so the first spawn in a test process is
+/// reliably a cold one. Paying that cost here keeps the measured region to the
+/// product work the test is actually asserting about.
+fn warm_binary_image() {
+    static WARMED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WARMED.get_or_init(|| {
+        let _unused = std::process::Command::new(env!("CARGO_BIN_EXE_labby"))
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+}
+
 fn isolated_command(home: &std::path::Path, server: &MockServer) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
     command
@@ -30,6 +53,10 @@ fn isolated_command(home: &std::path::Path, server: &MockServer) -> Command {
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
         .env("LABBY_SERVER_URL", server.uri())
         .env("LABBY_MCP_HTTP_TOKEN", "")
+        // A stdio MCP child must never read the harness's own stdin.
+        // `tokio::process::Command::output` pipes stdout/stderr but leaves
+        // stdin inherited, so make the empty stdin these tests assume explicit.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
@@ -380,6 +407,8 @@ async fn explicit_stdio_bridge_failure_never_starts_standalone() {
         .mount(&server)
         .await;
 
+    // Bound the product behavior, not the one-time cost of loading the binary.
+    warm_binary_image();
     let output = tokio::time::timeout(
         Duration::from_secs(3),
         isolated_command(home.path(), &server).arg("mcp").output(),
