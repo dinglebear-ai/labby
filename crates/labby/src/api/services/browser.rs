@@ -26,7 +26,6 @@ use crate::dispatch::error::ToolError;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 static SOCKET_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
-static HANDSHAKE_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
 
 pub fn routes(_state: AppState) -> RouteGroup {
     RouteGroup::empty().route(
@@ -115,16 +114,10 @@ async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Respon
             required_scopes: Vec::new(),
         }));
     }
-    let socket_permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
+    let permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
         ApiError::new(ToolError::Sdk {
             sdk_kind: "server_busy".to_string(),
             message: "browser connection capacity is exhausted".to_string(),
-        })
-    })?;
-    let handshake_permit = HANDSHAKE_CAPACITY.try_acquire().map_err(|_| {
-        ApiError::new(ToolError::Sdk {
-            sdk_kind: "server_busy".to_string(),
-            message: "browser unauthenticated connection capacity is exhausted".to_string(),
         })
     })?;
     initialize_browser_bridge().await?;
@@ -132,22 +125,13 @@ async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Respon
         .max_message_size(512 * 1024)
         .max_frame_size(512 * 1024)
         .on_upgrade(move |socket| async move {
-            let _socket_permit = socket_permit;
-            handle_socket(
-                socket,
-                extension_id.expect("validated extension id"),
-                handshake_permit,
-            )
-            .await;
+            let _permit = permit;
+            handle_socket(socket, extension_id.expect("validated extension id")).await;
         }))
 }
 
-async fn handle_socket(
-    socket: WebSocket,
-    extension_id: String,
-    handshake_permit: tokio::sync::SemaphorePermit<'static>,
-) {
-    if let Err(error) = run_socket(socket, &extension_id, handshake_permit).await {
+async fn handle_socket(socket: WebSocket, extension_id: String) {
+    if let Err(error) = run_socket(socket, &extension_id).await {
         tracing::warn!(
             surface = "api",
             service = "browser",
@@ -160,7 +144,6 @@ async fn handle_socket(
 async fn run_socket(
     socket: WebSocket,
     extension_id: &str,
-    handshake_permit: tokio::sync::SemaphorePermit<'static>,
 ) -> Result<(), labby_browser::BrowserError> {
     let bridge = browser_bridge()
         .await
@@ -295,7 +278,6 @@ async fn run_socket(
         }
     }
 
-    drop(handshake_permit);
     let mut connection = authenticated.expect("authenticated connection set");
     let browser_id = connection.browser_id.clone();
     let connection_id = connection.connection_id.clone();

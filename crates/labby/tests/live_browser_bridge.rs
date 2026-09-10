@@ -205,23 +205,6 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(signature.to_bytes())})).await;
     assert_eq!(receive(&mut socket).await["type"], "authenticated");
 
-    // Successful authentication must release the separate handshake budget so
-    // long-lived trusted browsers do not consume the unauthenticated allowance.
-    let mut unauthenticated_sockets = Vec::new();
-    for _ in 0..16 {
-        let mut request = format!("{}/browser/socket", base.replacen("http://", "ws://", 1))
-            .into_client_request()
-            .unwrap();
-        request.headers_mut().insert(
-            "Origin",
-            format!("chrome-extension://{EXTENSION}").parse().unwrap(),
-        );
-        let (candidate, response) = tokio_tungstenite::connect_async(request).await.unwrap();
-        assert_eq!(response.status().as_u16(), 101);
-        unauthenticated_sockets.push(candidate);
-    }
-    drop(unauthenticated_sockets);
-
     send(&mut socket, json!({"type":"heartbeat"})).await;
     let heartbeat = receive(&mut socket).await;
     assert_eq!(heartbeat["type"], "acknowledged");
@@ -397,7 +380,7 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
 }
 
 #[tokio::test]
-async fn unauthenticated_socket_admission_is_bounded_and_released_after_disconnect() {
+async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
     let token = uuid::Uuid::new_v4().to_string();
     let guard = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_MCP_HTTP_TOKEN", &token)
@@ -417,7 +400,7 @@ async fn unauthenticated_socket_admission_is_bounded_and_released_after_disconne
         request
     };
     let mut sockets = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..64 {
         let (socket, _) = tokio::time::timeout(
             Duration::from_secs(5),
             tokio_tungstenite::connect_async(request()),
