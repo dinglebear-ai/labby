@@ -930,16 +930,20 @@ async fn upload_impl(
     crate::dispatch::file_stash::capture_observation_details(None, None, Some(declared));
     validate_transfer_headers(&headers)?;
     let svc = service(&state);
-    let (reservation, admission) = svc
-        .reserve_upload(&principal, &display_name, declared)
-        .await?;
     let stream = body.into_data_stream().map_err(std::io::Error::other);
     let reader = StreamReader::new(stream);
     let cancel = CancellationToken::new();
     let mut guard = CancelOnDrop(Some(cancel.clone()));
-    // Keep finalization alive after an HTTP request future is dropped so the
-    // cancellation signal can drive the shared service's reservation cleanup.
+    let owner: crate::access::AccessPrincipalId = (*principal).clone();
+    // Reserve and finalize in one spawned task so neither step is owned by the
+    // cancellable HTTP request future. Reserving in the handler left a window
+    // between the durable reservation and the task that answers the
+    // cancellation signal: a request dropped inside that window released the
+    // admission permits but left the reserved bytes charged until the janitor
+    // TTL. Keeping finalization spawned also lets the signal drive the shared
+    // service's reservation cleanup after the request future is gone.
     let upload = tokio::spawn(async move {
+        let (reservation, admission) = svc.reserve_upload(&owner, &display_name, declared).await?;
         svc.finalize_upload(reservation, admission, reader, cancel)
             .await
     });
@@ -1727,6 +1731,33 @@ mod tests {
                 .owned_committed_bytes,
             0
         );
+        runtime.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn router_surfaces_reservation_refusal_from_the_spawned_upload() {
+        // Reservation runs inside the spawned upload task so a dropped request
+        // cannot strand it. Its refusals must still reach the caller as the
+        // reservation's own error rather than a join failure.
+        let (router, service, principal, runtime, _temp) = ready_router_fixture().await;
+        let oversized = crate::config::FileStashPreferences::default().max_file_bytes + 1;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stash/uploads")
+                    .header("x-labby-stash-filename", "huge.txt")
+                    .header(header::CONTENT_LENGTH, oversized.to_string())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let stats = service.stats(&principal).await.unwrap();
+        assert_eq!(stats.owned_reserved_bytes, 0);
+        assert_eq!(stats.owned_committed_bytes, 0);
         runtime.shutdown().await;
     }
 
