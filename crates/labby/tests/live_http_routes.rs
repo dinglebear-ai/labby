@@ -523,18 +523,29 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
     match oversized {
         Ok(response) => assert!(!response.status().is_success()),
         Err(error) => {
-            // The auth layer rejects this request before consuming its body.
-            // Depending on when the client finishes writing, Linux reports
-            // that fail-closed response as a broken pipe instead of exposing
-            // an HTTP status.
-            // reqwest's Display output stops at the high-level request error,
-            // while the platform-specific broken-pipe cause is retained in
-            // the debug/source chain.
-            let message = format!("{error:?}").to_ascii_lowercase();
+            // The auth layer rejects this request before consuming its body
+            // and closes the connection. Depending on when the client
+            // finishes writing, that fail-closed response surfaces as a
+            // write failure on a socket the server closed rather than as an
+            // HTTP status: EPIPE on Unix, and on Windows ERROR_NO_DATA
+            // (mapped to BrokenPipe), WSAECONNABORTED (10053), or
+            // WSAECONNRESET (10054). Match the io::ErrorKind at the bottom of
+            // reqwest's source chain instead of platform-specific message
+            // text, which differs per OS.
+            let top: &(dyn std::error::Error + 'static) = &error;
+            let server_closed_kind = std::iter::successors(Some(top), |cause| cause.source())
+                .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::kind);
             assert!(
                 error.is_request()
-                    && (message.contains("broken pipe")
-                        || message.contains("pipe is being closed")),
+                    && matches!(
+                        server_closed_kind,
+                        Some(
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                        )
+                    ),
                 "unexpected oversized-request transport error: {error:?}"
             );
         }
