@@ -244,7 +244,10 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     {
         Ok(ok) => Ok(ok),
         Err(first_error) => {
-            let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
+            // Classify the MCP failure alone. The child's stderr is its own log
+            // output, so it must not reach `compatibility_retry`; a server that
+            // merely logs "Method not found" is not rejecting `server/discover`.
+            let lifecycle_error = anyhow::anyhow!(first_error.protocol_error().to_string());
             // A child that exited before answering proved nothing about its
             // lifecycle; only a live peer's rejection justifies a respawn.
             if initial_attempt == LifecycleAttempt::Modern
@@ -253,7 +256,12 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
                     compatibility_retry(&lifecycle_error, LifecycleTransport::Stdio)
             {
                 remember_legacy_stdio_lifecycle(lifecycle_key);
-                log_fallback(&command.name, "stdio", attempt, &lifecycle_error);
+                log_fallback(
+                    &command.name,
+                    "stdio",
+                    attempt,
+                    &anyhow::anyhow!(first_error.diagnostics_with_error()),
+                );
                 return connect_stdio_upstream_once(
                     &command,
                     handler,
