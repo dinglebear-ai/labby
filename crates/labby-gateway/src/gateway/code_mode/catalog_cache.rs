@@ -35,10 +35,44 @@ const CACHE_VERSION: u32 = 1;
 #[allow(dead_code)]
 const CACHE_TTL: Duration = Duration::from_hours(6);
 
+/// Capped exponential suppression window for an upstream that failed to probe.
+///
+/// Deliberately minute-scale and separate from [`CACHE_TTL`]: pinning a failure
+/// for six hours would make a transient outage look permanent, while dropping
+/// it entirely makes every run re-pay a multi-second connect against an
+/// upstream already known to be down.
+///
+/// Distinct from [`labby_runtime::backoff::reprobe_backoff`] on purpose: that
+/// ladder paces in-process retries at second scale, this one paces suppression
+/// across separate one-shot CLI invocations.
+fn negative_backoff(consecutive_failures: u32) -> Duration {
+    let seconds = match consecutive_failures {
+        0 | 1 => 30,
+        2 => 60,
+        3 => 120,
+        _ => 300,
+    };
+    Duration::from_secs(seconds)
+}
+
+/// Deterministic jitter seed for an upstream, so hosts sharing a dead upstream
+/// do not resynchronise onto it. Deterministic rather than random keeps the
+/// window reproducible under test.
+fn jitter_seed(upstream_name: &str) -> u64 {
+    let digest = Sha256::digest(upstream_name.as_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(bytes)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct CatalogCache {
     version: u32,
     upstreams: HashMap<String, CachedUpstreamCatalog>,
+    /// Short-lived negative entries. `serde(default)` so a cache written by a
+    /// build without them still loads.
+    #[serde(default)]
+    failures: HashMap<String, CachedUpstreamFailure>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -49,12 +83,36 @@ struct CachedUpstreamCatalog {
     tools: Vec<CachedTool>,
 }
 
+/// A recorded probe failure, suppressing reconnect attempts until
+/// `retry_after_unix`. Bound to the config fingerprint so editing an upstream
+/// retries it immediately instead of waiting out the backoff.
+#[derive(Clone, Serialize, Deserialize)]
+struct CachedUpstreamFailure {
+    fingerprint: String,
+    #[serde(default)]
+    failed_at_unix: u64,
+    #[serde(default)]
+    consecutive_failures: u32,
+    #[serde(default)]
+    retry_after_unix: u64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct CachedTool {
     tool: rmcp::model::Tool,
     input_schema: Option<Value>,
     output_schema: Option<Value>,
     destructive: bool,
+}
+
+/// A pending negative cache entry for one upstream whose probe failed.
+///
+/// Only genuine probe failures belong here. An upstream that was still
+/// connecting, or was never attempted, when the cold-connect budget ended has
+/// not failed — suppressing it would turn a slow run into a lasting outage.
+pub(crate) struct CatalogCacheFailure {
+    pub(crate) upstream_name: String,
+    pub(crate) fingerprint: String,
 }
 
 /// A pending cache update for one upstream, produced after a live probe.
@@ -145,25 +203,55 @@ impl CatalogCache {
                 .collect(),
         )
     }
+
+    /// Return `true` when `upstream_name` failed recently enough that this run
+    /// should skip it instead of re-paying the connect.
+    ///
+    /// Suppression lapses on its own once `retry_after_unix` passes, and any
+    /// config edit changes the fingerprint and clears it, so a recovered or
+    /// reconfigured upstream can never stay invisible.
+    pub(crate) fn probe_suppressed(&self, upstream_name: &str, fingerprint: &str) -> bool {
+        let Some(entry) = self.failures.get(upstream_name) else {
+            return false;
+        };
+        if entry.fingerprint != fingerprint {
+            return false;
+        }
+        now_unix() < entry.retry_after_unix
+    }
 }
 
 /// Merge `updates` into the on-disk cache at `path` and persist atomically.
 ///
 /// Loads a fresh copy first so concurrent invocations updating different
 /// upstreams do not clobber each other's entries (last-writer-wins per file,
-/// but each write carries the latest visible merge). Upstreams that failed to
-/// probe, or were still connecting when the caller's budget ended, must NOT be
-/// passed here — leaving them absent means the next run retries.
+/// but each write carries the latest visible merge).
+///
+/// Upstreams that were still connecting when the caller's budget ended, or were
+/// never attempted, must NOT be passed in either argument — they have not
+/// failed, and leaving them absent means the next run retries them immediately.
+///
+/// Upstreams whose probe genuinely failed go in `failures`, not `updates`. They
+/// are recorded as short-lived negative entries rather than dropped: dropping
+/// them means every subsequent run re-pays a multi-second connect against an
+/// upstream already known to be down, which is what lets a handful of dead
+/// upstreams exhaust the cold-connect budget before healthy ones are reached. A
+/// success clears any negative entry for that upstream.
 ///
 /// The write is completed before returning so one-shot CLI invocations do not
 /// exit before a refreshed cache lands on disk. The write is skipped entirely
 /// only when no entry has changed and no TTL timestamp needs renewal.
-pub(crate) async fn merge_and_store(path: PathBuf, updates: Vec<CatalogCacheUpdate>) {
-    if updates.is_empty() {
+pub(crate) async fn merge_and_store(
+    path: PathBuf,
+    updates: Vec<CatalogCacheUpdate>,
+    failures: Vec<CatalogCacheFailure>,
+) {
+    if updates.is_empty() && failures.is_empty() {
         return;
     }
     if let Err(error) =
-        tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates)).await
+        tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates, failures))
+            .await
     {
         tracing::warn!(
             surface = "dispatch",
@@ -175,14 +263,24 @@ pub(crate) async fn merge_and_store(path: PathBuf, updates: Vec<CatalogCacheUpda
     }
 }
 
-fn merge_and_store_blocking(path: &Path, updates: Vec<CatalogCacheUpdate>) {
+fn merge_and_store_blocking(
+    path: &Path,
+    updates: Vec<CatalogCacheUpdate>,
+    failures: Vec<CatalogCacheFailure>,
+) {
     let mut cache = CatalogCache::load_from(path);
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
     let mut changed = false;
     for update in updates {
+        // A successful probe clears any suppression for that upstream.
+        changed |= cache.failures.remove(&update.upstream_name).is_some();
         changed |= merge_update_into_cache(&mut cache, update, saved_at_unix);
     }
+    for failure in failures {
+        changed |= merge_failure_into_cache(&mut cache, failure, saved_at_unix);
+    }
+    changed |= prune_expired_failures(&mut cache, saved_at_unix);
 
     if !changed {
         return;
@@ -198,6 +296,48 @@ fn merge_and_store_blocking(path: &Path, updates: Vec<CatalogCacheUpdate>) {
             "failed to persist code_mode catalog cache"
         );
     }
+}
+
+/// Record a probe failure, escalating the window when the same upstream fails
+/// again under the same configuration.
+fn merge_failure_into_cache(
+    cache: &mut CatalogCache,
+    failure: CatalogCacheFailure,
+    saved_at_unix: u64,
+) -> bool {
+    let consecutive_failures = cache
+        .failures
+        .get(&failure.upstream_name)
+        .filter(|existing| existing.fingerprint == failure.fingerprint)
+        .map_or(1, |existing| {
+            existing.consecutive_failures.saturating_add(1)
+        });
+
+    let window = labby_runtime::backoff::jitter_delay(
+        negative_backoff(consecutive_failures),
+        jitter_seed(&failure.upstream_name),
+    );
+
+    cache.failures.insert(
+        failure.upstream_name,
+        CachedUpstreamFailure {
+            fingerprint: failure.fingerprint,
+            failed_at_unix: saved_at_unix,
+            consecutive_failures,
+            retry_after_unix: saved_at_unix.saturating_add(window.as_secs()),
+        },
+    );
+    true
+}
+
+/// Drop negative entries whose window has lapsed, so the file does not
+/// accumulate a row per upstream ever seen failing.
+fn prune_expired_failures(cache: &mut CatalogCache, now_unix: u64) -> bool {
+    let before = cache.failures.len();
+    cache
+        .failures
+        .retain(|_, entry| now_unix < entry.retry_after_unix);
+    cache.failures.len() != before
 }
 
 fn merge_update_into_cache(
@@ -316,6 +456,7 @@ mod tests {
         let mut cache = CatalogCache {
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
+            failures: HashMap::new(),
         };
         cache.upstreams.insert(
             "alpha".to_string(),
@@ -346,6 +487,7 @@ mod tests {
         let mut cache = CatalogCache {
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
+            failures: HashMap::new(),
         };
         cache.upstreams.insert(
             "alpha".to_string(),
@@ -398,6 +540,7 @@ mod tests {
         let mut cache = CatalogCache {
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
+            failures: HashMap::new(),
         };
         cache.upstreams.insert(
             "alpha".to_string(),
@@ -429,6 +572,7 @@ mod tests {
         let mut cache = CatalogCache {
             version: CACHE_VERSION,
             upstreams: HashMap::new(),
+            failures: HashMap::new(),
         };
         let stale_saved_at = now_unix() - CACHE_TTL.as_secs() - 60;
         let tool = CachedTool {
@@ -523,6 +667,7 @@ mod tests {
                 fingerprint: "fp".to_string(),
                 tools: Vec::new(),
             }],
+            Vec::new(),
         )
         .await;
 
@@ -532,5 +677,149 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "cache must not be group- or world-readable");
+    }
+
+    fn empty_cache() -> CatalogCache {
+        CatalogCache {
+            version: CACHE_VERSION,
+            upstreams: HashMap::new(),
+            failures: HashMap::new(),
+        }
+    }
+
+    fn failure(name: &str, fingerprint: &str) -> CatalogCacheFailure {
+        CatalogCacheFailure {
+            upstream_name: name.to_string(),
+            fingerprint: fingerprint.to_string(),
+        }
+    }
+
+    #[test]
+    fn recorded_failure_suppresses_the_next_probe() {
+        let mut cache = empty_cache();
+        assert!(!cache.probe_suppressed("alpha", "fp"), "clean cache");
+        assert!(merge_failure_into_cache(
+            &mut cache,
+            failure("alpha", "fp"),
+            now_unix()
+        ));
+        assert!(cache.probe_suppressed("alpha", "fp"));
+        assert!(!cache.probe_suppressed("beta", "fp"), "per-upstream");
+    }
+
+    #[test]
+    fn suppression_lapses_once_the_window_passes() {
+        let mut cache = empty_cache();
+        let long_ago = now_unix() - negative_backoff(1).as_secs() * 2;
+        merge_failure_into_cache(&mut cache, failure("alpha", "fp"), long_ago);
+        assert!(
+            !cache.probe_suppressed("alpha", "fp"),
+            "an expired negative entry must not keep an upstream invisible"
+        );
+    }
+
+    #[test]
+    fn repeated_failures_escalate_the_window_and_cap() {
+        let mut cache = empty_cache();
+        let now = now_unix();
+        let mut windows = Vec::new();
+        for _ in 0..6 {
+            merge_failure_into_cache(&mut cache, failure("alpha", "fp"), now);
+            windows.push(cache.failures["alpha"].retry_after_unix - now);
+        }
+        assert_eq!(cache.failures["alpha"].consecutive_failures, 6);
+        assert!(
+            windows[0] <= windows[1] && windows[1] <= windows[2],
+            "window should escalate: {windows:?}"
+        );
+        let (_, max_jitter) = labby_runtime::backoff::jitter_window(negative_backoff(u32::MAX));
+        assert!(
+            windows.iter().all(|w| *w <= max_jitter.as_secs()),
+            "window must stay capped: {windows:?}"
+        );
+    }
+
+    #[test]
+    fn changing_upstream_config_retries_immediately() {
+        let mut cache = empty_cache();
+        merge_failure_into_cache(&mut cache, failure("alpha", "fp"), now_unix());
+        assert!(cache.probe_suppressed("alpha", "fp"));
+        assert!(
+            !cache.probe_suppressed("alpha", "edited-fp"),
+            "a config edit must clear suppression rather than wait out the backoff"
+        );
+    }
+
+    #[test]
+    fn a_successful_probe_clears_suppression_and_restores_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+        let now = now_unix();
+
+        let mut seeded = empty_cache();
+        seeded.version = CACHE_VERSION;
+        merge_failure_into_cache(&mut seeded, failure("alpha", "fp"), now);
+        persist_atomic(&path, &seeded).expect("seed cache");
+        assert!(CatalogCache::load_from(&path).probe_suppressed("alpha", "fp"));
+
+        // A tool that did not exist while the upstream was failing must still be
+        // discovered on recovery.
+        merge_and_store_blocking(
+            &path,
+            vec![CatalogCacheUpdate {
+                upstream_name: "alpha".to_string(),
+                fingerprint: "fp".to_string(),
+                tools: vec![test_tool("brand_new_tool")],
+            }],
+            Vec::new(),
+        );
+
+        let reloaded = CatalogCache::load_from(&path);
+        assert!(!reloaded.probe_suppressed("alpha", "fp"));
+        let tools = reloaded
+            .fresh_tools("alpha", "fp")
+            .expect("recovered tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool.name, "brand_new_tool");
+    }
+
+    #[test]
+    fn failures_round_trip_to_disk_and_expired_ones_are_pruned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+
+        merge_and_store_blocking(&path, Vec::new(), vec![failure("dead", "fp")]);
+        assert!(CatalogCache::load_from(&path).probe_suppressed("dead", "fp"));
+
+        let mut stale = empty_cache();
+        stale.version = CACHE_VERSION;
+        merge_failure_into_cache(
+            &mut stale,
+            failure("stale", "fp"),
+            now_unix() - negative_backoff(1).as_secs() * 2,
+        );
+        assert!(prune_expired_failures(&mut stale, now_unix()));
+        assert!(stale.failures.is_empty());
+    }
+
+    #[test]
+    fn cache_written_without_negative_entries_still_loads() {
+        let legacy = serde_json::json!({
+            "version": CACHE_VERSION,
+            "upstreams": {
+                "alpha": { "fingerprint": "fp", "saved_at_unix": now_unix(), "tools": [] }
+            }
+        });
+        let cache: CatalogCache =
+            serde_json::from_value(legacy).expect("legacy cache must deserialize");
+        assert!(cache.failures.is_empty());
+        assert!(!cache.probe_suppressed("alpha", "fp"));
+        assert!(cache.fresh_tools("alpha", "fp").is_some());
+    }
+
+    #[test]
+    fn jitter_seed_is_stable_per_upstream_and_differs_across_upstreams() {
+        assert_eq!(jitter_seed("alpha"), jitter_seed("alpha"));
+        assert_ne!(jitter_seed("alpha"), jitter_seed("beta"));
     }
 }
