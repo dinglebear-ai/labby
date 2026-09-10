@@ -2205,15 +2205,22 @@ fn budget_warning(logs: &str) -> Option<&str> {
 
 /// One-shot CLI catalog: dead and stalled upstreams ahead of a genuinely cold
 /// healthy one must not starve it. Uncached upstreams are probed concurrently
-/// under a budget derived from the Code Mode timeout (half of 3s here), the
+/// under a budget derived from the Code Mode timeout (half of 6s here), the
 /// stalled straggler is named and omitted for this run, and the upstream that
 /// completed is persisted so the next run does not pay for it again. Serial
 /// probing would first wait out the stalled upstream's 30s discovery timeout,
-/// which the 10s guard rejects.
+/// which the 15s guard rejects.
+///
+/// How the refused upstream is classified is deliberately not asserted: a
+/// connect to a closed port is refused immediately on Unix but can stay
+/// pending on Windows, so it may end the run either as a failure or as still
+/// in flight. Only that it never lands in the catalog or the cache matters
+/// here; the failure-reporting path is pinned by
+/// `one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast`.
 #[tokio::test]
 async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstreams() {
     let stalled = stalled_http_upstream("alpha").await;
-    // `fixture_http_upstream` points at 127.0.0.1:9, which refuses at once.
+    // `fixture_http_upstream` points at 127.0.0.1:9, which nothing listens on.
     let dead = fixture_http_upstream("beta");
     let responder = OneShotHttpResponder::new("ping", Duration::ZERO);
     let (_server, healthy) = cold_http_upstream("omega", responder.clone()).await;
@@ -2221,13 +2228,13 @@ async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstre
     let cache_path = cache_dir.path().join("codemode-catalog.json");
     let (manager, _pool) = one_shot_manager_at(
         vec![stalled.clone(), dead.clone(), healthy.clone()],
-        3_000,
+        6_000,
         cache_path.clone(),
     )
     .await;
 
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
@@ -2243,17 +2250,8 @@ async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstre
         "the stalled upstream must be named as in flight: {warning}"
     );
     assert!(
-        !warning.contains("beta") && !warning.contains("omega"),
-        "failed and completed upstreams are not unfinished: {warning}"
-    );
-
-    let failure = logs
-        .lines()
-        .find(|line| line.contains("upstream connect failed; omitting"))
-        .expect("the fast failure must be logged");
-    assert!(
-        failure.contains("beta"),
-        "failure must name beta: {failure}"
+        !warning.contains("omega"),
+        "a completed upstream is not unfinished: {warning}"
     );
 
     let cache = catalog_cache::CatalogCache::load_from(&cache_path);
@@ -2440,16 +2438,16 @@ async fn one_shot_cli_catalog_serves_cached_upstreams_when_a_straggler_misses_th
 #[tokio::test]
 async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cutoff() {
     let responder = OneShotHttpResponder::new("ping", Duration::ZERO)
-        .with_prompts_delay(Duration::from_secs(5));
+        .with_prompts_delay(Duration::from_mins(2));
     let (_server, mut healthy) = cold_http_upstream("omega", responder).await;
     healthy.proxy_prompts = true;
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let cache_path = cache_dir.path().join("codemode-catalog.json");
     let (manager, _pool) =
-        one_shot_manager_at(vec![healthy.clone()], 1_000, cache_path.clone()).await;
+        one_shot_manager_at(vec![healthy.clone()], 4_000, cache_path.clone()).await;
 
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
