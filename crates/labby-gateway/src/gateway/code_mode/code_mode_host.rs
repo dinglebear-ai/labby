@@ -290,6 +290,16 @@ impl CodeModeHost for GatewayManager {
         Ok(outcome)
     }
 
+    async fn list_resources(
+        &self,
+        upstream: String,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        super::resources::list_resources(self, &upstream, caller, surface, scope).await
+    }
+
     async fn read_resource(
         &self,
         uri: String,
@@ -297,6 +307,7 @@ impl CodeModeHost for GatewayManager {
         surface: CodeModeSurface,
         scope: &ToolScope,
     ) -> Result<Value, ToolError> {
+        super::resources::validate_read_uri(&uri)?;
         if let Some(upstream) = uri
             .strip_prefix("lab://upstream/")
             .and_then(|rest| rest.split_once('/').map(|(name, _)| name))
@@ -1208,7 +1219,10 @@ fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCall
 
 /// Map a Code Mode caller + surface onto an `UpstreamRuntimeOwner`. Lifted out
 /// of the (now neutral) `CodeModeCaller` so the kernel carries no gateway type.
-fn runtime_owner(caller: &CodeModeCaller, surface: CodeModeSurface) -> UpstreamRuntimeOwner {
+pub(super) fn runtime_owner(
+    caller: &CodeModeCaller,
+    surface: CodeModeSurface,
+) -> UpstreamRuntimeOwner {
     let surface = surface.tag();
     let subject = caller.subject().map(ToOwned::to_owned);
     let raw = subject
@@ -1231,7 +1245,7 @@ fn runtime_owner(caller: &CodeModeCaller, surface: CodeModeSurface) -> UpstreamR
 /// (`SHARED_GATEWAY_OAUTH_SUBJECT`); non-admin callers keep their own `sub` so a
 /// personal upstream grant is used; a `sub`-less caller falls back to the shared
 /// subject. Mirrors `oauth_upstream_subject_for_request`.
-fn oauth_subject(caller: &CodeModeCaller) -> Option<&str> {
+pub(super) fn oauth_subject(caller: &CodeModeCaller) -> Option<&str> {
     if caller.is_admin() {
         return Some(SHARED_GATEWAY_OAUTH_SUBJECT);
     }

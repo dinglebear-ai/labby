@@ -75,12 +75,30 @@ Inside the sandbox:
   inside the same sandbox runtime.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
 - `await callTool("github::list_pull_requests", params)` calls the raw bridge.
+- `await codemode.listResources("upstream-name")` lists that upstream's exposed
+  MCP resources as `{ resources: [...] }`, including each exact read-ready `uri`.
 - `await codemode.readResource("lab://upstream/<name>/<uri>")` reads an
   upstream MCP resource and returns its normal `ReadResourceResult` object.
 
 Resource reads use the same route and caller scoping as Code Mode tool calls.
 Native `ui://` widget resources are also supported when the owning upstream is
 visible to the current run.
+
+Discover resource URIs instead of constructing them from tool identifiers:
+
+```javascript
+const { resources } = await codemode.listResources("docs");
+const skill = resources.find(resource => resource.name === "docs/skill");
+if (!skill) throw new Error("The required skill was not listed");
+return await codemode.readResource(skill.uri);
+```
+
+Use the configured upstream name, not its sanitized JavaScript namespace.
+`upstream::tool` identifies a tool, not a resource. Resource discovery connects
+the selected upstream lazily and uses the caller's scope, resource exposure
+policy, and OAuth subject. It does not connect unrelated upstreams. Listing
+uses the native MCP listing bounds and failure behavior; an empty list is not
+proof of provider health. Resource reads still enforce access at call time.
 
 ### Local State And Git Providers
 

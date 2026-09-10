@@ -176,6 +176,23 @@ pub trait CodeModeHost: Send + Sync {
         ctx: ExecCtx,
     ) -> impl Future<Output = Result<ToolCallOutcome, CodeModeCallError>> + Send;
 
+    /// List resources for one upstream, returning read-ready URIs under the
+    /// same caller and namespace restrictions as resource reads.
+    fn list_resources(
+        &self,
+        _upstream: String,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode resource discovery is not available".to_string(),
+            })
+        }
+    }
+
     /// Read a resource through the host's resource source. The URI is passed
     /// unchanged so the host can apply its own routing and authorization
     /// rules. The returned value is the serialized MCP `ReadResourceResult`.

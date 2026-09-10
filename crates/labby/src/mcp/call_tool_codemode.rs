@@ -210,7 +210,7 @@ Execute JavaScript in a sandbox with access to the Labby gateway catalog.
 
 1. Discover: `const hits = await codemode.search({ query: \"short intent phrase\", limit: 5 });`
 2. Inspect: `const docs = await codemode.describe(hits.results[0].path);`
-3. Read a resource: `await codemode.readResource(\"lab://upstream/<name>/<uri>\");`
+3. Discover resources: `const { resources } = await codemode.listResources(\"upstream-name\");` Then pass a returned `resources[].uri` unchanged to `codemode.readResource(uri)`.
 4. Call: `await codemode.<upstream>.<tool>(params)` or `await callTool(\"upstream::tool\", params);`
 
 Never guess helper or method names. If you have not already confirmed the exact \
@@ -256,6 +256,10 @@ every job has settled. Prefer it over `Promise.all([...])` for fan-out — \
 `Promise.all` rejects on the first failure and discards every other in-flight \
 result; `codemode.batch` never does.
 
+`codemode.listResources(upstream)` lists exposed resources for one configured \
+upstream name and returns `{ resources: [...] }` with exact read-ready URIs. \
+Resource URIs are not `upstream::tool` identifiers. An empty list is not a \
+connection health check.\n\n\
 `codemode.readResource(uri)` reads an upstream MCP resource through the same \
 route and caller scope as the current Code Mode run. It returns the MCP \
 `ReadResourceResult` object with a `contents` array.
