@@ -3,6 +3,7 @@
 //! cache used by the `search` surface.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -16,7 +17,7 @@ use crate::gateway::code_mode::{
 use crate::upstream::pool::UpstreamPool;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig};
+use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
 
 use super::GatewayManager;
 
@@ -87,6 +88,31 @@ fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
     })
 }
 
+/// Wall-clock a one-shot CLI catalog build may spend cold-connecting uncached
+/// upstreams: half the configured Code Mode execution timeout, so proxy
+/// generation leaves the sandbox roughly the other half (less the broker's
+/// response reserve and catalog rendering).
+fn one_shot_catalog_connect_budget(code_mode: &CodeModeConfig) -> std::time::Duration {
+    std::time::Duration::from_millis(code_mode.timeout_ms) / 2
+}
+
+/// Restore configuration order after concurrent probes settle in arbitrary
+/// order, so the rendered proxy is stable across runs. (The live catalog path
+/// orders alphabetically instead; both orders are deterministic.)
+fn sort_tools_by_config_order(tools: &mut [UpstreamTool], upstreams: &[UpstreamConfig]) {
+    let position: std::collections::HashMap<&str, usize> = upstreams
+        .iter()
+        .enumerate()
+        .map(|(index, upstream)| (upstream.name.as_str(), index))
+        .collect();
+    tools.sort_by_key(|tool| {
+        position
+            .get(tool.upstream_name.as_ref())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+}
+
 impl GatewayManager {
     pub(crate) async fn catalog_render_flight(
         &self,
@@ -104,6 +130,21 @@ impl GatewayManager {
 
     pub async fn code_mode_config(&self) -> CodeModeConfig {
         self.config.read().await.code_mode.clone()
+    }
+
+    /// Location of the one-shot CLI catalog cache: the product path unless a
+    /// test injected an isolated file.
+    pub(crate) fn code_mode_catalog_cache_path(&self) -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = &self.code_mode_catalog_cache_path {
+            return path.clone();
+        }
+        crate::gateway::code_mode::catalog_cache::cache_path()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_code_mode_catalog_cache_path_for_tests(&mut self, path: PathBuf) {
+        self.code_mode_catalog_cache_path = Some(path);
     }
 
     /// Shared, long-lived Code Mode warm-runner pool (Perf H1).
@@ -368,14 +409,33 @@ impl GatewayManager {
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode
     /// proxy catalog from the on-disk cache, connecting only upstreams whose
-    /// cache entry is missing, stale, or fingerprint-mismatched.
+    /// cache entry is missing, stale, or fingerprint-mismatched. OAuth upstreams
+    /// are subject-scoped, so they are probed on every run (when a subject is
+    /// present, which the gateway host always supplies) and never cached.
     ///
     /// A one-shot `labby gateway code exec` must not connect the full upstream
     /// fleet per invocation just to generate the `codemode.*` proxy. Tool calls
     /// still resolve live (`resolve_code_mode_upstream_tool` ensures the target
     /// upstream), so a stale cache can only mis-shape the proxy — `callTool`
-    /// remains the always-fresh escape hatch. Upstreams that fail to probe are
-    /// omitted from the proxy and NOT cached, so the next run retries them.
+    /// remains the always-fresh escape hatch. The same path serves
+    /// `snippets.exec`, whose executions run on the CLI surface.
+    ///
+    /// Uncached upstreams are probed concurrently (bounded by
+    /// `upstream_discovery_concurrency()`) under a wall-clock budget of half the
+    /// configured Code Mode timeout, so proxy generation leaves the sandbox
+    /// roughly the other half. This runs inside the broker's proxy-generation
+    /// deadline, and a per-upstream discovery timeout is as long as or longer
+    /// than that whole deadline (30s HTTP, 60s stdio by default against a 30s
+    /// Code Mode timeout): a serial pass let one stalled stdio child spend the
+    /// entire budget before any other upstream was reached, and a pass cut off
+    /// by the deadline persisted nothing, so every later run was just as cold.
+    ///
+    /// Partial is loud and never empty: upstreams that fail, are still
+    /// connecting, or were never attempted when the budget ends are omitted
+    /// from the proxy and NOT cached (so the next run retries them) and are
+    /// named in a warning; a pass that would leave the catalog with nothing
+    /// from cache and nothing connected is an error instead. Every upstream
+    /// that did complete is persisted even when the budget cut the pass short.
     #[allow(dead_code)]
     pub async fn code_mode_catalog_tools_cached(
         &self,
@@ -389,76 +449,103 @@ impl GatewayManager {
             return Ok(Vec::new());
         }
 
-        let cache = catalog_cache::CatalogCache::load();
+        let cache_path = self.code_mode_catalog_cache_path();
+        let cache = catalog_cache::CatalogCache::load_from(&cache_path);
         let mut tools = Vec::new();
-        let mut updates = Vec::new();
-        let mut pool = None;
+        let mut cache_hits = 0usize;
+        // Upstreams that need a live probe, carrying the fingerprint their
+        // fresh tools are stored under (`None` for subject-scoped OAuth probes,
+        // which are never cached).
+        let mut pending: Vec<(UpstreamConfig, Option<String>)> = Vec::new();
         for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
             if upstream.oauth.is_some() {
-                let Some(subject) = oauth_subject else {
-                    continue;
-                };
-                let subject_pool = match &pool {
-                    Some(pool) => Arc::clone(pool),
-                    None => {
-                        let fresh = self.ensure_lazy_upstream_pool(&cfg, owner).await;
-                        pool = Some(Arc::clone(&fresh));
-                        fresh
-                    }
-                };
-                if let Err(error) = subject_pool
-                    .ensure_tools_for_upstream(upstream, Some(subject), owner)
-                    .await
-                {
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "gateway",
-                        action = "code_mode.catalog_cache",
-                        upstream = %upstream.name,
-                        error = %error,
-                        "subject-scoped upstream connect failed; omitting it from the one-shot catalog"
-                    );
-                    continue;
+                if oauth_subject.is_some() {
+                    pending.push((upstream.clone(), None));
                 }
-                tools.extend(
-                    subject_pool
-                        .subject_scoped_upstream_tools_allowed(
-                            std::slice::from_ref(upstream),
-                            subject,
-                            None,
-                        )
-                        .await,
-                );
                 continue;
             }
             let fingerprint = catalog_cache::fingerprint(upstream);
             if let Some(cached) = cache.fresh_tools(&upstream.name, &fingerprint) {
+                cache_hits += 1;
                 tools.extend(cached);
                 continue;
             }
-            let pool = match &pool {
-                Some(pool) => Arc::clone(pool),
-                None => {
-                    let fresh = self.ensure_lazy_upstream_pool(&cfg, owner).await;
-                    pool = Some(Arc::clone(&fresh));
-                    fresh
-                }
-            };
-            let subject = upstream.oauth.as_ref().and(oauth_subject);
-            match pool
-                .ensure_tools_for_upstream(upstream, subject, owner)
-                .await
-            {
-                Ok(_) => {
-                    let live = pool.healthy_tools_for_upstream(&upstream.name).await;
-                    updates.push(catalog_cache::CatalogCacheUpdate {
-                        upstream_name: upstream.name.clone(),
-                        fingerprint,
-                        tools: live.clone(),
-                    });
+            pending.push((upstream.clone(), Some(fingerprint)));
+        }
+        if pending.is_empty() {
+            sort_tools_by_config_order(&mut tools, &cfg.upstream);
+            return Ok(tools);
+        }
+
+        let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
+        let budget = one_shot_catalog_connect_budget(&cfg.code_mode);
+        let deadline = Instant::now() + budget;
+        let fingerprints: BTreeMap<String, Option<String>> = pending
+            .iter()
+            .map(|(upstream, fingerprint)| (upstream.name.clone(), fingerprint.clone()))
+            .collect();
+        let mut outstanding: BTreeSet<String> = fingerprints.keys().cloned().collect();
+        // `buffer_unordered` polls at most `concurrency` probes at once, so at
+        // the deadline the rest were never attempted; report them as such.
+        let started: Arc<std::sync::Mutex<BTreeSet<String>>> = Arc::default();
+        let owner_cloned = owner.cloned();
+        let oauth_subject_cloned = oauth_subject.map(ToOwned::to_owned);
+        let mut probes = Box::pin(
+            futures::stream::iter(pending)
+                .map(|(upstream, fingerprint)| {
+                    let pool = Arc::clone(&pool);
+                    let owner = owner_cloned.clone();
+                    let oauth_subject = oauth_subject_cloned.clone();
+                    let started = Arc::clone(&started);
+                    async move {
+                        started
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(upstream.name.clone());
+                        let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
+                        let outcome = pool
+                            .ensure_tools_for_upstream(&upstream, subject, owner.as_ref())
+                            .await;
+                        let live = match (&outcome, subject) {
+                            (Err(_), _) => Vec::new(),
+                            (Ok(_), Some(subject)) => {
+                                pool.subject_scoped_upstream_tools_allowed(
+                                    std::slice::from_ref(&upstream),
+                                    subject,
+                                    None,
+                                )
+                                .await
+                            }
+                            (Ok(_), None) => pool.healthy_tools_for_upstream(&upstream.name).await,
+                        };
+                        (upstream, fingerprint, outcome.map(|_| live))
+                    }
+                })
+                .buffer_unordered(concurrency),
+        );
+
+        let mut updates = Vec::new();
+        let mut connected = 0usize;
+        let mut failures = Vec::new();
+        let budget_exhausted = loop {
+            match tokio::time::timeout_at(deadline, probes.next()).await {
+                Ok(Some((upstream, fingerprint, Ok(live)))) => {
+                    outstanding.remove(&upstream.name);
+                    connected += 1;
+                    if let Some(fingerprint) = fingerprint {
+                        updates.push(catalog_cache::CatalogCacheUpdate {
+                            upstream_name: upstream.name.clone(),
+                            fingerprint,
+                            tools: live.clone(),
+                        });
+                    }
                     tools.extend(live);
                 }
-                Err(error) => {
+                Ok(Some((upstream, _, Err(error)))) => {
+                    outstanding.remove(&upstream.name);
                     tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
@@ -467,10 +554,89 @@ impl GatewayManager {
                         error = %error,
                         "upstream connect failed; omitting from codemode proxy (not cached)"
                     );
+                    failures.push(format!("{}: {error}", upstream.name));
+                }
+                Ok(None) => break false,
+                Err(_elapsed) => break true,
+            }
+        };
+        // Dropping the stream cancels in-flight connects the same way the
+        // per-upstream discovery timeout does; the stdio process-group guard
+        // reaps any child that was still starting.
+        drop(probes);
+
+        let mut in_flight = Vec::new();
+        let mut not_attempted = Vec::new();
+        if budget_exhausted {
+            let started = started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for name in outstanding {
+                // A connect also refreshes the upstream's resource and prompt
+                // caches after its tools are installed, so a probe cut off in
+                // that tail is still a connected upstream: keep its tools.
+                if let Some(Some(fingerprint)) = fingerprints.get(&name) {
+                    let live = pool.healthy_tools_for_upstream(&name).await;
+                    if !live.is_empty() {
+                        connected += 1;
+                        updates.push(catalog_cache::CatalogCacheUpdate {
+                            upstream_name: name.clone(),
+                            fingerprint: fingerprint.clone(),
+                            tools: live.clone(),
+                        });
+                        tools.extend(live);
+                        continue;
+                    }
+                }
+                if started.contains(&name) {
+                    in_flight.push(name);
+                } else {
+                    not_attempted.push(name);
                 }
             }
         }
-        catalog_cache::merge_and_store(updates).await;
+        catalog_cache::merge_and_store(cache_path, updates).await;
+
+        // Partial means partial, not empty: with nothing served from cache and
+        // nothing connected, the proxy would offer no upstream helpers at all,
+        // and a silent empty catalog is exactly what the broker's fail-closed
+        // contract forbids.
+        if cache_hits == 0 && connected == 0 {
+            let mut details = failures;
+            if !in_flight.is_empty() {
+                details.push(format!(
+                    "still connecting when the {}ms cold-connect budget ended: {}",
+                    budget.as_millis(),
+                    in_flight.join(", ")
+                ));
+            }
+            if !not_attempted.is_empty() {
+                details.push(format!(
+                    "not attempted within the cold-connect budget: {}",
+                    not_attempted.join(", ")
+                ));
+            }
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_connect_error".to_string(),
+                message: format!(
+                    "no Code Mode upstream connected for the one-shot catalog: {}",
+                    details.join("; ")
+                ),
+            });
+        }
+        if !in_flight.is_empty() || !not_attempted.is_empty() {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "code_mode.catalog_cache",
+                budget_ms = budget.as_millis(),
+                in_flight_upstreams = ?in_flight,
+                not_attempted_upstreams = ?not_attempted,
+                "cold-connect budget exhausted; omitting unfinished upstreams from codemode proxy (not cached)"
+            );
+        }
+        sort_tools_by_config_order(&mut tools, &cfg.upstream);
         Ok(tools)
     }
 
@@ -614,7 +780,11 @@ impl GatewayManager {
                 }
             }
         }
-        crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates).await;
+        crate::gateway::code_mode::catalog_cache::merge_and_store(
+            self.code_mode_catalog_cache_path(),
+            cache_updates,
+        )
+        .await;
 
         // origin/main widened this to include subject-scoped tools; #210 excludes
         // the synthetic in-process builtin peers. Both matter: the error must

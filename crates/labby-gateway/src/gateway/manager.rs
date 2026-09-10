@@ -217,6 +217,10 @@ pub struct GatewayManager {
             >,
         >,
     >,
+    /// Test-only override for the one-shot CLI catalog cache file; production
+    /// builds always resolve the product location under the Labby home.
+    #[cfg(test)]
+    pub(super) code_mode_catalog_cache_path: Option<PathBuf>,
     /// Cached Code Mode catalog embedding vectors, keyed separately by the
     /// visible `(id, description)` ranking corpus. `RwLock` (not
     /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent

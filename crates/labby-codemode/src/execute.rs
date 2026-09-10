@@ -275,7 +275,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // source `search` uses) before starting the runner. Proxy failure is an
         // execution failure: otherwise `codemode.search`, `codemode.describe`,
         // and generated helpers silently disappear while raw `callTool` can
-        // still make the run look successful.
+        // still make the run look successful. A host may degrade to a partial
+        // catalog under its own, shorter cold-connect budget, but only loudly
+        // (it logs which upstreams it omitted), and a pass that would leave the
+        // catalog empty is an error rather than an empty proxy; this deadline
+        // stays the fail-closed backstop.
         let deadline = tokio::time::Instant::now() + timeout;
         let proxy = match tokio::time::timeout_at(
             deadline,

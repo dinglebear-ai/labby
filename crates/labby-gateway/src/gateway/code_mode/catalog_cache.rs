@@ -5,8 +5,9 @@
 //! but a one-shot CLI process would have to connect every configured stdio
 //! upstream per invocation just to generate the proxy. This cache persists the
 //! per-upstream tool lists (fingerprinted against the upstream config and
-//! bounded by a TTL) so repeat CLI invocations connect zero upstreams for proxy
-//! generation; tool calls still resolve live via
+//! bounded by a TTL) so repeat CLI invocations connect no non-OAuth upstream
+//! for proxy generation (OAuth upstreams are subject-scoped and never cached,
+//! so they are probed each run); tool calls still resolve live via
 //! `resolve_code_mode_upstream_tool`, so a stale cache can only omit or
 //! over-offer `codemode.*` helpers — never execute against stale state.
 //!
@@ -16,7 +17,7 @@
 //! failure is treated as a cache miss.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -77,19 +78,35 @@ pub(crate) fn fingerprint(config: &UpstreamConfig) -> String {
 }
 
 impl CatalogCache {
-    /// Load the cache from disk. Missing, unreadable, corrupt, or
+    /// Load the cache at `path`. Missing, unreadable, corrupt, or
     /// version-mismatched files are all treated as an empty cache.
-    pub(crate) fn load() -> Self {
-        let path = cache_path();
-        let Ok(bytes) = std::fs::read(&path) else {
-            return Self::default();
+    pub(crate) fn load_from(path: &Path) -> Self {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::default();
+            }
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.catalog_cache",
+                    path = %path.display(),
+                    error = %error,
+                    "code_mode catalog cache unreadable; treating as empty"
+                );
+                return Self::default();
+            }
         };
         match serde_json::from_slice::<Self>(&bytes) {
             Ok(cache) if cache.version == CACHE_VERSION => cache,
             Ok(_) | Err(_) => {
-                tracing::debug!(
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.catalog_cache",
                     path = %path.display(),
-                    "code_mode catalog cache unreadable or version-mismatched; treating as empty"
+                    "code_mode catalog cache corrupt or version-mismatched; treating as empty"
                 );
                 Self::default()
             }
@@ -130,31 +147,36 @@ impl CatalogCache {
     }
 }
 
-/// Merge `updates` into the on-disk cache and persist atomically.
+/// Merge `updates` into the on-disk cache at `path` and persist atomically.
 ///
 /// Loads a fresh copy first so concurrent invocations updating different
 /// upstreams do not clobber each other's entries (last-writer-wins per file,
-/// but each write carries the latest visible merge). Failed-to-probe upstreams
-/// must NOT be passed here — leaving them absent means the next run retries.
+/// but each write carries the latest visible merge). Upstreams that failed to
+/// probe, or were still connecting when the caller's budget ended, must NOT be
+/// passed here — leaving them absent means the next run retries.
 ///
 /// The write is completed before returning so one-shot CLI invocations do not
 /// exit before a refreshed cache lands on disk. The write is skipped entirely
 /// only when no entry has changed and no TTL timestamp needs renewal.
-pub(crate) async fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
+pub(crate) async fn merge_and_store(path: PathBuf, updates: Vec<CatalogCacheUpdate>) {
     if updates.is_empty() {
         return;
     }
-    if let Err(error) = tokio::task::spawn_blocking(move || merge_and_store_blocking(updates)).await
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates)).await
     {
         tracing::warn!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "code_mode.catalog_cache",
             error = %error,
             "failed to join code_mode catalog cache persistence task"
         );
     }
 }
 
-fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
-    let mut cache = CatalogCache::load();
+fn merge_and_store_blocking(path: &Path, updates: Vec<CatalogCacheUpdate>) {
+    let mut cache = CatalogCache::load_from(path);
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
     let mut changed = false;
@@ -166,9 +188,11 @@ fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
         return;
     }
 
-    let path = cache_path();
-    if let Err(error) = persist_atomic(&path, &cache) {
+    if let Err(error) = persist_atomic(path, &cache) {
         tracing::warn!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "code_mode.catalog_cache",
             path = %path.display(),
             error = %error,
             "failed to persist code_mode catalog cache"
@@ -230,19 +254,23 @@ fn tools_fingerprint_matches(existing: &CachedUpstreamCatalog, tools: &[CachedTo
     existing_bytes == new_bytes
 }
 
-fn persist_atomic(path: &std::path::Path, cache: &CatalogCache) -> std::io::Result<()> {
+/// Publish the cache through the shared owner-only atomic writer.
+///
+/// The cache is derived from `config.toml` — each entry is keyed by a digest of
+/// the whole serialized upstream config, and the tool descriptions come from
+/// the upstreams themselves — so it must not be more readable than the config
+/// it mirrors (`0600`). `write_secure_atomic` also names its own temporary
+/// file, which a process-id-based name did not: two concurrent writers in one
+/// process (a `snippets.exec` and a Code Mode refresh both reach here) could
+/// otherwise interleave on the same temp path and publish a truncated cache.
+fn persist_atomic(path: &Path, cache: &CatalogCache) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("cache path has no parent directory"))?;
     std::fs::create_dir_all(parent)?;
     let bytes = serde_json::to_vec(cache).map_err(std::io::Error::other)?;
-    let tmp = parent.join(format!(".codemode-catalog.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    let renamed = std::fs::rename(&tmp, path);
-    if renamed.is_err() {
-        drop(std::fs::remove_file(&tmp));
-    }
-    renamed
+    labby_runtime::secure_atomic_file::write_secure_atomic(path, &bytes)
+        .map_err(|error| error.source)
 }
 
 fn now_unix() -> u64 {
@@ -476,5 +504,33 @@ mod tests {
 
         assert_eq!(fingerprint(&config), fingerprint(&config));
         assert_ne!(fingerprint(&config), fingerprint(&changed));
+    }
+
+    /// The cache mirrors `config.toml` (its keys are digests of the serialized
+    /// upstream config, its values the upstreams' own tool descriptions), so it
+    /// must not be readable by anyone who cannot already read that config.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn persisted_cache_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache").join("codemode-catalog.json");
+        merge_and_store(
+            path.clone(),
+            vec![CatalogCacheUpdate {
+                upstream_name: "alpha".to_string(),
+                fingerprint: "fp".to_string(),
+                tools: Vec::new(),
+            }],
+        )
+        .await;
+
+        let mode = std::fs::metadata(&path)
+            .expect("cache written")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "cache must not be group- or world-readable");
     }
 }

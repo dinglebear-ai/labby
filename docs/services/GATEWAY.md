@@ -436,6 +436,28 @@ Running the CLI from a different machine than the daemon should use
 `LABBY_MCP_HTTP_TOKEN` and `LABBY_SERVER_URL`; see `docs/runtime/ENV.md` §
 "Remote Gateway CLI Usage" for the exact precedence and fallback behavior.
 
+When `gateway code exec` falls back to the local manager (and for
+`snippets.exec`, which runs on the same CLI-surface catalog path), the
+`codemode.*` proxy is built from the on-disk catalog cache
+(`$LABBY_HOME/cache/codemode-catalog.json`, `~/.labby/cache/codemode-catalog.json`
+when `LABBY_HOME` is unset; per-upstream entries fingerprinted against the
+upstream config and valid for six hours). Non-OAuth upstreams are served from
+the cache when their entry is fresh; only those with a missing, stale, or
+mismatched entry are connected. OAuth upstreams are subject-scoped, so they are
+connected on every run and never cached. Connects run concurrently (bounded by
+`[gateway] upstream_discovery_concurrency`, default 3, or the
+`LABBY_UPSTREAM_DISCOVERY_CONCURRENCY` override) under a wall-clock budget of
+half `[code_mode] timeout_ms`, so proxy generation leaves the sandbox roughly
+the other half. Upstreams that fail, are still connecting, or were never
+attempted when that budget ends are omitted from the proxy for that run, named
+in a warning, and not cached, so the next run retries them; every non-OAuth
+upstream that did connect is cached even when the budget cut the pass short. If
+nothing was served from cache and nothing connected, the run fails with
+`upstream_connect_error` naming the failed and unfinished upstreams rather than
+executing against an empty proxy. Tool calls still resolve the target upstream
+live, so a stale cache can only change which `codemode.*` helpers are offered,
+never what a call executes.
+
 The local `GatewayManager` these CLI commands fall back to is built lazily --
 only if remote detection genuinely fails -- so a successful remote dispatch
 never touches `~/.labby/auth.db` or any other local state at all
