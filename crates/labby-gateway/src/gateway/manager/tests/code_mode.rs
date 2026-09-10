@@ -11,6 +11,200 @@ use super::*;
 use crate::gateway::code_mode::catalog_cache;
 
 #[tokio::test]
+async fn code_mode_resource_discovery_returns_readable_exposed_uris() {
+    let server = wiremock::MockServer::start().await;
+    let fallback = OneShotHttpResponder::new("status", Duration::ZERO);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            use wiremock::Respond;
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let result = match body["method"].as_str().unwrap() {
+                "server/discover" => json!({
+                    "resultType": "complete", "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "serverInfo": {"name": "resource-fixture", "version": "1"},
+                    "ttlMs": 0, "cacheScope": "private"
+                }),
+                "resources/list" => json!({"resources": [
+                    {"uri": "fixture://skill?revision=1", "name": "skill"},
+                    {"uri": "fixture://hidden", "name": "hidden"}
+                ]}),
+                "resources/templates/list" => json!({"resourceTemplates": []}),
+                "resources/read" => {
+                    assert_eq!(body["params"]["uri"], "fixture://skill?revision=1");
+                    json!({"contents": [{"uri": "fixture://skill?revision=1", "text": "fixture contract"}]})
+                }
+                _ => return fallback.respond(request),
+            };
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": body["id"], "result": result
+            }))
+        })
+        .mount(&server)
+        .await;
+    let mut config = fixture_http_upstream("alpha");
+    config.url = Some(format!("{}/mcp", server.uri()));
+    config.proxy_resources = true;
+    config.expose_resources = Some(vec!["fixture://skill*".to_string()]);
+    let (manager, pool) = code_mode_manager_with_pool(config).await;
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+    let scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()).read_only();
+    let discovered = CodeModeHost::list_resources(
+        &manager,
+        "alpha".to_string(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &scope,
+    )
+    .await
+    .expect("cold resource discovery");
+    let resources = discovered["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1, "hidden resource must not be advertised");
+    let uri = resources[0]["uri"].as_str().unwrap();
+    assert_eq!(uri, "lab://upstream/alpha/fixture://skill?revision=1");
+    let read = CodeModeHost::read_resource(
+        &manager,
+        uri.to_string(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &scope,
+    )
+    .await
+    .expect("use discovered URI unchanged");
+    assert_eq!(read["contents"][0]["text"], "fixture contract");
+}
+
+#[tokio::test]
+async fn code_mode_resource_discovery_rejects_scope_and_disabled_proxy_before_connecting() {
+    let config = fixture_http_upstream("alpha");
+    let (manager, pool) = code_mode_manager_with_pool(config).await;
+    for (scope, expected) in [
+        (
+            ToolScope::scoped_namespaces(vec!["beta".to_string()], Vec::new()),
+            "forbidden",
+        ),
+        (ToolScope::default(), "not_found"),
+    ] {
+        let error = CodeModeHost::list_resources(
+            &manager,
+            "alpha".to_string(),
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &scope,
+        )
+        .await
+        .expect_err("must reject before connecting");
+        assert_eq!(error.kind(), expected);
+    }
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
+async fn code_mode_resource_discovery_uses_callers_oauth_connection() {
+    #[derive(Clone)]
+    struct Resources(&'static str);
+    impl rmcp::ServerHandler for Resources {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            rmcp::model::ServerInfo::new(
+                rmcp::model::ServerCapabilities::builder()
+                    .enable_resources()
+                    .build(),
+            )
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+            Ok(rmcp::model::ListResourcesResult::with_all_items(vec![
+                rmcp::model::Resource::new(format!("fixture://{}", self.0), self.0),
+            ]))
+        }
+    }
+    let mut config = fixture_oauth_upstream("alpha", "http://unused.invalid/mcp");
+    config.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(config.clone()).await;
+    for subject in ["alice", "bob"] {
+        pool.install_test_subject_server_for_upstream(&config, subject, Resources(subject))
+            .await;
+    }
+    for subject in ["alice", "bob"] {
+        let caller = CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: false,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some(subject.to_string()),
+        };
+        let listed = CodeModeHost::list_resources(
+            &manager,
+            "alpha".to_string(),
+            &caller,
+            CodeModeSurface::Mcp,
+            &ToolScope::default().read_only(),
+        )
+        .await
+        .expect("use the caller's cached OAuth connection");
+        assert_eq!(listed["resources"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            listed["resources"][0]["uri"],
+            format!("lab://upstream/alpha/fixture://{subject}")
+        );
+    }
+    assert_eq!(
+        pool.connection_count_for_tests().await,
+        0,
+        "no global connection"
+    );
+}
+
+#[tokio::test]
+async fn code_mode_resource_discovery_rejects_empty_oauth_subject() {
+    let mut config = fixture_oauth_upstream("alpha", "http://unused.invalid/mcp");
+    config.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(config).await;
+    let error = CodeModeHost::list_resources(
+        &manager,
+        "alpha".to_string(),
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: false,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some(String::new()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect_err("OAuth discovery needs a subject");
+    assert_eq!(error.kind(), "forbidden");
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
+async fn code_mode_resource_read_rejects_tool_ids_before_connecting() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    let error = CodeModeHost::read_resource(
+        &manager,
+        "alpha::fixture://skill".to_string(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect_err("tool identifiers are not resource URIs");
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(error.to_string().contains("codemode.listResources"));
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
 async fn code_mode_host_resource_read_connects_a_cold_upstream() {
     let mut upstream = fixture_http_upstream("alpha");
     upstream.proxy_resources = true;

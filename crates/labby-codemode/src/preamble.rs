@@ -95,8 +95,15 @@ const JS_RESERVED: &[&str] = &[
 /// Namespaces that sanitize to one of these names are suffixed so a
 /// real namespace named `search`, `describe`, `step`, or `batch` cannot overwrite the
 /// local discovery/control helpers.
-const CODEMODE_TOP_LEVEL_RESERVED: &[&str] =
-    &["search", "describe", "readResource", "run", "step", "batch"];
+const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
+    "search",
+    "describe",
+    "listResources",
+    "readResource",
+    "run",
+    "step",
+    "batch",
+];
 
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
@@ -416,6 +423,12 @@ codemode.describe = async function(target) {{
     safety: entry.safety,
     markdown: markdown
   }};
+}};
+codemode.listResources = async function(upstream) {{
+  if (typeof upstream !== "string" || !upstream.trim()) {{
+    throw new TypeError("codemode.listResources requires a non-empty upstream name");
+  }}
+  return callTool("__lab_internal::list_resources", {{ upstream: upstream }});
 }};
 codemode.readResource = async function(uri) {{
   if (typeof uri !== "string" || !uri.trim()) {{
@@ -976,7 +989,14 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_does_not_overwrite_local_discovery_helpers() {
-        for raw in ["search", "describe", "readResource", "step", "batch"] {
+        for raw in [
+            "search",
+            "describe",
+            "listResources",
+            "readResource",
+            "step",
+            "batch",
+        ] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
             let js = proxy(&[tool]).expect("proxy");

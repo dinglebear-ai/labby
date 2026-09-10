@@ -456,6 +456,24 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             });
         };
         match tool {
+            "list_resources" => {
+                let upstream = params
+                    .get("upstream")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "list_resources requires a non-empty `upstream`".to_string(),
+                        param: "upstream".to_string(),
+                    })?;
+                if upstream.len() > MAX_RESOURCE_URI_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: "resource upstream name is too long".to_string(),
+                    });
+                }
+                host.list_resources(upstream.to_string(), caller, surface, scope)
+                    .await
+            }
             "read_resource" => {
                 let uri = params
                     .get("uri")
@@ -1051,6 +1069,18 @@ mod tests {
             .into())
         }
 
+        async fn list_resources(
+            &self,
+            upstream: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(
+                json!({ "resources": [{ "uri": format!("lab://upstream/{upstream}/fixture://skill") }] }),
+            )
+        }
+
         async fn read_resource(
             &self,
             uri: String,
@@ -1097,6 +1127,56 @@ mod tests {
 
         fn openapi_http_client(&self) -> reqwest::Client {
             labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_resource_discovery_round_trips_uri() {
+        let host = FixtureHost::new(Vec::new());
+        let broker = CodeModeBroker::new(Some(&host));
+        let discovered = broker
+            .call_tool_id(
+                "__lab_internal::list_resources",
+                json!({"upstream": "alpha"}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("list resource metadata");
+        let uri = discovered["resources"][0]["uri"].clone();
+        let read = broker
+            .call_tool_id(
+                "__lab_internal::read_resource",
+                json!({"uri": uri}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("read using discovered URI");
+        assert_eq!(read["contents"][0]["uri"], uri);
+        for params in [
+            json!({}),
+            json!({"upstream": 42}),
+            json!({"upstream": ""}),
+            json!({"upstream": "x".repeat(MAX_RESOURCE_URI_BYTES + 1)}),
+        ] {
+            assert!(
+                broker
+                    .call_tool_id(
+                        "__lab_internal::list_resources",
+                        params,
+                        CodeModeCaller::TrustedLocal,
+                        CodeModeSurface::Cli,
+                        &ToolScope::default(),
+                        ExecCtx::none(),
+                    )
+                    .await
+                    .is_err()
+            );
         }
     }
 

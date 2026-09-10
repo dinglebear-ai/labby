@@ -13,6 +13,7 @@ pub(crate) mod code_mode_host;
 pub(crate) mod embeddings;
 #[cfg(test)]
 mod reconstruction_tests;
+mod resources;
 mod search;
 mod tool_error;
 
