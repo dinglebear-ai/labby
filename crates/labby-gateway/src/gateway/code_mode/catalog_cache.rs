@@ -254,19 +254,23 @@ fn tools_fingerprint_matches(existing: &CachedUpstreamCatalog, tools: &[CachedTo
     existing_bytes == new_bytes
 }
 
+/// Publish the cache through the shared owner-only atomic writer.
+///
+/// The cache is derived from `config.toml` — each entry is keyed by a digest of
+/// the whole serialized upstream config, and the tool descriptions come from
+/// the upstreams themselves — so it must not be more readable than the config
+/// it mirrors (`0600`). `write_secure_atomic` also names its own temporary
+/// file, which a process-id-based name did not: two concurrent writers in one
+/// process (a `snippets.exec` and a Code Mode refresh both reach here) could
+/// otherwise interleave on the same temp path and publish a truncated cache.
 fn persist_atomic(path: &Path, cache: &CatalogCache) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("cache path has no parent directory"))?;
     std::fs::create_dir_all(parent)?;
     let bytes = serde_json::to_vec(cache).map_err(std::io::Error::other)?;
-    let tmp = parent.join(format!(".codemode-catalog.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    let renamed = std::fs::rename(&tmp, path);
-    if renamed.is_err() {
-        drop(std::fs::remove_file(&tmp));
-    }
-    renamed
+    labby_runtime::secure_atomic_file::write_secure_atomic(path, &bytes)
+        .map_err(|error| error.source)
 }
 
 fn now_unix() -> u64 {
@@ -500,5 +504,33 @@ mod tests {
 
         assert_eq!(fingerprint(&config), fingerprint(&config));
         assert_ne!(fingerprint(&config), fingerprint(&changed));
+    }
+
+    /// The cache mirrors `config.toml` (its keys are digests of the serialized
+    /// upstream config, its values the upstreams' own tool descriptions), so it
+    /// must not be readable by anyone who cannot already read that config.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn persisted_cache_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache").join("codemode-catalog.json");
+        merge_and_store(
+            path.clone(),
+            vec![CatalogCacheUpdate {
+                upstream_name: "alpha".to_string(),
+                fingerprint: "fp".to_string(),
+                tools: Vec::new(),
+            }],
+        )
+        .await;
+
+        let mode = std::fs::metadata(&path)
+            .expect("cache written")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "cache must not be group- or world-readable");
     }
 }
