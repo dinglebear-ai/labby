@@ -91,14 +91,14 @@ function setState(next: BrowserSessionState) {
 }
 
 /**
- * The identity that decides whether a state change is an authority change.
+ * The identity that decides whether a state change changes authority or project context.
  * Transport fields (CSRF token, expiry) are deliberately excluded: a session
  * refresh that only rotates them must neither abort in-flight requests nor
  * defeat the CSRF retry in `performServiceAction`.
  */
 function sessionIdentity(state: BrowserSessionState) {
   if (state.status !== 'authenticated') return state.status
-  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}`
+  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}:${state.projectId ?? ''}`
 }
 
 function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: true }>): SessionAuthority | undefined {
@@ -129,6 +129,9 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
   const authority = normalizeAuthority(payload)
   // normalizeAuthority already rejected unknown states, so any string left is one of ours.
   const authorityState = payload.authority_state ?? undefined
+  const projectedProjectId = typeof payload.project_id === 'string' && payload.project_id.length > 0
+    ? payload.project_id
+    : undefined
   return {
     status: 'authenticated',
     user: payload.user,
@@ -140,7 +143,10 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
       ? { remediation: payload.remediation }
       : {}),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
-    projectId: authority?.activeProjectId,
+    // Project-bound sessions can carry an explicit server-selected project
+    // without the durable authority projection. Preserve that binding without
+    // manufacturing authority or choosing from the caller's membership list.
+    projectId: authority?.activeProjectId ?? projectedProjectId,
   }
 }
 

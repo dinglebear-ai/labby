@@ -19,6 +19,7 @@ import {
   type SkillValidation,
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
+import { selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -63,6 +64,60 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 }
 
 export function SkillLibraryPageContent() {
+  const session = useBrowserSession()
+  const projectId = session.status === 'authenticated' ? session.projectId : undefined
+
+  if (projectId && session.status === 'authenticated') {
+    // Key the project-scoped editor to the caller and current authority
+    // generation so workspace, login, or policy changes cannot leave stale
+    // Artifacts or in-flight editor state visible in a new context.
+    const scopeKey = `${session.user.sub}:${projectId}:${session.authority?.generation ?? 'bound'}`
+    return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
+  }
+
+  const projects = session.status === 'authenticated' ? session.authority?.projects ?? [] : []
+  const chooseProject = (nextProjectId: string) => {
+    try {
+      selectSessionWorkspace({ projectId: nextProjectId })
+    } catch (cause) {
+      toast.error(getErrorMessage(cause, 'The project workspace could not be selected.'))
+    }
+  }
+
+  return (
+    <div className="grid gap-4">
+      <div>
+        <h2 className="font-display text-xl font-semibold">Artifact Library</h2>
+        <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p>
+      </div>
+
+      {session.status === 'loading' ? (
+        <div className="flex min-h-56 items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
+      ) : session.status === 'authenticated' ? (
+        <DashboardPanel title="Project required">
+          <p className="text-sm text-aurora-text-muted">The Artifact Library is project-scoped. Select an eligible project workspace to continue.</p>
+          {projects.length > 0 ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {projects.map(project => (
+                <Button key={project.id} variant="outline" size="sm" onClick={() => chooseProject(project.id)}>
+                  {project.name ?? project.id}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className={cn(AURORA_DENSE_META, 'mt-3 text-aurora-text-muted')}>No eligible project is available for this session. Create or assign a project in the Control Plane, then refresh your session.</p>
+          )}
+        </DashboardPanel>
+      ) : (
+        <DashboardPanel title="Library unavailable">
+          <p className="text-sm text-destructive">{session.status === 'auth_error' ? session.message : 'Sign in to select a project workspace.'}</p>
+        </DashboardPanel>
+      )}
+    </div>
+  )
+}
+
+function ProjectScopedSkillLibraryPageContent() {
   const [page, setPage] = useState<SkillLibraryPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
