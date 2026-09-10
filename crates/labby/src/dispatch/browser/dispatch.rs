@@ -69,9 +69,26 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             let id = require_str(&params, "browser_id")?;
             to_json(bridge.revoke_browser(&id).await.map_err(map_error)?)
         }
-        "browser.pairing.list" => to_json(json!({
-            "pairings": bridge.store().pending_pairings().await.map_err(map_error)?
-        })),
+        "browser.pairing.list" => {
+            let pairings = bridge
+                .store()
+                .pending_pairings()
+                .await
+                .map_err(map_error)?
+                .into_iter()
+                .map(|pairing| {
+                    json!({
+                        "id": pairing.id,
+                        "display_name": pairing.display_name,
+                        "extension_id": pairing.extension_id,
+                        "status": pairing.status,
+                        "expires_at": pairing.expires_at,
+                        "browser_id": pairing.browser_id,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({"pairings": pairings}))
+        }
         "browser.pairing.approve" => {
             let id = require_str(&params, "pairing_id")?;
             let pairing_fingerprint = require_str(&params, "pairing_fingerprint")?;

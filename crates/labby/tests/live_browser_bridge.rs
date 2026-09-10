@@ -22,7 +22,7 @@ const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn send(socket: &mut Socket, mut value: Value) {
-    value["version"] = json!(2);
+    value["version"] = json!(1);
     value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -159,6 +159,19 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .as_str()
         .expect("pairing fingerprint");
     assert_eq!(pairing_fingerprint.len(), 12);
+
+    let listed = success(action(
+        &client,
+        base,
+        &token,
+        "browser.pairing.list",
+        json!({}),
+    ))
+    .await;
+    let listed_pairing = &listed["pairings"][0];
+    assert_eq!(listed_pairing["id"], pending["pairing_id"]);
+    assert!(listed_pairing.get("public_key").is_none());
+    assert!(listed_pairing.get("pairing_fingerprint").is_none());
 
     let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(

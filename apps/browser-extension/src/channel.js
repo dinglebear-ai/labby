@@ -1,6 +1,6 @@
 import {bridgeFailureKind} from "./errors.js";
 
-const VERSION = 2;
+const VERSION = 1;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 /** @typedef {{isCurrent: () => boolean, messageNow: (type: string, payload: any) => Promise<any>}} Connection */
 

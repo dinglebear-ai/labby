@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Current browser protocol version.
-pub(crate) const PROTOCOL_VERSION: u32 = 2;
+pub(crate) const PROTOCOL_VERSION: u32 = 1;
 
 /// JSON envelope exchanged with the MV3 extension.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -150,9 +150,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_v2_rejects_legacy_v1_envelopes() {
+    fn protocol_v1_rejects_unknown_v2_envelopes() {
         let envelope = BrowserEnvelope {
-            version: 1,
+            version: 2,
             request_id: None,
             message: BrowserMessage::Heartbeat,
         };
@@ -161,7 +161,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("unsupported browser protocol version 1")
+                .contains("unsupported browser protocol version 2")
         );
     }
 }

@@ -1,6 +1,6 @@
 # Labby Browser Bridge extension
 
-Load this directory as an unpacked Manifest V3 extension during development. It connects directly to Labby's `/browser/socket` endpoint using browser wire protocol v2 and does not require a separate web application or bridge process. Loopback endpoints may use HTTP; remote Labby services must use HTTPS and connect over WSS. Chrome 116 or newer is required so WebSocket activity can extend the Manifest V3 service-worker lifetime; the bridge sends an acknowledged protocol heartbeat every 20 seconds while connected and reconnects when that liveness check times out.
+Load this directory as an unpacked Manifest V3 extension during development. It connects directly to Labby's `/browser/socket` endpoint and does not require a separate web application or bridge process. Loopback endpoints may use HTTP; remote Labby services must use HTTPS and connect over WSS. Chrome 116 or newer is required so WebSocket activity can extend the Manifest V3 service-worker lifetime; the bridge sends an acknowledged protocol heartbeat every 20 seconds while connected and reconnects when that liveness check times out.
 
 The default `granted_sites` mode scans only tabs whose origin Chrome already permits. Invoking Labby on the current tab grants a one-tab `activeTab` scan from that explicit user gesture without broadening background access. Selecting `all_tabs` triggers Chrome's optional-host-permission prompt and shows a persistent warning. Returning to granted-sites mode removes the broad permission.
 
