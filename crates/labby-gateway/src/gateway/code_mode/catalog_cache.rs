@@ -5,8 +5,9 @@
 //! but a one-shot CLI process would have to connect every configured stdio
 //! upstream per invocation just to generate the proxy. This cache persists the
 //! per-upstream tool lists (fingerprinted against the upstream config and
-//! bounded by a TTL) so repeat CLI invocations connect zero upstreams for proxy
-//! generation; tool calls still resolve live via
+//! bounded by a TTL) so repeat CLI invocations connect no non-OAuth upstream
+//! for proxy generation (OAuth upstreams are subject-scoped and never cached,
+//! so they are probed each run); tool calls still resolve live via
 //! `resolve_code_mode_upstream_tool`, so a stale cache can only omit or
 //! over-offer `codemode.*` helpers — never execute against stale state.
 //!
@@ -80,15 +81,32 @@ impl CatalogCache {
     /// Load the cache at `path`. Missing, unreadable, corrupt, or
     /// version-mismatched files are all treated as an empty cache.
     pub(crate) fn load_from(path: &Path) -> Self {
-        let Ok(bytes) = std::fs::read(path) else {
-            return Self::default();
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::default();
+            }
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.catalog_cache",
+                    path = %path.display(),
+                    error = %error,
+                    "code_mode catalog cache unreadable; treating as empty"
+                );
+                return Self::default();
+            }
         };
         match serde_json::from_slice::<Self>(&bytes) {
             Ok(cache) if cache.version == CACHE_VERSION => cache,
             Ok(_) | Err(_) => {
-                tracing::debug!(
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "code_mode.catalog_cache",
                     path = %path.display(),
-                    "code_mode catalog cache unreadable or version-mismatched; treating as empty"
+                    "code_mode catalog cache corrupt or version-mismatched; treating as empty"
                 );
                 Self::default()
             }
@@ -133,8 +151,9 @@ impl CatalogCache {
 ///
 /// Loads a fresh copy first so concurrent invocations updating different
 /// upstreams do not clobber each other's entries (last-writer-wins per file,
-/// but each write carries the latest visible merge). Failed-to-probe upstreams
-/// must NOT be passed here — leaving them absent means the next run retries.
+/// but each write carries the latest visible merge). Upstreams that failed to
+/// probe, or were still connecting when the caller's budget ended, must NOT be
+/// passed here — leaving them absent means the next run retries.
 ///
 /// The write is completed before returning so one-shot CLI invocations do not
 /// exit before a refreshed cache lands on disk. The write is skipped entirely
@@ -147,6 +166,9 @@ pub(crate) async fn merge_and_store(path: PathBuf, updates: Vec<CatalogCacheUpda
         tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates)).await
     {
         tracing::warn!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "code_mode.catalog_cache",
             error = %error,
             "failed to join code_mode catalog cache persistence task"
         );
@@ -168,6 +190,9 @@ fn merge_and_store_blocking(path: &Path, updates: Vec<CatalogCacheUpdate>) {
 
     if let Err(error) = persist_atomic(path, &cache) {
         tracing::warn!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "code_mode.catalog_cache",
             path = %path.display(),
             error = %error,
             "failed to persist code_mode catalog cache"

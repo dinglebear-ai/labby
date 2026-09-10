@@ -260,6 +260,7 @@ impl GatewayManager {
             code_mode_catalog_render_flights: Arc::new(
                 Mutex::new(std::collections::HashMap::new()),
             ),
+            #[cfg(test)]
             code_mode_catalog_cache_path: None,
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
