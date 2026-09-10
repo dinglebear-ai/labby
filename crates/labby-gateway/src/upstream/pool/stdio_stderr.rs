@@ -72,6 +72,20 @@ impl StdioConnectError {
         self.child_exited
     }
 
+    /// The MCP-level failure on its own, with the child's stderr excluded.
+    ///
+    /// Lifecycle-compatibility classification must read this and never
+    /// [`Self::diagnostics_with_error`]: the stderr tail is the child's own log
+    /// output, and an ordinary server log line ("Error: Method not found") is
+    /// not the peer rejecting `server/discover`. Matching protocol vocabulary
+    /// against log noise downgrades healthy upstreams and respawns them.
+    /// Operator-facing text, cache-poison repair, and logs still use the full
+    /// diagnostics.
+    #[must_use]
+    pub(super) fn protocol_error(&self) -> &str {
+        &self.message
+    }
+
     pub(super) fn diagnostics_with_error(&self) -> String {
         if self.diagnostics.trim().is_empty() {
             self.message.clone()
