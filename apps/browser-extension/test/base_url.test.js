@@ -5,6 +5,7 @@ import {parseBaseUrl} from "../src/base_url.js";
 test("accepts and normalizes loopback Labby endpoints", () => {
   assert.equal(parseBaseUrl("http://localhost:8765/"), "http://localhost:8765");
   assert.equal(parseBaseUrl("http://127.0.0.1:8765"), "http://127.0.0.1:8765");
+  assert.equal(parseBaseUrl("http://[::1]:8765"), "http://[::1]:8765");
   assert.equal(parseBaseUrl("https://[::1]:8765"), "https://[::1]:8765");
 });
 
