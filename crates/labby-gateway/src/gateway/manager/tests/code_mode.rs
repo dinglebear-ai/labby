@@ -2232,6 +2232,22 @@ fn tool_ids(tools: &[UpstreamTool]) -> Vec<String> {
         .collect()
 }
 
+/// Outer liveness guard for a budget-bounded one-shot catalog call.
+///
+/// These tests prove that the cold-connect budget, not a per-upstream
+/// discovery timeout, is what bounds the wait. The guard therefore has to stay
+/// below that discovery timeout — 30s for the stalled HTTP fixtures, since
+/// `UpstreamPool::new` uses the 30s `DEFAULT_REQUEST_TIMEOUT` — so a budget
+/// that stopped working still fails the test rather than merely running long.
+///
+/// Within that ceiling it should be as generous as possible: the calls being
+/// guarded finish in a few hundred milliseconds, and the guard is not the
+/// assertion. The returned catalog and the emitted warning carry the meaning.
+/// Earlier values as low as 5s left only a scheduling hiccup of headroom on a
+/// loaded machine, which is a flake waiting to happen and already bit the
+/// sibling Windows shard once.
+const BUDGET_GUARD: Duration = Duration::from_secs(20);
+
 /// Run `future` while capturing tracing output, returning its result and the
 /// captured JSON log lines.
 #[allow(clippy::await_holding_lock)] // TRACING_TEST_LOCK must span the captured await
@@ -2290,7 +2306,7 @@ async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstre
     .await;
 
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(15),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
@@ -2343,7 +2359,7 @@ async fn one_shot_cli_catalog_errors_when_nothing_connects_within_the_budget() {
     .await;
 
     let error = tokio::time::timeout(
-        Duration::from_secs(5),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     )
     .await
@@ -2378,7 +2394,7 @@ async fn one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast() {
     .await;
 
     let error = tokio::time::timeout(
-        Duration::from_secs(10),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     )
     .await
@@ -2467,7 +2483,7 @@ async fn one_shot_cli_catalog_serves_cached_upstreams_when_a_straggler_misses_th
     let stalled = stalled_http_upstream("alpha").await;
     let (manager, _pool) = one_shot_manager_at(vec![stalled, healthy], 400, cache_path).await;
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(5),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
@@ -2503,7 +2519,7 @@ async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cu
         one_shot_manager_at(vec![healthy.clone()], 4_000, cache_path.clone()).await;
 
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(15),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
@@ -2585,7 +2601,7 @@ async fn one_shot_cli_catalog_names_unattempted_upstreams_when_stalled_probes_fi
     .await;
 
     let error = tokio::time::timeout(
-        Duration::from_secs(5),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     )
     .await
@@ -2630,7 +2646,7 @@ async fn one_shot_cli_catalog_treats_a_cached_zero_tool_upstream_as_served() {
     let stalled = stalled_http_upstream("alpha").await;
     let (manager, _pool) = one_shot_manager_at(vec![stalled, quiet], 400, cache_path).await;
     let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        Duration::from_secs(5),
+        BUDGET_GUARD,
         manager.code_mode_catalog_tools_cached(None, None),
     ))
     .await;
