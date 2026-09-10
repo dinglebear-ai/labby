@@ -129,6 +129,10 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     );
     let (mut socket, upgrade) = tokio_tungstenite::connect_async(request).await.unwrap();
     assert_eq!(upgrade.status().as_u16(), 101);
+    send(&mut socket, json!({"type":"heartbeat"})).await;
+    let heartbeat = receive(&mut socket).await;
+    assert_eq!(heartbeat["type"], "acknowledged");
+    assert_eq!(heartbeat["received"], "heartbeat");
     let signing = SigningKey::from_bytes(&[41; 32]);
     send(
         &mut socket,
@@ -166,6 +170,10 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     );
     send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(signature.to_bytes())})).await;
     assert_eq!(receive(&mut socket).await["type"], "authenticated");
+    send(&mut socket, json!({"type":"heartbeat"})).await;
+    let heartbeat = receive(&mut socket).await;
+    assert_eq!(heartbeat["type"], "acknowledged");
+    assert_eq!(heartbeat["received"], "heartbeat");
     send(
         &mut socket,
         json!({

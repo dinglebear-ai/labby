@@ -30,6 +30,21 @@ test("maps Rust tool calls to extension events", async () => {
   assert.equal(event.payload.call_id, "call");
 });
 
+test("keeps the MV3 service worker alive with protocol heartbeats", async () => {
+  const sockets = installSocket();
+  const instance = new LabbyBrowserChannel({baseUrl: "http://localhost:8765", extensionId: "id", onChallenge() {}, onError() {}, heartbeatIntervalMs: 5});
+  instance.connect();
+  await sockets[0].onopen();
+  await new Promise((resolve) => setTimeout(resolve, 16));
+  const heartbeats = () => sockets[0].frames.filter((frame) => frame.type === "heartbeat");
+  const sentBeforeClose = heartbeats().length;
+  assert.ok(sentBeforeClose >= 2);
+  assert.ok(heartbeats().every((frame) => frame.version === 1 && frame.request_id === undefined));
+  instance.close();
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  assert.equal(heartbeats().length, sentBeforeClose);
+});
+
 test("disconnect cancellation is once-only and bound to the closing socket", () => {
   const sockets = installSocket();
   const disconnected = [];

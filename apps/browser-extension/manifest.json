@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Labby Browser Bridge",
   "version": "0.1.0",
+  "minimum_chrome_version": "116",
   "description": "Connect browser-native WebMCP tools to your Labby runtime.",
   "permissions": ["activeTab", "alarms", "storage", "scripting"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],

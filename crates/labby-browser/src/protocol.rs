@@ -82,6 +82,8 @@ pub enum BrowserMessage {
     },
     /// Authentication completed.
     Authenticated { browser_id: String },
+    /// Keep the MV3 service worker and browser socket active while idle.
+    Heartbeat,
     /// Browser catalog observation.
     Observe(CatalogObservation),
     /// Close one exact browser document.

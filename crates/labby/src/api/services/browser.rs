@@ -240,6 +240,12 @@ async fn run_socket(
                 authenticated = Some(connection);
                 BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
             }
+            BrowserMessage::Heartbeat => BrowserEnvelope::new(
+                request_id,
+                BrowserMessage::Acknowledged {
+                    received: "heartbeat".to_string(),
+                },
+            ),
             _ => BrowserEnvelope::new(
                 request_id,
                 BrowserMessage::Error {
@@ -274,6 +280,7 @@ async fn run_socket(
                 envelope.validate_version()?;
                 let request_id = envelope.request_id.clone();
                 let received = match envelope.message {
+                    BrowserMessage::Heartbeat => "heartbeat",
                     BrowserMessage::Observe(observation) => { bridge.observe(&browser_id, &connection_id, &observation).await?; "observe" }
                     BrowserMessage::DocumentClosed { tab_id, document_id } => { bridge.close_document(&browser_id, &connection_id, tab_id, &document_id).await?; "document_closed" }
                     completion @ (BrowserMessage::ToolResult { .. } | BrowserMessage::ToolError { .. }) => {
