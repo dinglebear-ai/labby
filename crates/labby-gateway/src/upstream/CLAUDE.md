@@ -34,7 +34,7 @@ Dependency direction:
 | `pool/connect.rs` | `connect_upstream` / `_http` / `_websocket`, `runtime_origin_label`, jitter/oauth-log helpers (reads env). All transport fns are generic over the client handler `H: ClientHandler`; `connect_upstream_with_client` passes `()` (the default for pooled connections), while `connect_upstream_with_handler` is the seam the relay path uses to install a `RelayClientHandler`. |
 | `pool/http_cancellation.rs` | Builds the bounded HTTP/Unix-socket cancellation side channel, serializes relay-token requests and standard cancellation notifications, and requires an acknowledged relay-token response before treating delivery as correlated. |
 | `pool/connect_stdio.rs` | `connect_stdio_upstream` (child-process spawn + process-group guard) + `connect_in_process_service_peer`. |
-| `pool/connect_stdio_tests.rs` | Unix-only regressions for the stdio connect path: a child that exits before answering the handshake is spawned exactly once and is never remembered as a legacy-lifecycle command, even when its stderr tail resembles a lifecycle rejection. |
+| `pool/connect_stdio_tests.rs` | Unix-only regressions for the stdio connect path: a child that exits before answering the handshake is spawned exactly once and is never remembered as a legacy-lifecycle command, even when its stderr tail resembles a lifecycle rejection, and a **live** child's stderr never drives that classification either. |
 | `pool/connection.rs` | `UpstreamConnection` `Debug`/`Drop`/`shutdown` + `UpstreamPool::acquire_peer`. |
 | `pool/lifecycle.rs` | `drain_for_swap`. |
 | `pool/discover.rs` | `discover_all_inner` + `discover_all*` variants + `routable_upstream_peers`. |
@@ -161,3 +161,12 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
   `prompt_names`/`resource_uris` inspection snapshots stay deliberately
   unfiltered so the admin exposure editor can still see excluded entries.
 - Stdio lifecycle ownership lives in `pool/stdio_transport.rs`; it is the single waiter for child exit so PID, generation, exit status, stderr tail, and invalidated requests remain correlated. Its `ChildExitObserver` records the `transport_eof` termination, and `connect_stdio.rs` consults it before any lifecycle-compatibility respawn: a child that died before answering proves nothing about which MCP lifecycle it speaks.
+- **Lifecycle classification reads the MCP error alone.** `compatibility_retry`
+  must be given `StdioConnectError::protocol_error()`, never
+  `diagnostics_with_error()`. The latter appends the child's captured stderr,
+  and "Method not found" is ordinary MCP server log vocabulary, so matching
+  protocol patterns against it downgrades and respawns healthy upstreams. The
+  child-exit gate cannot cover this: a still-running child never sets it, and
+  the exit is not observable at all when the handshake fails at the send step.
+  Full diagnostics remain correct for operator-facing errors, the fallback log
+  line, and `cache_repair`, which is legitimately stderr-driven.
