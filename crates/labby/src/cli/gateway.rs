@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 mod args;
 mod code;
@@ -115,10 +115,15 @@ async fn build_manager_with_upstream_oauth_runtime(
         runtime,
     )?;
     let manager = Arc::new(manager);
+    // Persisted config can fail gateway validation (for example a stdio
+    // `command` outside the spawn allowlist). Propagate the typed `ToolError`
+    // so `--json` callers get the shared `invalid_param` envelope with the
+    // remediation text instead of a panic; `cli/serve.rs` reports the same
+    // failure the same way.
     manager
         .try_seed_config(config.to_gateway_config())
         .await
-        .expect("loaded gateway config must normalize and validate");
+        .context("loaded gateway config failed validation")?;
     install_gateway_manager(Arc::clone(&manager));
     Ok(manager)
 }

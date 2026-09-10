@@ -578,12 +578,15 @@ impl CodeModeHost for GatewayManager {
 }
 
 pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
-    rmcp_tool_is_explicitly_read_only(&tool.tool)
+    rmcp_tool_is_explicitly_read_only(&tool.tool) && !tool.destructive
 }
 
 fn rmcp_tool_is_explicitly_read_only(tool: &rmcp::model::Tool) -> bool {
     tool.annotations.as_ref().is_some_and(|annotations| {
-        annotations.read_only_hint == Some(true) && annotations.destructive_hint == Some(false)
+        // MCP's destructive hint is optional and only meaningful for tools that
+        // are not read-only. Its absence must not disqualify an explicit
+        // readOnlyHint=true tool, while an explicit contradiction still fails closed.
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
     })
 }
 
@@ -1663,7 +1666,7 @@ mod tests {
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().destructive(false),)
         )));
-        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
+        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().read_only(true),)
         )));
         assert!(tool_is_explicitly_read_only(&upstream_with_annotations(

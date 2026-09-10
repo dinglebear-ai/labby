@@ -68,6 +68,21 @@ fn small_stack_command(home: &std::path::Path) -> Command {
     };
     #[cfg(not(unix))]
     let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
+    isolate_from_daemon(&mut command, home);
+    command
+}
+
+/// A one-shot CLI invocation that cannot reach any live daemon, so gateway
+/// subcommands that still run locally build the lazy local manager.
+fn local_command(home: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
+    isolate_from_daemon(&mut command, home);
+    command
+}
+
+/// Point every daemon-detection input at nothing so the CLI never finds a
+/// gateway to route through and exercises its local fallback paths.
+fn isolate_from_daemon(command: &mut Command, home: &std::path::Path) {
     command
         .kill_on_drop(true)
         .env("LABBY_HOME", home)
@@ -77,7 +92,6 @@ fn small_stack_command(home: &std::path::Path) -> Command {
         .env("LABBY_MCP_HTTP_TOKEN", "")
         .env("LABBY_MCP_HTTP_HOST", "127.0.0.1")
         .env("LABBY_MCP_HTTP_PORT", "9");
-    command
 }
 
 #[tokio::test]
@@ -125,6 +139,75 @@ async fn local_code_mode_execution_fits_a_one_mebibyte_main_stack() {
     assert_eq!(
         value["result"], 7,
         "Code Mode must return the executed result"
+    );
+}
+
+/// Regression: a persisted `config.toml` whose stdio upstream `command` is
+/// outside the spawn allowlist used to panic the lazy local manager build
+/// (`expect("loaded gateway config must normalize and validate")`), so
+/// `--json` callers saw a Rust panic on stderr instead of the shared CLI
+/// error envelope. The validation failure must surface as `invalid_param`
+/// with the allowlist guidance, exactly as `labby serve` reports it.
+#[tokio::test]
+async fn local_code_mode_reports_rejected_stdio_command_as_invalid_param() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+[[upstream]]
+name = "rejected-stdio"
+enabled = true
+command = "/bin/sleep"
+args = ["300"]
+
+[code_mode]
+enabled = true
+"#,
+    )
+    .unwrap();
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        local_command(home.path())
+            .args(["gateway", "code", "exec", "--json", "--code", "return 1"])
+            .output(),
+    )
+    .await
+    .expect("rejected local gateway config must fail promptly")
+    .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("panicked"),
+        "config validation failure must not panic the CLI: {stderr}"
+    );
+    assert!(
+        stderr.trim_start().starts_with('{'),
+        "stderr must begin with a JSON error envelope: {stderr}"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("stderr must be one JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["command"], "gateway");
+    assert_eq!(envelope["error"]["contract_version"], 1);
+    assert_eq!(envelope["error"]["kind"], "invalid_param");
+    assert_eq!(envelope["error"]["origin"], "validation");
+    let message = envelope["error"]["message"]
+        .as_str()
+        .expect("error message must be a string");
+    assert!(
+        message.contains("stdio command '/bin/sleep' is not in the allowed list"),
+        "message must carry the spawn-guard diagnosis: {message}"
+    );
+    assert!(
+        message.contains("extra_stdio_commands"),
+        "message must carry the allowlist remediation guidance: {message}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no result must be written on stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
 }
 
