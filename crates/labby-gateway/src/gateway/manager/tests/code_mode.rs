@@ -2245,13 +2245,30 @@ fn tool_ids(tools: &[UpstreamTool]) -> Vec<String> {
 /// assertion. The returned catalog and the emitted warning carry the meaning.
 /// Earlier values as low as 5s left only a scheduling hiccup of headroom on a
 /// loaded machine, which is a flake waiting to happen and already bit the
-/// sibling Windows shard once.
+/// sibling Windows shard once. Note that the margin is not what makes these
+/// guards reliable: what did is [`with_captured_logs`] building the guarded
+/// future after it holds `TRACING_TEST_LOCK`, so queueing for that lock is no
+/// longer charged here. This value is headroom on top of that fix, not a
+/// substitute for it.
 const BUDGET_GUARD: Duration = Duration::from_secs(20);
 
-/// Run `future` while capturing tracing output, returning its result and the
+/// Run a future while capturing tracing output, returning its result and the
 /// captured JSON log lines.
+///
+/// Takes a closure rather than a future on purpose. `TRACING_TEST_LOCK` is
+/// process-wide and is held for the whole captured await, so under `cargo test`
+/// — one process for the entire crate — callers queue behind each other for as
+/// long as the current holder's call takes. `tokio::time::timeout` computes its
+/// deadline eagerly at construction, so building it at the call site would
+/// start the clock before this lock is acquired and charge that queue time to
+/// the caller's guard, failing it with `Elapsed` without the guarded call ever
+/// having been slow. Constructing the future here, after the lock is held,
+/// keeps a guard a measure of the call rather than of lock contention.
 #[allow(clippy::await_holding_lock)] // TRACING_TEST_LOCK must span the captured await
-async fn with_captured_logs<T>(future: impl Future<Output = T>) -> (T, String) {
+async fn with_captured_logs<T, F>(build_future: impl FnOnce() -> F) -> (T, String)
+where
+    F: Future<Output = T>,
+{
     let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -2264,7 +2281,7 @@ async fn with_captured_logs<T>(future: impl Future<Output = T>) -> (T, String) {
             .without_time(),
     );
     let tracing_guard = tracing::subscriber::set_default(subscriber);
-    let output = future.await;
+    let output = build_future().await;
     drop(tracing_guard);
     (output, crate::test_support::captured_logs(&buffer))
 }
@@ -2305,10 +2322,12 @@ async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstre
     )
     .await;
 
-    let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        BUDGET_GUARD,
-        manager.code_mode_catalog_tools_cached(None, None),
-    ))
+    let (tools, logs) = with_captured_logs(|| {
+        tokio::time::timeout(
+            BUDGET_GUARD,
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
+    })
     .await;
     let tools = tools
         .expect("one-shot catalog must not wait out a stalled upstream's discovery timeout")
@@ -2482,10 +2501,12 @@ async fn one_shot_cli_catalog_serves_cached_upstreams_when_a_straggler_misses_th
 
     let stalled = stalled_http_upstream("alpha").await;
     let (manager, _pool) = one_shot_manager_at(vec![stalled, healthy], 400, cache_path).await;
-    let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        BUDGET_GUARD,
-        manager.code_mode_catalog_tools_cached(None, None),
-    ))
+    let (tools, logs) = with_captured_logs(|| {
+        tokio::time::timeout(
+            BUDGET_GUARD,
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
+    })
     .await;
     let tools = tools
         .expect("the budget must bound the wait")
@@ -2518,10 +2539,12 @@ async fn one_shot_cli_catalog_keeps_an_upstream_whose_tools_landed_before_the_cu
     let (manager, _pool) =
         one_shot_manager_at(vec![healthy.clone()], 4_000, cache_path.clone()).await;
 
-    let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        BUDGET_GUARD,
-        manager.code_mode_catalog_tools_cached(None, None),
-    ))
+    let (tools, logs) = with_captured_logs(|| {
+        tokio::time::timeout(
+            BUDGET_GUARD,
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
+    })
     .await;
     let tools = tools
         .expect("the budget must bound the wait")
@@ -2645,10 +2668,12 @@ async fn one_shot_cli_catalog_treats_a_cached_zero_tool_upstream_as_served() {
 
     let stalled = stalled_http_upstream("alpha").await;
     let (manager, _pool) = one_shot_manager_at(vec![stalled, quiet], 400, cache_path).await;
-    let (tools, logs) = with_captured_logs(tokio::time::timeout(
-        BUDGET_GUARD,
-        manager.code_mode_catalog_tools_cached(None, None),
-    ))
+    let (tools, logs) = with_captured_logs(|| {
+        tokio::time::timeout(
+            BUDGET_GUARD,
+            manager.code_mode_catalog_tools_cached(None, None),
+        )
+    })
     .await;
     let tools = tools
         .expect("the budget must bound the wait")
@@ -2698,7 +2723,7 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
     );
 
     let (second, logs) =
-        with_captured_logs(manager.code_mode_catalog_tools_cached(None, None)).await;
+        with_captured_logs(|| manager.code_mode_catalog_tools_cached(None, None)).await;
     let second = second.expect("second run should still serve the cached healthy upstream");
     assert_eq!(
         second
