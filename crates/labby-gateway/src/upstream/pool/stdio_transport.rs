@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -288,6 +288,29 @@ async fn log_termination(
     }
 }
 
+/// Shared record that the transport reached stdout EOF and reaped the child
+/// (the `event=transport_eof` termination). Connect callers consult it before
+/// lifecycle fallback: a child that died before answering proves nothing about
+/// which MCP lifecycle it speaks, so it must not be respawned as "legacy".
+#[derive(Clone, Default)]
+pub(super) struct ChildExitObserver {
+    transport_eof: Arc<AtomicBool>,
+}
+
+impl ChildExitObserver {
+    /// True once the transport observed EOF on the child's stdout while a
+    /// message was expected, i.e. the child exited (or was reaped after
+    /// closing its output) before the connection was established.
+    #[must_use]
+    pub(super) fn child_exited(&self) -> bool {
+        self.transport_eof.load(Ordering::Acquire)
+    }
+
+    fn record_transport_eof(&self) {
+        self.transport_eof.store(true, Ordering::Release);
+    }
+}
+
 /// Labby-owned equivalent of rmcp's child transport. Keeping the child handle
 /// here lets lifecycle logs retain upstream identity and exit status.
 pub(super) struct DiagnosticChildTransport {
@@ -297,6 +320,7 @@ pub(super) struct DiagnosticChildTransport {
     generation: u64,
     pid: Option<u32>,
     diagnostics: StdioDiagnostics,
+    exit_observer: ChildExitObserver,
 }
 
 impl DiagnosticChildTransport {
@@ -324,6 +348,7 @@ impl DiagnosticChildTransport {
                 generation,
                 pid,
                 diagnostics,
+                exit_observer: ChildExitObserver::default(),
             },
             stderr,
         ))
@@ -339,7 +364,18 @@ impl DiagnosticChildTransport {
         self.generation
     }
 
+    /// Handle that outlives the transport's move into the rmcp service, so the
+    /// connect path can tell a dead child from a live peer that rejected the
+    /// modern lifecycle.
+    #[must_use]
+    pub(super) fn exit_observer(&self) -> ChildExitObserver {
+        self.exit_observer.clone()
+    }
+
     async fn finish_child(&mut self, event: &'static str, expected: bool) {
+        if event == "transport_eof" {
+            self.exit_observer.record_transport_eof();
+        }
         let invalidated = take_inflight(&self.upstream, self.generation);
         let Some(child) = self.child.take() else {
             return;
