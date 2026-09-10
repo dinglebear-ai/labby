@@ -118,6 +118,9 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       if (isAbortError(error)) {
         throw error
       }
+      if (issuedUnder !== getBrowserSessionContextIdentity()) {
+        throw new DOMException('Authority or project context changed', 'AbortError')
+      }
       const message = error instanceof Error ? error.message : 'unknown network error'
       throw createError(
         `${serviceLabel} backend action \`${action}\` failed before a response was received: ${message}`,
