@@ -432,10 +432,17 @@ impl GatewayManager {
     ///
     /// Partial is loud and never empty: upstreams that fail, are still
     /// connecting, or were never attempted when the budget ends are omitted
-    /// from the proxy and NOT cached (so the next run retries them) and are
-    /// named in a warning; a pass that would leave the catalog with nothing
-    /// from cache and nothing connected is an error instead. Every upstream
-    /// that did complete is persisted even when the budget cut the pass short.
+    /// from the proxy and are named in a warning; a pass that would leave the
+    /// catalog with nothing from cache and nothing connected is an error
+    /// instead. Every upstream that did complete is persisted even when the
+    /// budget cut the pass short.
+    ///
+    /// An upstream whose probe genuinely *failed* is additionally recorded as a
+    /// short-lived negative cache entry and skipped while that window holds, so
+    /// a fleet of dead upstreams stops re-consuming the cold-connect budget on
+    /// every invocation. Being cut off by the budget is not a failure and is
+    /// never suppressed. Suppression expires on its own and any config edit
+    /// clears it, so a recovered upstream returns without operator action.
     #[allow(dead_code)]
     pub async fn code_mode_catalog_tools_cached(
         &self,
@@ -453,6 +460,10 @@ impl GatewayManager {
         let cache = catalog_cache::CatalogCache::load_from(&cache_path);
         let mut tools = Vec::new();
         let mut cache_hits = 0usize;
+        // Upstreams skipped outright because a recent failure is still
+        // suppressed. Reported like any other omission so a partial catalog
+        // never goes unexplained.
+        let mut suppressed: Vec<String> = Vec::new();
         // Upstreams that need a live probe, carrying the fingerprint their
         // fresh tools are stored under (`None` for subject-scoped OAuth probes,
         // which are never cached).
@@ -470,9 +481,26 @@ impl GatewayManager {
                 tools.extend(cached);
                 continue;
             }
+            if cache.probe_suppressed(&upstream.name, &fingerprint) {
+                suppressed.push(upstream.name.clone());
+                continue;
+            }
             pending.push((upstream.clone(), Some(fingerprint)));
         }
         if pending.is_empty() {
+            if !suppressed.is_empty() {
+                if cache_hits == 0 {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "upstream_connect_error".to_string(),
+                        message: format!(
+                            "no Code Mode upstream connected for the one-shot catalog: \
+                             all upstreams are suppressed by recent probe failures: {}",
+                            suppressed.join(", ")
+                        ),
+                    });
+                }
+                warn_suppressed(&suppressed);
+            }
             sort_tools_by_config_order(&mut tools, &cfg.upstream);
             return Ok(tools);
         }
@@ -530,6 +558,7 @@ impl GatewayManager {
         let mut updates = Vec::new();
         let mut connected = 0usize;
         let mut failures = Vec::new();
+        let mut failed_probes = Vec::new();
         let budget_exhausted = loop {
             match tokio::time::timeout_at(deadline, probes.next()).await {
                 Ok(Some((upstream, fingerprint, Ok(live)))) => {
@@ -552,9 +581,18 @@ impl GatewayManager {
                         action = "code_mode.catalog_cache",
                         upstream = %upstream.name,
                         error = %error,
-                        "upstream connect failed; omitting from codemode proxy (not cached)"
+                        "upstream connect failed; omitting from codemode proxy and \
+                         suppressing retries briefly"
                     );
                     failures.push(format!("{}: {error}", upstream.name));
+                    // Only this arm is a real failure. The budget-exhausted
+                    // paths below are not, and must not be suppressed.
+                    if let Some(Some(fingerprint)) = fingerprints.get(&upstream.name) {
+                        failed_probes.push(catalog_cache::CatalogCacheFailure {
+                            upstream_name: upstream.name.clone(),
+                            fingerprint: fingerprint.clone(),
+                        });
+                    }
                 }
                 Ok(None) => break false,
                 Err(_elapsed) => break true,
@@ -596,7 +634,7 @@ impl GatewayManager {
                 }
             }
         }
-        catalog_cache::merge_and_store(cache_path, updates).await;
+        catalog_cache::merge_and_store(cache_path, updates, failed_probes).await;
 
         // Partial means partial, not empty: with nothing served from cache and
         // nothing connected, the proxy would offer no upstream helpers at all,
@@ -604,6 +642,12 @@ impl GatewayManager {
         // contract forbids.
         if cache_hits == 0 && connected == 0 {
             let mut details = failures;
+            if !suppressed.is_empty() {
+                details.push(format!(
+                    "suppressed by recent probe failures: {}",
+                    suppressed.join(", ")
+                ));
+            }
             if !in_flight.is_empty() {
                 details.push(format!(
                     "still connecting when the {}ms cold-connect budget ended: {}",
@@ -624,6 +668,9 @@ impl GatewayManager {
                     details.join("; ")
                 ),
             });
+        }
+        if !suppressed.is_empty() {
+            warn_suppressed(&suppressed);
         }
         if !in_flight.is_empty() || !not_attempted.is_empty() {
             tracing::warn!(
@@ -780,9 +827,14 @@ impl GatewayManager {
                 }
             }
         }
+        // No negative entries from this path: the long-lived MCP surface keeps
+        // its own reprobe state and re-probes per call, so cross-invocation
+        // suppression here would only mask upstream recovery. The negative cache
+        // exists for one-shot CLI runs, which have no such in-process state.
         crate::gateway::code_mode::catalog_cache::merge_and_store(
             self.code_mode_catalog_cache_path(),
             cache_updates,
+            Vec::new(),
         )
         .await;
 
@@ -1096,6 +1148,20 @@ impl GatewayManager {
             });
         }
     }
+}
+
+/// Report upstreams skipped because a recent probe failure is still suppressed.
+///
+/// Separate from the budget-exhaustion warning: those upstreams may be perfectly
+/// healthy and merely slow, while these are known to have failed.
+fn warn_suppressed(suppressed: &[String]) {
+    tracing::warn!(
+        surface = "dispatch",
+        service = "gateway",
+        action = "code_mode.catalog_cache",
+        suppressed_upstreams = ?suppressed,
+        "omitting upstreams from codemode proxy while their recent probe failures are suppressed"
+    );
 }
 
 #[cfg(test)]
