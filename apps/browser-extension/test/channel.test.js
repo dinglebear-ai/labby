@@ -126,6 +126,24 @@ test("closing before open rejects callers waiting for readiness", async () => {
   await assert.rejects(pending, /channel_closed/);
 });
 
+test("explicit auth failure reaches stale-association recovery", async () => {
+  const sockets = installSocket();
+  const failures = [];
+  const instance = new LabbyBrowserChannel({
+    baseUrl: "https://labby.example.com", extensionId: "a".repeat(32), browserId: "stale-browser",
+    onChallenge() {}, onError(error) { failures.push(error instanceof Error ? error.message : String(error)); }
+  });
+  instance.connect();
+  const opening = sockets[0].onopen();
+  const challenge = sockets[0].frames[0];
+  assert.equal(challenge.type, "auth_challenge");
+  instance.receive({version: 1, request_id: challenge.request_id, type: "error", kind: "auth_failed", message: "browser authentication failed"});
+  await opening;
+  assert.equal(sockets[0].closed, true);
+  assert.ok(failures.includes("auth_failed"));
+  instance.close();
+});
+
 test("an authentication capability cannot send an old challenge after reconnect", async () => {
   const sockets = installSocket();
   let resumeSigning;

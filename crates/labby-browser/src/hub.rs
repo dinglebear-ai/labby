@@ -524,25 +524,25 @@ impl BrowserBridge {
         Ok(browser)
     }
 
-    /// Approve pairing and evict every superseded identity for its extension.
+    /// Approve pairing and evict the superseded identity for this browser credential.
     pub async fn approve_pairing(
         &self,
         pairing_id: &str,
         pairing_fingerprint: &str,
     ) -> Result<crate::store::BrowserRecord> {
         let _authority = self.authority.lock().await;
-        let extension_id = self
+        let public_key = self
             .store
             .pairing(pairing_id)
             .await?
             .ok_or(BrowserError::NotFound)?
-            .extension_id;
+            .public_key;
         let superseded: Vec<_> = self
             .store
             .browsers()
             .await?
             .into_iter()
-            .filter(|browser| browser.extension_id == extension_id && browser.revoked_at.is_none())
+            .filter(|browser| browser.public_key == public_key && browser.revoked_at.is_none())
             .map(|browser| browser.id)
             .collect();
         let browser = self
@@ -868,6 +868,64 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn distinct_installations_of_one_extension_remain_connected() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let first_signing = SigningKey::from_bytes(&[9; 32]);
+        let second_signing = SigningKey::from_bytes(&[10; 32]);
+
+        let first_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(first_signing.verifying_key().as_bytes());
+        let first_pairing = bridge
+            .request_pairing("Chrome one", EXTENSION_ID, &first_public_key)
+            .await
+            .unwrap();
+        let first_browser = bridge
+            .approve_pairing(&first_pairing.id, &first_pairing.pairing_fingerprint())
+            .await
+            .unwrap();
+        let _first_connection =
+            authenticate_browser(&bridge, &first_browser.id, &first_signing).await;
+
+        let second_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(second_signing.verifying_key().as_bytes());
+        let second_pairing = bridge
+            .request_pairing("Chrome two", EXTENSION_ID, &second_public_key)
+            .await
+            .unwrap();
+        let second_browser = bridge
+            .approve_pairing(&second_pairing.id, &second_pairing.pairing_fingerprint())
+            .await
+            .unwrap();
+        let _second_connection =
+            authenticate_browser(&bridge, &second_browser.id, &second_signing).await;
+
+        let mut expected = vec![first_browser.id.clone(), second_browser.id.clone()];
+        expected.sort();
+        assert_eq!(bridge.connected_browser_ids().unwrap(), expected);
+
+        let replacement_pairing = bridge
+            .request_pairing("Chrome one replacement", EXTENSION_ID, &first_public_key)
+            .await
+            .unwrap();
+        let replacement = bridge
+            .approve_pairing(
+                &replacement_pairing.id,
+                &replacement_pairing.pairing_fingerprint(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            bridge.connected_browser_ids().unwrap(),
+            vec![second_browser.id.clone()]
+        );
+        let _replacement_connection =
+            authenticate_browser(&bridge, &replacement.id, &first_signing).await;
+        let mut expected = vec![replacement.id, second_browser.id];
+        expected.sort();
+        assert_eq!(bridge.connected_browser_ids().unwrap(), expected);
     }
 
     #[tokio::test]

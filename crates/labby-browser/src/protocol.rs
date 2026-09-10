@@ -51,7 +51,7 @@ pub enum BrowserMessage {
     PairingRequest {
         /// Human-facing browser/profile name.
         display_name: String,
-        /// Chrome extension identity.
+        /// Chrome extension package id from the socket Origin.
         extension_id: String,
         /// Base64-encoded Ed25519 public key.
         public_key: String,

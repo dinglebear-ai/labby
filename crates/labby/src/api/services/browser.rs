@@ -240,27 +240,31 @@ async fn run_socket(
                 }
             }
             BrowserMessage::AuthChallenge { browser_id } => {
-                let browser = bridge
-                    .store()
-                    .browser(&browser_id)
-                    .await?
-                    .ok_or(labby_browser::BrowserError::AuthenticationFailed)?;
-                if browser.extension_id != extension_id || browser.revoked_at.is_some() {
-                    return Err(labby_browser::BrowserError::AuthenticationFailed);
+                match bridge.store().browser(&browser_id).await? {
+                    Some(browser)
+                        if browser.extension_id == extension_id && browser.revoked_at.is_none() =>
+                    {
+                        let mut challenge = bridge.issue_challenge(&browser_id).await?;
+                        challenge.request_id = request_id;
+                        challenge
+                    }
+                    _ => authentication_failed(request_id),
                 }
-                let mut challenge = bridge.issue_challenge(&browser_id).await?;
-                challenge.request_id = request_id;
-                challenge
             }
             BrowserMessage::AuthResponse {
                 challenge_id,
                 signature,
-            } => {
-                let connection = bridge.authenticate(&challenge_id, &signature).await?;
-                let browser_id = connection.browser_id.clone();
-                authenticated = Some(connection);
-                BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
-            }
+            } => match bridge.authenticate(&challenge_id, &signature).await {
+                Ok(connection) => {
+                    let browser_id = connection.browser_id.clone();
+                    authenticated = Some(connection);
+                    BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
+                }
+                Err(labby_browser::BrowserError::AuthenticationFailed) => {
+                    authentication_failed(request_id)
+                }
+                Err(error) => return Err(error),
+            },
             BrowserMessage::Heartbeat => BrowserEnvelope::new(
                 request_id,
                 BrowserMessage::Acknowledged {
@@ -336,6 +340,16 @@ async fn run_socket(
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+fn authentication_failed(request_id: Option<String>) -> BrowserEnvelope {
+    BrowserEnvelope::new(
+        request_id,
+        BrowserMessage::Error {
+            kind: "auth_failed".to_string(),
+            message: "browser authentication failed".to_string(),
+        },
+    )
 }
 
 async fn send_envelope(

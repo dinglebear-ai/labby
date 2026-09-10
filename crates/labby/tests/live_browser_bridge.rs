@@ -322,6 +322,27 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     )
     .await;
     drop(socket);
+
+    let mut stale_request = format!("{}/browser/socket", base.replacen("http://", "ws://", 1))
+        .into_client_request()
+        .unwrap();
+    stale_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut stale_socket, _) = tokio_tungstenite::connect_async(stale_request)
+        .await
+        .unwrap();
+    send(
+        &mut stale_socket,
+        json!({"type":"auth_challenge","browser_id":browser_id}),
+    )
+    .await;
+    let rejected_auth = receive(&mut stale_socket).await;
+    assert_eq!(rejected_auth["type"], "error");
+    assert_eq!(rejected_auth["kind"], "auth_failed");
+    stale_socket.close(None).await.unwrap();
+
     let cleanup = guard.finish().await;
     assert!(
         cleanup.failures.is_empty(),
