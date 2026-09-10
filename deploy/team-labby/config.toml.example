@@ -43,5 +43,11 @@ scopes = ["lab:read", "lab"]
 kind = "gateway_subset"
 project_id = "replace-with-bound-project-id"
 upstreams = ["team-depot", "catalog-depot", "linear"]
-services = ["artifacts", "bundles", "gateway", "jobs", "setup", "snippets", "sources", "uploads"]
+# Only context-free services may be listed here. Caller-bound services
+# (`artifacts`, `access`, `agents`, `tasks`, `dev_containers`, `projects`,
+# `stash`) and HTTP-only services (`bundles`, `jobs`, `sources`, `uploads`)
+# are rejected at startup with "unknown gateway_subset service". Team Depot
+# publishing does not need `artifacts`: the route-owned `depot_publish` tool
+# is attached automatically whenever `upstreams` includes `team-depot`.
+services = ["gateway", "setup", "snippets"]
 expose_code_mode = true

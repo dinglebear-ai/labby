@@ -134,8 +134,9 @@ peer_uid = 1000
   so older clients retain that version's request-validation and wire semantics.
   The gateway-to-upstream boundary attempts `server/discover` first
   and performs one bounded fallback to legacy `initialize` for recognized
-  lifecycle-compatibility failures; HTTP/TCP and Unix-socket upstreams share
-  that policy.
+  lifecycle-compatibility failures; HTTP/TCP, Unix-socket, and stdio upstreams
+  share that policy. A stdio child that exits before answering the probe is
+  reported as a startup failure, not respawned as a legacy server.
 - Protected MCP routes validate route-specific OAuth resources and scopes.
 - OAuth metadata and callback routes are public by protocol design.
 - Browser session cookies are separate from MCP authorization headers.

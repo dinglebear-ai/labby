@@ -85,8 +85,30 @@ fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Which kind of transport produced a connect error.
+///
+/// The distinction matters for one signal only: a discovery stream that closed
+/// before any response arrived. rmcp's streamable HTTP worker does not surface
+/// a JSON-RPC *error* frame received over SSE during the initialize phase; it
+/// keeps draining for a success response and then quits with an empty stream.
+/// A legacy HTTP server's `-32601` for `server/discover` is therefore only ever
+/// observable as `connection closed: discover response`, so on network
+/// transports that message is treated as legacy evidence. On stdio the same
+/// message means the child closed stdout, which proves nothing about the
+/// lifecycle it speaks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LifecycleTransport {
+    /// Streamable HTTP, Unix-socket HTTP, or WebSocket.
+    Network,
+    /// A child process speaking MCP over its stdio pipes.
+    Stdio,
+}
+
 /// Select a retry only when an error proves lifecycle incompatibility.
-pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAttempt> {
+pub(super) fn compatibility_retry(
+    error: &anyhow::Error,
+    transport: LifecycleTransport,
+) -> Option<LifecycleAttempt> {
     if modern_discovery_error_must_not_downgrade(error) {
         return None;
     }
@@ -110,9 +132,16 @@ pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAtte
         || message.contains("no valid session id")
         || message.contains("expect initialize request")
         || message.contains("expected initialize request")
-        || message.contains("connection closed: discover response")
         || message.contains("invalid params")
         || message.contains("invalid request parameters")
+    {
+        return Some(LifecycleAttempt::LegacyInitialize);
+    }
+
+    // See `LifecycleTransport`: only a network peer's closed discovery stream
+    // carries a swallowed legacy rejection.
+    if transport == LifecycleTransport::Network
+        && message.contains("connection closed: discover response")
     {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
@@ -162,10 +191,12 @@ mod tests {
         .expect("unexpected result should deserialize through the SDK union");
         let error = anyhow::Error::new(ClientInitializeError::ExpectedInitResult(Some(result)));
 
-        assert_eq!(
-            compatibility_retry(&error),
-            Some(LifecycleAttempt::LegacyInitialize)
-        );
+        for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+            assert_eq!(
+                compatibility_retry(&error, transport),
+                Some(LifecycleAttempt::LegacyInitialize)
+            );
+        }
     }
 
     #[test]
@@ -177,7 +208,9 @@ mod tests {
         .expect("tool-shaped result should deserialize");
         let error = anyhow::Error::new(ClientInitializeError::ExpectedInitResult(Some(result)));
 
-        assert_eq!(compatibility_retry(&error), None);
+        for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+            assert_eq!(compatibility_retry(&error, transport), None);
+        }
     }
 
     #[test]
@@ -191,13 +224,30 @@ mod tests {
             "JSON-RPC error: -32602: Invalid request parameters(\"\")",
             "JSON-RPC error: -32601: Method not supported",
             "HTTP 422 Unprocessable Entity: Unexpected message, expect initialize request",
-            "connection closed: discover response",
         ] {
-            assert_eq!(
-                compatibility_retry(&anyhow::anyhow!(message)),
-                Some(LifecycleAttempt::LegacyInitialize)
-            );
+            for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+                assert_eq!(
+                    compatibility_retry(&anyhow::anyhow!(message), transport),
+                    Some(LifecycleAttempt::LegacyInitialize),
+                    "{message} over {transport:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn closed_discovery_stream_is_legacy_evidence_only_on_network_transports() {
+        let error = anyhow::anyhow!("connection closed: discover response");
+        assert_eq!(
+            compatibility_retry(&error, LifecycleTransport::Network),
+            Some(LifecycleAttempt::LegacyInitialize),
+            "rmcp swallows a legacy server's SSE error frame during initialize"
+        );
+        assert_eq!(
+            compatibility_retry(&error, LifecycleTransport::Stdio),
+            None,
+            "a stdio child that closed stdout proved nothing about its lifecycle"
+        );
     }
 
     #[test]
@@ -206,10 +256,12 @@ mod tests {
             client_supported: vec![ProtocolVersion::V_2026_07_28],
             server_supported: vec![ProtocolVersion::V_2025_11_25],
         });
-        assert_eq!(
-            compatibility_retry(&error),
-            Some(LifecycleAttempt::LegacyInitialize)
-        );
+        for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+            assert_eq!(
+                compatibility_retry(&error, transport),
+                Some(LifecycleAttempt::LegacyInitialize)
+            );
+        }
     }
 
     #[test]
@@ -222,7 +274,9 @@ mod tests {
             let error = anyhow::Error::new(ClientInitializeError::JsonRpcError(
                 rmcp::model::ErrorData::new(code, "modern protocol contract error", None),
             ));
-            assert_eq!(compatibility_retry(&error), None);
+            for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+                assert_eq!(compatibility_retry(&error, transport), None);
+            }
         }
     }
 
@@ -233,8 +287,15 @@ mod tests {
             "HTTP 500 Internal Server Error",
             "connection timed out",
             "certificate verify failed",
+            "connection closed: initialize response",
         ] {
-            assert_eq!(compatibility_retry(&anyhow::anyhow!(message)), None);
+            for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+                assert_eq!(
+                    compatibility_retry(&anyhow::anyhow!(message), transport),
+                    None,
+                    "{message} over {transport:?}"
+                );
+            }
         }
     }
 }
