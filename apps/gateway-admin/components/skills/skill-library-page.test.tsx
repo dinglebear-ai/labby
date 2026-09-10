@@ -293,6 +293,65 @@ test('library waits for an explicit project selection before issuing requests', 
   }
 })
 
+test('same-project workspace identity changes remount the library', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeTeamId: 'team-a',
+      activeProjectId: 'project-1',
+      teams: [
+        { id: 'team-a', role: 'owner', membershipEpoch: 1, policyEpoch: 1 },
+        { id: 'team-b', role: 'owner', membershipEpoch: 1, policyEpoch: 1 },
+      ],
+      projects: [{ id: 'project-1', role: 'owner', name: 'Project One' }],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    return {
+      library_version: listCalls,
+      published_library_version: listCalls,
+      can_create: true,
+      create_visibilities: ['private'],
+      allowed_actions: [],
+      items: [item(listCalls === 1 ? 'alpha' : 'bravo')],
+    }
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.match(view.container.textContent ?? '', /alpha/)
+
+    await act(async () => {
+      selectSessionWorkspace({ teamId: 'team-b', projectId: 'project-1' })
+      await Promise.resolve()
+    })
+    await act(async () => {})
+
+    assert.equal(listCalls, 2)
+    assert.match(view.container.textContent ?? '', /bravo/)
+    assert.doesNotMatch(view.container.textContent ?? '', /alpha/)
+  } finally {
+    skillLibrary.list = originalList
+    await view.unmount()
+  }
+})
+
 test('switching projects remounts the library and drops prior project state', async () => {
   installTestDom()
   __setBrowserSessionStateForTests({

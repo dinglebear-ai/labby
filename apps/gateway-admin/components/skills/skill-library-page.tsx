@@ -19,7 +19,7 @@ import {
   type SkillValidation,
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
-import { selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
+import { authorityIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -71,7 +71,7 @@ export function SkillLibraryPageContent() {
     // Key the project-scoped editor to the caller and current authority
     // generation so workspace, login, or policy changes cannot leave stale
     // Artifacts or in-flight editor state visible in a new context.
-    const scopeKey = `${session.user.sub}:${projectId}:${session.authority?.generation ?? 'bound'}`
+    const scopeKey = `${session.user.sub}:${projectId}:${authorityIdentity(session.authority)}`
     return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
   }
 
