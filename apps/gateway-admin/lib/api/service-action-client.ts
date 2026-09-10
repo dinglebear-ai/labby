@@ -100,6 +100,11 @@ export async function performServiceAction<T, TError extends ServiceActionError>
 }): Promise<T> {
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
+  const initialAuthority = authorityIdentity(getSessionAuthority())
+  const initialProjectId = getSessionProjectId()
+  const initialContextIsCurrent = () =>
+    initialAuthority === authorityIdentity(getSessionAuthority()) &&
+    initialProjectId === getSessionProjectId()
 
   // Every attempt captures the authority and project context it was issued
   // under and rejects its own response if either changes while it is in
@@ -155,6 +160,10 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       throw error
     }
 
+    if (!initialContextIsCurrent()) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
+    }
+
     const currentSession = getBrowserSessionState()
     if (
       currentSession.status === 'authenticated' &&
@@ -166,6 +175,9 @@ export async function performServiceAction<T, TError extends ServiceActionError>
     const session = await refreshBrowserSession()
     if (session.status !== 'authenticated') {
       throw error
+    }
+    if (!initialContextIsCurrent()) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
     }
 
     return request()
