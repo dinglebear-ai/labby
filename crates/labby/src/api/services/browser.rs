@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::{
@@ -28,9 +28,36 @@ use crate::dispatch::error::ToolError;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PREAUTH_SOCKETS_PER_CLIENT: usize = 8;
+const MAX_PAIRING_REQUESTS_PER_CLIENT: usize = 8;
+const PAIRING_REQUEST_WINDOW: Duration = Duration::from_mins(5);
 static SOCKET_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
-static PREAUTH_CLIENTS: LazyLock<Mutex<HashMap<IpAddr, usize>>> =
+static PREAUTH_CLIENTS: LazyLock<Mutex<HashMap<IpAddr, ClientAdmission>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Default)]
+struct ClientAdmission {
+    active_sockets: usize,
+    pairing_committed: usize,
+    pairing_reserved: usize,
+    pairing_window_started: Option<Instant>,
+}
+
+impl ClientAdmission {
+    fn refresh_pairing_window(&mut self, now: Instant) {
+        if self
+            .pairing_window_started
+            .is_some_and(|started| now.duration_since(started) >= PAIRING_REQUEST_WINDOW)
+        {
+            self.pairing_committed = 0;
+            self.pairing_reserved = 0;
+            self.pairing_window_started = None;
+        }
+    }
+
+    fn idle(&self) -> bool {
+        self.active_sockets == 0 && self.pairing_committed == 0 && self.pairing_reserved == 0
+    }
+}
 
 struct PreauthClientPermit {
     client_ip: IpAddr,
@@ -38,36 +65,102 @@ struct PreauthClientPermit {
 
 impl PreauthClientPermit {
     fn acquire(client_ip: IpAddr) -> Result<Self, ApiError> {
-        let mut active = PREAUTH_CLIENTS.lock().map_err(|_| {
+        let now = Instant::now();
+        let mut clients = PREAUTH_CLIENTS.lock().map_err(|_| {
             ApiError::new(ToolError::Sdk {
                 sdk_kind: "server_busy".to_string(),
                 message: "browser admission state is unavailable".to_string(),
             })
         })?;
-        let count = active.entry(client_ip).or_default();
-        if *count >= MAX_PREAUTH_SOCKETS_PER_CLIENT {
+        clients.retain(|_, state| {
+            state.refresh_pairing_window(now);
+            !state.idle()
+        });
+        let state = clients.entry(client_ip).or_default();
+        if state.active_sockets >= MAX_PREAUTH_SOCKETS_PER_CLIENT {
             return Err(ApiError::new(ToolError::Sdk {
                 sdk_kind: "server_busy".to_string(),
                 message: "browser unauthenticated connection capacity is exhausted for this client"
                     .to_string(),
             }));
         }
-        *count += 1;
+        state.active_sockets += 1;
         Ok(Self { client_ip })
+    }
+
+    fn reserve_pairing_request(
+        &self,
+    ) -> Result<PairingRequestReservation, labby_browser::BrowserError> {
+        let now = Instant::now();
+        let mut clients = PREAUTH_CLIENTS
+            .lock()
+            .map_err(|_| labby_browser::BrowserError::ServerBusy)?;
+        let state = clients
+            .get_mut(&self.client_ip)
+            .ok_or(labby_browser::BrowserError::ServerBusy)?;
+        state.refresh_pairing_window(now);
+        if state.pairing_committed + state.pairing_reserved >= MAX_PAIRING_REQUESTS_PER_CLIENT {
+            return Err(labby_browser::BrowserError::ServerBusy);
+        }
+        state.pairing_window_started.get_or_insert(now);
+        state.pairing_reserved += 1;
+        Ok(PairingRequestReservation {
+            client_ip: self.client_ip,
+            committed: false,
+        })
     }
 }
 
 impl Drop for PreauthClientPermit {
     fn drop(&mut self) {
-        let Ok(mut active) = PREAUTH_CLIENTS.lock() else {
+        let Ok(mut clients) = PREAUTH_CLIENTS.lock() else {
             return;
         };
-        let Some(count) = active.get_mut(&self.client_ip) else {
+        let Some(state) = clients.get_mut(&self.client_ip) else {
             return;
         };
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            active.remove(&self.client_ip);
+        state.active_sockets = state.active_sockets.saturating_sub(1);
+        state.refresh_pairing_window(Instant::now());
+        if state.idle() {
+            clients.remove(&self.client_ip);
+        }
+    }
+}
+
+struct PairingRequestReservation {
+    client_ip: IpAddr,
+    committed: bool,
+}
+
+impl PairingRequestReservation {
+    fn commit(mut self) -> Result<(), labby_browser::BrowserError> {
+        let mut clients = PREAUTH_CLIENTS
+            .lock()
+            .map_err(|_| labby_browser::BrowserError::ServerBusy)?;
+        let state = clients
+            .get_mut(&self.client_ip)
+            .ok_or(labby_browser::BrowserError::ServerBusy)?;
+        state.pairing_reserved = state.pairing_reserved.saturating_sub(1);
+        state.pairing_committed += 1;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for PairingRequestReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let Ok(mut clients) = PREAUTH_CLIENTS.lock() else {
+            return;
+        };
+        let Some(state) = clients.get_mut(&self.client_ip) else {
+            return;
+        };
+        state.pairing_reserved = state.pairing_reserved.saturating_sub(1);
+        if state.idle() {
+            clients.remove(&self.client_ip);
         }
     }
 }
@@ -272,9 +365,14 @@ async fn run_socket(
                 if claimed_extension_id != extension_id {
                     return Err(labby_browser::BrowserError::AuthenticationFailed);
                 }
+                let pairing_reservation = preauth_permit
+                    .as_ref()
+                    .ok_or(labby_browser::BrowserError::AuthenticationFailed)?
+                    .reserve_pairing_request()?;
                 let pairing = bridge
                     .request_pairing(&display_name, extension_id, &public_key)
                     .await?;
+                pairing_reservation.commit()?;
                 let pairing_fingerprint = pairing.pairing_fingerprint();
                 BrowserEnvelope::new(
                     request_id,
@@ -469,6 +567,30 @@ mod tests {
         );
         headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
         assert_eq!(admission_client_ip(&headers, true, Some(peer)), None);
+    }
+
+    #[test]
+    fn pairing_creation_budget_is_bounded_and_failed_reservations_roll_back() {
+        let ip: IpAddr = "198.51.100.43".parse().unwrap();
+        let permit = PreauthClientPermit::acquire(ip).unwrap();
+
+        // A store-side rejection drops its uncommitted reservation and must not
+        // consume the client's five-minute pairing budget.
+        drop(permit.reserve_pairing_request().unwrap());
+        for _ in 0..MAX_PAIRING_REQUESTS_PER_CLIENT {
+            permit.reserve_pairing_request().unwrap().commit().unwrap();
+        }
+        assert!(permit.reserve_pairing_request().is_err());
+
+        {
+            let mut clients = PREAUTH_CLIENTS.lock().unwrap();
+            let state = clients.get_mut(&ip).unwrap();
+            state.pairing_window_started =
+                Some(Instant::now() - PAIRING_REQUEST_WINDOW - Duration::from_secs(1));
+        }
+        permit.reserve_pairing_request().unwrap().commit().unwrap();
+        drop(permit);
+        PREAUTH_CLIENTS.lock().unwrap().remove(&ip);
     }
 
     #[test]

@@ -408,6 +408,62 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
 }
 
 #[tokio::test]
+async fn pairing_creation_is_rate_limited_per_client() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
+    let token = uuid::Uuid::new_v4().to_string();
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", &token)
+        .start()
+        .await
+        .unwrap();
+    let url = format!(
+        "{}/browser/socket",
+        guard.connection().base_url.replacen("http://", "ws://", 1)
+    );
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    for index in 1_u8..=8 {
+        let signing = SigningKey::from_bytes(&[index; 32]);
+        send(
+            &mut socket,
+            json!({
+                "type":"pairing_request",
+                "display_name":format!("Rate fixture {index}"),
+                "extension_id":EXTENSION,
+                "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+            }),
+        )
+        .await;
+        assert_eq!(receive(&mut socket).await["type"], "pairing_pending");
+    }
+
+    let signing = SigningKey::from_bytes(&[9; 32]);
+    send(
+        &mut socket,
+        json!({
+            "type":"pairing_request",
+            "display_name":"Rate fixture rejected",
+            "extension_id":EXTENSION,
+            "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+        }),
+    )
+    .await;
+    let terminal = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("rate-limited socket must terminate promptly");
+    match terminal {
+        None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
+        Some(Ok(message)) => panic!("rate-limited pairing unexpectedly received {message:?}"),
+    }
+    assert!(guard.finish().await.failures.is_empty());
+}
+
+#[tokio::test]
 async fn idle_socket_admission_is_bounded_per_client_and_released_after_disconnect() {
     let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let token = uuid::Uuid::new_v4().to_string();
