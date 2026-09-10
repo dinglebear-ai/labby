@@ -933,6 +933,21 @@ services = ["{service}"]
 }
 
 #[test]
+fn team_labby_deploy_example_passes_startup_validation() {
+    // The checked-in deployment template is what operators copy into production.
+    // It drifted when `artifacts` became caller-bound and `bundles`/`jobs`/
+    // `sources`/`uploads` became HTTP-only, and production then failed to start
+    // with "unknown gateway_subset service". Keep it loadable by the same
+    // validation the binary runs at startup.
+    let source = include_str!("../../../deploy/team-labby/config.toml.example");
+    let config: labby::config::LabConfig =
+        toml::from_str(source).expect("team-labby example config syntax");
+    config
+        .validate()
+        .expect("deploy/team-labby/config.toml.example must pass startup validation");
+}
+
+#[test]
 fn caller_bound_stash_is_rejected_as_a_context_free_gateway_subset_target() {
     let source = r#"
 [[protected_mcp_routes]]
