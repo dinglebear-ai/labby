@@ -171,12 +171,35 @@ impl GatewayManager {
 impl GatewayManager {
     /// Construct a manager with the testkit filesystem-backed config store.
     ///
+    /// In this crate's own test builds the one-shot Code Mode catalog cache is
+    /// pinned next to `path`, so a manager built for a test never reads or
+    /// writes the Labby home of whoever runs the suite. The override field is
+    /// `cfg(test)`, so `testkit` consumers keep the product location.
     /// Production callers use [`Self::from_config`] or [`Self::with_store`] so
     /// the host owns config rendering and credential persistence.
     #[cfg(any(test, feature = "testkit"))]
     pub fn new(path: PathBuf, runtime: GatewayRuntimeHandle) -> Self {
         let store = Arc::new(FsGatewayConfigStore::new(path.clone()));
-        Self::with_store(path, runtime, store)
+        #[cfg(test)]
+        let catalog_cache_path = path.with_file_name("codemode-catalog.json");
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut manager = Self::with_store(path, runtime, store);
+        #[cfg(test)]
+        {
+            manager.code_mode_catalog_cache_path = Some(catalog_cache_path);
+        }
+        manager
+    }
+
+    /// Keep `dir` alive for as long as any clone of this manager exists.
+    ///
+    /// Fixture helpers build a manager inside a temporary directory and return
+    /// only the manager. Without this guard the directory is removed when the
+    /// helper returns, and the first catalog cache write would recreate it as
+    /// an orphan under the system temporary directory.
+    #[cfg(test)]
+    pub(crate) fn retain_scratch_dir_for_tests(&mut self, dir: tempfile::TempDir) {
+        self._test_scratch_dir = Some(Arc::new(dir));
     }
 
     /// Construct a manager with an explicit host-owned config store.
@@ -262,6 +285,8 @@ impl GatewayManager {
             ),
             #[cfg(test)]
             code_mode_catalog_cache_path: None,
+            #[cfg(test)]
+            _test_scratch_dir: None,
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),

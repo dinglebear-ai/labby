@@ -118,6 +118,41 @@ async fn scoped_code_mode_catalog_fails_when_allowed_upstream_is_unhealthy() {
 }
 
 #[tokio::test]
+async fn cold_connect_catalog_refresh_persists_the_cache_inside_the_scratch_dir() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let tools = Arc::new(tokio::sync::RwLock::new(vec!["ping".to_string()]));
+    pool.insert_live_tool_server_for_tests("alpha", tools).await;
+
+    let refreshed = manager
+        .code_mode_catalog_tools(true, None, None)
+        .await
+        .expect("live fixture peer reprobes successfully");
+    assert!(
+        refreshed
+            .iter()
+            .any(|tool| tool.tool.name.as_ref() == "ping")
+    );
+
+    let cache_path = manager.code_mode_catalog_cache_path();
+    assert_eq!(
+        cache_path.parent(),
+        manager.path.parent(),
+        "test managers pin the catalog cache next to their scratch config"
+    );
+    assert!(
+        !cache_path.starts_with(labby_runtime::lab_home()),
+        "test managers must never write the developer's Labby home: {}",
+        cache_path.display()
+    );
+    let persisted = std::fs::read_to_string(&cache_path).expect("refresh persisted the cache");
+    assert!(
+        persisted.contains("\"ping\""),
+        "persisted cache carries the refreshed tool: {persisted}"
+    );
+}
+
+#[tokio::test]
 async fn resolve_code_mode_upstream_tool_hides_priority_zero_upstreams() {
     let mut upstream = fixture_http_upstream("suppressed");
     upstream.priority = 0.0;

@@ -504,7 +504,11 @@ async fn code_mode_manager_with_upstreams(
     let runtime = GatewayRuntimeHandle::default();
     let pool = Arc::new(UpstreamPool::new());
     runtime.swap(Some(Arc::clone(&pool))).await;
-    let manager = GatewayManager::new(path, runtime);
+    let mut manager = GatewayManager::new(path, runtime);
+    // `GatewayManager::new` pins the Code Mode catalog cache next to `path`.
+    // Keep the scratch directory alive so cold-connect refreshes land there
+    // instead of recreating a removed directory or touching the Labby home.
+    manager.retain_scratch_dir_for_tests(dir);
     manager
         .seed_config_unchecked_for_tests(GatewayConfig {
             code_mode: CodeModeConfig {
