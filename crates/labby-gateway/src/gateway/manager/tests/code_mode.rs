@@ -2004,3 +2004,80 @@ async fn ensure_embeddings_unreachable_tei_fails_open_and_records_cooldown() {
         "failure must start the cooldown"
     );
 }
+
+/// One-shot CLI catalog (`use_cache = true`): a stalled upstream must not
+/// starve the proxy build. Uncached upstreams are probed concurrently under a
+/// budget derived from the Code Mode timeout, stragglers are omitted for this
+/// run, and every upstream that did complete is persisted so the next run does
+/// not pay for it again.
+#[tokio::test]
+async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstreams() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stalled upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_mins(2)).await;
+            });
+        }
+    });
+
+    let mut stalled = fixture_http_upstream("alpha");
+    stalled.url = Some(format!("http://{addr}/mcp"));
+    let healthy = fixture_http_upstream("beta");
+    let (mut manager, pool) =
+        code_mode_manager_with_upstreams(vec![stalled.clone(), healthy.clone()]).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                // Half of this is the cold-connect budget; keep the test fast.
+                timeout_ms: 400,
+                ..CodeModeConfig::default()
+            },
+            upstream: vec![stalled.clone(), healthy.clone()],
+            ..GatewayConfig::default()
+        })
+        .await;
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let cache_path = cache_dir.path().join("codemode-catalog.json");
+    manager.set_code_mode_catalog_cache_path_for_tests(cache_path.clone());
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "ping"))
+        .await;
+
+    let tools = tokio::time::timeout(
+        Duration::from_secs(5),
+        manager.code_mode_catalog_tools_cached(None, None),
+    )
+    .await
+    .expect("one-shot catalog must not wait out a stalled upstream's discovery timeout")
+    .expect("a stalled upstream is omitted from the proxy, not an error");
+    let ids = tools
+        .iter()
+        .map(|tool| format!("{}::{}", tool.upstream_name, tool.tool.name))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["beta::ping"]);
+
+    let cache = crate::gateway::code_mode::catalog_cache::CatalogCache::load_from(&cache_path);
+    let cached_healthy = cache.fresh_tools(
+        "beta",
+        &crate::gateway::code_mode::catalog_cache::fingerprint(&healthy),
+    );
+    assert_eq!(
+        cached_healthy.map(|tools| tools.len()),
+        Some(1),
+        "an upstream that completed must be persisted even though another stalled"
+    );
+    assert!(
+        cache
+            .fresh_tools(
+                "alpha",
+                &crate::gateway::code_mode::catalog_cache::fingerprint(&stalled),
+            )
+            .is_none(),
+        "a stalled upstream must not be cached, so the next run retries it"
+    );
+}

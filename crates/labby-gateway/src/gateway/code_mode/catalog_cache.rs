@@ -16,7 +16,7 @@
 //! failure is treated as a cache miss.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -77,11 +77,10 @@ pub(crate) fn fingerprint(config: &UpstreamConfig) -> String {
 }
 
 impl CatalogCache {
-    /// Load the cache from disk. Missing, unreadable, corrupt, or
+    /// Load the cache at `path`. Missing, unreadable, corrupt, or
     /// version-mismatched files are all treated as an empty cache.
-    pub(crate) fn load() -> Self {
-        let path = cache_path();
-        let Ok(bytes) = std::fs::read(&path) else {
+    pub(crate) fn load_from(path: &Path) -> Self {
+        let Ok(bytes) = std::fs::read(path) else {
             return Self::default();
         };
         match serde_json::from_slice::<Self>(&bytes) {
@@ -130,7 +129,7 @@ impl CatalogCache {
     }
 }
 
-/// Merge `updates` into the on-disk cache and persist atomically.
+/// Merge `updates` into the on-disk cache at `path` and persist atomically.
 ///
 /// Loads a fresh copy first so concurrent invocations updating different
 /// upstreams do not clobber each other's entries (last-writer-wins per file,
@@ -140,11 +139,12 @@ impl CatalogCache {
 /// The write is completed before returning so one-shot CLI invocations do not
 /// exit before a refreshed cache lands on disk. The write is skipped entirely
 /// only when no entry has changed and no TTL timestamp needs renewal.
-pub(crate) async fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
+pub(crate) async fn merge_and_store(path: PathBuf, updates: Vec<CatalogCacheUpdate>) {
     if updates.is_empty() {
         return;
     }
-    if let Err(error) = tokio::task::spawn_blocking(move || merge_and_store_blocking(updates)).await
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || merge_and_store_blocking(&path, updates)).await
     {
         tracing::warn!(
             error = %error,
@@ -153,8 +153,8 @@ pub(crate) async fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
     }
 }
 
-fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
-    let mut cache = CatalogCache::load();
+fn merge_and_store_blocking(path: &Path, updates: Vec<CatalogCacheUpdate>) {
+    let mut cache = CatalogCache::load_from(path);
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
     let mut changed = false;
@@ -166,8 +166,7 @@ fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
         return;
     }
 
-    let path = cache_path();
-    if let Err(error) = persist_atomic(&path, &cache) {
+    if let Err(error) = persist_atomic(path, &cache) {
         tracing::warn!(
             path = %path.display(),
             error = %error,
@@ -230,7 +229,7 @@ fn tools_fingerprint_matches(existing: &CachedUpstreamCatalog, tools: &[CachedTo
     existing_bytes == new_bytes
 }
 
-fn persist_atomic(path: &std::path::Path, cache: &CatalogCache) -> std::io::Result<()> {
+fn persist_atomic(path: &Path, cache: &CatalogCache) -> std::io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("cache path has no parent directory"))?;

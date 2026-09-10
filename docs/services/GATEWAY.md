@@ -436,6 +436,19 @@ Running the CLI from a different machine than the daemon should use
 `LABBY_MCP_HTTP_TOKEN` and `LABBY_SERVER_URL`; see `docs/runtime/ENV.md` §
 "Remote Gateway CLI Usage" for the exact precedence and fallback behavior.
 
+When `gateway code exec` falls back to the local manager, the `codemode.*`
+proxy is built from the on-disk catalog cache
+(`$LABBY_HOME/cache/codemode-catalog.json`, per-upstream entries fingerprinted
+against the upstream config and valid for six hours). Only upstreams with a
+missing, stale, or mismatched entry are connected, concurrently (bounded by
+`upstream_discovery_concurrency`) and under a wall-clock budget of half
+`[code_mode] timeout_ms`, so the sandbox always keeps the other half. Upstreams
+that fail or are still connecting when that budget ends are omitted from the
+proxy for that run and are not cached, so the next run retries them; every
+upstream that did connect is cached even when the budget cut the pass short.
+Tool calls still resolve the target upstream live, so a stale cache can only
+change which `codemode.*` helpers are offered, never what a call executes.
+
 The local `GatewayManager` these CLI commands fall back to is built lazily --
 only if remote detection genuinely fails -- so a successful remote dispatch
 never touches `~/.labby/auth.db` or any other local state at all
