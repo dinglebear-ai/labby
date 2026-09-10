@@ -108,15 +108,16 @@ async function initialize() {
 async function reportBridgeFailure(error, context) {
   const message = bridgeFailureKind(error);
   console.error("Labby browser bridge connection failed", {kind: message});
-  await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
-  if (message === "auth_failed") {
-    await identityManager.revoke();
-    if (channel) channel.browserId = undefined;
-  }
+  if (message === "auth_failed" && channel) channel.browserId = undefined;
   if (message === "pairing_not_pending") {
-    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
     clearTimeout(pairingPollTimer);
     pairingPollTimer = undefined;
+    pairingPollExpiresAt = undefined;
+  }
+  await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
+  if (message === "auth_failed") await identityManager.revoke();
+  if (message === "pairing_not_pending") {
+    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
   }
 }
 
