@@ -39,6 +39,8 @@ mod checked_call;
 mod completion;
 mod connect;
 mod connect_stdio;
+#[cfg(all(test, unix))]
+mod connect_stdio_tests;
 #[cfg(test)]
 mod connect_tests;
 #[cfg(all(test, unix))]
