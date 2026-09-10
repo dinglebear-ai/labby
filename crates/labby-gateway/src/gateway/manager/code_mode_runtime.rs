@@ -465,7 +465,10 @@ impl GatewayManager {
         );
         let budget = one_shot_catalog_connect_budget(&cfg.code_mode);
         let deadline = Instant::now() + budget;
-        let pending_count = pending.len();
+        let mut outstanding: BTreeSet<String> = pending
+            .iter()
+            .map(|(upstream, _)| upstream.name.clone())
+            .collect();
         let owner_cloned = owner.cloned();
         let oauth_subject_cloned = oauth_subject.map(ToOwned::to_owned);
         let mut probes = Box::pin(
@@ -498,11 +501,12 @@ impl GatewayManager {
         );
 
         let mut updates = Vec::new();
-        let mut settled = 0usize;
+        let mut connected = 0usize;
         loop {
             match tokio::time::timeout_at(deadline, probes.next()).await {
                 Ok(Some((upstream, fingerprint, Ok(live)))) => {
-                    settled += 1;
+                    outstanding.remove(&upstream.name);
+                    connected += 1;
                     if let Some(fingerprint) = fingerprint {
                         updates.push(catalog_cache::CatalogCacheUpdate {
                             upstream_name: upstream.name.clone(),
@@ -513,7 +517,7 @@ impl GatewayManager {
                     tools.extend(live);
                 }
                 Ok(Some((upstream, _, Err(error)))) => {
-                    settled += 1;
+                    outstanding.remove(&upstream.name);
                     tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
@@ -525,12 +529,27 @@ impl GatewayManager {
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
+                    let omitted = outstanding.iter().cloned().collect::<Vec<_>>();
+                    // Partial means partial, not empty: with nothing served
+                    // from cache and nothing connected, the proxy would offer
+                    // no upstream helpers at all, and a silent empty catalog is
+                    // exactly what the broker's fail-closed contract forbids.
+                    if tools.is_empty() && connected == 0 {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: "upstream_connect_error".to_string(),
+                            message: format!(
+                                "no Code Mode upstream connected within the {}ms cold-connect budget; still connecting: {}",
+                                budget.as_millis(),
+                                omitted.join(", ")
+                            ),
+                        });
+                    }
                     tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
                         action = "code_mode.catalog_cache",
                         budget_ms = budget.as_millis(),
-                        still_connecting = pending_count - settled,
+                        omitted_upstreams = ?omitted,
                         "cold-connect budget exhausted; omitting still-connecting upstreams from codemode proxy (not cached)"
                     );
                     break;
