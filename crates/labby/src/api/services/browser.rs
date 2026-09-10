@@ -213,7 +213,7 @@ async fn run_socket(
             BrowserMessage::PairingStatus { pairing_id } => {
                 let pairing = bridge.store().pairing(&pairing_id).await?;
                 match pairing {
-                    Some(pairing) => {
+                    Some(pairing) if pairing.extension_id == extension_id => {
                         let pairing_fingerprint = pairing.pairing_fingerprint();
                         match (pairing.status, pairing.browser_id) {
                             (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
@@ -238,7 +238,7 @@ async fn run_socket(
                             ),
                         }
                     }
-                    None => BrowserEnvelope::new(
+                    Some(_) | None => BrowserEnvelope::new(
                         request_id,
                         BrowserMessage::Error {
                             kind: "pairing_not_pending".to_string(),

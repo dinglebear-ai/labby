@@ -122,7 +122,7 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .unwrap();
     assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-    let mut request = socket_url.into_client_request().unwrap();
+    let mut request = socket_url.clone().into_client_request().unwrap();
     request.headers_mut().insert(
         "Origin",
         format!("chrome-extension://{EXTENSION}").parse().unwrap(),
@@ -157,6 +157,27 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .as_str()
         .expect("pairing fingerprint");
     assert_eq!(pairing_fingerprint.len(), 12);
+
+    let mut other_extension_request = socket_url.into_client_request().unwrap();
+    other_extension_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{}", "b".repeat(32))
+            .parse()
+            .unwrap(),
+    );
+    let (mut other_extension_socket, _) = tokio_tungstenite::connect_async(other_extension_request)
+        .await
+        .unwrap();
+    send(
+        &mut other_extension_socket,
+        json!({"type":"pairing_status","pairing_id":pending["pairing_id"]}),
+    )
+    .await;
+    let hidden_pairing = receive(&mut other_extension_socket).await;
+    assert_eq!(hidden_pairing["type"], "error");
+    assert_eq!(hidden_pairing["kind"], "pairing_not_pending");
+    other_extension_socket.close(None).await.unwrap();
+
     let approved = success(action(
         &client,
         base,
