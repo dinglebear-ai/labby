@@ -14,19 +14,24 @@ function channel(options = {}) {
 test("sends versioned plain JSON and correlates replies", async () => {
   const {instance, frames} = channel();
   const pending = instance.messageNow("pairing.request", {display_name: "Chrome", public_key: "key"});
-  assert.equal(frames[0].version, 1);
+  assert.equal(frames[0].version, 2);
   assert.equal(frames[0].type, "pairing_request");
   assert.equal(frames[0].extension_id, "a".repeat(32));
-  instance.receive({version: 1, request_id: frames[0].request_id, type: "pairing_pending", pairing_id: "pair", expires_at: 1, pairing_fingerprint: "A1B2C3D4E5F6"});
+  instance.receive({version: 2, request_id: frames[0].request_id, type: "pairing_pending", pairing_id: "pair", expires_at: 1, pairing_fingerprint: "A1B2C3D4E5F6"});
   const reply = await pending;
   assert.equal(reply.payload.pairing_id, "pair");
   assert.equal(reply.payload.pairing_fingerprint, "A1B2C3D4E5F6");
 });
 
+test("rejects legacy protocol v1 envelopes after the v2 wire upgrade", () => {
+  const {instance} = channel();
+  assert.throws(() => instance.receive({version: 1, type: "heartbeat"}), /invalid_protocol_envelope/);
+});
+
 test("maps Rust tool calls to extension events", async () => {
   let event;
   const {instance} = channel({onEvent(value) { event = value; }});
-  instance.receive({version: 1, type: "tool_call", call_id: "call", tab_id: 1, document_id: "doc", catalog_revision: 2, tool_name: "search", arguments: {}});
+  instance.receive({version: 2, type: "tool_call", call_id: "call", tab_id: 1, document_id: "doc", catalog_revision: 2, tool_name: "search", arguments: {}});
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(event.type, "tool.call");
   assert.equal(event.payload.call_id, "call");
@@ -41,9 +46,9 @@ test("keeps the MV3 service worker alive with acknowledged protocol heartbeats",
   const heartbeats = () => sockets[0].frames.filter((frame) => frame.type === "heartbeat");
   const sentBeforeClose = heartbeats().length;
   assert.ok(sentBeforeClose >= 2);
-  assert.ok(heartbeats().every((frame) => frame.version === 1 && typeof frame.request_id === "string"));
+  assert.ok(heartbeats().every((frame) => frame.version === 2 && typeof frame.request_id === "string"));
   for (const heartbeat of heartbeats()) {
-    instance.receive({version: 1, request_id: heartbeat.request_id, type: "acknowledged", received: "heartbeat"});
+    instance.receive({version: 2, request_id: heartbeat.request_id, type: "acknowledged", received: "heartbeat"});
   }
   assert.equal(instance.pending.size, 0);
   instance.close();
@@ -94,7 +99,7 @@ test("publishes sanitized observations with a stable positive catalog revision",
   assert.equal(frames[0].origin, "https://example.com");
   assert.equal(frames[0].sanitized_path, "/path");
   assert.ok(frames[0].catalog_revision > 0);
-  instance.receive({version: 1, request_id: frames[0].request_id, type: "acknowledged", received: "observe"});
+  instance.receive({version: 2, request_id: frames[0].request_id, type: "acknowledged", received: "observe"});
   await pending;
 });
 
@@ -104,7 +109,7 @@ test("reply deadlines remove pending requests", async () => {
   assert.equal(instance.pending.size, 0);
 });
 
-function installSocket() {
+function installSocket({asyncClose = false} = {}) {
   const sockets = [];
   globalThis.WebSocket = class {
     static OPEN = 1;
@@ -112,7 +117,11 @@ function installSocket() {
     frames = [];
     send(value) { this.frames.push(JSON.parse(value)); }
     constructor() { sockets.push(this); }
-    close() { this.closed = true; this.onclose?.(); }
+    close() {
+      this.closed = true;
+      if (asyncClose) queueMicrotask(() => this.onclose?.());
+      else this.onclose?.();
+    }
   };
   return sockets;
 }
@@ -126,8 +135,8 @@ test("closing before open rejects callers waiting for readiness", async () => {
   await assert.rejects(pending, /channel_closed/);
 });
 
-test("explicit auth failure reaches stale-association recovery", async () => {
-  const sockets = installSocket();
+test("explicit auth failure reaches stale-association recovery exactly once", async () => {
+  const sockets = installSocket({asyncClose: true});
   const failures = [];
   const instance = new LabbyBrowserChannel({
     baseUrl: "https://labby.example.com", extensionId: "a".repeat(32), browserId: "stale-browser",
@@ -137,10 +146,11 @@ test("explicit auth failure reaches stale-association recovery", async () => {
   const opening = sockets[0].onopen();
   const challenge = sockets[0].frames[0];
   assert.equal(challenge.type, "auth_challenge");
-  instance.receive({version: 1, request_id: challenge.request_id, type: "error", kind: "auth_failed", message: "browser authentication failed"});
+  instance.receive({version: 2, request_id: challenge.request_id, type: "error", kind: "auth_failed", message: "browser authentication failed"});
   await opening;
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sockets[0].closed, true);
-  assert.ok(failures.includes("auth_failed"));
+  assert.deepEqual(failures, ["auth_failed"]);
   instance.close();
 });
 
@@ -157,7 +167,7 @@ test("an authentication capability cannot send an old challenge after reconnect"
   }});
   instance.connect();
   const oldOpen = sockets[0].onopen();
-  instance.receive({version: 1, type: "auth_challenge", request_id: sockets[0].frames[0].request_id, challenge_id: "old-challenge", nonce: "old-nonce"});
+  instance.receive({version: 2, type: "auth_challenge", request_id: sockets[0].frames[0].request_id, challenge_id: "old-challenge", nonce: "old-nonce"});
   await started;
   instance.connect();
   resumeSigning();

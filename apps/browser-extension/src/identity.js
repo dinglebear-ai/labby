@@ -146,8 +146,11 @@ export function createIdentityManager({keyStore, storage, subtle}) {
 
   function revoke() {
     return serialized(async () => {
-      await keyStore.clear();
+      // Clear the server association first. Any storage-driven reinitialization
+      // queues behind this serialized lifecycle operation until the old key is
+      // erased, so a stale browser id cannot race a reconnect.
       await clearAssociation();
+      await keyStore.clear();
     });
   }
 

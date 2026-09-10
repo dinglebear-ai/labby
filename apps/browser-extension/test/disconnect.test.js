@@ -6,29 +6,78 @@ import {cancelWebMcp, invokeWebMcp} from "../src/probe.js";
 
 // Run the actual worker handlers with Chrome boundary fakes; do not start its
 // unrelated identity/scan bootstrap or maintain a second handler implementation.
-function worker({getSettings = async () => ({}), execute = async () => []} = {}) {
+function worker({getSettings = async () => ({}), execute = async () => [], identityManager = {revoke: async () => {}}} = {}) {
   const listener = {addListener() {}};
+  const storageWrites = [];
   const context = vm.createContext({
     console, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp,
-    createIdentityManager: () => ({}), IndexedDbIdentityStore: class {},
-    indexedDB: {}, crypto: {subtle: {}},
+    createIdentityManager: () => identityManager, IndexedDbIdentityStore: class {},
+    indexedDB: {}, crypto: {subtle: {}}, bridgeFailureKind: (error) => error instanceof Error ? error.message : String(error),
     stableStringify: JSON.stringify, canScanTab: async () => true,
     executionAllowed: () => true,
     chrome: {
       runtime: {onInstalled: listener, onStartup: listener, onMessage: listener},
       tabs: {onUpdated: listener, onActivated: listener, onRemoved: listener, get: async () => ({id: 7})},
       alarms: {onAlarm: listener}, permissions: {onAdded: listener, onRemoved: listener},
-      storage: {onChanged: listener, local: {get: getSettings}},
+      storage: {onChanged: listener, local: {
+        get: getSettings,
+        set: async (value) => { storageWrites.push({type: "set", value}); },
+        remove: async (value) => { storageWrites.push({type: "remove", value}); }
+      }},
       scripting: {executeScript: execute},
     },
-    ScanScheduler: class {},
+    ScanScheduler: class { run() { return Promise.resolve(); } },
   });
   const source = readFileSync(new URL("../src/service_worker.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace(/\ninitialize\(\);\s*$/, "");
-  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, pendingCalls, observations};`, context);
+  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }};`, context);
   context.handlers.observations.set(7, {tab_id: 7, document_id: "doc", tools: []});
+  context.handlers.storageWrites = storageWrites;
   return context.handlers;
 }
+
+test("stale persisted browser id cannot promote an unauthenticated reconnect", async () => {
+  const handlers = worker({getSettings: async () => ({browserId: "stale-browser"})});
+  const messages = [];
+  handlers.setChannel({
+    browserId: undefined,
+    message: async (...args) => { messages.push(args); return {payload: {}}; }
+  });
+
+  await handlers.resumeAndScan();
+
+  assert.deepEqual(messages, []);
+  assert.deepEqual(handlers.storageWrites, []);
+});
+
+test("stale pairing failure cannot delete a newer pairing association", async () => {
+  const handlers = worker({getSettings: async () => ({pairingId: "new-pair"})});
+  await handlers.reportBridgeFailure(new Error("pairing_not_pending"), {
+    pairingId: "old-pair", pairingGeneration: handlers.pairingGeneration()
+  });
+  assert.deepEqual(handlers.storageWrites, []);
+
+  handlers.advancePairingGeneration();
+  await handlers.reportBridgeFailure(new Error("pairing_not_pending"), {
+    pairingId: "new-pair", pairingGeneration: 0
+  });
+  assert.deepEqual(handlers.storageWrites, []);
+});
+
+test("auth failure closes the stale channel before asynchronous identity revocation", async () => {
+  const gate = deferred();
+  let revoked = false;
+  const handlers = worker({identityManager: {revoke: async () => { revoked = true; await gate.promise; }}});
+  let closed = false;
+  const staleChannel = {browserId: "stale", close() { closed = true; }};
+  handlers.setChannel(staleChannel);
+  const reporting = handlers.reportBridgeFailure(new Error("auth_failed"), {});
+  assert.equal(closed, true);
+  assert.equal(staleChannel.browserId, undefined);
+  assert.equal(revoked, true);
+  gate.resolve();
+  await reporting;
+});
 
 const payload = {call_id: "call", tab_id: 7, document_id: "doc", catalog_fingerprint: "[]", tool_name: "tool"};
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return {promise, resolve}; };

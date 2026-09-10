@@ -108,6 +108,20 @@ test("revocation erases credential and association before re-pair", async () => 
   assert.notEqual(replacement.publicKey, prior.publicKey);
 });
 
+test("revocation clears the server association before erasing the credential", async () => {
+  const order = [];
+  class OrderedKeyStore extends MemoryKeyStore {
+    async clear() { order.push("credential"); await super.clear(); }
+  }
+  class OrderedStorage extends MemoryStorage {
+    async remove(keys) { order.push("association"); await super.remove(keys); }
+  }
+  const state = manager(new OrderedKeyStore(), new OrderedStorage({browserId: "revoked"}));
+  await state.identity.ensure();
+  await state.identity.revoke();
+  assert.deepEqual(order.slice(-2), ["association", "credential"]);
+});
+
 test("revocation waits for racing identity creation and erases its committed key", async () => {
   const keyStore = new DelayedKeyStore();
   const state = manager(keyStore, new MemoryStorage({browserId: "revoked"}));

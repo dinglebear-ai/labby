@@ -1,6 +1,6 @@
 import {bridgeFailureKind} from "./errors.js";
 
-const VERSION = 1;
+const VERSION = 2;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 /** @typedef {{isCurrent: () => boolean, messageNow: (type: string, payload: any) => Promise<any>}} Connection */
 
@@ -33,7 +33,10 @@ export class LabbyBrowserChannel {
     this.socket = socket;
     const connection = {isCurrent: () => this.socket === socket, messageNow: (/** @type {string} */ type, /** @type {any} */ payload) => this.messageNow(type, payload, socket)};
     this.connection = connection;
-    this.ready.catch((error) => { if (this.socket === socket) this.onError(error, {kind: "connection_setup_failed"}); });
+    let setupErrorReported = false;
+    this.ready.catch((error) => {
+      if (this.socket === socket && !setupErrorReported) this.onError(error, {kind: "connection_setup_failed"});
+    });
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;
       try { this.receive(JSON.parse(event.data), connection); } catch (error) { this.onError(error, {kind: "invalid_json"}); }
@@ -56,7 +59,10 @@ export class LabbyBrowserChannel {
         this.reconnectAttempt = 0;
       } catch (error) {
         if (this.socket !== socket) return;
-        this.onError(error, {kind: "authentication_or_resync_failed"}); this.rejectReady(error); socket.close();
+        setupErrorReported = true;
+        this.onError(error, {kind: "authentication_or_resync_failed"});
+        this.rejectReady(error);
+        socket.close();
       }
     };
     socket.onclose = () => {

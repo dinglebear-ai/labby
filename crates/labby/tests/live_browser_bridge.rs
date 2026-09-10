@@ -22,7 +22,7 @@ const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn send(socket: &mut Socket, mut value: Value) {
-    value["version"] = json!(1);
+    value["version"] = json!(2);
     value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -160,7 +160,7 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .expect("pairing fingerprint");
     assert_eq!(pairing_fingerprint.len(), 12);
 
-    let mut other_extension_request = socket_url.into_client_request().unwrap();
+    let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(
         "Origin",
         format!("chrome-extension://{}", "b".repeat(32))
@@ -199,13 +199,39 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     .await;
     let nonce = receive(&mut socket).await;
     assert_eq!(nonce["type"], "auth_nonce");
-    let signature = signing.sign(
-        &URL_SAFE_NO_PAD
-            .decode(nonce["nonce"].as_str().unwrap())
-            .unwrap(),
-    );
+    let nonce_bytes = URL_SAFE_NO_PAD
+        .decode(nonce["nonce"].as_str().unwrap())
+        .unwrap();
+    let invalid_signing = SigningKey::from_bytes(&[42; 32]);
+    let invalid_signature = invalid_signing.sign(&nonce_bytes);
+    send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(invalid_signature.to_bytes())})).await;
+    let rejected = receive(&mut socket).await;
+    assert_eq!(rejected["type"], "error");
+    assert_eq!(rejected["kind"], "auth_failed");
+
+    let signature = signing.sign(&nonce_bytes);
     send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(signature.to_bytes())})).await;
     assert_eq!(receive(&mut socket).await["type"], "authenticated");
+
+    // Authentication releases this socket's per-client pre-auth permit. A full
+    // client allowance must remain available while the authenticated socket is
+    // still established.
+    let idle_request = || {
+        let mut request = socket_url.clone().into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Origin",
+            format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+        );
+        request
+    };
+    let mut idle_sockets = Vec::new();
+    for _ in 0..8 {
+        let (idle, _) = tokio_tungstenite::connect_async(idle_request())
+            .await
+            .unwrap();
+        idle_sockets.push(idle);
+    }
+    drop(idle_sockets);
 
     send(&mut socket, json!({"type":"heartbeat"})).await;
     let heartbeat = receive(&mut socket).await;
@@ -382,7 +408,7 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
 }
 
 #[tokio::test]
-async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
+async fn idle_socket_admission_is_bounded_per_client_and_released_after_disconnect() {
     let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let token = uuid::Uuid::new_v4().to_string();
     let guard = live_labby::LiveLabbyBuilder::new()
@@ -403,7 +429,7 @@ async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
         request
     };
     let mut sockets = Vec::new();
-    for _ in 0..64 {
+    for _ in 0..8 {
         let (socket, _) = tokio::time::timeout(
             Duration::from_secs(5),
             tokio_tungstenite::connect_async(request()),

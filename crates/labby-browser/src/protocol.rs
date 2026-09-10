@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Current browser protocol version.
-pub(crate) const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const PROTOCOL_VERSION: u32 = 2;
 
 /// JSON envelope exchanged with the MV3 extension.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -143,4 +143,25 @@ pub struct ToolDescriptor {
 
 fn default_object_schema() -> Value {
     serde_json::json!({"type": "object"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_v2_rejects_legacy_v1_envelopes() {
+        let envelope = BrowserEnvelope {
+            version: 1,
+            request_id: None,
+            message: BrowserMessage::Heartbeat,
+        };
+        let error = envelope.validate_version().unwrap_err();
+        assert_eq!(error.kind(), "invalid_request");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported browser protocol version 1")
+        );
+    }
 }

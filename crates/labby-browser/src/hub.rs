@@ -206,7 +206,7 @@ impl BrowserBridge {
         challenge_id: &str,
         signature: &str,
     ) -> Result<BrowserConnection> {
-        let challenge = self.store.take_challenge(challenge_id).await?;
+        let challenge = self.store.challenge(challenge_id).await?;
         let browser = self
             .store
             .browser(&challenge.browser_id)
@@ -230,6 +230,14 @@ impl BrowserBridge {
             .verify(&challenge.nonce, &signature)
             .map_err(|_| BrowserError::AuthenticationFailed)?;
         let _authority = self.authority.lock().await;
+        let consumed = self.store.take_challenge(challenge_id).await?;
+        if consumed.id != challenge.id
+            || consumed.browser_id != challenge.browser_id
+            || consumed.nonce != challenge.nonce
+            || consumed.expires_at != challenge.expires_at
+        {
+            return Err(BrowserError::AuthenticationFailed);
+        }
         self.store.touch_browser(&browser.id).await?;
         let (sender, receiver) = mpsc::channel(128);
         let generation = Uuid::new_v4();
@@ -1249,6 +1257,43 @@ mod tests {
                 .unwrap()
                 .contains(&browser_id)
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_signature_does_not_consume_a_live_challenge() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        let challenge = bridge
+            .issue_challenge(&connection.browser_id)
+            .await
+            .unwrap();
+        let BrowserMessage::AuthNonce {
+            challenge_id,
+            nonce,
+            ..
+        } = challenge.message
+        else {
+            unreachable!()
+        };
+        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(nonce)
+            .unwrap();
+        let invalid = SigningKey::from_bytes(&[10; 32]);
+        let invalid_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(invalid.sign(&nonce).to_bytes());
+        assert!(matches!(
+            bridge.authenticate(&challenge_id, &invalid_signature).await,
+            Err(BrowserError::AuthenticationFailed)
+        ));
+
+        let valid = SigningKey::from_bytes(&[9; 32]);
+        let valid_signature =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(valid.sign(&nonce).to_bytes());
+        let authenticated = bridge
+            .authenticate(&challenge_id, &valid_signature)
+            .await
+            .unwrap();
+        assert_eq!(authenticated.browser_id, connection.browser_id);
     }
 
     #[tokio::test]

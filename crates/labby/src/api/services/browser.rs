@@ -1,6 +1,8 @@
 //! Thin HTTP adapters for the Rust browser bridge.
 
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -25,7 +27,70 @@ use crate::dispatch::error::ToolError;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PREAUTH_SOCKETS_PER_CLIENT: usize = 8;
 static SOCKET_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+static PREAUTH_CLIENTS: LazyLock<Mutex<HashMap<IpAddr, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct PreauthClientPermit {
+    client_ip: IpAddr,
+}
+
+impl PreauthClientPermit {
+    fn acquire(client_ip: IpAddr) -> Result<Self, ApiError> {
+        let mut active = PREAUTH_CLIENTS.lock().map_err(|_| {
+            ApiError::new(ToolError::Sdk {
+                sdk_kind: "server_busy".to_string(),
+                message: "browser admission state is unavailable".to_string(),
+            })
+        })?;
+        let count = active.entry(client_ip).or_default();
+        if *count >= MAX_PREAUTH_SOCKETS_PER_CLIENT {
+            return Err(ApiError::new(ToolError::Sdk {
+                sdk_kind: "server_busy".to_string(),
+                message: "browser unauthenticated connection capacity is exhausted for this client"
+                    .to_string(),
+            }));
+        }
+        *count += 1;
+        Ok(Self { client_ip })
+    }
+}
+
+impl Drop for PreauthClientPermit {
+    fn drop(&mut self) {
+        let Ok(mut active) = PREAUTH_CLIENTS.lock() else {
+            return;
+        };
+        let Some(count) = active.get_mut(&self.client_ip) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            active.remove(&self.client_ip);
+        }
+    }
+}
+
+fn admission_client_ip(
+    headers: &HeaderMap,
+    trust_forwarded_headers: bool,
+    peer: Option<SocketAddr>,
+) -> Option<IpAddr> {
+    if trust_forwarded_headers
+        && let Some(forwarded) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+    {
+        return forwarded
+            .split(',')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse().ok());
+    }
+    peer.map(|address| address.ip())
+}
 
 pub fn routes(_state: AppState) -> RouteGroup {
     RouteGroup::empty().route(
@@ -102,7 +167,12 @@ async fn handle_action(
     .await
 }
 
-async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
+async fn upgrade(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
     let extension_id = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|value| value.to_str().ok())
@@ -115,6 +185,16 @@ async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Respon
             required_scopes: Vec::new(),
         }));
     }
+    let peer = peer.map(|Extension(ConnectInfo(address))| address);
+    let client_ip = admission_client_ip(&headers, state.config.api.trust_forwarded_headers, peer)
+        .ok_or_else(|| {
+        ApiError::new(ToolError::Forbidden {
+            message: "browser bridge requires a direct or trusted forwarded client address"
+                .to_string(),
+            required_scopes: Vec::new(),
+        })
+    })?;
+    let preauth_permit = PreauthClientPermit::acquire(client_ip)?;
     let permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
         ApiError::new(ToolError::Sdk {
             sdk_kind: "server_busy".to_string(),
@@ -127,12 +207,21 @@ async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Respon
         .max_frame_size(512 * 1024)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            handle_socket(socket, extension_id.expect("validated extension id")).await;
+            handle_socket(
+                socket,
+                extension_id.expect("validated extension id"),
+                preauth_permit,
+            )
+            .await;
         }))
 }
 
-async fn handle_socket(socket: WebSocket, extension_id: String) {
-    if let Err(error) = run_socket(socket, &extension_id).await {
+async fn handle_socket(
+    socket: WebSocket,
+    extension_id: String,
+    preauth_permit: PreauthClientPermit,
+) {
+    if let Err(error) = run_socket(socket, &extension_id, preauth_permit).await {
         tracing::warn!(
             surface = "api",
             service = "browser",
@@ -145,12 +234,14 @@ async fn handle_socket(socket: WebSocket, extension_id: String) {
 async fn run_socket(
     socket: WebSocket,
     extension_id: &str,
+    preauth_permit: PreauthClientPermit,
 ) -> Result<(), labby_browser::BrowserError> {
     let bridge = browser_bridge()
         .await
         .map_err(|error| labby_browser::BrowserError::InvalidRequest(error.to_string()))?;
     let (mut sink, mut source) = socket.split();
     let mut authenticated = None;
+    let mut preauth_permit = Some(preauth_permit);
 
     let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     while authenticated.is_none() {
@@ -250,6 +341,7 @@ async fn run_socket(
                 Ok(connection) => {
                     let browser_id = connection.browser_id.clone();
                     authenticated = Some(connection);
+                    drop(preauth_permit.take());
                     BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
                 }
                 Err(labby_browser::BrowserError::AuthenticationFailed) => {
@@ -352,4 +444,44 @@ async fn send_envelope(
         .await
         .map_err(|_| labby_browser::BrowserError::ToolTimeout)?
         .map_err(|_| labby_browser::BrowserError::ConnectionClosed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn client_admission_uses_forwarded_ip_only_when_proxy_headers_are_trusted() {
+        let peer: SocketAddr = "127.0.0.1:8765".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.9, 127.0.0.1"),
+        );
+        assert_eq!(
+            admission_client_ip(&headers, false, Some(peer)),
+            Some("127.0.0.1".parse().unwrap())
+        );
+        assert_eq!(
+            admission_client_ip(&headers, true, Some(peer)),
+            Some("203.0.113.9".parse().unwrap())
+        );
+        headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
+        assert_eq!(admission_client_ip(&headers, true, Some(peer)), None);
+    }
+
+    #[test]
+    fn unauthenticated_admission_is_bounded_per_client_and_released_on_drop() {
+        let ip: IpAddr = "198.51.100.42".parse().unwrap();
+        let mut permits = Vec::new();
+        for _ in 0..MAX_PREAUTH_SOCKETS_PER_CLIENT {
+            permits.push(PreauthClientPermit::acquire(ip).unwrap());
+        }
+        assert!(PreauthClientPermit::acquire(ip).is_err());
+        drop(permits.pop());
+        permits.push(PreauthClientPermit::acquire(ip).unwrap());
+        drop(permits);
+        assert!(PreauthClientPermit::acquire(ip).is_ok());
+    }
 }
