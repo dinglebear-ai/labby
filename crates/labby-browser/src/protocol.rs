@@ -62,6 +62,8 @@ pub enum BrowserMessage {
         pairing_id: String,
         /// Unix expiry timestamp.
         expires_at: i64,
+        /// Short out-of-band identity fingerprint the operator must confirm.
+        pairing_fingerprint: String,
     },
     /// Poll pairing state.
     PairingStatus { pairing_id: String },
@@ -82,6 +84,8 @@ pub enum BrowserMessage {
     },
     /// Authentication completed.
     Authenticated { browser_id: String },
+    /// Keep the MV3 service worker and browser socket active while idle.
+    Heartbeat,
     /// Browser catalog observation.
     Observe(CatalogObservation),
     /// Close one exact browser document.

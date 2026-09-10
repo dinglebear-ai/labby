@@ -697,8 +697,7 @@
             "description": "Requested service, action target, or upstream was not found",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentErrorResponse"
+                "schema": {                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -1397,8 +1396,7 @@
             "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentErrorResponse"
+                "schema": {                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -2097,8 +2095,7 @@
             "description": "Operation timed out; use recovery guidance before retrying",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentErrorResponse"
+                "schema": {                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -2797,8 +2794,7 @@
             }
           },
           "422": {
-            "description": "Validation, confirmation, path-safety, or tool-execution error",
-            "content": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",            "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentErrorResponse"
@@ -3497,8 +3493,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/AgentErrorResponse"
                 }
-              }
-            }
+              }            }
           },
           "429": {
             "description": "File Stash capacity is busy",
@@ -4197,8 +4192,7 @@
               }
             }
           },
-          "413": {
-            "description": "File or request exceeds a configured limit",
+          "413": {            "description": "File or request exceeds a configured limit",
             "content": {
               "application/json": {
                 "schema": {
@@ -4897,8 +4891,7 @@
         "properties": {
           "name": {
             "type": "string"
-          },
-          "team_id": {
+          },          "team_id": {
             "type": "string"
           }
         }
@@ -5597,8 +5590,7 @@
         "properties": {
           "connection_id": {
             "type": "string"
-          },
-          "following": {
+          },          "following": {
             "type": "boolean"
           },
           "name": {
@@ -6254,9 +6246,13 @@
       "BrowserBrowserPairingApproveParams": {
         "type": "object",
         "required": [
-          "pairing_id"
+          "pairing_id",
+          "pairing_fingerprint"
         ],
         "properties": {
+          "pairing_fingerprint": {
+            "type": "string"
+          },
           "pairing_id": {
             "type": "string"
           }
@@ -6293,8 +6289,7 @@
         }
       },
       "BrowserBrowserSessionGetParams": {
-        "type": "object",
-        "required": [
+        "type": "object",        "required": [
           "session_id"
         ],
         "properties": {
@@ -6993,8 +6988,7 @@
       },
       "DoctorSchemaParams": {
         "type": "object",
-        "required": [
-          "action"
+        "required": [          "action"
         ],
         "properties": {
           "action": {
@@ -7693,8 +7687,7 @@
         "properties": {
           "owner": {
             "type": "string"
-          },
-          "resource": {
+          },          "resource": {
             "type": "string"
           },
           "scopes": {
@@ -8393,8 +8386,7 @@
             "type": "object"
           }
         }
-      },
-      "ProjectsProjectsActivateParams": {
+      },      "ProjectsProjectsActivateParams": {
         "type": "object",
         "required": [
           "team_id",
@@ -9093,8 +9085,7 @@
             "type": "integer"
           }
         }
-      },
-      "SourcesSourcesDeleteParams": {
+      },      "SourcesSourcesDeleteParams": {
         "type": "object",
         "required": [
           "id"

@@ -17,8 +17,10 @@ test("sends versioned plain JSON and correlates replies", async () => {
   assert.equal(frames[0].version, 1);
   assert.equal(frames[0].type, "pairing_request");
   assert.equal(frames[0].extension_id, "a".repeat(32));
-  instance.receive({version: 1, request_id: frames[0].request_id, type: "pairing_pending", pairing_id: "pair", expires_at: 1});
-  assert.equal((await pending).payload.pairing_id, "pair");
+  instance.receive({version: 1, request_id: frames[0].request_id, type: "pairing_pending", pairing_id: "pair", expires_at: 1, pairing_fingerprint: "A1B2C3D4E5F6"});
+  const reply = await pending;
+  assert.equal(reply.payload.pairing_id, "pair");
+  assert.equal(reply.payload.pairing_fingerprint, "A1B2C3D4E5F6");
 });
 
 test("maps Rust tool calls to extension events", async () => {
@@ -28,6 +30,41 @@ test("maps Rust tool calls to extension events", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(event.type, "tool.call");
   assert.equal(event.payload.call_id, "call");
+});
+
+test("keeps the MV3 service worker alive with acknowledged protocol heartbeats", async () => {
+  const sockets = installSocket();
+  const instance = new LabbyBrowserChannel({baseUrl: "http://localhost:8765", extensionId: "id", onChallenge() {}, onError() {}, heartbeatIntervalMs: 5});
+  instance.connect();
+  await sockets[0].onopen();
+  await new Promise((resolve) => setTimeout(resolve, 16));
+  const heartbeats = () => sockets[0].frames.filter((frame) => frame.type === "heartbeat");
+  const sentBeforeClose = heartbeats().length;
+  assert.ok(sentBeforeClose >= 2);
+  assert.ok(heartbeats().every((frame) => frame.version === 1 && typeof frame.request_id === "string"));
+  for (const heartbeat of heartbeats()) {
+    instance.receive({version: 1, request_id: heartbeat.request_id, type: "acknowledged", received: "heartbeat"});
+  }
+  assert.equal(instance.pending.size, 0);
+  instance.close();
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  assert.equal(heartbeats().length, sentBeforeClose);
+});
+
+test("reconnects when heartbeat acknowledgements stop", async () => {
+  const sockets = installSocket();
+  const failures = [];
+  const instance = new LabbyBrowserChannel({
+    baseUrl: "http://localhost:8765", extensionId: "id", onChallenge() {},
+    onError(_error, context) { failures.push(context?.kind); },
+    heartbeatIntervalMs: 5, replyTimeoutMs: 10
+  });
+  instance.connect();
+  await sockets[0].onopen();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(sockets[0].closed, true);
+  assert.ok(failures.includes("heartbeat_failed"));
+  instance.close();
 });
 
 test("disconnect cancellation is once-only and bound to the closing socket", () => {

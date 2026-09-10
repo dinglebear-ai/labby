@@ -74,7 +74,13 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         })),
         "browser.pairing.approve" => {
             let id = require_str(&params, "pairing_id")?;
-            to_json(bridge.approve_pairing(&id).await.map_err(map_error)?)
+            let pairing_fingerprint = require_str(&params, "pairing_fingerprint")?;
+            to_json(
+                bridge
+                    .approve_pairing(&id, &pairing_fingerprint)
+                    .await
+                    .map_err(map_error)?,
+            )
         }
         "browser.sessions" => {
             let cursor = params.get("cursor").and_then(Value::as_str);

@@ -42,8 +42,8 @@ export const browserApi = {
   async pairings(signal?: AbortSignal) {
     return (await browserAction<BrowserPairingListResponse>('browser.pairing.list', {}, signal)).pairings
   },
-  approvePairing: (pairingId: string, signal?: AbortSignal) =>
-    browserAction<BrowserIdentity>('browser.pairing.approve', { pairing_id: pairingId }, signal),
+  approvePairing: (pairingId: string, pairingFingerprint: string, signal?: AbortSignal) =>
+    browserAction<BrowserIdentity>('browser.pairing.approve', { pairing_id: pairingId, pairing_fingerprint: pairingFingerprint }, signal),
   revoke: (browserId: string, signal?: AbortSignal) =>
     browserAction<BrowserIdentity>('browser.revoke', { browser_id: browserId }, signal),
   async sessions(signal?: AbortSignal, cursor?: string) {

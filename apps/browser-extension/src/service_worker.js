@@ -3,7 +3,7 @@ import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
-import {parseLoopbackBaseUrl} from "./base_url.js";
+import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
 
@@ -82,7 +82,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function initialize() {
   await chrome.alarms.create("labby-periodic-scan", {periodInMinutes: 1});
   const settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
-  try { settings.baseUrl = parseLoopbackBaseUrl(settings.baseUrl); } catch {
+  try { settings.baseUrl = parseBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
   }
@@ -114,7 +114,7 @@ async function reportBridgeFailure(error, context) {
     if (channel) channel.browserId = undefined;
   }
   if (message === "pairing_not_pending") {
-    await chrome.storage.local.remove("pairingId");
+    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
     clearTimeout(pairingPollTimer);
     pairingPollTimer = undefined;
   }
@@ -148,9 +148,16 @@ async function resumeAndScan() {
       await handleServerEvent({type: "pairing.approved", payload: reply.payload});
       return;
     }
+    const pairingFingerprint = reply?.payload?.pairing_fingerprint;
+    await chrome.storage.local.set({
+      bridgeStatus: {state: "pairing", updatedAt: Date.now()},
+      ...(pairingFingerprint ? {pairingFingerprint} : {})
+    });
+    if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
     schedulePairingPoll(reply?.payload?.expires_at);
   }
   if (browserId) {
+    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
     await syncBrowserSettings();
     await resync();
     await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
@@ -177,7 +184,7 @@ function schedulePairingPoll(expiresAt) {
 }
 
 async function finalizePairingExpiry() {
-  await chrome.storage.local.remove("pairingId");
+  await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
   await chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
 }
 
@@ -207,7 +214,7 @@ async function handleServerEvent(envelope, connection) {
     if (channel?.browserId !== envelope.payload.browser_id) {
       await chrome.storage.local.set({browserId: envelope.payload.browser_id});
     }
-    await chrome.storage.local.remove("pairingId");
+    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
     channel?.close();
     channel = undefined;
     await initialize();
@@ -465,7 +472,15 @@ async function handleUiMessage(message) {
   if (message.type === "pair") {
     const identity = await ensureIdentity();
     const reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
-    if (reply?.payload?.pairing_id) await chrome.storage.local.set({pairingId: reply.payload.pairing_id});
+    if (reply?.payload?.pairing_id) {
+      const pairingFingerprint = reply.payload.pairing_fingerprint;
+      await chrome.storage.local.set({
+        pairingId: reply.payload.pairing_id,
+        bridgeStatus: {state: "pairing", updatedAt: Date.now()},
+        ...(pairingFingerprint ? {pairingFingerprint} : {})
+      });
+      if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
+    }
     schedulePairingPoll(reply?.payload?.expires_at);
     void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
     return {ok: true, ...reply};

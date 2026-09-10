@@ -630,7 +630,7 @@
     "master_only": false,
     "cache_posture": "route-defined",
     "failure_disclosure": "standard",
-    "side_effects": "loopback browser-extension WebSocket upgrade",
+    "side_effects": "browser-extension WebSocket upgrade",
     "notes": "browser socket"
   },
   {
@@ -697,8 +697,7 @@
     "notes": "callback"
   },
   {
-    "method": "POST",
-    "path": "/callback/{machine_id}/{*suffix}",
+    "method": "POST",    "path": "/callback/{machine_id}/{*suffix}",
     "aliases": [],
     "surface": "api",
     "handler_group": "oauth_relay",
@@ -1397,8 +1396,7 @@
     "method": "POST",
     "path": "/v1/depot/operations",
     "aliases": [],
-    "surface": "api",
-    "handler_group": "depot",
+    "surface": "api",    "handler_group": "depot",
     "handler_identity": "call",
     "feature": null,
     "runtime_condition": null,
@@ -2097,8 +2095,7 @@
     "runtime_condition": "mounted only when API authentication is configured; requires lab:admin",
     "auth_required": true,
     "bearer_only": false,
-    "bootstrap_proof": false,
-    "session_cookie_allowed": true,
+    "bootstrap_proof": false,    "session_cookie_allowed": true,
     "csrf_required": true,
     "host_validation": false,
     "master_only": true,

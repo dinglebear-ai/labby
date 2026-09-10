@@ -26,6 +26,7 @@ use crate::dispatch::error::ToolError;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 static SOCKET_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+static HANDSHAKE_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
 
 pub fn routes(_state: AppState) -> RouteGroup {
     RouteGroup::empty().route(
@@ -62,7 +63,7 @@ pub(crate) fn public_descriptors() -> Vec<RouteDescriptor> {
             "browser",
             RouteAuth::Public,
         )
-        .side_effects("loopback browser-extension WebSocket upgrade"),
+        .side_effects("browser-extension WebSocket upgrade"),
     ]
 }
 
@@ -101,30 +102,29 @@ async fn handle_action(
     .await
 }
 
-async fn upgrade(
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
-    headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
-) -> Result<Response, ApiError> {
-    let loopback = peer
-        .as_ref()
-        .is_some_and(|Extension(ConnectInfo(address))| address.ip().is_loopback());
+async fn upgrade(headers: HeaderMap, upgrade: WebSocketUpgrade) -> Result<Response, ApiError> {
     let extension_id = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|value| value.to_str().ok())
         .and_then(|origin| origin.strip_prefix("chrome-extension://"))
         .filter(|id| id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte)))
         .map(str::to_string);
-    if !loopback || extension_id.is_none() {
+    if extension_id.is_none() {
         return Err(ApiError::new(ToolError::Forbidden {
-            message: "browser bridge accepts only loopback extension connections".to_string(),
+            message: "browser bridge accepts only browser-extension origins".to_string(),
             required_scopes: Vec::new(),
         }));
     }
-    let permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
+    let socket_permit = SOCKET_CAPACITY.try_acquire().map_err(|_| {
         ApiError::new(ToolError::Sdk {
             sdk_kind: "server_busy".to_string(),
             message: "browser connection capacity is exhausted".to_string(),
+        })
+    })?;
+    let handshake_permit = HANDSHAKE_CAPACITY.try_acquire().map_err(|_| {
+        ApiError::new(ToolError::Sdk {
+            sdk_kind: "server_busy".to_string(),
+            message: "browser unauthenticated connection capacity is exhausted".to_string(),
         })
     })?;
     initialize_browser_bridge().await?;
@@ -132,13 +132,22 @@ async fn upgrade(
         .max_message_size(512 * 1024)
         .max_frame_size(512 * 1024)
         .on_upgrade(move |socket| async move {
-            let _permit = permit;
-            handle_socket(socket, extension_id.expect("validated extension id")).await;
+            let _socket_permit = socket_permit;
+            handle_socket(
+                socket,
+                extension_id.expect("validated extension id"),
+                handshake_permit,
+            )
+            .await;
         }))
 }
 
-async fn handle_socket(socket: WebSocket, extension_id: String) {
-    if let Err(error) = run_socket(socket, &extension_id).await {
+async fn handle_socket(
+    socket: WebSocket,
+    extension_id: String,
+    handshake_permit: tokio::sync::SemaphorePermit<'static>,
+) {
+    if let Err(error) = run_socket(socket, &extension_id, handshake_permit).await {
         tracing::warn!(
             surface = "api",
             service = "browser",
@@ -151,6 +160,7 @@ async fn handle_socket(socket: WebSocket, extension_id: String) {
 async fn run_socket(
     socket: WebSocket,
     extension_id: &str,
+    handshake_permit: tokio::sync::SemaphorePermit<'static>,
 ) -> Result<(), labby_browser::BrowserError> {
     let bridge = browser_bridge()
         .await
@@ -190,11 +200,13 @@ async fn run_socket(
                 let pairing = bridge
                     .request_pairing(&display_name, extension_id, &public_key)
                     .await?;
+                let pairing_fingerprint = pairing.pairing_fingerprint();
                 BrowserEnvelope::new(
                     request_id,
                     BrowserMessage::PairingPending {
                         pairing_id: pairing.id,
                         expires_at: pairing.expires_at,
+                        pairing_fingerprint,
                     },
                 )
             }
@@ -204,6 +216,7 @@ async fn run_socket(
                     .pairing(&pairing_id)
                     .await?
                     .ok_or(labby_browser::BrowserError::NotFound)?;
+                let pairing_fingerprint = pairing.pairing_fingerprint();
                 match (pairing.status, pairing.browser_id) {
                     (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
                         request_id,
@@ -214,6 +227,7 @@ async fn run_socket(
                         BrowserMessage::PairingPending {
                             pairing_id: pairing.id,
                             expires_at: pairing.expires_at,
+                            pairing_fingerprint,
                         },
                     ),
                     (status, _) => BrowserEnvelope::new(
@@ -247,6 +261,12 @@ async fn run_socket(
                 authenticated = Some(connection);
                 BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
             }
+            BrowserMessage::Heartbeat => BrowserEnvelope::new(
+                request_id,
+                BrowserMessage::Acknowledged {
+                    received: "heartbeat".to_string(),
+                },
+            ),
             _ => BrowserEnvelope::new(
                 request_id,
                 BrowserMessage::Error {
@@ -263,6 +283,7 @@ async fn run_socket(
         }
     }
 
+    drop(handshake_permit);
     let mut connection = authenticated.expect("authenticated connection set");
     let browser_id = connection.browser_id.clone();
     let connection_id = connection.connection_id.clone();
@@ -281,6 +302,7 @@ async fn run_socket(
                 envelope.validate_version()?;
                 let request_id = envelope.request_id.clone();
                 let received = match envelope.message {
+                    BrowserMessage::Heartbeat => "heartbeat",
                     BrowserMessage::Observe(observation) => { bridge.observe(&browser_id, &connection_id, &observation).await?; "observe" }
                     BrowserMessage::DocumentClosed { tab_id, document_id } => { bridge.close_document(&browser_id, &connection_id, tab_id, &document_id).await?; "document_closed" }
                     completion @ (BrowserMessage::ToolResult { .. } | BrowserMessage::ToolError { .. }) => {

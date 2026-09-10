@@ -3,7 +3,7 @@ const DATABASE_NAME = "labby-browser-identity";
 const STORE_NAME = "credentials";
 const RECORD_KEY = "active";
 const LEGACY_KEYS = ["privateKey", "publicKey"];
-const ASSOCIATION_KEYS = ["browserId", "pairingId"];
+const ASSOCIATION_KEYS = ["browserId", "pairingId", "pairingFingerprint"];
 
 /** @param {IDBRequest<any>} request @returns {Promise<any>} */
 function requestResult(request) {

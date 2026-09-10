@@ -175,7 +175,7 @@ impl BrowserBridge {
         &self.store
     }
 
-    /// Accept an unauthenticated pairing request from a loopback-gated adapter.
+    /// Accept an unauthenticated pairing request from a validated browser-extension adapter.
     pub async fn request_pairing(
         &self,
         display_name: &str,
@@ -525,7 +525,11 @@ impl BrowserBridge {
     }
 
     /// Approve pairing and evict every superseded identity for its extension.
-    pub async fn approve_pairing(&self, pairing_id: &str) -> Result<crate::store::BrowserRecord> {
+    pub async fn approve_pairing(
+        &self,
+        pairing_id: &str,
+        pairing_fingerprint: &str,
+    ) -> Result<crate::store::BrowserRecord> {
         let _authority = self.authority.lock().await;
         let extension_id = self
             .store
@@ -541,7 +545,10 @@ impl BrowserBridge {
             .filter(|browser| browser.extension_id == extension_id && browser.revoked_at.is_none())
             .map(|browser| browser.id)
             .collect();
-        let browser = self.store.approve_pairing(pairing_id).await?;
+        let browser = self
+            .store
+            .approve_pairing(pairing_id, pairing_fingerprint)
+            .await?;
         let mut state = self.lock_state()?;
         for browser_id in superseded {
             if let Some(connection) = state.connections.remove(&browser_id) {
@@ -773,7 +780,11 @@ mod tests {
             .request_pairing("Chrome", EXTENSION_ID, &public_key)
             .await
             .unwrap();
-        let browser = bridge.store().approve_pairing(&pairing.id).await.unwrap();
+        let browser = bridge
+            .store()
+            .approve_pairing(&pairing.id, &pairing.pairing_fingerprint())
+            .await
+            .unwrap();
         authenticate_browser(bridge, &browser.id, &signing).await
     }
 

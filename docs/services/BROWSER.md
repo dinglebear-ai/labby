@@ -1,26 +1,26 @@
 ---
 title: "Browser Bridge"
 created: "2026-08-29"
-updated: "2026-09-05"
+updated: "2026-09-10"
 ---
 
 # Browser Bridge
 
 The `browser` service is Labby's Rust-native bridge to browser WebMCP tools. Labby owns durable browser identities, operator-approved pairing, authenticated live connections, sanitized catalog persistence, explicit per-document enablement, bounded invocation routing, cancellation, and stale-document protection. It does not run a separate Webby, Phoenix, LiveView, or Next.js application.
 
-An unpacked Manifest V3 extension lives in `apps/browser-extension`. JavaScript remains only at the browser boundary because Chrome executes the WebMCP probe and tool call inside the page's main world. The extension connects to Labby's `/browser/socket` WebSocket on loopback and speaks the versioned JSON protocol implemented by `labby-browser`.
+An unpacked Manifest V3 extension lives in `apps/browser-extension`. JavaScript remains only at the browser boundary because Chrome executes the WebMCP probe and tool call inside the page's main world. The extension connects to Labby's `/browser/socket` WebSocket and speaks the versioned JSON protocol implemented by `labby-browser`. Loopback endpoints may use HTTP/WS; remote endpoints must use HTTPS/WSS and still pass configured Host validation. Chrome 116 or newer is required; the extension sends an acknowledged versioned heartbeat every 20 seconds so WebSocket activity keeps the Manifest V3 service worker alive during otherwise idle periods and a half-open path is forced through normal reconnect handling when the heartbeat reply times out.
 
 ## Trust and consent
 
 `browser.call` is classified as destructive because page callbacks may delete durable data. Page-provided read-only annotations cannot override this classification. Administrator access and catalog consent remain separate requirements; MCP clients use the gateway’s existing destructive-action confirmation contract.
 
-Pairing uses an extension-generated Ed25519 identity and requires operator approval through the `browser` service. The private key is non-extractable and is stored as a structured-cloned `CryptoKey` in the extension's IndexedDB database; it is never exported to or stored in `chrome.storage.local`. Authentication challenges are short-lived and single-use. The WebSocket adapter accepts only loopback peers with a browser-extension origin.
+Pairing uses an extension-generated Ed25519 identity and requires operator approval through the `browser` service. The private key is non-extractable and is stored as a structured-cloned `CryptoKey` in the extension's IndexedDB database; it is never exported to or stored in `chrome.storage.local`. Authentication challenges are short-lived and single-use. A pending pairing may be refreshed only by the same extension public key; a conflicting key cannot mutate an operator-visible approval target. Each pending request also has a short fingerprint derived from the request identity and public key. The extension displays that fingerprint, and `browser.pairing.approve` requires the operator to submit the matching value before Labby creates a durable browser identity. The WebSocket Origin syntax check and configured Host validation are admission filters, not proof of browser identity; a remote browser becomes trusted only after fingerprint-confirmed pairing and subsequent Ed25519 challenge authentication.
 
 The extension intentionally fails closed when identity state is missing, corrupt, revoked, or still in the legacy extractable-JWK format. It deletes the unusable credential and its `browserId`/pending pairing association, generates a fresh non-extractable identity, and requires the operator to pair and approve it again. Removing and reinstalling the extension likewise loses the device credential and requires re-pairing. There is no key export or recovery phrase; recovery is revocation followed by a new operator-approved pairing.
 
 The validated extension socket initializes the local daemon's browser runtime. Until that happens, runtime actions report `browser_unavailable`; `help` and `schema` remain available without opening browser state. CLI or stdio processes must target the owning daemon rather than creating a disconnected second browser runtime.
 
-Browser storage admits one process owner through a persistent lock and requires an owned private directory with unaliased SQLite files and sidecars. Offline backup and restore share that ownership lock. Existing shared directories are refused without silently changing their permissions; repair the directory explicitly before restarting. The socket adapter admits at most 64 connections, bounds unauthenticated handshakes to two minutes, and bounds writes to five seconds.
+Browser storage admits one process owner through a persistent lock and requires an owned private directory with unaliased SQLite files and sidecars. Offline backup and restore share that ownership lock. Existing shared directories are refused without silently changing their permissions; repair the directory explicitly before restarting. The socket adapter admits at most 64 connections overall and at most 16 unauthenticated handshakes at once. The unauthenticated permit is released immediately after successful Ed25519 authentication; unauthenticated handshakes are bounded to two minutes, and writes are bounded to five seconds.
 
 Once initialized, the runtime remains available after the extension socket disconnects. Initialization failures are cached for the lifetime of the daemon; correct the underlying problem and restart the daemon before retrying.
 

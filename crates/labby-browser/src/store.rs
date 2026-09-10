@@ -19,6 +19,7 @@ mod storage_tests;
 pub use storage::BrowserStorageLock;
 
 const PAIRING_TTL_SECONDS: i64 = 300;
+const MAX_PENDING_PAIRINGS: i64 = 64;
 const CHALLENGE_TTL_SECONDS: i64 = 60;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 32;
@@ -125,6 +126,14 @@ pub struct PairingRequest {
     pub status: PairingStatus,
     pub expires_at: i64,
     pub browser_id: Option<String>,
+}
+
+impl PairingRequest {
+    /// Short out-of-band fingerprint that binds operator approval to this exact key.
+    #[must_use]
+    pub fn pairing_fingerprint(&self) -> String {
+        derive_pairing_fingerprint(&self.id, &self.extension_id, &self.public_key)
+    }
 }
 
 /// One-time authentication challenge.
@@ -282,9 +291,15 @@ impl Store {
     pub async fn pending_pairings(&self) -> Result<Vec<PairingRequest>> {
         self.call(BlockingStore::pending_pairings).await
     }
-    pub async fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+    pub async fn approve_pairing(
+        &self,
+        id: &str,
+        pairing_fingerprint: &str,
+    ) -> Result<BrowserRecord> {
         let id = id.to_owned();
-        self.call(move |s| s.approve_pairing(&id)).await
+        let pairing_fingerprint = pairing_fingerprint.to_owned();
+        self.call(move |s| s.approve_pairing(&id, &pairing_fingerprint))
+            .await
     }
     pub async fn browser(&self, id: &str) -> Result<Option<BrowserRecord>> {
         let id = id.to_owned();
@@ -440,7 +455,9 @@ impl BlockingStore {
         })
     }
 
-    /// Create or refresh one pending pairing request.
+    /// Create or refresh one pending pairing request. A refresh may extend only
+    /// the exact identity that created the pending request; its operator-visible
+    /// metadata and credential are immutable until the request resolves.
     fn request_pairing(
         &self,
         display_name: &str,
@@ -450,17 +467,50 @@ impl BlockingStore {
         validate_pairing_input(display_name, extension_id, &public_key)?;
         let now = now_seconds()?;
         let expires_at = now + PAIRING_TTL_SECONDS;
-        let id = Uuid::new_v4().to_string();
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE extension_id=?2 AND status='pending'",
-            params![now, extension_id],
+            "DELETE FROM browser_pairing_requests WHERE status='expired' AND resolved_at IS NOT NULL AND resolved_at<=?1",
+            params![now - PAIRING_TTL_SECONDS],
         )?;
         transaction.execute(
-            "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
-            params![id, display_name, extension_id, public_key, expires_at, now],
+            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE status='pending' AND expires_at<=?1",
+            params![now],
         )?;
+        let existing = transaction
+            .query_row(
+                "SELECT id,public_key FROM browser_pairing_requests WHERE extension_id=?1 AND status='pending' LIMIT 1",
+                params![extension_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?;
+        let id = if let Some((id, existing_public_key)) = existing {
+            if existing_public_key != public_key {
+                return Err(BrowserError::InvalidRequest(
+                    "a pairing request is already pending for this extension identity".to_string(),
+                ));
+            }
+            transaction.execute(
+                "UPDATE browser_pairing_requests SET expires_at=?1 WHERE id=?2",
+                params![expires_at, id],
+            )?;
+            id
+        } else {
+            let pending: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM browser_pairing_requests WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )?;
+            if pending >= MAX_PENDING_PAIRINGS {
+                return Err(BrowserError::ServerBusy);
+            }
+            let id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
+                params![id, display_name, extension_id, public_key, expires_at, now],
+            )?;
+            id
+        };
         transaction.commit()?;
         drop(connection);
         self.pairing(&id)?.ok_or(BrowserError::NotFound)
@@ -495,7 +545,7 @@ impl BlockingStore {
     }
 
     /// Approve a pairing and create the durable browser identity.
-    fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+    fn approve_pairing(&self, id: &str, pairing_fingerprint: &str) -> Result<BrowserRecord> {
         let now = now_seconds()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -503,6 +553,14 @@ impl BlockingStore {
         if pairing.status != PairingStatus::Pending || pairing.expires_at <= now {
             return Err(BrowserError::InvalidRequest(
                 "pairing request is not pending".to_string(),
+            ));
+        }
+        if !pairing
+            .pairing_fingerprint()
+            .eq_ignore_ascii_case(pairing_fingerprint)
+        {
+            return Err(BrowserError::InvalidRequest(
+                "pairing fingerprint does not match".to_string(),
             ));
         }
         transaction.execute(
@@ -944,6 +1002,20 @@ fn map_browser(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserRecord> {
     })
 }
 
+fn derive_pairing_fingerprint(id: &str, extension_id: &str, public_key: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"labby-browser-pairing-fingerprint-v1");
+    for field in [id.as_bytes(), extension_id.as_bytes(), public_key] {
+        digest.update((field.len() as u64).to_le_bytes());
+        digest.update(field);
+    }
+    let digest = digest.finalize();
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5]
+    )
+}
+
 pub(crate) fn digest_catalog(
     revision: i64,
     origin: &str,
@@ -1167,9 +1239,98 @@ mod tests {
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
         assert_eq!(request.status, PairingStatus::Pending);
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         assert_eq!(browser.extension_id, extension_id());
-        assert!(store.approve_pairing(&request.id).is_err());
+        assert!(
+            store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pairing_approval_requires_the_extension_fingerprint() {
+        let store = BlockingStore::memory().unwrap();
+        let request = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let fingerprint = request.pairing_fingerprint();
+        assert_eq!(fingerprint.len(), 12);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let error = store
+            .approve_pairing(&request.id, "000000000000")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_request");
+        assert_eq!(store.pending_pairings().unwrap().len(), 1);
+
+        let browser = store
+            .approve_pairing(&request.id, &fingerprint.to_ascii_lowercase())
+            .unwrap();
+        assert_eq!(browser.extension_id, extension_id());
+    }
+
+    fn extension_id_for(index: usize) -> String {
+        let hi = char::from(97 + ((index / 16) % 16) as u8);
+        let lo = char::from(97 + (index % 16) as u8);
+        format!("{}{}{}", "a".repeat(30), hi, lo)
+    }
+
+    #[test]
+    fn pairing_refresh_reuses_the_pending_slot_for_the_same_key() {
+        let store = BlockingStore::memory().unwrap();
+        let first = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let refreshed = store
+            .request_pairing("Chrome renamed", extension_id(), vec![7; 32])
+            .unwrap();
+        assert_eq!(refreshed.id, first.id);
+        assert_eq!(refreshed.display_name, "Chrome");
+        assert_eq!(refreshed.public_key, vec![7; 32]);
+        assert_eq!(store.pending_pairings().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn conflicting_key_cannot_replace_a_pending_pairing() {
+        let store = BlockingStore::memory().unwrap();
+        let first = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let error = store
+            .request_pairing("Chrome", extension_id(), vec![8; 32])
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_request");
+
+        let pending = store.pending_pairings().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, first.id);
+        assert_eq!(pending[0].display_name, "Chrome");
+        assert_eq!(pending[0].public_key, vec![7; 32]);
+    }
+
+    #[test]
+    fn pending_pairing_capacity_is_bounded() {
+        let store = BlockingStore::memory().unwrap();
+        for index in 0..MAX_PENDING_PAIRINGS as usize {
+            store
+                .request_pairing("Chrome", &extension_id_for(index), vec![7; 32])
+                .unwrap();
+        }
+        let error = store
+            .request_pairing(
+                "One too many",
+                &extension_id_for(MAX_PENDING_PAIRINGS as usize),
+                vec![7; 32],
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), "server_busy");
+        assert_eq!(
+            store.pending_pairings().unwrap().len(),
+            MAX_PENDING_PAIRINGS as usize
+        );
     }
 
     #[test]
@@ -1178,7 +1339,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         let observation = CatalogObservation {
             tab_id: 1,
             document_id: "doc".into(),
@@ -1215,7 +1378,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         store
             .observe(
                 &browser.id,
@@ -1258,7 +1423,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         let mut observation = CatalogObservation {
             tab_id: 1,
             document_id: "doc".into(),
@@ -1337,7 +1504,9 @@ mod tests {
             let request = store
                 .request_pairing("Chrome", extension_id(), vec![7; 32])
                 .unwrap();
-            let browser = store.approve_pairing(&request.id).unwrap();
+            let browser = store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .unwrap();
             store.revoke_browser(&browser.id).unwrap();
             browser.id
         };
@@ -1451,7 +1620,10 @@ mod tests {
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .await
             .unwrap();
-        let browser = store.approve_pairing(&pairing.id).await.unwrap();
+        let browser = store
+            .approve_pairing(&pairing.id, &pairing.pairing_fingerprint())
+            .await
+            .unwrap();
         for tab_id in 0..5 {
             store
                 .observe(
