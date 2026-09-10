@@ -653,8 +653,8 @@ impl BlockingStore {
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "DELETE FROM browser_auth_challenges WHERE used_at IS NOT NULL OR expires_at<=?1",
-            params![now],
+            "DELETE FROM browser_auth_challenges WHERE used_at IS NOT NULL OR expires_at<=?1 OR browser_id=?2",
+            params![now, browser_id],
         )?;
         let pending: i64 = transaction.query_row(
             "SELECT COUNT(*) FROM browser_auth_challenges WHERE used_at IS NULL AND expires_at>?1",
@@ -1436,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_challenge_capacity_is_bounded_and_old_rows_are_reaped() {
+    fn auth_challenge_reaps_old_rows_and_replaces_one_browser_pending_challenge() {
         let store = BlockingStore::memory().unwrap();
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
@@ -1457,7 +1457,15 @@ mod tests {
             )
             .unwrap();
 
-        store.create_challenge(&browser.id).unwrap();
+        let replaced = store.create_challenge(&browser.id).unwrap();
+        let replacement = store.create_challenge(&browser.id).unwrap();
+        assert_eq!(
+            store.take_challenge(&replaced.id).unwrap_err().kind(),
+            "auth_failed"
+        );
+        let consumed = store.take_challenge(&replacement.id).unwrap();
+        assert_eq!(consumed.id, replacement.id);
+        assert_eq!(consumed.browser_id, replacement.browser_id);
         let remaining: i64 = store
             .lock()
             .unwrap()
@@ -1466,10 +1474,28 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining, 1);
+    }
 
-        for _ in 1..MAX_PENDING_AUTH_CHALLENGES {
+    #[test]
+    fn auth_challenge_capacity_is_bounded_across_distinct_browsers() {
+        let store = BlockingStore::memory().unwrap();
+        for index in 0..MAX_PENDING_AUTH_CHALLENGES {
+            let key = vec![index as u8; 32];
+            let request = store
+                .request_pairing("Chrome", extension_id(), key)
+                .unwrap();
+            let browser = store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .unwrap();
             store.create_challenge(&browser.id).unwrap();
         }
+        let key = vec![MAX_PENDING_AUTH_CHALLENGES as u8; 32];
+        let request = store
+            .request_pairing("One too many", extension_id(), key)
+            .unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         let error = store.create_challenge(&browser.id).unwrap_err();
         assert_eq!(error.kind(), "server_busy");
         let pending: i64 = store
