@@ -39,6 +39,9 @@ impl StdioDiagnostics {
 pub(super) struct StdioConnectError {
     message: String,
     diagnostics: String,
+    /// The child closed its stdout (transport EOF) before the connection was
+    /// established. Such a failure says nothing about lifecycle compatibility.
+    child_exited: bool,
 }
 
 impl StdioConnectError {
@@ -46,19 +49,27 @@ impl StdioConnectError {
         Self {
             message: error.to_string(),
             diagnostics: String::new(),
+            child_exited: false,
         }
     }
 
     pub(super) async fn with_diagnostics(
         error: impl std::fmt::Display,
         diagnostics: &StdioDiagnostics,
+        child_exited: bool,
     ) -> Self {
         let message = error.to_string();
         let diagnostics = diagnostics.snapshot().await;
         Self {
             message,
             diagnostics,
+            child_exited,
         }
+    }
+
+    #[must_use]
+    pub(super) const fn child_exited(&self) -> bool {
+        self.child_exited
     }
 
     pub(super) fn diagnostics_with_error(&self) -> String {

@@ -51,7 +51,8 @@ use super::helpers::{
 };
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
-    LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
+    LifecycleAttempt, LifecycleTransport, compatibility_retry, legacy_protocol_version,
+    log_fallback,
 };
 use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
@@ -579,7 +580,7 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     {
         Ok(connection) => Ok(connection),
         Err(error) => {
-            let Some(attempt) = compatibility_retry(&error) else {
+            let Some(attempt) = compatibility_retry(&error, LifecycleTransport::Network) else {
                 return Err(error);
             };
             log_fallback(&config.name, "websocket", attempt, &error);
@@ -709,7 +710,7 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
     {
         Ok(connection) => Ok(connection),
         Err(error) => {
-            let Some(attempt) = compatibility_retry(&error) else {
+            let Some(attempt) = compatibility_retry(&error, LifecycleTransport::Network) else {
                 return Err(error);
             };
             log_fallback(&config.name, upstream_transport(config), attempt, &error);

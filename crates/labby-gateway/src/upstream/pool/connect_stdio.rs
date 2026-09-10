@@ -25,7 +25,8 @@ use super::connect::{
 use super::helpers::STDIO_DISCOVERY_TIMEOUT;
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
-    LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
+    LifecycleAttempt, LifecycleTransport, compatibility_retry, legacy_protocol_version,
+    log_fallback,
 };
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
@@ -86,11 +87,11 @@ fn allowed_stdio_parent_environment(
         .collect()
 }
 
-fn stdio_lifecycle_key(name: &str, command: &str, args: &[String]) -> String {
+pub(super) fn stdio_lifecycle_key(name: &str, command: &str, args: &[String]) -> String {
     format!("{name}\u{0}{command}\u{0}{}", args.join("\u{0}"))
 }
 
-fn prefers_legacy_stdio_lifecycle(key: &str) -> bool {
+pub(super) fn prefers_legacy_stdio_lifecycle(key: &str) -> bool {
     LEGACY_STDIO_LIFECYCLE
         .get_or_init(|| RwLock::new(HashSet::new()))
         .read()
@@ -244,8 +245,12 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
         Ok(ok) => Ok(ok),
         Err(first_error) => {
             let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
+            // A child that exited before answering proved nothing about its
+            // lifecycle; only a live peer's rejection justifies a respawn.
             if initial_attempt == LifecycleAttempt::Modern
-                && let Some(attempt) = compatibility_retry(&lifecycle_error)
+                && !first_error.child_exited()
+                && let Some(attempt) =
+                    compatibility_retry(&lifecycle_error, LifecycleTransport::Stdio)
             {
                 remember_legacy_stdio_lifecycle(lifecycle_key);
                 log_fallback(&command.name, "stdio", attempt, &lifecycle_error);
@@ -600,6 +605,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
 
     let pid = process.id();
     let generation = process.generation();
+    let child_exit = process.exit_observer();
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %command.name, transport = "stdio",
@@ -635,7 +641,12 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             {
                 Ok(service) => service,
                 Err(error) => {
-                    return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await);
+                    return Err(StdioConnectError::with_diagnostics(
+                        error,
+                        &stderr_capture,
+                        child_exit.child_exited(),
+                    )
+                    .await);
                 }
             };
             UpstreamClientService::Direct(service)
@@ -647,7 +658,12 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             {
                 Ok(service) => service,
                 Err(error) => {
-                    return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await);
+                    return Err(StdioConnectError::with_diagnostics(
+                        error,
+                        &stderr_capture,
+                        child_exit.child_exited(),
+                    )
+                    .await);
                 }
             };
             UpstreamClientService::Versioned(service)
@@ -665,6 +681,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
                 return Err(StdioConnectError::with_diagnostics(
                     error.into_service_error(&command.name),
                     &stderr_capture,
+                    child_exit.child_exited(),
                 )
                 .await);
             }
