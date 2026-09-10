@@ -129,8 +129,8 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
   const authority = normalizeAuthority(payload)
   // normalizeAuthority already rejected unknown states, so any string left is one of ours.
   const authorityState = payload.authority_state ?? undefined
-  const projectedProjectId = typeof payload.project_id === 'string' && payload.project_id.length > 0
-    ? payload.project_id
+  const projectedProjectId = typeof payload.project_id === 'string' && payload.project_id.trim()
+    ? payload.project_id.trim()
     : undefined
   return {
     status: 'authenticated',
