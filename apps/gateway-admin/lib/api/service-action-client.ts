@@ -1,10 +1,8 @@
 import { gatewayRequestInit } from './gateway-request.ts'
-import { authorityIdentity } from '../auth/authority.ts'
 import {
+  getBrowserSessionContextIdentity,
   getBrowserSessionState,
-  getSessionAuthority,
   getSessionCsrfToken,
-  getSessionProjectId,
   loadBrowserSession,
   type BrowserSessionState,
 } from '../auth/session-store.ts'
@@ -100,20 +98,15 @@ export async function performServiceAction<T, TError extends ServiceActionError>
 }): Promise<T> {
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
-  const initialAuthority = authorityIdentity(getSessionAuthority())
-  const initialProjectId = getSessionProjectId()
-  const initialContextIsCurrent = () =>
-    initialAuthority === authorityIdentity(getSessionAuthority()) &&
-    initialProjectId === getSessionProjectId()
+  const initialContext = getBrowserSessionContextIdentity()
+  const initialContextIsCurrent = () => initialContext === getBrowserSessionContextIdentity()
 
-  // Every attempt captures the authority and project context it was issued
-  // under and rejects its own response if either changes while it is in
-  // flight. "No projection" is itself an authority identity, while an
-  // explicitly project-bound session may still carry project context without
-  // a durable authority projection.
+  // Every attempt captures the session's authority/project identity and
+  // rejects its own response if that context changes while it is in flight.
+  // The shared identity includes the authenticated subject and explicit
+  // project binding while deliberately excluding transport-only fields.
   const request = async () => {
-    const issuedUnder = authorityIdentity(getSessionAuthority())
-    const issuedProjectId = getSessionProjectId()
+    const issuedUnder = getBrowserSessionContextIdentity()
     let response: Response
     try {
       const init = gatewayRequestInit(action, params, undefined, signal)
@@ -134,10 +127,7 @@ export async function performServiceAction<T, TError extends ServiceActionError>
     }
 
     const result = await parseActionResponse<T, TError>(response, createError)
-    if (
-      issuedUnder !== authorityIdentity(getSessionAuthority()) ||
-      issuedProjectId !== getSessionProjectId()
-    ) {
+    if (issuedUnder !== getBrowserSessionContextIdentity()) {
       throw new DOMException('Authority or project context changed', 'AbortError')
     }
     return result

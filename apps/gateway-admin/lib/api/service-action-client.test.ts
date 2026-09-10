@@ -64,6 +64,15 @@ test('performServiceAction rejects a project-bound response after the project ch
   await assert.rejects(pending, isAbort)
 })
 
+test('performServiceAction rejects an unprojected response after the authenticated subject changes', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'two' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-a' })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
 test('performServiceAction treats gaining or losing the authority projection as a change', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
   let release = blockedFetch()

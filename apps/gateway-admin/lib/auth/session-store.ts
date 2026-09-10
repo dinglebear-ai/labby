@@ -161,6 +161,10 @@ export function getBrowserSessionState() {
   return currentState
 }
 
+export function getBrowserSessionContextIdentity() {
+  return sessionIdentity(currentState)
+}
+
 export function getSessionCsrfToken() {
   return currentState.status === 'authenticated' ? currentState.csrfToken : undefined
 }
