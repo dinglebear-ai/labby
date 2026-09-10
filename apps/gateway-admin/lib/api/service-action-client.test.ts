@@ -55,6 +55,15 @@ test('performServiceAction treats a team or project switch under the same genera
   await assert.rejects(pending, isAbort)
 })
 
+test('performServiceAction rejects a project-bound response after the project changes without an authority projection', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-b' })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
 test('performServiceAction treats gaining or losing the authority projection as a change', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
   let release = blockedFetch()

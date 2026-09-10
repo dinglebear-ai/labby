@@ -4,6 +4,7 @@ import {
   getBrowserSessionState,
   getSessionAuthority,
   getSessionCsrfToken,
+  getSessionProjectId,
   loadBrowserSession,
   type BrowserSessionState,
 } from '../auth/session-store.ts'
@@ -100,12 +101,14 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
 
-  // Every attempt captures the authority it was issued under and rejects its
-  // own response if that authority changed while it was in flight. "No
-  // projection" is itself an identity, so a session that gains or loses its
-  // authority mid-request is also treated as a change.
+  // Every attempt captures the authority and project context it was issued
+  // under and rejects its own response if either changes while it is in
+  // flight. "No projection" is itself an authority identity, while an
+  // explicitly project-bound session may still carry project context without
+  // a durable authority projection.
   const request = async () => {
     const issuedUnder = authorityIdentity(getSessionAuthority())
+    const issuedProjectId = getSessionProjectId()
     let response: Response
     try {
       const init = gatewayRequestInit(action, params, undefined, signal)
@@ -126,8 +129,11 @@ export async function performServiceAction<T, TError extends ServiceActionError>
     }
 
     const result = await parseActionResponse<T, TError>(response, createError)
-    if (issuedUnder !== authorityIdentity(getSessionAuthority())) {
-      throw new DOMException('Authority context changed', 'AbortError')
+    if (
+      issuedUnder !== authorityIdentity(getSessionAuthority()) ||
+      issuedProjectId !== getSessionProjectId()
+    ) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
     }
     return result
   }
