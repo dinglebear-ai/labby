@@ -221,6 +221,12 @@ pub struct GatewayManager {
     /// builds always resolve the product location under the Labby home.
     #[cfg(test)]
     pub(super) code_mode_catalog_cache_path: Option<PathBuf>,
+    /// Scratch directory backing a fixture-built manager. Held here so it
+    /// outlives every clone of the manager instead of vanishing when the
+    /// fixture helper returns, which would send cache writes into a
+    /// directory that no longer exists.
+    #[cfg(test)]
+    pub(super) _test_scratch_dir: Option<Arc<tempfile::TempDir>>,
     /// Cached Code Mode catalog embedding vectors, keyed separately by the
     /// visible `(id, description)` ranking corpus. `RwLock` (not
     /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
