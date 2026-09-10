@@ -20,6 +20,7 @@ import {
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
 import { isAbortError } from '@/lib/api/service-action-client'
+import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
 import { authorityIdentity, getBrowserSessionContextIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
@@ -66,11 +67,12 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 
 export function SkillLibraryPageContent() {
   const session = useBrowserSession()
+  const bypassBrowserSessionAuth = shouldBypassBrowserSessionAuth()
   const projectId = session.status === 'authenticated' ? session.projectId : undefined
 
   if (projectId && session.status === 'authenticated') {
     // Key the project-scoped editor to the caller and current authority
-    // generation so workspace, login, or policy changes cannot leave stale
+    // identity so workspace, login, or policy changes cannot leave stale
     // Artifacts or in-flight editor state visible in a new context.
     const scopeKey = `${session.user.sub}:${projectId}:${authorityIdentity(session.authority)}`
     return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
@@ -92,8 +94,12 @@ export function SkillLibraryPageContent() {
         <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p>
       </div>
 
-      {session.status === 'loading' ? (
+      {session.status === 'loading' && !bypassBrowserSessionAuth ? (
         <div className="flex min-h-56 items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
+      ) : session.status === 'loading' ? (
+        <DashboardPanel title="Project required">
+          <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to manage the Artifact Library.</p>
+        </DashboardPanel>
       ) : session.status === 'authenticated' ? (
         <DashboardPanel title="Project required">
           <p className="text-sm text-aurora-text-muted">The Artifact Library is project-scoped. Select an eligible project workspace to continue.</p>

@@ -367,6 +367,32 @@ test('refreshing the library does not lock a new-Skill editor to incidental sele
   }
 })
 
+test('mock data mode renders a terminal project state instead of waiting forever for auth', async () => {
+  installTestDom()
+  const previousMockData = process.env.NEXT_PUBLIC_MOCK_DATA
+  process.env.NEXT_PUBLIC_MOCK_DATA = 'true'
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  const originalList = skillLibrary.list
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    throw new Error('mock mode must not issue a project-scoped library request')
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.equal(listCalls, 0)
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.match(view.container.textContent ?? '', /Mock data mode does not project an authenticated project/)
+  } finally {
+    skillLibrary.list = originalList
+    if (previousMockData === undefined) delete process.env.NEXT_PUBLIC_MOCK_DATA
+    else process.env.NEXT_PUBLIC_MOCK_DATA = previousMockData
+    await view.unmount()
+  }
+})
+
 test('library waits for an explicit project selection before issuing requests', async () => {
   installTestDom()
   __setBrowserSessionStateForTests({
