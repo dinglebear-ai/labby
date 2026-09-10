@@ -151,6 +151,135 @@ test('editor fields are locked while delayed validation and save use their snaps
   }
 })
 
+test('a project switch while save validation is pending never writes into the new project', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeProjectId: 'project-1',
+      teams: [],
+      projects: [
+        { id: 'project-1', role: 'owner' },
+        { id: 'project-2', role: 'owner' },
+      ],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  const originalValidate = skillLibrary.validate
+  const originalCreate = skillLibrary.create
+  const page: SkillLibraryPage = {
+    library_version: 1,
+    published_library_version: 1,
+    can_create: true,
+    create_visibilities: ['private'],
+    allowed_actions: [],
+    items: [],
+  }
+  let resolveValidation!: (value: Awaited<ReturnType<typeof skillLibrary.validate>>) => void
+  const pendingValidation = new Promise<Awaited<ReturnType<typeof skillLibrary.validate>>>(resolve => { resolveValidation = resolve })
+  let createCalls = 0
+  skillLibrary.list = async () => page
+  skillLibrary.validate = async () => pendingValidation
+  skillLibrary.create = async () => {
+    createCalls += 1
+    throw new Error('create must not run after the project changes')
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    const button = (label: string) => [...view.container.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.includes(label)) as HTMLButtonElement
+    await act(async () => button('Create skill').click())
+    act(() => button('Save immutable revision').click())
+    await act(async () => {
+      selectSessionWorkspace({ projectId: 'project-2' })
+      resolveValidation({ valid: true, rejections: [] })
+      await Promise.resolve()
+    })
+
+    assert.equal(createCalls, 0)
+  } finally {
+    skillLibrary.list = originalList
+    skillLibrary.validate = originalValidate
+    skillLibrary.create = originalCreate
+    await view.unmount()
+  }
+})
+
+test('an aborted old-project activation cannot trigger a stale reload', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeProjectId: 'project-1',
+      teams: [],
+      projects: [
+        { id: 'project-1', role: 'owner' },
+        { id: 'project-2', role: 'owner' },
+      ],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  const originalActivate = skillLibrary.activate
+  const page: SkillLibraryPage = {
+    library_version: 1,
+    published_library_version: 1,
+    can_create: true,
+    create_visibilities: ['private'],
+    allowed_actions: [],
+    items: [{ ...item('alpha'), allowed_actions: ['artifacts.activate'] }],
+  }
+  let rejectActivation!: (reason: unknown) => void
+  const pendingActivation = new Promise<Awaited<ReturnType<typeof skillLibrary.activate>>>((_, reject) => { rejectActivation = reject })
+  let listCalls = 0
+  skillLibrary.list = async () => { listCalls += 1; return page }
+  skillLibrary.activate = async () => pendingActivation
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    const button = [...view.container.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.includes('Activate latest revision')) as HTMLButtonElement
+    assert.ok(button)
+    act(() => button.click())
+    await act(async () => {
+      selectSessionWorkspace({ projectId: 'project-2' })
+      rejectActivation(new DOMException('Authority or project context changed', 'AbortError'))
+      await Promise.resolve()
+    })
+    await act(async () => {})
+
+    assert.equal(listCalls, 2, 'only the old and newly mounted project contexts should list')
+  } finally {
+    skillLibrary.list = originalList
+    skillLibrary.activate = originalActivate
+    await view.unmount()
+  }
+})
+
 test('a pending import locks cancellation and its source fields until completion', async () => {
   installTestDom()
   authenticateProject()

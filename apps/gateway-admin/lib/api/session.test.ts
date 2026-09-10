@@ -76,6 +76,13 @@ test('project-bound sessions preserve explicit project context without an author
     expires_at: 124,
     csrf_token: 'csrf-project',
     project_id: '  project-bound  ',
+    authority_generation: null,
+    organization_id: null,
+    owner: null,
+    active_owner: null,
+    teams: [],
+    projects: [],
+    capabilities: [],
   }), { status: 200 })) as FetchMock
 
   const state = await loadBrowserSession()

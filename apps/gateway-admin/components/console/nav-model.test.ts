@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
-import { capabilityAwareNavSections, capabilityForPath, consoleNavItems, consoleNavSections } from './nav-model'
+import { allowsProjectBoundSessionFallback, capabilityAwareNavSections, capabilityForPath, consoleNavItems, consoleNavSections } from './nav-model'
 
 const ADMIN_APP_ROOT = new URL('../../app/(admin)/', import.meta.url).pathname
 
@@ -98,6 +98,13 @@ test('direct route manifest fails closed for unknown routes and gates known ones
   assert.equal(capabilityForPath('/stash'), 'scope.read')
   assert.equal(capabilityForPath('/gateway'), 'platform.manage')
   assert.equal(capabilityForPath('/not-a-product-route'), undefined)
+})
+
+test('only Skills admits a project-bound session without a durable authority projection', () => {
+  assert.equal(allowsProjectBoundSessionFallback('/skills'), true)
+  assert.equal(allowsProjectBoundSessionFallback('/skills/example'), true)
+  assert.equal(allowsProjectBoundSessionFallback('/library'), false)
+  assert.equal(allowsProjectBoundSessionFallback('/depot'), false)
 })
 
 test('every shipped app/(admin) route resolves to a capability instead of locking itself out', () => {

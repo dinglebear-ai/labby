@@ -19,7 +19,8 @@ import {
   type SkillValidation,
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
-import { authorityIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
+import { isAbortError } from '@/lib/api/service-action-client'
+import { authorityIdentity, getBrowserSessionContextIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -145,8 +146,9 @@ function ProjectScopedSkillLibraryPageContent() {
     setBusy(current => current === 'load-revision' ? null : current)
   }
 
-  function editorOperationIsCurrent(generation: number) {
-    return generation === editorGeneration.current
+  function editorOperationIsCurrent(generation: number, contextIdentity?: string) {
+    return generation === editorGeneration.current &&
+      (contextIdentity === undefined || contextIdentity === getBrowserSessionContextIdentity())
   }
 
   const load = useCallback(async (signal?: AbortSignal, search = '') => {
@@ -159,7 +161,7 @@ function ProjectScopedSkillLibraryPageContent() {
       setPage(next)
       setSelectedId(current => current && next.items.some(item => item.artifact_id === current) ? current : next.items[0]?.artifact_id ?? null)
     } catch (cause) {
-      if (!signal?.aborted && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
+      if (!isAbortError(cause) && !signal?.aborted && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
     } finally {
       if (!signal?.aborted && generation === listGeneration.current) setLoading(false)
     }
@@ -177,7 +179,7 @@ function ProjectScopedSkillLibraryPageContent() {
       if (generation !== listGeneration.current) return
       setPage(current => current?.next_cursor === cursor ? { ...next, items: [...current.items, ...next.items] } : current)
     } catch (cause) {
-      if (generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
+      if (!isAbortError(cause) && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
     } finally {
       if (generation === listGeneration.current) setLoading(false)
     }
@@ -186,7 +188,11 @@ function ProjectScopedSkillLibraryPageContent() {
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
-    return () => controller.abort()
+    return () => {
+      listGeneration.current += 1
+      editorGeneration.current += 1
+      controller.abort()
+    }
   }, [load])
 
   const selected = useMemo(() => page?.items.find(item => item.artifact_id === selectedId), [page, selectedId])
@@ -209,13 +215,14 @@ function ProjectScopedSkillLibraryPageContent() {
     if (!selected) return
     const target = { artifactId: selected.artifact_id, revisionId: selected.latest_revision_id }
     const generation = ++editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('load-revision')
     try {
       const contents = await Promise.all(selected.latest_revision_files.map(async revisionFile => {
         const loaded = await skillLibrary.read(target.artifactId, target.revisionId, revisionFile.path)
         return { path: loaded.path, content: loaded.text }
       }))
-      if (generation !== editorGeneration.current) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setEditingArtifact(target)
       setName(selected.name)
       setVisibility(selected.visibility)
@@ -224,34 +231,36 @@ function ProjectScopedSkillLibraryPageContent() {
       setValidation(null)
       setEditing(true)
     } catch (cause) {
-      if (generation === editorGeneration.current) toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
     } finally {
-      if (generation === editorGeneration.current) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function validate() {
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('validate')
     try {
       const result = await skillLibrary.validate(name.trim(), files)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setValidation(result)
       if (result.valid) toast.success('Skill is valid')
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function save() {
     if (!page) return
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('save')
     try {
       const checked = await skillLibrary.validate(name.trim(), files)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setValidation(checked)
       if (!checked.valid) return
       const receipt = editingArtifact
@@ -267,25 +276,27 @@ function ProjectScopedSkillLibraryPageContent() {
             expectedLibraryVersion: page.library_version,
             idempotencyKey: requestKey('create'),
           })
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Immutable revision saved', { description: 'Activate it when you are ready to publish.' })
       setEditing(false)
       setEditingArtifact(null)
       await load(undefined, appliedQuery)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) {
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
         toast.error(getErrorMessage(cause, 'Unable to save this Skill.'))
         await load(undefined, appliedQuery)
       }
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function activate() {
     if (!page || !selected) return
+    const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('activate')
     try {
       await skillLibrary.activate({
@@ -294,18 +305,23 @@ function ProjectScopedSkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('activate'),
       })
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Skill published')
       await load(undefined, appliedQuery)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to activate this Skill.'))
-      await load(undefined, appliedQuery)
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
+        toast.error(getErrorMessage(cause, 'Unable to activate this Skill.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function archive() {
     if (!page || !selected || !window.confirm(`Archive ${selected.name}?`)) return
+    const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('archive')
     try {
       await skillLibrary.archive({
@@ -313,13 +329,16 @@ function ProjectScopedSkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('archive'),
       })
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Artifact archived')
       await load(undefined, appliedQuery)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to archive this Artifact.'))
-      await load(undefined, appliedQuery)
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
+        toast.error(getErrorMessage(cause, 'Unable to archive this Artifact.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
@@ -333,6 +352,7 @@ function ProjectScopedSkillLibraryPageContent() {
       return
     }
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('import')
     try {
       const source = {
@@ -346,19 +366,19 @@ function ProjectScopedSkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('import'),
       })
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Artifact imported', { description: 'The exact provider revision is now stored in this Labby library.' })
       setImporting(false)
       await load(undefined, appliedQuery)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) {
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
         toast.error(getErrorMessage(cause, 'Unable to import this Artifact.'))
         await load(undefined, appliedQuery)
       }
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 

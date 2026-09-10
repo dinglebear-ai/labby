@@ -126,7 +126,15 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       )
     }
 
-    const result = await parseActionResponse<T, TError>(response, createError)
+    let result: T
+    try {
+      result = await parseActionResponse<T, TError>(response, createError)
+    } catch (error) {
+      if (issuedUnder !== getBrowserSessionContextIdentity()) {
+        throw new DOMException('Authority or project context changed', 'AbortError')
+      }
+      throw error
+    }
     if (issuedUnder !== getBrowserSessionContextIdentity()) {
       throw new DOMException('Authority or project context changed', 'AbortError')
     }

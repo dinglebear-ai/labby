@@ -73,6 +73,20 @@ test('performServiceAction rejects an unprojected response after the authenticat
   await assert.rejects(pending, isAbort)
 })
 
+test('performServiceAction rejects a stale non-success response before surfacing its service error', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  let release: (() => void) | undefined
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  globalThis.fetch = (async () => {
+    await blocked
+    return new Response(JSON.stringify({ kind: 'conflict', message: 'stale project error' }), { status: 409 })
+  }) as typeof fetch
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-b' })
+  release?.()
+  await assert.rejects(pending, isAbort)
+})
+
 test('performServiceAction treats gaining or losing the authority projection as a change', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
   let release = blockedFetch()
