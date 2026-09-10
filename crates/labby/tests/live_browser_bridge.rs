@@ -19,6 +19,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::client::IntoClientRequest 
 
 type Socket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn send(socket: &mut Socket, mut value: Value) {
     value["version"] = json!(1);
@@ -72,6 +73,7 @@ async fn failure(request: reqwest::RequestBuilder, status: reqwest::StatusCode, 
 
 #[tokio::test]
 async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http_dispatch() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let page_state = tempfile::tempdir().expect("owned page callback state");
     let page_record = page_state.path().join("page-record.txt");
     std::fs::write(&page_record, "before callback").unwrap();
@@ -381,6 +383,7 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
 
 #[tokio::test]
 async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let token = uuid::Uuid::new_v4().to_string();
     let guard = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_MCP_HTTP_TOKEN", &token)
