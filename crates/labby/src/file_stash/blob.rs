@@ -30,6 +30,10 @@ pub(crate) struct BlobStore {
     active_uploads: Arc<Mutex<HashSet<String>>>,
 }
 
+/// Bounded retries for releasing an abandoned reservation's metadata row
+/// before the janitor takes over. See [`BlobStore::release_reserved_metadata`].
+const RELEASE_ATTEMPTS: u32 = 5;
+
 impl BlobStore {
     pub(super) fn new(
         tmp: File,
@@ -113,14 +117,18 @@ impl BlobStore {
     ) -> Result<String> {
         let upload_id = reservation.upload_id.clone();
         if cancel.is_cancelled() {
-            self.store.cancel_upload(upload_id).await?;
+            // Nothing was written yet, so only the metadata reservation needs
+            // releasing. Never propagate a transient admission failure here:
+            // the caller is already gone, so an unreleased row would stay
+            // charged against the owner's quota until the janitor TTL.
+            self.release_reserved_metadata(&upload_id).await;
             return Err(FileStashStoreError::Unavailable);
         }
         let temp_name = format!("{}.part", upload_id);
         let mut file = match create_regular_exclusive(&self.tmp, &temp_name) {
             Ok(file) => tokio::fs::File::from_std(file),
             Err(error) => {
-                self.store.cancel_upload(upload_id).await?;
+                self.release_reserved_metadata(&upload_id).await;
                 return Err(error);
             }
         };
@@ -460,18 +468,44 @@ impl BlobStore {
         })
     }
 
+    /// Delete an abandoned reservation's metadata row, releasing its reserved
+    /// bytes and name claim. The store's admission queue is bounded and can
+    /// transiently reject work, so a single rejection must not strand the row
+    /// until the pending TTL; retry the release a bounded number of times
+    /// before falling back to scheduling the janitor.
+    async fn release_reserved_metadata(&self, upload_id: &str) {
+        const RELEASE_BACKOFF: Duration = Duration::from_millis(50);
+        let mut last = None;
+        for attempt in 0..RELEASE_ATTEMPTS {
+            match self.store.cancel_upload(upload_id.to_owned()).await {
+                Ok(()) => return,
+                // Only admission pressure is worth retrying; a durable failure
+                // repeats and belongs to the janitor.
+                Err(FileStashStoreError::Busy) => {
+                    last = Some(FileStashStoreError::Busy);
+                    if attempt + 1 < RELEASE_ATTEMPTS {
+                        tokio::time::sleep(RELEASE_BACKOFF).await;
+                    }
+                }
+                Err(error) => {
+                    last = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = last {
+            tracing::warn!(error_kind = %error, cleanup_stage = "metadata_cancel", "file stash upload cleanup deferred");
+        }
+        if let Err(schedule_error) = self.store.expire_upload_now(upload_id.to_owned()).await {
+            tracing::warn!(error_kind = %schedule_error, cleanup_stage = "schedule_retry", "file stash upload cleanup retry scheduling failed");
+        }
+    }
+
     async fn cleanup_failed_upload(&self, temp_name: &str, upload_id: &str) {
         let temp_removed = remove_regular_if_exists(&self.tmp, temp_name).is_ok();
         let blob_removed = remove_regular_if_exists(&self.blobs, upload_id).is_ok();
         if temp_removed && blob_removed {
-            if let Err(error) = self.store.cancel_upload(upload_id.to_owned()).await {
-                tracing::warn!(error_kind = %error, cleanup_stage = "metadata_cancel", "file stash upload cleanup deferred");
-                if let Err(schedule_error) =
-                    self.store.expire_upload_now(upload_id.to_owned()).await
-                {
-                    tracing::warn!(error_kind = %schedule_error, cleanup_stage = "schedule_retry", "file stash upload cleanup retry scheduling failed");
-                }
-            }
+            self.release_reserved_metadata(upload_id).await;
         } else {
             tracing::warn!(
                 temp_removed,
@@ -1098,7 +1132,7 @@ mod tests {
             .reserve_for_owner("owner", "a".into(), "a".into(), 2)
             .await
             .unwrap();
-        super::super::store::inject_cancel_failure(reservation.upload_id.clone());
+        super::super::store::inject_cancel_failure(reservation.upload_id.clone(), RELEASE_ATTEMPTS);
         assert!(matches!(
             blobs
                 .write_reserved(reservation, admission, &b"x"[..], CancellationToken::new())
@@ -1107,6 +1141,55 @@ mod tests {
         ));
         assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
         blobs.cleanup_expired().await.unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn transient_metadata_cancel_failure_releases_without_waiting_for_the_janitor() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), preferences())
+                .await;
+        let blobs = runtime.blob_store().await.unwrap();
+        let store = runtime.store().await.unwrap();
+        let (reservation, admission) = blobs
+            .reserve_for_owner("owner", "a".into(), "a".into(), 2)
+            .await
+            .unwrap();
+        // The store's admission queue is bounded and rejects work under
+        // pressure. One rejection must not park the owner's reserved bytes
+        // until the pending TTL, so the release retries before deferring.
+        super::super::store::inject_cancel_failure(reservation.upload_id.clone(), 1);
+        assert!(matches!(
+            blobs
+                .write_reserved(reservation, admission, &b"x"[..], CancellationToken::new())
+                .await,
+            Err(FileStashStoreError::LengthMismatch)
+        ));
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_upload_releases_its_reservation_before_any_transfer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), preferences())
+                .await;
+        let blobs = runtime.blob_store().await.unwrap();
+        let store = runtime.store().await.unwrap();
+        let (reservation, admission) = blobs
+            .reserve_for_owner("owner", "a".into(), "a".into(), 2)
+            .await
+            .unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            blobs
+                .write_reserved(reservation, admission, &b"xx"[..], cancel)
+                .await,
+            Err(FileStashStoreError::Unavailable)
+        ));
         assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
     }
 

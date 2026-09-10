@@ -397,8 +397,13 @@ impl FileStashStore {
             let mut injected = FAIL_CANCEL_ID
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if injected.as_deref() == Some(upload_id.as_str()) {
-                *injected = None;
+            if let Some((id, remaining)) = injected.as_mut()
+                && id == upload_id.as_str()
+            {
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    *injected = None;
+                }
                 return Err(FileStashStoreError::Busy);
             }
         }
@@ -631,14 +636,17 @@ impl FileStashStore {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<String>>> =
+static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<(String, u32)>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+/// Reject the next `times` cancel attempts for `upload_id` with `Busy`. The
+/// caller retries admission failures, so a test that needs the janitor
+/// fallback must exhaust every attempt.
 #[cfg(all(test, target_os = "linux"))]
-pub(super) fn inject_cancel_failure(upload_id: String) {
+pub(super) fn inject_cancel_failure(upload_id: String, times: u32) {
     *FAIL_CANCEL_ID
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(upload_id);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((upload_id, times.max(1)));
 }
 
 fn unix_now() -> i64 {
