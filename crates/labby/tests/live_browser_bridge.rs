@@ -133,6 +133,14 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     let heartbeat = receive(&mut socket).await;
     assert_eq!(heartbeat["type"], "acknowledged");
     assert_eq!(heartbeat["received"], "heartbeat");
+    send(
+        &mut socket,
+        json!({"type":"pairing_status","pairing_id":"missing-pairing"}),
+    )
+    .await;
+    let missing_pairing = receive(&mut socket).await;
+    assert_eq!(missing_pairing["type"], "error");
+    assert_eq!(missing_pairing["kind"], "pairing_not_pending");
     let signing = SigningKey::from_bytes(&[41; 32]);
     send(
         &mut socket,

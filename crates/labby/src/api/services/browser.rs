@@ -211,30 +211,38 @@ async fn run_socket(
                 )
             }
             BrowserMessage::PairingStatus { pairing_id } => {
-                let pairing = bridge
-                    .store()
-                    .pairing(&pairing_id)
-                    .await?
-                    .ok_or(labby_browser::BrowserError::NotFound)?;
-                let pairing_fingerprint = pairing.pairing_fingerprint();
-                match (pairing.status, pairing.browser_id) {
-                    (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
-                        request_id,
-                        BrowserMessage::PairingApproved { browser_id },
-                    ),
-                    (PairingStatus::Pending, None) => BrowserEnvelope::new(
-                        request_id,
-                        BrowserMessage::PairingPending {
-                            pairing_id: pairing.id,
-                            expires_at: pairing.expires_at,
-                            pairing_fingerprint,
-                        },
-                    ),
-                    (status, _) => BrowserEnvelope::new(
+                let pairing = bridge.store().pairing(&pairing_id).await?;
+                match pairing {
+                    Some(pairing) => {
+                        let pairing_fingerprint = pairing.pairing_fingerprint();
+                        match (pairing.status, pairing.browser_id) {
+                            (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
+                                request_id,
+                                BrowserMessage::PairingApproved { browser_id },
+                            ),
+                            (PairingStatus::Pending, None) => BrowserEnvelope::new(
+                                request_id,
+                                BrowserMessage::PairingPending {
+                                    pairing_id: pairing.id,
+                                    expires_at: pairing.expires_at,
+                                    pairing_fingerprint,
+                                },
+                            ),
+                            (status, _) => BrowserEnvelope::new(
+                                request_id,
+                                BrowserMessage::Error {
+                                    kind: "pairing_not_pending".to_string(),
+                                    message: format!("pairing request is {status:?}")
+                                        .to_lowercase(),
+                                },
+                            ),
+                        }
+                    }
+                    None => BrowserEnvelope::new(
                         request_id,
                         BrowserMessage::Error {
                             kind: "pairing_not_pending".to_string(),
-                            message: format!("pairing request is {status:?}").to_lowercase(),
+                            message: "pairing request is unavailable".to_string(),
                         },
                     ),
                 }
