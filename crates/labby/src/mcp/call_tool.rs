@@ -2812,7 +2812,7 @@ fn classify_widget_callback_candidates(
         route,
     }
     .into();
-    if resolved.tool.destructive {
+    if resolved.tool.destructive && !upstream_tool_is_app_only(&resolved.tool.tool) {
         return Some(WidgetCallbackGate::Destructive { resolved });
     }
 
@@ -2821,6 +2821,48 @@ fn classify_widget_callback_candidates(
         requires_scope_check,
     })
 }
+
+/// True when an upstream tool declares itself callable only by its MCP App
+/// (`_meta.ui.visibility` lists `app` and not `model`).
+///
+/// Such tools are never advertised to the model — not in `list_tools`, not
+/// through Code Mode — so the only caller that can reach them is the app the
+/// user is driving, and the upstream already authorizes that caller with its
+/// own per-session credential. The destructive-confirmation gate exists to
+/// interpose a human between the model and a side-effecting call; on this
+/// path the human *is* the caller, and the widget callback has no elicitation
+/// channel with which to answer the prompt. Gating it does not add a control,
+/// it only turns the app's fallback transport into a dead end (see #207 and
+/// the connexin `write_connexin_input` case).
+///
+/// Tools that also list `model` keep the gate: those are reachable by the
+/// model and the confirmation is meaningful there.
+fn upstream_tool_is_app_only(tool: &rmcp::model::Tool) -> bool {
+    let Some(meta) = tool.meta.as_ref() else {
+        return false;
+    };
+    let Some(visibility) = meta
+        .0
+        .get("ui")
+        .and_then(|ui| ui.get("visibility"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let mut app = false;
+    for entry in visibility {
+        match entry.as_str() {
+            Some("app") => app = true,
+            Some("model") => return false,
+            _ => {}
+        }
+    }
+    app
+}
+
+#[cfg(test)]
+#[path = "call_tool/widget_callback_gate_tests.rs"]
+mod widget_callback_gate_tests;
 
 #[cfg(all(test, feature = "skills"))]
 #[path = "call_tool/skill_library_callback_tests.rs"]
