@@ -103,8 +103,15 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
 // runs under `--test-threads=2`. `DispatchFn` is a bare fn pointer and cannot
 // capture per-test state, so isolation comes from giving each test its own
 // static plus its own dispatch fn rather than from locking or serialization.
+//
+// The same race then resurfaced between the two MRTR tests, which shared
+// `DESTRUCTIVE_DISPATCH_COUNT_MRTR` and its dispatch fn: CI hit `left 1
+// right 0` on the cross-session test's final assertion. Hence the third
+// counter below. Adding a destructive-dispatch test means adding a counter
+// and a dispatch fn for it, never reusing an existing pair.
 static DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION: AtomicUsize = AtomicUsize::new(0);
 static DESTRUCTIVE_DISPATCH_COUNT_MRTR: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTIVE_DISPATCH_COUNT_CROSS_SESSION: AtomicUsize = AtomicUsize::new(0);
 
 const DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
     name: "danger.delete",
@@ -138,6 +145,16 @@ fn destructive_counting_dispatch_mrtr(
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
     Box::pin(async {
         DESTRUCTIVE_DISPATCH_COUNT_MRTR.fetch_add(1, Ordering::SeqCst);
+        Ok(serde_json::json!({"ok": true}))
+    })
+}
+
+fn destructive_counting_dispatch_cross_session(
+    _action: String,
+    _params: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+    Box::pin(async {
+        DESTRUCTIVE_DISPATCH_COUNT_CROSS_SESSION.fetch_add(1, Ordering::SeqCst);
         Ok(serde_json::json!({"ok": true}))
     })
 }
@@ -1068,15 +1085,15 @@ async fn destructive_builtin_uses_single_use_bound_mrtr_elicitation() {
 
 #[tokio::test]
 async fn destructive_confirmation_cannot_cross_mcp_sessions_and_is_burned() {
-    DESTRUCTIVE_DISPATCH_COUNT_MRTR.store(0, Ordering::SeqCst);
+    DESTRUCTIVE_DISPATCH_COUNT_CROSS_SESSION.store(0, Ordering::SeqCst);
     let first_server = test_server(
-        destructive_test_registry(destructive_counting_dispatch_mrtr),
+        destructive_test_registry(destructive_counting_dispatch_cross_session),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Info,
     );
     let mut second_server = test_server(
-        destructive_test_registry(destructive_counting_dispatch_mrtr),
+        destructive_test_registry(destructive_counting_dispatch_cross_session),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Info,
@@ -1138,7 +1155,10 @@ async fn destructive_confirmation_cannot_cross_mcp_sessions_and_is_burned() {
         panic!("burned retry must be denied");
     };
     assert_eq!(burned.is_error, Some(true));
-    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        DESTRUCTIVE_DISPATCH_COUNT_CROSS_SESSION.load(Ordering::SeqCst),
+        0
+    );
 }
 
 #[test]
