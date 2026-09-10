@@ -2103,6 +2103,27 @@ async fn cold_http_upstream(
     (server, upstream)
 }
 
+/// An upstream that accepts the connection and then refuses the MCP handshake.
+///
+/// Deliberately not `fixture_http_upstream`'s closed port: a connect to a
+/// closed port is refused instantly on Unix but sits in SYN retransmit on
+/// Windows, so that upstream can end a run either as a genuine failure or as
+/// still in flight. Tests that assert the *failure* arm specifically — as the
+/// negative cache must, since only a real failure may be suppressed — need a
+/// fixture that fails the same way on every platform. Accepting the connection
+/// and answering 500 does that.
+async fn refusing_http_upstream(name: &str) -> (wiremock::MockServer, UpstreamConfig) {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let mut upstream = fixture_http_upstream(name);
+    upstream.url = Some(format!("{}/mcp", server.uri()));
+    (server, upstream)
+}
+
 /// A socket that accepts and never answers, so a connect stalls until its
 /// discovery timeout (far beyond any budget used here).
 async fn stalled_http_upstream(name: &str) -> UpstreamConfig {
@@ -2599,11 +2620,11 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let cache_path = cache_dir.path().join("codemode-catalog.json");
 
-    let dead = fixture_http_upstream("dead");
+    let (dead_server, dead) = refusing_http_upstream("dead").await;
     let (server, healthy) =
         cold_http_upstream("healthy", OneShotHttpResponder::new("ping", Duration::ZERO)).await;
     let (manager, _pool) =
-        one_shot_manager_at(vec![dead, healthy], 4_000, cache_path.clone()).await;
+        one_shot_manager_at(vec![dead.clone(), healthy], 4_000, cache_path.clone()).await;
 
     let first = manager
         .code_mode_catalog_tools_cached(None, None)
@@ -2621,10 +2642,7 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
     // second run must reach neither the network nor the dead upstream.
     let cache = catalog_cache::CatalogCache::load_from(&cache_path);
     assert!(
-        cache.probe_suppressed(
-            "dead",
-            &catalog_cache::fingerprint(&fixture_http_upstream("dead"))
-        ),
+        cache.probe_suppressed("dead", &catalog_cache::fingerprint(&dead)),
         "a failed probe must leave a negative entry"
     );
 
@@ -2643,6 +2661,7 @@ async fn a_failed_probe_is_suppressed_on_the_next_one_shot_run() {
         "a suppressed upstream must be reported, not silently dropped: {logs}"
     );
     drop(server);
+    drop(dead_server);
 }
 
 /// Suppression must never be the reason a catalog comes back empty.
@@ -2651,7 +2670,7 @@ async fn an_entirely_suppressed_fleet_is_an_error_not_an_empty_catalog() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let cache_path = cache_dir.path().join("codemode-catalog.json");
 
-    let dead = fixture_http_upstream("dead");
+    let (dead_server, dead) = refusing_http_upstream("dead").await;
     let (manager, _pool) = one_shot_manager_at(vec![dead], 4_000, cache_path.clone()).await;
 
     manager
@@ -2668,4 +2687,5 @@ async fn an_entirely_suppressed_fleet_is_an_error_not_an_empty_catalog() {
         message.contains("suppressed") && message.contains("dead"),
         "the error must name the suppressed upstream: {message}"
     );
+    drop(dead_server);
 }
