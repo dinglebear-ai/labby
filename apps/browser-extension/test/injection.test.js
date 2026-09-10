@@ -105,6 +105,55 @@ for (const [label, raw] of Object.entries(catalogs)) {
   });
 }
 
+test("the injected probe drops cyclic schemas before the Chrome boundary", async () => {
+  const probe = inject(probeWebMcp);
+  const cyclic = {};
+  cyclic.self = cyclic;
+
+  await withModelContext({getTools: async () => [tool({name: "bad", inputSchema: cyclic}), tool({name: "good"})]}, async () => {
+    const observed = await probe();
+    assert.deepEqual(observed.tools.map((entry) => entry.name), ["good"]);
+  });
+});
+
+test("the injected invocation rejects cyclic results before the Chrome boundary", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const modelContext = {
+    getTools: async () => [tool({name: "safe"})],
+    executeTool: async () => {
+      const cyclic = {};
+      cyclic.self = cyclic;
+      return cyclic;
+    }
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    const expectedCatalog = stableStringify(normalizeTools(observed.tools));
+    const result = await invoke("safe", {}, "cyclic-result", expectedCatalog, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "result_too_large");
+  });
+});
+
+test("the injected invocation rejects oversized string results before parsing", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const modelContext = {
+    getTools: async () => [tool({name: "safe"})],
+    executeTool: async () => "x".repeat(131_073)
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    const expectedCatalog = stableStringify(normalizeTools(observed.tools));
+    const result = await invoke("safe", {}, "oversized-result", expectedCatalog, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "result_too_large");
+  });
+});
+
 test("a catalog that changed after observation is still rejected", async () => {
   const invoke = inject(invokeWebMcp);
   const modelContext = {

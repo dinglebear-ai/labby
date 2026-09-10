@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
@@ -16,6 +16,7 @@ const POLL_PATH: &str = "/auth/desktop/poll";
 const REDEEM_PATH: &str = "/auth/desktop/redeem";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_FLOW_DURATION: Duration = Duration::from_secs(5 * 60);
+const MAX_AUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 enum PollResult {
@@ -47,7 +48,7 @@ struct StartRequest<'a> {
     return_to: Option<&'a str>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct StartResponse {
     authorization_url: String,
     poll_token: String,
@@ -60,7 +61,7 @@ struct PollRequest<'a> {
     poll_token: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct PollResponse {
     ready: bool,
     expires_at: i64,
@@ -151,6 +152,36 @@ fn poll_ready(
     }
 }
 
+async fn decode_json_bounded<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    context: &str,
+) -> Result<T, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_AUTH_RESPONSE_BYTES as u64)
+    {
+        return Err(format!("Labby returned an oversized {context}"));
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(MAX_AUTH_RESPONSE_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Labby returned an invalid {context}: {error}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_AUTH_RESPONSE_BYTES {
+            return Err(format!("Labby returned an oversized {context}"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("Labby returned an invalid {context}: {error}"))
+}
+
 async fn post_start(
     client: &reqwest::Client,
     origin: &str,
@@ -170,10 +201,7 @@ async fn post_start(
     if response.status() != reqwest::StatusCode::CREATED {
         return Err(format!("Labby rejected sign-in ({})", response.status()));
     }
-    let response: StartResponse = response
-        .json()
-        .await
-        .map_err(|error| format!("Labby returned an invalid sign-in response: {error}"))?;
+    let response: StartResponse = decode_json_bounded(response, "sign-in response").await?;
     if response.poll_token.is_empty() || response.redeem_code.is_empty() {
         return Err("Labby returned an incomplete sign-in response".to_owned());
     }
@@ -214,10 +242,7 @@ async fn post_poll(
     ) {
         return Err(format!("Labby could not complete sign-in ({status})"));
     }
-    let response: PollResponse = response
-        .json()
-        .await
-        .map_err(|error| format!("Labby returned an invalid sign-in status: {error}"))?;
+    let response: PollResponse = decode_json_bounded(response, "sign-in status").await?;
     poll_ready(status, &response, now).map(|ready| {
         if ready {
             PollResult::Ready
@@ -676,6 +701,34 @@ setTimeout(() => {{
     }
 
     #[test]
+    fn start_response_body_is_bounded_without_content_length() {
+        let (origin, request) = mock_once(|_| {
+            let body = "x".repeat(MAX_AUTH_RESPONSE_BYTES + 1);
+            format!(
+                "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}"
+            )
+        });
+        let error = run_async(post_start(&test_client(), &origin, "challenge", "/"))
+            .expect_err("oversized response must be rejected");
+        assert!(error.contains("oversized sign-in response"));
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn poll_response_body_is_bounded_without_content_length() {
+        let (origin, request) = mock_once(|_| {
+            let body = "x".repeat(MAX_AUTH_RESPONSE_BYTES + 1);
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}"
+            )
+        });
+        let error = run_async(post_poll(&test_client(), &origin, "poll", 1_000))
+            .expect_err("oversized response must be rejected");
+        assert!(error.contains("oversized sign-in status"));
+        request.join().unwrap();
+    }
+
+    #[test]
     fn default_poll_cadence_leaves_room_in_the_server_rate_budget() {
         assert!(POLL_INTERVAL >= Duration::from_secs(2));
     }
@@ -777,161 +830,4 @@ setTimeout(() => {{
             let (origin, request) = mock_once(move |_| {
                 let body = serde_json::json!({"ready": ready, "expires_at": 2_000}).to_string();
                 format!(
-                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-            });
-            assert_eq!(
-                run_async(post_poll(&test_client(), &origin, "poll-secret", 1_000)).unwrap(),
-                if expected {
-                    PollResult::Ready
-                } else {
-                    PollResult::RetryAfter(POLL_INTERVAL)
-                }
-            );
-            let request = request.join().unwrap();
-            assert!(request.starts_with("POST /auth/desktop/poll HTTP/1.1\r\n"));
-            assert!(request.contains("\"poll_token\":\"poll-secret\""));
-        }
-    }
-
-    #[test]
-    fn mock_poll_rejects_inconsistent_or_expired_response() {
-        for (status, ready, expires_at) in
-            [(200, false, 2_000), (202, true, 2_000), (202, false, 999)]
-        {
-            let (origin, request) = mock_once(move |_| {
-                let body =
-                    serde_json::json!({"ready": ready, "expires_at": expires_at}).to_string();
-                format!(
-                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-            });
-            assert!(run_async(post_poll(&test_client(), &origin, "poll", 1_000)).is_err());
-            request.join().unwrap();
-        }
-    }
-
-    #[test]
-    fn a_new_flow_invalidates_the_previous_generation() {
-        let state = DesktopAuthState::default();
-        let first = state.begin();
-        assert!(state.is_current(first));
-        let second = state.begin();
-        assert!(!state.is_current(first));
-        assert!(state.is_current(second));
-    }
-
-    #[test]
-    fn redeem_is_same_origin_cookie_fetch_and_requires_no_content() {
-        let response = StartResponse {
-            authorization_url: "https://labby.example.com/auth/desktop/authorize?state=s".into(),
-            poll_token: "poll".into(),
-            redeem_code: "code\"</script>".into(),
-            expires_at: i64::MAX,
-        };
-        let script = redeem_script(
-            &response,
-            "verifier",
-            "/settings/",
-            "https://labby.example.com",
-            7,
-        );
-        assert!(script.contains("fetch('/auth/desktop/redeem'"));
-        assert!(script.contains("credentials: 'include'"));
-        assert!(script.contains("response.status !== 204"));
-        assert!(script.contains("location.origin !== \"https://labby.example.com\""));
-        assert!(script.contains("location.replace(\"/settings/\")"));
-        assert!(!script.contains("code\"</script>"));
-    }
-
-    #[test]
-    fn progress_overlay_keeps_the_hosted_document_and_is_accessible() {
-        let script = status_script("Continue in browser", false, 3);
-        assert!(script.contains("aria-live"));
-        assert!(script.contains("role', 'status"));
-        assert!(!script.contains("document.body.innerHTML"));
-    }
-
-    #[test]
-    fn executed_status_script_creates_accessible_live_region() {
-        let result = execute_browser_script(&status_script("Continue in browser", false, 7), "");
-        assert_eq!(result["generation"], 7);
-        assert_eq!(result["status"]["role"], "status");
-        assert_eq!(result["status"]["live"], "polite");
-        assert_eq!(result["status"]["text"], "Continue in browser");
-    }
-
-    #[test]
-    fn executed_redeem_on_204_navigates_to_internal_return() {
-        let result = execute_browser_script(
-            &format!(
-                "{};\n{}",
-                status_script("Completing", false, 7),
-                redeem_test_script(7)
-            ),
-            "",
-        );
-        assert_eq!(result["fetchCalls"], 1);
-        assert_eq!(result["navigations"], serde_json::json!(["/settings/"]));
-    }
-
-    #[test]
-    fn executed_redeem_failures_show_error_without_navigation() {
-        for prelude in [
-            "global.fetch = async () => { result.fetchCalls += 1; return {status: 500}; };",
-            "global.fetch = async () => { result.fetchCalls += 1; throw new Error('offline'); };",
-        ] {
-            let result = execute_browser_script(
-                &format!(
-                    "{};\n{}",
-                    status_script("Completing", false, 7),
-                    redeem_test_script(7)
-                ),
-                prelude,
-            );
-            assert_eq!(result["fetchCalls"], 1);
-            assert_eq!(result["navigations"], serde_json::json!([]));
-            assert_eq!(result["status"]["role"], "alert");
-            assert!(
-                result["status"]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Sign-in failed")
-            );
-        }
-    }
-
-    #[test]
-    fn stale_generation_and_wrong_origin_never_execute_fetch() {
-        for prelude in [
-            "window.__labbyDesktopAuthGeneration = 8;",
-            "window.__labbyDesktopAuthGeneration = 7; location.origin = 'https://attacker.invalid';",
-        ] {
-            let result = execute_browser_script(&redeem_test_script(7), prelude);
-            assert_eq!(result["fetchCalls"], 0);
-            assert_eq!(result["navigations"], serde_json::json!([]));
-        }
-    }
-
-    #[test]
-    fn replacement_attempt_suppresses_stale_completion_after_fetch() {
-        let result = execute_browser_script(
-            &redeem_test_script(7),
-            r#"
-window.__labbyDesktopAuthGeneration = 7;
-global.fetch = () => {
-  result.fetchCalls += 1;
-  return new Promise(resolve => {
-    setTimeout(() => { window.__labbyDesktopAuthGeneration = 8; }, 0);
-    setTimeout(() => resolve({status: 204}), 5);
-  });
-};
-"#,
-        );
-        assert_eq!(result["fetchCalls"], 1);
-        assert_eq!(result["generation"], 8);
-        assert_eq!(result["navigations"], serde_json::json!([]));
-    }
-}
+                    "HTTP/1.1 {status} Test\r\ncontent-type: applica

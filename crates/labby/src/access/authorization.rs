@@ -99,6 +99,7 @@ pub(super) fn depot_delegation_authority(
     identity: &VerifiedIdentity,
     project_id: &str,
     selected_team_id: Option<&str>,
+    permission: Permission,
 ) -> AccessStoreResult<DepotDelegationAuthoritySnapshot> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
@@ -135,6 +136,9 @@ pub(super) fn depot_delegation_authority(
         select_project_membership_in_transaction(&transaction, identity, project_id)
             .map_err(collapse_denial)?
     };
+    if !selected.role.permissions().contains(&permission) {
+        return Err(AccessStoreError::NotAuthorized);
+    }
     let (authority_schema, global_revision, organization_policy, project_policy, project_membership) = transaction
         .query_row(
             "SELECT m.schema_version,m.global_revision,o.policy_epoch,p.project_policy_epoch,pe.epoch
@@ -316,12 +320,14 @@ pub(super) fn authorize_library_in_transaction(
             } else {
                 "SELECT tm.team_id, tm.role
                  FROM team_memberships tm
+                 JOIN groups g
+                   ON g.organization_id=tm.organization_id AND g.group_id=tm.team_id
                  JOIN team_project_assignments assignment
                    ON assignment.organization_id=tm.organization_id
                   AND assignment.team_id=tm.team_id
                  WHERE tm.organization_id=?1 AND tm.principal_id=?2
-                   AND tm.status='active' AND assignment.status='active'
-                   AND assignment.project_id=?3
+                   AND tm.status='active' AND g.status='active'
+                   AND assignment.status='active' AND assignment.project_id=?3
                  ORDER BY tm.team_id"
             })
             .map_err(map_sqlite_error)?;
@@ -566,7 +572,12 @@ mod tests {
         assert_eq!(library.project_id, "other-project");
 
         let delegated = store
-            .depot_delegation_authority(owner, "other-project".to_owned(), None)
+            .depot_delegation_authority(
+                owner,
+                "other-project".to_owned(),
+                None,
+                Permission::AssetUse,
+            )
             .await
             .unwrap();
         assert!(delegated.platform_administrator);
@@ -653,17 +664,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_persisted_vocabulary_remains_typed() {
-        let (_directory, store, owner) = fixture().await;
+    async fn delegation_snapshot_revalidates_the_requested_permission() {
+        let (_directory, store, _owner) = fixture().await;
+        let member = identity("delegation-member-subject");
         store
             .execute_test_statement(
-                "UPDATE project_loadouts SET loadout_name='bad
-name'
-                 WHERE project_id='member-project';",
+                "INSERT INTO principals VALUES
+                   ('delegation-member','bootstrap-local','user','active','Delegation member',3,3);
+                 INSERT INTO principal_links VALUES
+                   ('delegation-member-link','delegation-member','external','https://accounts.google.com','delegation-member-subject',NULL,'active',1,1,3,3);
+                 INSERT INTO project_memberships VALUES
+                   ('delegation-member-project','bootstrap-local','member-project','delegation-member','admin','active','bootstrap-owner',3,3);",
             )
             .await
             .unwrap();
-        let result = decision(&store, owner, "member-project", Permission::ProjectRead).await;
-        assert!(matches!(result, Err(AccessStoreError::MalformedVocabulary)));
+
+        store
+            .depot_delegation_authority(
+                member.clone(),
+                "member-project".to_owned(),
+                None,
+                Permission::AssetUse,
+            )
+            .await
+            .unwrap();
+
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='viewer', updated_at=4
+                 WHERE membership_id='delegation-member-project';",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .depot_delegation_authority(
+                    member,
+                    "member-project".to_owned(),
+                    None,
+                    Permission::AssetUse,
+                )
+                .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
     }
-}
+
+    #[tokio::test]
+    async fn suspended_teams_do_not_contribute_library_authority() {
+        let (_directory, store, _owner) = fixture().await;
+        let member = identity("library-member-subject");
+        store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES
+                   ('library-member','bootstrap-local','user','active','Library member',3,3);
+                 INSERT INTO principal_links VALUES
+                   ('library-member-link','library-member','external','https://accounts.google.com','library-member-subject',NULL,'active',1,1,3,3);
+                 INSERT INTO project_memberships VALUES
+                   ('library-member-project','bootstrap-local','member-project','library-member','member','active','bootstrap-owner',3,3);
+                 INSERT INTO groups VALUES
+                   ('library-team','bootstrap-local','team','Library team','active',1,1,'bootstrap-owner',3,3,NULL);
+                 INSERT INTO team_memberships VALUES
+                   ('library-team-member','bootstrap-local','library-team','library-member','admin','active',1,'bootstrap-owner',3,3,NULL);
+                 INSERT INTO team_project_assignments VALUES
+                   ('library-team-project','bootstrap-local','library-team','member-project','member','active',1,'bootstrap-owner',3,3,NULL);",
+            )
+            .await
+            .unwrap();
+
+        let active = store
+            .authorize_skill_library(
+                member.clone(),
+                "member-project".to_owned(),
+                Permission::AssetUse,
+            )
+            .await
+            .unwrap();
+        assert_eq!(act

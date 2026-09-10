@@ -37,7 +37,7 @@ impl StdioDiagnostics {
 }
 
 pub(super) struct StdioConnectError {
-    message: String,
+    error: anyhow::Error,
     diagnostics: String,
     /// The child closed its stdout (transport EOF) before the connection was
     /// established. Such a failure says nothing about lifecycle compatibility.
@@ -45,23 +45,28 @@ pub(super) struct StdioConnectError {
 }
 
 impl StdioConnectError {
-    pub(super) fn without_diagnostics(error: impl std::fmt::Display) -> Self {
+    pub(super) fn without_diagnostics<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         Self {
-            message: error.to_string(),
+            error: anyhow::Error::new(error),
             diagnostics: String::new(),
             child_exited: false,
         }
     }
 
-    pub(super) async fn with_diagnostics(
-        error: impl std::fmt::Display,
+    pub(super) async fn with_diagnostics<E>(
+        error: E,
         diagnostics: &StdioDiagnostics,
         child_exited: bool,
-    ) -> Self {
-        let message = error.to_string();
+    ) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let diagnostics = diagnostics.snapshot().await;
         Self {
-            message,
+            error: anyhow::Error::new(error),
             diagnostics,
             child_exited,
         }
@@ -72,30 +77,37 @@ impl StdioConnectError {
         self.child_exited
     }
 
-    /// The MCP-level failure on its own, with the child's stderr excluded.
+    /// The typed MCP-level failure on its own, with the child's stderr excluded.
     ///
     /// Lifecycle-compatibility classification must read this and never
     /// [`Self::diagnostics_with_error`]: the stderr tail is the child's own log
     /// output, and an ordinary server log line ("Error: Method not found") is
     /// not the peer rejecting `server/discover`. Matching protocol vocabulary
-    /// against log noise downgrades healthy upstreams and respawns them.
-    /// Operator-facing text, cache-poison repair, and logs still use the full
-    /// diagnostics.
+    /// against log noise downgrades healthy upstreams and respawns them. Keeping
+    /// the original error also preserves fail-closed protocol error codes for
+    /// compatibility logic. Operator-facing text, cache-poison repair, and logs
+    /// still use the full diagnostics.
     #[must_use]
-    pub(super) fn protocol_error(&self) -> &str {
-        &self.message
+    pub(super) const fn protocol_error(&self) -> &anyhow::Error {
+        &self.error
     }
 
     pub(super) fn diagnostics_with_error(&self) -> String {
+        let message = format!("{:#}", self.error);
         if self.diagnostics.trim().is_empty() {
-            self.message.clone()
+            message
         } else {
-            format!("{}\n{}", self.message, self.diagnostics)
+            format!("{message}\n{}", self.diagnostics)
         }
     }
 
     pub(super) fn into_anyhow(self) -> anyhow::Error {
-        anyhow::anyhow!(self.diagnostics_with_error())
+        if self.diagnostics.trim().is_empty() {
+            self.error
+        } else {
+            self.error
+                .context(format!("upstream stderr:\n{}", self.diagnostics))
+        }
     }
 }
 

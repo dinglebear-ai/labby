@@ -272,6 +272,11 @@ pub(crate) async fn dispatch(
             Ok(json!({"agent_id":definition.id,"state":state_name(state)}))
         }
         "agents.run" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
             let definition = load(&context, &params).await?;
             if definition.state != AgentState::Active {
                 return Err(denied());
@@ -298,87 +303,103 @@ pub(crate) async fn dispatch(
                 .map_err(|_| denied())?;
             let session_id = format!("{}-{now}", definition.id);
             let lease_expires_at = lease.expires_at_millis();
-            context
-                .store
-                .create_agent_session(
-                    session_id.clone(),
-                    definition.clone(),
-                    context.identity.safe_fingerprint(),
-                    epochs.fingerprint().as_str().to_owned(),
-                    i64::try_from(lease.expires_at_millis()).map_err(|_| internal())?,
-                    i64::try_from(now).map_err(|_| internal())?,
+            let authority_fingerprint = epochs.fingerprint().as_str().to_owned();
+            let run_context = context.clone();
+            let run_definition = definition.clone();
+            let run_session_id = session_id.clone();
+            let owned = tokio::spawn(async move {
+                run_context
+                    .store
+                    .create_agent_session(
+                        run_session_id.clone(),
+                        run_definition.clone(),
+                        run_context.identity.safe_fingerprint(),
+                        authority_fingerprint,
+                        i64::try_from(lease_expires_at).map_err(|_| internal())?,
+                        i64::try_from(now).map_err(|_| internal())?,
+                    )
+                    .await
+                    .map_err(map)?;
+                run_context
+                    .store
+                    .set_agent_session_status(
+                        run_definition.id.clone(),
+                        run_session_id.clone(),
+                        "admitted".into(),
+                        "running".into(),
+                    )
+                    .await
+                    .map_err(map)?;
+                let request = AgentExecutionRequest {
+                    definition: run_definition.clone(),
+                    session: AgentSessionBinding {
+                        session_id: run_session_id.clone(),
+                        agent_id: run_definition.id.clone(),
+                        agent_version: run_definition.revision.version,
+                        principal: PrincipalId::new(lease.binding().principal_id())
+                            .map_err(|_| invalid("principal"))?,
+                        owner: run_definition.owner.clone(),
+                        catalog_generation: run_definition.revision.catalog_generation.clone(),
+                        authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
+                        lease_expires_at: i64::try_from(lease_expires_at)
+                            .map_err(|_| internal())?,
+                    },
+                    lease,
+                    bounds: AgentResourceBounds {
+                        max_runtime_millis: 300_000,
+                        max_output_bytes: 16 * 1024 * 1024,
+                        max_external_effects: 1_000,
+                    },
+                };
+                let result = execute_agent(
+                    &LiveExecutionAuthority {
+                        store: run_context.store.clone(),
+                        identity: run_context.identity.clone(),
+                        owner: run_definition.owner.clone(),
+                        definition: run_definition.clone(),
+                    },
+                    &DisabledExecutor,
+                    request,
+                    Cancellation::new(),
+                    now,
                 )
-                .await
-                .map_err(map)?;
-            context
-                .store
-                .set_agent_session_status(
-                    definition.id.clone(),
-                    session_id.clone(),
-                    "admitted".into(),
-                    "running".into(),
-                )
-                .await
-                .map_err(map)?;
-            let request = AgentExecutionRequest {
-                definition: definition.clone(),
-                session: AgentSessionBinding {
-                    session_id: session_id.clone(),
-                    agent_id: definition.id.clone(),
-                    agent_version: definition.revision.version,
-                    // The runtime rejects a session whose principal or epoch fingerprint
-                    // differs from the lease binding; both come from the lease itself.
-                    principal: PrincipalId::new(lease.binding().principal_id())
-                        .map_err(|_| invalid("principal"))?,
-                    owner: definition.owner.clone(),
-                    catalog_generation: definition.revision.catalog_generation.clone(),
-                    authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
-                    lease_expires_at: i64::try_from(lease_expires_at).map_err(|_| internal())?,
-                },
-                lease,
-                bounds: AgentResourceBounds {
-                    max_runtime_millis: 300_000,
-                    max_output_bytes: 16 * 1024 * 1024,
-                    max_external_effects: 1_000,
-                },
-            };
-            let result = execute_agent(
-                &LiveExecutionAuthority {
-                    store: context.store.clone(),
-                    identity: context.identity.clone(),
-                    owner: definition.owner.clone(),
-                    definition: definition.clone(),
-                },
-                &DisabledExecutor,
-                request,
-                Cancellation::new(),
-                now,
-            )
-            .await;
-            let next = match result {
-                Ok(_) => "completed",
-                Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
-                Err(AgentRuntimeError::Cancelled) => "cancelled",
-                Err(_) => "failed",
-            };
-            context
-                .store
-                .set_agent_session_status(
-                    definition.id.clone(),
-                    session_id.clone(),
-                    "running".into(),
-                    next.into(),
-                )
-                .await
-                .map_err(map)?;
-            match result {
-                Ok(output) => Ok(
-                    json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":session_id,"status":next,"output_digest":output.digest,"authority_expires_at":lease_expires_at}),
-                ),
-                Err(error) => Err(map_agent_runtime_error(&error)),
-            }
+                .await;
+                let next = match result {
+                    Ok(_) => "completed",
+                    Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
+                    Err(AgentRuntimeError::Cancelled) => "cancelled",
+                    Err(_) => "failed",
+                };
+                run_context
+                    .store
+                    .set_agent_session_status(
+                        run_definition.id.clone(),
+                        run_session_id.clone(),
+                        "running".into(),
+                        next.into(),
+                    )
+                    .await
+                    .map_err(map)?;
+                match result {
+                    Ok(output) => Ok(json!({
+                        "agent_id":run_definition.id,
+                        "agent_version":run_definition.revision.version,
+                        "session_id":run_session_id,
+                        "status":next,
+                        "output_digest":output.digest,
+                        "authority_expires_at":lease_expires_at
+                    })),
+                    Err(error) => Err(map_agent_runtime_error(&error)),
+                }
+            });
+            owned.await.map_err(|_| internal())?
         }
         "agents.session.status" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
             let definition = load(&context, &params).await?;
             authorize(
                 &context,
@@ -786,373 +807,4 @@ pub(crate) mod test_support {
         identity: &VerifiedIdentity,
     ) -> AgentDispatchContext {
         AgentDispatchContext {
-            store: store.clone(),
-            identity: identity.clone(),
-            ceiling: AuthorityCeiling::trusted_local(),
-        }
-    }
-
-    pub(crate) fn digest(fill: char) -> String {
-        format!(
-            "sha256:{}",
-            std::iter::repeat_n(fill, 64).collect::<String>()
-        )
-    }
-
-    /// Valid `agents.create` parameters for a personal Agent owned by the
-    /// bootstrap principal.
-    pub(crate) fn agent_params(agent_id: &str) -> Value {
-        json!({
-            "agent_id": agent_id,
-            "owner_kind": "personal",
-            "owner_id": BOOTSTRAP_PRINCIPAL,
-            "content_digest": digest('a'),
-            "repository_digest": digest('b'),
-            "image_digest": digest('c'),
-            "harness_digest": digest('d'),
-            "loadout_digest": digest('e'),
-            "catalog_generation": "catalog-1",
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::test_support::{
-        BOOTSTRAP_PRINCIPAL, agent_context, agent_params, browser, digest, fixture,
-    };
-    use super::*;
-    use labby_runtime::authority::AuthorityLeaseError;
-
-    fn envelope(error: &ToolError) -> Value {
-        serde_json::from_str(&error.to_string()).unwrap()
-    }
-
-    #[test]
-    fn every_action_has_a_capability_and_none_is_platform_scoped() {
-        for spec in ACTIONS {
-            let capability = required_capability(spec.name);
-            assert!(capability.is_some(), "{}", spec.name);
-            assert_eq!(
-                spec.requires_admin,
-                capability.is_some_and(Capability::is_platform),
-                "{}",
-                spec.name
-            );
-        }
-        assert_eq!(required_capability("agents.bogus"), None);
-    }
-
-    #[test]
-    fn catalog_is_complete_and_unbound_denies() {
-        assert_eq!(ACTIONS.len(), 8);
-        let create = ACTIONS
-            .iter()
-            .find(|action| action.name == "agents.create")
-            .unwrap();
-        for required in [
-            "content_digest",
-            "repository_digest",
-            "image_digest",
-            "harness_digest",
-            "loadout_digest",
-            "catalog_generation",
-        ] {
-            assert!(
-                create
-                    .params
-                    .iter()
-                    .any(|param| param.name == required && param.required)
-            );
-        }
-        assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
-    }
-    #[tokio::test]
-    async fn context_free_is_fail_closed() {
-        assert_eq!(
-            dispatch_unbound("agents.list", json!({}))
-                .await
-                .unwrap_err()
-                .kind(),
-            "forbidden"
-        );
-    }
-
-    #[test]
-    fn runtime_errors_keep_their_typed_reason() {
-        let table = [
-            (AgentRuntimeError::Revoked, "authority_changed"),
-            (
-                AgentRuntimeError::Lease(AuthorityLeaseError::Expired),
-                "authority_changed",
-            ),
-            (
-                AgentRuntimeError::Lease(AuthorityLeaseError::AuthorityChanged),
-                "authority_changed",
-            ),
-            (
-                AgentRuntimeError::AuthorityUnavailable,
-                "source_unavailable",
-            ),
-            (AgentRuntimeError::ResourceLimit, "quota_exceeded"),
-            (AgentRuntimeError::Cancelled, "cancelled"),
-            (AgentRuntimeError::ExecutorFailed, "service_unavailable"),
-            (AgentRuntimeError::PinnedDefinitionMismatch, "forbidden"),
-            (AgentRuntimeError::BindingMismatch, "forbidden"),
-            (AgentRuntimeError::NotDispatchable, "forbidden"),
-            (AgentRuntimeError::InvalidDefinition, "internal_error"),
-            (AgentRuntimeError::InvalidBounds, "internal_error"),
-        ];
-        for (error, kind) in table {
-            let mapped = map_agent_runtime_error(&error);
-            assert_eq!(mapped.kind(), kind, "{error:?}");
-        }
-        assert_eq!(
-            envelope(&map_agent_runtime_error(&AgentRuntimeError::Revoked))["message"],
-            "authority changed during execution"
-        );
-        assert_eq!(
-            envelope(&map_agent_runtime_error(&AgentRuntimeError::ExecutorFailed))["message"],
-            "Agent execution backend is not configured"
-        );
-    }
-
-    #[test]
-    fn installation_owner_is_rejected_as_invalid_input() {
-        let error = owner(&json!({"owner_kind":"installation","owner_id":"local"})).unwrap_err();
-        assert_eq!(error.kind(), "invalid_param");
-        assert_eq!(envelope(&error)["param"], "owner_kind");
-        assert!(owner(&json!({"owner_kind":"personal","owner_id":"p1"})).is_ok());
-    }
-
-    #[test]
-    fn caller_supplied_epochs_are_refused_and_server_assigned() {
-        for key in ["authority_epoch", "publication_epoch"] {
-            let mut params = agent_params("a1");
-            params[key] = json!(99);
-            let error = reject_server_assigned(&params).unwrap_err();
-            assert_eq!(error.kind(), "invalid_param");
-            assert_eq!(envelope(&error)["param"], key);
-        }
-        let created = definition(&agent_params("a1"), None).unwrap();
-        assert_eq!((created.authority_epoch, created.publication_epoch), (1, 1));
-        let mut prior = created.clone();
-        prior.state = AgentState::Suspended;
-        prior.authority_epoch = 7;
-        let next = definition(&json!({"agent_id":"a1"}), Some(&prior)).unwrap();
-        assert_eq!(next.revision.version, 2);
-        assert_eq!(
-            next.state,
-            AgentState::Suspended,
-            "update must not reactivate"
-        );
-        assert_eq!((next.authority_epoch, next.publication_epoch), (7, 2));
-    }
-
-    #[tokio::test]
-    async fn team_derived_project_agents_are_listed_and_disappear_on_suspension() {
-        let (_dir, store, owner) = fixture().await;
-        store.execute_test_statement(
-            "INSERT INTO principals VALUES('team-reader','bootstrap-local','user','active',NULL,2,2);
-             INSERT INTO principal_links VALUES('team-reader-link','team-reader','external','https://accounts.google.com','team-reader',NULL,'active',1,1,2,2);"
-        ).await.unwrap();
-        store
-            .add_team_member(
-                crate::access::AddTeamMemberInput::new(
-                    owner.clone(),
-                    "bootstrap-initial-team",
-                    "team-reader",
-                    crate::access::TeamRole::Member,
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        store
-            .assign_team_project(
-                crate::access::AssignTeamProjectInput::new(
-                    owner.clone(),
-                    "bootstrap-initial-team",
-                    "bootstrap-default",
-                    crate::access::ProjectRole::Viewer,
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        let mut params = agent_params("project-agent");
-        params["owner_kind"] = json!("project");
-        params["owner_id"] = json!("bootstrap-default");
-        dispatch(agent_context(&store, &owner), "agents.create", params)
-            .await
-            .unwrap();
-        let reader = agent_context(&store, &browser("team-reader"));
-        let listed = dispatch(reader.clone(), "agents.list", json!({}))
-            .await
-            .unwrap();
-        assert_eq!(listed["agents"].as_array().unwrap().len(), 1);
-        assert_eq!(listed["agents"][0]["agent_id"], "project-agent");
-        store
-            .suspend_team(owner, "bootstrap-initial-team".into())
-            .await
-            .unwrap();
-        let listed = dispatch(reader, "agents.list", json!({})).await.unwrap();
-        assert!(listed["agents"].as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn live_execution_rejects_a_suspended_pinned_definition() {
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(
-            context.clone(),
-            "agents.create",
-            agent_params("running-agent"),
-        )
-        .await
-        .unwrap();
-        let definition = store
-            .get_agent_definition("running-agent".into())
-            .await
-            .unwrap()
-            .unwrap();
-        let authority = LiveExecutionAuthority {
-            store: store.clone(),
-            identity: owner,
-            owner: definition.owner.clone(),
-            definition,
-        };
-        assert!(authority.current_epochs().await.is_ok());
-        dispatch(
-            context,
-            "agents.suspend",
-            json!({"agent_id":"running-agent"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            authority.current_epochs().await.unwrap_err(),
-            AgentRuntimeError::Revoked
-        );
-    }
-
-    #[tokio::test]
-    async fn create_refuses_caller_epochs_and_nothing_is_stored() {
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        let mut params = agent_params("epoch-agent");
-        params["authority_epoch"] = json!(42);
-        let error = dispatch(context.clone(), "agents.create", params)
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind(), "invalid_param");
-        assert!(
-            store
-                .get_agent_definition("epoch-agent".into())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        let created = dispatch(context, "agents.create", agent_params("epoch-agent"))
-            .await
-            .unwrap();
-        assert_eq!(created["authority_epoch"], 1);
-        assert_eq!(created["publication_epoch"], 1);
-    }
-
-    #[tokio::test]
-    async fn update_preserves_suspended_state() {
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(
-            context.clone(),
-            "agents.create",
-            agent_params("suspended-agent"),
-        )
-        .await
-        .unwrap();
-        dispatch(
-            context.clone(),
-            "agents.suspend",
-            json!({"agent_id":"suspended-agent"}),
-        )
-        .await
-        .unwrap();
-        let updated = dispatch(
-            context.clone(),
-            "agents.update",
-            json!({"agent_id":"suspended-agent","content_digest":digest('f')}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(updated["version"], 2);
-        assert_eq!(updated["state"], "suspended");
-        let stored = store
-            .get_agent_definition("suspended-agent".into())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.state, AgentState::Suspended);
-        assert_eq!(stored.revision.content_digest, digest('f'));
-        // A suspended Agent still cannot run after the revision bump.
-        let error = dispatch(context, "agents.run", json!({"agent_id":"suspended-agent"}))
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind(), "forbidden");
-    }
-
-    #[tokio::test]
-    async fn taken_identifier_is_indistinguishable_from_denial() {
-        let (_dir, store, owner) = fixture().await;
-        let context = agent_context(&store, &owner);
-        dispatch(context.clone(), "agents.create", agent_params("taken"))
-            .await
-            .unwrap();
-        let duplicate = dispatch(context.clone(), "agents.create", agent_params("taken"))
-            .await
-            .unwrap_err();
-        // A stranger with no principal is denied for a free identifier.
-        let stranger = agent_context(&store, &browser("stranger-subject"));
-        let unauthorized = dispatch(stranger, "agents.create", agent_params("free"))
-            .await
-            .unwrap_err();
-        assert_eq!(duplicate.kind(), "forbidden");
-        assert_eq!(envelope(&duplicate), envelope(&unauthorized));
-        assert_eq!(envelope(&duplicate)["message"], "access denied");
-        // The lost compare-and-set from the store maps the same way.
-        let raced = map_put(AccessStoreError::IntegrityViolation {
-            check: "agent_version",
-        });
-        assert_eq!(envelope(&raced), envelope(&duplicate));
-        assert_eq!(
-            map_put(AccessStoreError::Corrupt).kind(),
-            "service_unavailable"
-        );
-        // The original record is untouched.
-        let stored = store
-            .get_agent_definition("taken".into())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.revision.version, 1);
-        assert_eq!(
-            stored.owner.to_owned(),
-            OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap())
-        );
-    }
-
-    #[tokio::test]
-    async fn store_denials_collapse_to_one_non_enumerating_error() {
-        for error in [
-            AccessStoreError::NotAuthorized,
-            AccessStoreError::IdentityUnavailable,
-            AccessStoreError::ProjectAccessUnavailable,
-            AccessStoreError::TeamUnavailable,
-        ] {
-            let mapped = map(error);
-            assert_eq!(mapped.kind(), "forbidden");
-            assert_eq!(envelope(&mapped)["message"], "access denied");
-        }
-        assert_eq!(map(AccessStoreError::Locked).kind(), "service_unavailable");
-    }
-}
+            store: store

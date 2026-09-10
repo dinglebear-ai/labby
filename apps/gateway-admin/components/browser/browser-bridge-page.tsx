@@ -23,6 +23,7 @@ type BrowserData = {
   browsers: BrowserIdentity[]
   pairings: BrowserPairing[]
   sessions: BrowserSession[]
+  sessionNextCursor: string | null
 }
 
 const POLL_INTERVAL_MS = 5_000
@@ -36,7 +37,9 @@ function pageLabel(session: BrowserSession): string {
 }
 
 export function BrowserBridgePage() {
-  const [data, setData] = React.useState<BrowserData>({ browsers: [], pairings: [], sessions: [] })
+  const [data, setData] = React.useState<BrowserData>({ browsers: [], pairings: [], sessions: [], sessionNextCursor: null })
+  const [sessionCursors, setSessionCursors] = React.useState<Array<string | undefined>>([undefined])
+  const sessionCursor = sessionCursors.at(-1)
   const [loading, setLoading] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string>()
@@ -49,11 +52,11 @@ export function BrowserBridgePage() {
     const generation = ++loadGeneration.current
     if (announce) setRefreshing(true)
     try {
-      const [browsers, pairings, sessions] = await Promise.all([
-        browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal),
+      const [browsers, pairings, sessionPage] = await Promise.all([
+        browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal, sessionCursor),
       ])
       if (generation === loadGeneration.current) {
-        setData({ browsers, pairings, sessions })
+        setData({ browsers, pairings, sessions: sessionPage.sessions, sessionNextCursor: sessionPage.next_cursor })
         setError(undefined)
       }
       return true
@@ -67,7 +70,7 @@ export function BrowserBridgePage() {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [sessionCursor])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -99,6 +102,19 @@ export function BrowserBridgePage() {
     }
   }
 
+  function showPreviousSessionPage() {
+    if (sessionCursors.length <= 1) return
+    setLoading(true)
+    setSessionCursors((current) => current.slice(0, -1))
+  }
+
+  function showNextSessionPage() {
+    if (!data.sessionNextCursor) return
+    setLoading(true)
+    const cursor = data.sessionNextCursor
+    setSessionCursors((current) => [...current, cursor])
+  }
+
   const activeSessions = data.sessions.filter((session) => session.status === 'active')
   const connected = data.browsers.filter((browser) => browser.connected && !browser.revoked_at)
   const enabled = activeSessions.filter((session) => session.enabled)
@@ -114,8 +130,8 @@ export function BrowserBridgePage() {
         stats={[
           { label: 'Paired', value: data.browsers.filter((browser) => !browser.revoked_at).length, icon: <MonitorSmartphone size={14} /> },
           { label: 'Pending', value: data.pairings.length, icon: <ShieldCheck size={14} />, tone: data.pairings.length ? 'var(--aurora-warn)' : undefined },
-          { label: 'Pages', value: activeSessions.length, icon: <Globe2 size={14} /> },
-          { label: 'Enabled', value: enabled.length, icon: <Wrench size={14} />, tone: enabled.length ? 'var(--aurora-success)' : undefined },
+          { label: 'Pages shown', value: activeSessions.length, icon: <Globe2 size={14} /> },
+          { label: 'Enabled shown', value: enabled.length, icon: <Wrench size={14} />, tone: enabled.length ? 'var(--aurora-success)' : undefined },
         ]}
       />
 
@@ -171,7 +187,7 @@ export function BrowserBridgePage() {
 
       <section aria-labelledby="browser-pages-heading">
         <div className="mb-3"><h2 id="browser-pages-heading" className="font-display text-[19px] leading-[1.12] font-bold text-aurora-text-primary">Observed pages and tools</h2><p className="mt-1 text-sm text-aurora-text-muted">Discovery is metadata-only. Execution remains disabled until you enable the exact active document below.</p></div>
-        {loading ? <LoadingPanel label="Loading observed browser pages" /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title="No WebMCP pages observed" description="Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan." /> : (
+        {loading ? <LoadingPanel label="Loading observed browser pages" /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title={sessionCursors.length > 1 || data.sessionNextCursor ? "No active WebMCP pages on this session page" : "No WebMCP pages observed"} description={sessionCursors.length > 1 || data.sessionNextCursor ? "Use the session-page controls to review older or newer observed pages." : "Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan."} /> : (
           <div className="grid gap-3">
             {activeSessions.map((session) => (
               <Card key={session.id}>
@@ -189,6 +205,13 @@ export function BrowserBridgePage() {
             ))}
           </div>
         )}
+        {!loading && (sessionCursors.length > 1 || data.sessionNextCursor) ? (
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <Button variant="outline" size="sm" onClick={showPreviousSessionPage} disabled={sessionCursors.length <= 1 || Boolean(busyKey)}>Previous pages</Button>
+            <span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Session page {sessionCursors.length}</span>
+            <Button variant="outline" size="sm" onClick={showNextSessionPage} disabled={!data.sessionNextCursor || Boolean(busyKey)}>Next pages</Button>
+          </div>
+        ) : null}
       </section>
 
       <ActionConfirmationDialog open={Boolean(revokeTarget)} title="Revoke browser identity?" description={`This disconnects ${revokeTarget?.display_name ?? 'the browser'}, disables its active page sessions, and requires a new pairing before it can reconnect.`} confirmLabel="Revoke browser" busy={Boolean(busyKey)} onOpenChange={(open) => { if (!open) setRevokeTarget(undefined) }} onConfirm={() => { if (!revokeTarget) return; const target = revokeTarget; void mutate(`revoke:${target.id}`, () => browserApi.revoke(target.id), `${target.display_name} revoked`).then((succeeded) => { if (succeeded) setRevokeTarget(undefined) }) }} />

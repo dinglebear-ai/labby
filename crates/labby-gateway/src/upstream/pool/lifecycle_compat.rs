@@ -281,6 +281,23 @@ mod tests {
     }
 
     #[test]
+    fn stdio_error_wrapper_preserves_typed_modern_protocol_rejection() {
+        let wrapped = super::super::stdio_stderr::StdioConnectError::without_diagnostics(
+            ClientInitializeError::JsonRpcError(rmcp::model::ErrorData::new(
+                ErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
+                "unsupported protocol version",
+                None,
+            )),
+        );
+
+        assert_eq!(
+            compatibility_retry(wrapped.protocol_error(), LifecycleTransport::Stdio),
+            None,
+            "stdio diagnostics must not erase typed fail-closed protocol errors"
+        );
+    }
+
+    #[test]
     fn does_not_downgrade_operational_or_authentication_failures() {
         for message in [
             "HTTP 401 Unauthorized",
