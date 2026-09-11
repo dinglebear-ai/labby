@@ -220,7 +220,6 @@ pub(crate) fn public_descriptors() -> Vec<RouteDescriptor> {
             "browser",
             RouteAuth::Public,
         )
-        .host_validated()
         .side_effects("browser-extension WebSocket upgrade"),
     ]
 }

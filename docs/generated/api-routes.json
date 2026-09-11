@@ -626,7 +626,7 @@
     "bootstrap_proof": false,
     "session_cookie_allowed": false,
     "csrf_required": false,
-    "host_validation": true,
+    "host_validation": false,
     "master_only": false,
     "cache_posture": "route-defined",
     "failure_disclosure": "standard",
