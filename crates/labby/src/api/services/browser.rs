@@ -370,7 +370,7 @@ async fn run_socket(
         };
         let request_id = envelope.request_id.clone();
         let reply = match envelope.message {
-            (BrowserMessage::PairingRequest { .. } | BrowserMessage::PairingStatus { .. })
+            BrowserMessage::PairingRequest { .. } | BrowserMessage::PairingStatus { .. }
                 if protocol_version == LEGACY_PROTOCOL_VERSION =>
             {
                 protocol_upgrade_required(protocol_version, request_id)
