@@ -40,7 +40,15 @@ toml = "1.1"
 thiserror = "2"
 sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
-schemars = "1.2"
+# Exact-pinned per the repository contract (deps-exact-pinned), and pinned to
+# the version in the ROOT Cargo.lock rather than the newest release. The
+# contract checker scans every manifest in the repository but resolves versions
+# against the root lockfile only, so a second workspace must agree with the
+# product on the crates it covers. That is also the right outcome on its own
+# terms: schemars generates the committed JSON Schemas, and two workspaces
+# generating them at different versions would produce different bytes.
+# Declared ahead of M1, which is the milestone that actually uses it.
+schemars = "=1.2.1"
 insta = { version = "1", features = ["json"] }
 
 # Mirrors [workspace.lints.clippy] in the root Cargo.toml. The two tables are
