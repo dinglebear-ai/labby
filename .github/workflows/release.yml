@@ -316,9 +316,22 @@ jobs:
       - name: Resolve N-1 release
         id: previous
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_ARCHIVE: ${{ matrix.archive }}
         run: |
           set -euo pipefail
-          previous=$(git tag --sort=-version:refname --merged HEAD 'v*' | grep -Fxv "$GITHUB_REF_NAME" | head -1)
+          # N-1 is the newest published release carrying this leg's installer
+          # assets, not the newest tag: a release that fails qualification
+          # stays an asset-less draft, and installing it would strand every
+          # later release. The resolver fails closed when nothing qualifies.
+          releases="$RUNNER_TEMP/labby-releases.json"
+          merged="$RUNNER_TEMP/labby-merged-tags.txt"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$releases"
+          git tag --merged HEAD 'v*' >"$merged"
+          previous=$(python3 scripts/ci/resolve-n-minus-one-baseline.py \
+            --candidate "$GITHUB_REF_NAME" --releases "$releases" --merged-tags "$merged" \
+            --asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256")
           test -n "$previous"
           echo "tag=$previous" >> "$GITHUB_OUTPUT"
       - name: N-1 stateful upgrade and rollback qualification

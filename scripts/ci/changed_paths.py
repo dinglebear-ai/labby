@@ -108,6 +108,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/lifecycle-scripts.json",
             "scripts/ci/check-lifecycle-scripts.sh",
             "scripts/ci/test_release_hardening.py",
+            "scripts/ci/resolve-n-minus-one-baseline.py",
             "scripts/ci/check_node_toolchain_sync.py",
             "scripts/ci/js-advisory-policy.json",
             "scripts/ci/js_advisory_gate.py",
@@ -270,6 +271,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             in {
                 ".github/workflows/release.yml",
                 ".github/workflows/build-incus-image.yml",
+                "scripts/ci/resolve-n-minus-one-baseline.py",
             },
         ):
             result["release"] = True

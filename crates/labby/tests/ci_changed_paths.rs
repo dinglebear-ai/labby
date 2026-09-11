@@ -575,6 +575,7 @@ fn release_workflow_changes_enable_the_release_contract() {
     for path in [
         ".github/workflows/release.yml",
         ".github/workflows/build-incus-image.yml",
+        "scripts/ci/resolve-n-minus-one-baseline.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");

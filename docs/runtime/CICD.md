@@ -284,7 +284,12 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
    binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Compose,
-   Incus, and host-service deployment. Each adapter must install N-1 and seed
+   Incus, and host-service deployment. N-1 is the newest published
+   (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
+   candidate, merged into it, and carries the leg's archive and `.sha256`
+   sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
+   releases stayed drafts or never received assets are skipped; if no release
+   qualifies, the leg fails closed. Each adapter must install N-1 and seed
    real application-schema rows in registered OAuth clients, access security
    events, and upstream usage calls, plus representative files in gateway
    configuration and credentials, snippets, imported skills, and artifact

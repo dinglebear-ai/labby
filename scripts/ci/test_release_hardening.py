@@ -8,12 +8,41 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LINUX_ASSETS = ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-x86_64-unknown-linux-gnu.tar.gz.sha256")
+
+
+def release_row(tag: str, *, draft: bool = False, prerelease: bool = False,
+                assets: tuple[str, ...] = LINUX_ASSETS, state: str = "uploaded") -> dict:
+    return {
+        "tag_name": tag,
+        "draft": draft,
+        "prerelease": prerelease,
+        "assets": [{"name": name, "state": state} for name in assets],
+    }
+
+
+def resolve_baseline(releases: list, merged: list[str], candidate: str = "v1.16.1",
+                     assets: tuple[str, ...] = LINUX_ASSETS) -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "releases.json").write_text(json.dumps(releases))
+        (work / "merged.txt").write_text("\n".join(merged) + "\n")
+        command = [
+            sys.executable, str(ROOT / "scripts/ci/resolve-n-minus-one-baseline.py"),
+            "--candidate", candidate,
+            "--releases", str(work / "releases.json"),
+            "--merged-tags", str(work / "merged.txt"),
+        ]
+        for asset in assets:
+            command += ["--asset", asset]
+        return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
@@ -81,6 +110,70 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         for deployment in ("unix", "windows", "macos", "incus", "host-service"):
             self.assertIn(f"deployment: {deployment}", workflow)
         self.assertNotIn("deployment: compose", workflow)
+
+    def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = release["jobs"]["upgrade-qualification"]["steps"]
+        previous = next(step for step in steps if step.get("id") == "previous")
+        run = previous["run"]
+        self.assertEqual("${{ matrix.archive }}", previous["env"]["REQUIRED_ARCHIVE"])
+        self.assertIn('gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases', run)
+        self.assertIn("git tag --merged HEAD", run)
+        self.assertIn("scripts/ci/resolve-n-minus-one-baseline.py", run)
+        self.assertIn('--asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256"', run)
+        # The newest tag is not a baseline: a failed release is an asset-less draft.
+        self.assertNotIn("head -1", run)
+        qualify = next(step for step in steps if step.get("name") == "N-1 stateful upgrade and rollback qualification")
+        self.assertIn("${{ steps.previous.outputs.tag }}", qualify["run"])
+
+    def test_n_minus_one_baseline_skips_drafts_and_releases_without_assets(self) -> None:
+        # Shape of dinglebear-ai/labby on 2026-09-11, as `gh api --paginate --slurp` pages.
+        releases = [
+            [
+                release_row("v1.16.0", draft=True, assets=()),
+                release_row("v1.15.1", draft=True, assets=()),
+                release_row("v1.14.1", draft=True, assets=()),
+                release_row("v1.14.1", draft=True, assets=()),
+                release_row("v1.13.3"),
+                release_row("labby-incus-latest"),
+            ],
+            [release_row("v1.13.2", draft=True), release_row("v1.13.1", assets=())],
+        ]
+        merged = ["v1.16.1", "v1.16.0", "v1.15.1", "v1.15.0", "v1.14.1", "v1.14.0", "v1.13.3", "v1.13.2", "v1.13.1"]
+        result = resolve_baseline(releases, merged)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("v1.13.3", result.stdout.strip())
+        self.assertIn("skip v1.16.0: draft", result.stderr)
+        self.assertIn("skip v1.15.0: no published release", result.stderr)
+
+    def test_n_minus_one_baseline_requires_an_older_merged_complete_stable_release(self) -> None:
+        releases = [
+            release_row("v1.17.0"),
+            release_row("v1.15.9"),
+            release_row("v1.15.0", prerelease=True),
+            release_row("v1.14.2", assets=LINUX_ASSETS[:1]),
+            release_row("v1.14.1", state="open"),
+            release_row("v1.10.0"),
+            release_row("v1.9.0"),
+        ]
+        merged = ["v1.17.0", "v1.16.1", "v1.15.0", "v1.14.2", "v1.14.1", "v1.10.0", "v1.9.0"]
+        result = resolve_baseline(releases, merged)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("v1.10.0", result.stdout.strip())
+        self.assertNotIn("v1.17.0", result.stderr)
+        self.assertNotIn("v1.15.9", result.stderr)
+        self.assertIn("skip v1.15.0: prerelease", result.stderr)
+        self.assertIn(f"skip v1.14.2: missing {LINUX_ASSETS[1]}", result.stderr)
+        self.assertIn("skip v1.14.1: missing", result.stderr)
+
+    def test_n_minus_one_baseline_fails_closed_without_a_qualifying_release(self) -> None:
+        darwin = ("lab-aarch64-apple-darwin.tar.gz", "lab-aarch64-apple-darwin.tar.gz.sha256")
+        result = resolve_baseline([release_row("v1.13.3")], ["v1.16.1", "v1.13.3"], assets=darwin)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("::error::No published release older than v1.16.1 carries lab-aarch64-apple-darwin.tar.gz", result.stderr)
+        self.assertNotEqual(0, resolve_baseline([], ["v1.16.1"]).returncode)
+        self.assertNotEqual(0, resolve_baseline([release_row("v1.13.3")], ["v1.13.3"], candidate="latest").returncode)
 
     def test_release_has_machine_readable_manifest_and_reconciler(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
