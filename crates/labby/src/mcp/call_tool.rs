@@ -2860,7 +2860,7 @@ fn upstream_tool_is_app_only(tool: &rmcp::model::Tool) -> bool {
     app
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gateway"))]
 #[path = "call_tool/widget_callback_gate_tests.rs"]
 mod widget_callback_gate_tests;
 
