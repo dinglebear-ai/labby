@@ -272,7 +272,7 @@ test('new snippet opens a guided intent-first builder with progressive disclosur
   const view = await renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
   try {
     const newSnippet = Array.from(view.container.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.trim() === 'New snippet',
+      (candidate) => candidate.textContent?.trim() === 'New Snippet',
     )
     assert.ok(newSnippet)
     await act(async () => newSnippet.dispatchEvent(new MouseEvent('click', { bubbles: true })))

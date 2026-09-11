@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { discoverKindPresentation } from '@/components/depot/discover-kind-presentation'
 import {
   AURORA_DISPLAY_2,
   AURORA_DISPLAY_NUMBER,
@@ -29,6 +30,19 @@ export function FoundationsSection() {
       </div>
 
       <div className="space-y-6 px-5 py-5">
+        <section aria-label="Artifact identity palette" className="space-y-3">
+          <p className={AURORA_MUTED_LABEL}>Artifact identity palette</p>
+          <p className="text-sm text-aurora-text-muted">Protocol orange identifies MCP and ACP. Warning gold remains reserved for guards and operational warnings.</p>
+          <div className="flex flex-wrap gap-3">
+            {['MCP', 'ACP', 'Skill', 'Agent', 'Prompt', 'Command', 'Hook', 'Plugin', 'Extension', 'Loadout', 'Snippet'].map(kind => {
+              const { icon: Icon, iconStyle, color } = discoverKindPresentation(kind)
+              return <div key={kind} className="flex items-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-strong p-3">
+                <span style={iconStyle} className="grid size-8 place-items-center rounded-[9px] border"><Icon aria-hidden="true" className="size-4" /></span>
+                <span style={{ color }} className="text-xs font-semibold">{kind}</span>
+              </div>
+            })}
+          </div>
+        </section>
         <section className="space-y-3">
           <p className={AURORA_MUTED_LABEL}>Color Tokens</p>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

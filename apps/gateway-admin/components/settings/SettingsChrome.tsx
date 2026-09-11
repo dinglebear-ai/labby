@@ -38,6 +38,7 @@ const CARD_HEADER_STYLE: CSSProperties = {
     '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
   background: 'var(--gw0-0_38)',
   fontSize: 10.5,
+  lineHeight: 'normal',
   fontWeight: 700,
   letterSpacing: '0.15em',
   textTransform: 'uppercase',
@@ -56,6 +57,7 @@ const ROW_STYLE: CSSProperties = {
 /** Row label: 13px/600 on primary text. */
 export const SETTINGS_LABEL_STYLE: CSSProperties = {
   fontSize: 13,
+  lineHeight: 'normal',
   fontWeight: 600,
   color: 'var(--aurora-text-primary)',
 }
@@ -101,6 +103,7 @@ export const SETTINGS_VALUE_STYLE: CSSProperties = {
   flexShrink: 0,
   fontFamily: 'inherit',
   fontSize: 11,
+  lineHeight: 'normal',
   color: 'var(--aurora-text-muted)',
 }
 
@@ -118,6 +121,7 @@ export function SettingsPageHeader({
           margin: 0,
           fontFamily: 'var(--font-display)',
           fontSize: 24,
+          lineHeight: 'normal',
           fontWeight: 800,
           color: 'var(--aurora-text-primary)',
         }}
@@ -125,7 +129,7 @@ export function SettingsPageHeader({
         {title}
       </h1>
       {description ? (
-        <p style={{ margin: '5px 0 0', fontSize: 12.5, color: 'var(--aurora-text-muted)' }}>
+        <p style={{ margin: '5px 0 0', fontSize: 12.5, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}>
           {description}
         </p>
       ) : null}
@@ -252,7 +256,7 @@ export function SettingsRow({
   return (
     <div style={ROW_STYLE}>
       {labelBlock}
-      {control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
+      {control ? <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{control}</div> : null}
       {children}
     </div>
   )
@@ -282,14 +286,16 @@ export function SettingsToggle({
   checked,
   onChange,
   disabled,
+  readOnly = false,
   id,
   label,
   describedBy,
   invalid,
 }: {
   checked: boolean
-  onChange: (checked: boolean) => void
+  onChange?: (checked: boolean) => void
   disabled?: boolean
+  readOnly?: boolean
   id?: string
   label: string
   describedBy?: string
@@ -304,8 +310,9 @@ export function SettingsToggle({
       aria-label={label}
       aria-describedby={describedBy}
       aria-invalid={invalid || undefined}
+      aria-readonly={readOnly || undefined}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      onClick={readOnly ? undefined : () => onChange?.(!checked)}
       style={{
         flexShrink: 0,
         width: 34,
@@ -313,7 +320,7 @@ export function SettingsToggle({
         borderRadius: 999,
         border: 'none',
         position: 'relative',
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        cursor: disabled ? 'not-allowed' : readOnly ? 'default' : 'pointer',
         opacity: disabled ? 0.5 : 1,
         transition: 'background 160ms',
         background: checked

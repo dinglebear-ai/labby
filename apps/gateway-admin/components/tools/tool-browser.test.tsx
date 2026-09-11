@@ -95,12 +95,17 @@ test('tool browser renders hostile catalog text literally and clears it on sessi
     await waitFor(() => assert.match(view.container.textContent ?? '', /github\.hostile/))
     const result = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('github.hostile'))
     assert.ok(result)
+    assert.equal(result.getAttribute('aria-pressed'), 'false')
     await act(async () => { result.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
     await waitFor(() => assert.match(view.container.textContent ?? '', /alert\(2\)/))
+    assert.equal(result.getAttribute('aria-pressed'), 'true')
+    view.container.querySelector<HTMLInputElement>('input')?.focus()
+    assert.equal(result.getAttribute('aria-pressed'), 'true')
     assert.equal(view.container.querySelectorAll('script').length, 0)
 
     await act(async () => { await loadBrowserSession() })
     assert.doesNotMatch(view.container.textContent ?? '', /github\.hostile|alert\(2\)/)
+    assert.equal(view.container.querySelector('[aria-pressed="true"]'), null)
   } finally {
     await view.unmount()
   }

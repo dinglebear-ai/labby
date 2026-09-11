@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { Loader2, Search, SlidersHorizontal } from 'lucide-react'
+import { Compass, Loader2, Plus, Search, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
@@ -26,6 +26,10 @@ import { DiscoverViewOptions, type DiscoveryDensity } from './discover-view-opti
 
 type LoadState = { failures?: string[]; loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 type View = 'cards' | 'list'
+
+export function discoveryCountLabel(count: number, exact: boolean, unavailable: boolean) {
+  return unavailable ? '—' : `${exact ? '' : '≥ '}${count.toLocaleString()}`
+}
 
 export function depotCoveragePulse(coverage?: string, error?: string) {
   if (error || coverage === 'all_failed') {
@@ -157,6 +161,9 @@ function SessionDepotPage() {
     importPending.current=true
     setImporting(true)
     try{
+      const artifactId=artifact.artifactId||artifact.id
+      const revisionId=artifact.currentRevisionId||artifact.currentRevision?.id
+      if(!artifactId||!revisionId)throw new Error('Depot did not provide an exact Artifact and revision identity.')
       const [connectionResult,libraryResult]=await Promise.all([
         controlPlaneAction<{connections?:Array<{id:string}>}>('artifacts','artifacts.list_connections'),
         controlPlaneAction<{library_version?:number}>('artifacts','artifacts.list',{limit:1}),
@@ -184,19 +191,19 @@ function SessionDepotPage() {
     : 'Some sources are still preparing search results or are unavailable. Retry to check again.'
 
   return <>
-    <AppHeader breadcrumbs={[{label:'Depot'},{label:'Discover'}]}/>
-    <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME}>
-      <ConsoleHero eyebrow="Depot · Bazaar" title="Discover" description="Explore artifacts across your connected registries, marketplaces, catalogs, and crawls." pulse={depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild variant="outline"><Link href="/create">Publish Artifact</Link></Button>}
+    <AppHeader icon={<Compass className="size-3.5" />} breadcrumbs={[{label:'Discover'}]}/>
+    <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-[14px]`}>
+      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={depotCoveragePulse(state.coverage,state.error)} actions={<Button data-visible-label asChild variant="outline" className="h-9 rounded-[10px] px-4 font-[650] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create"><Plus aria-hidden="true" className="size-3.5" />Publish Artifact</Link></Button>}
         stats={[
-          { label: activeQuery ? 'Matches' : 'Indexed', value: state.total === undefined ? '—' : `${state.exact ? '' : '≥ '}${resultCount.toLocaleString()}` },
-          { label: 'Sources', value: providers.filter(provider => provider.enabled).length },
+          { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined) },
+          { label: 'Sources', value: providers.filter(provider => provider.enabled).length, suffix: 'connected backends' },
           { label: 'Last crawl', value: <span title="Crawl timestamps are not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
           { label: 'Verified publishers', value: <span title="Publisher verification is not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
         ]}>
-        <div className="space-y-[var(--space-5)]">
-          <div className="relative mt-5">
-            <Search aria-hidden="true" className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-accent-primary" />
-            <Input name="artifact-search" aria-label="Search Depot artifacts" className="h-11 pl-10 pr-14" value={query}
+        <div className="space-y-[var(--space-3)] px-6 py-3.5 sm:pl-[82px]">
+          <div className="flex min-w-0 items-center gap-[9px] rounded-[12px] border border-aurora-border-strong bg-aurora-control-surface px-[13px] focus-within:ring-2 focus-within:ring-aurora-accent-primary">
+            <Search aria-hidden="true" className="size-4 shrink-0 text-aurora-accent-strong" />
+            <Input name="artifact-search" aria-label="Search Depot artifacts" className="h-10 min-w-0 flex-1 border-0 bg-transparent px-0 font-medium shadow-none focus-visible:ring-0" value={query}
               onChange={event => {
                 const next = event.target.value
                 invalidateContext(JSON.stringify([selectedProvider, kind, next.trim()]))
@@ -208,7 +215,7 @@ function SessionDepotPage() {
               }}
               placeholder="Search artifacts across your sources" />
             <Popover>
-              <PopoverTrigger asChild><Button variant="ghost" size="icon-sm" className="absolute right-1 top-1/2 -translate-y-1/2" aria-label="Kind and source filters"><SlidersHorizontal aria-hidden="true" className="size-4" /></Button></PopoverTrigger>
+              <PopoverTrigger asChild><Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Kind and source filters"><SlidersHorizontal aria-hidden="true" className="size-4" /></Button></PopoverTrigger>
               <PopoverContent align="end" aria-label="Kind and source filters" className="aurora-scrollbar max-h-[min(32rem,70svh)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto rounded-aurora-2 border-aurora-border-strong bg-aurora-panel-strong text-aurora-text-primary">
                 <fieldset className="space-y-2"><legend className="text-sm font-semibold">Artifact kind</legend>
                   <div className="flex flex-wrap gap-2">{['all', ...kinds].map(value => <Button key={value} size="sm" variant={kind === value ? 'secondary' : 'ghost'} aria-pressed={kind === value} onClick={() => { if (value !== kind) changeFilter('kind', value) }}>{value === 'all' ? 'All kinds' : value}</Button>)}</div>
@@ -259,5 +266,5 @@ function SessionDepotPage() {
 function ArtifactResults({artifacts,loading,incomplete,view,density,now,selectedKey,artifactHref}:{artifacts:FederatedArtifact[];loading:boolean;incomplete:boolean;view:View;density:DiscoveryDensity;now?:number;selectedKey?:string;artifactHref:(providerId?:string,id?:string)=>string}){
   if(loading&&!artifacts.length)return <div className="flex min-h-56 items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-subtle text-sm text-aurora-text-muted"><Loader2 className="mr-2 size-4 animate-spin"/>Searching Bazaar…</div>
   if(!artifacts.length)return <div className="flex min-h-56 items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-subtle text-sm text-aurora-text-muted">{incomplete?'Search results are not complete yet.':'No artifacts match this search.'}</div>
-  return <div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'space-y-2'}>{artifacts.map(artifact=><ArtifactCard key={artifactKey(artifact.providerId,artifact.artifactId)} artifact={artifact} compact={view==='list'} density={density} now={now} selected={selectedKey===artifactKey(artifact.providerId,artifact.artifactId)} href={artifactHref(artifact.providerId,artifact.artifactId)}/>)}</div>
+  return <div className={view==='cards'?'grid grid-cols-[repeat(auto-fill,minmax(min(100%,268px),1fr))] items-start gap-3':'space-y-2'}>{artifacts.map(artifact=><ArtifactCard key={artifactKey(artifact.providerId,artifact.artifactId)} artifact={artifact} compact={view==='list'} density={density} now={now} selected={selectedKey===artifactKey(artifact.providerId,artifact.artifactId)} href={artifactHref(artifact.providerId,artifact.artifactId)}/>)}</div>
 }

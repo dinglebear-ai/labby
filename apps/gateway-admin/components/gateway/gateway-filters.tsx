@@ -11,6 +11,7 @@ import {
   AURORA_MUTED_LABEL,
 } from '@/components/aurora/tokens'
 import { gatewayActionTone } from './gateway-theme'
+import { ActiveFilterStrip } from './active-filter-strip'
 import type {
   GatewaySourceFacet,
   GatewayStatusFacet,
@@ -141,22 +142,20 @@ export function GatewayFilters({
     ? search.length > 0 || toolHasNonSearchFilters
     : search.length > 0 || gatewayHasNonSearchFilters
 
-  const activeMobilePills = mode === 'tools'
-    ? [
-        ...toolFilters.gatewayIds
-          .map((gatewayId) => gatewayOptions.find((option) => option.value === gatewayId)?.label)
-          .filter(Boolean) as string[],
-        ...(toolFilters.exposure === 'all' ? [] : [EXPOSURE_OPTIONS.find((option) => option.value === toolFilters.exposure)?.label ?? toolFilters.exposure]),
-        ...toolFilters.source.map((value) => SOURCE_OPTIONS.find((option) => option.value === value)?.label ?? value),
-        ...toolFilters.transport.map((value) => TRANSPORT_OPTIONS.find((option) => option.value === value)?.label ?? value),
-      ]
-    : [
-        ...gatewayFilters.status.map((value) => GATEWAY_STATUS_OPTIONS.find((option) => option.value === value)?.label ?? value),
-        ...gatewayFilters.source.map((value) => SOURCE_OPTIONS.find((option) => option.value === value)?.label ?? value),
-        ...gatewayFilters.transport.map((value) => TRANSPORT_OPTIONS.find((option) => option.value === value)?.label ?? value),
-      ]
-
-  const activeFilterCount = activeMobilePills.length + (search.length > 0 ? 1 : 0)
+  const activeChips = [
+    ...(search ? [{ id: 'search', label: `Search: ${search}`, remove: () => onSearchChange('') }] : []),
+    ...(mode === 'gateways' ? [
+      ...gatewayFilters.status.map(value => ({ id: `status:${value}`, label: GATEWAY_STATUS_OPTIONS.find(option => option.value === value)?.label ?? value, remove: () => onGatewayFilterToggle('status', value) })),
+      ...gatewayFilters.source.map(value => ({ id: `source:${value}`, label: SOURCE_OPTIONS.find(option => option.value === value)?.label ?? value, remove: () => onGatewayFilterToggle('source', value) })),
+      ...gatewayFilters.transport.map(value => ({ id: `transport:${value}`, label: TRANSPORT_OPTIONS.find(option => option.value === value)?.label ?? value, remove: () => onGatewayFilterToggle('transport', value) })),
+    ] : [
+      ...toolFilters.gatewayIds.map(value => ({ id: `gateway:${value}`, label: gatewayOptions.find(option => option.value === value)?.label ?? value, remove: () => onToolFilterToggle('gatewayIds', value) })),
+      ...(toolFilters.exposure === 'all' ? [] : [{ id: 'exposure', label: EXPOSURE_OPTIONS.find(option => option.value === toolFilters.exposure)?.label ?? toolFilters.exposure, remove: () => onExposureChange('all') }]),
+      ...toolFilters.source.map(value => ({ id: `source:${value}`, label: SOURCE_OPTIONS.find(option => option.value === value)?.label ?? value, remove: () => onToolFilterToggle('source', value) })),
+      ...toolFilters.transport.map(value => ({ id: `transport:${value}`, label: TRANSPORT_OPTIONS.find(option => option.value === value)?.label ?? value, remove: () => onToolFilterToggle('transport', value) })),
+    ]),
+  ]
+  const activeFilterCount = activeChips.length
   const searchPlaceholder = mode === 'tools'
     ? 'Search tools, descriptions, or servers'
     : 'Search servers, commands, or endpoints'
@@ -301,22 +300,6 @@ export function GatewayFilters({
           </div>
         </div>
 
-        {activeMobilePills.length > 0 ? (
-          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-            {activeMobilePills.map((label) => (
-              <span
-                key={label}
-                className={cn(
-                  'inline-flex h-7 shrink-0 items-center rounded-aurora-1 border px-2.5 text-[10px] font-bold uppercase tracking-[0.12em]',
-                  filterPillTone(true),
-                )}
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        ) : null}
-
         {mobileSheetOpen ? (
           <div className={cn(AURORA_MEDIUM_PANEL, 'space-y-4 rounded-aurora-1 p-4')}>
             <div className="flex items-center justify-between gap-3">
@@ -412,6 +395,7 @@ export function GatewayFilters({
           </div>
         ) : null}
       </div>
+      <ActiveFilterStrip filters={activeChips} onClear={onClearFilters}/>
     </>
   )
 }

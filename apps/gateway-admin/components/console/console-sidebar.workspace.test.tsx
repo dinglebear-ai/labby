@@ -43,6 +43,9 @@ async function renderSidebar(snapshot: AuthoritySnapshot | undefined) {
     import('@/lib/testing/dom-test-utils.tsx'),
   ])
   document.body.replaceChildren()
+  // The console now opens on the compact icon rail to match the reference; this
+  // test exercises the expanded workspace switcher, so pin the persisted choice.
+  window.localStorage.setItem('labby-sidebar-collapsed-v2', '0')
   const view = await renderClient(
     <AppRouterContext.Provider value={router as never}>
       <PathnameContext.Provider value="/">

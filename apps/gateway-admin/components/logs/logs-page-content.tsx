@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Download, Loader2, Pause, Play, Search, TriangleAlert } from 'lucide-react'
+import { ChevronRight, Download, Loader2, Pause, Play, Search, Server, TriangleAlert, X } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
 import { AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { queryServerLogs } from '@/lib/api/server-logs-client'
 import type { ServerLogEntry } from '@/lib/types/traces'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -84,18 +85,22 @@ export function LogsPageContent() {
         <h1 className="mt-2 font-display text-3xl font-extrabold leading-none text-aurora-text-primary">Logs</h1>
       </section>
       <div className="flex h-[calc(100vh-14.25rem)] min-h-0 flex-col">
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-aurora-2 border border-aurora-border-strong bg-[rgba(3,12,18,0.94)] shadow-[var(--aurora-shadow-strong),inset_0_1px_0_rgba(255,255,255,0.04)]">
-        <form className="flex flex-wrap items-center gap-2 border-b border-aurora-border-default bg-aurora-panel-strong px-3 py-2" onSubmit={(event) => { event.preventDefault(); void load() }}>
-          <div className="relative min-w-64 flex-1 sm:max-w-80"><Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Filter log lines" className="h-8 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg pl-8 pr-3 font-mono text-xs outline-none focus:border-aurora-accent-primary" placeholder="Filter lines…"/></div>
+      <section aria-label="Log stream" className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-aurora-2 border border-aurora-border-default bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-strong">
+        <form className="flex flex-wrap items-center gap-2 border-b border-aurora-border-default bg-aurora-page-bg/35 px-3.5 py-[9px]" onSubmit={(event) => { event.preventDefault(); void load() }}>
+          <div className="relative min-w-[150px] flex-1 sm:max-w-80"><Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-aurora-text-muted"/><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Filter log lines" className="h-[30px] w-full rounded-[9px] border border-aurora-border-default bg-aurora-control-surface pl-[30px] pr-8 text-xs text-aurora-text-primary outline-none focus:border-aurora-accent-primary focus:ring-2 focus:ring-aurora-accent-primary/20" placeholder="Filter lines…"/>{query ? <button type="button" aria-label="Clear filter" title="Clear filter" onClick={() => setQuery('')} className="absolute right-1 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded text-aurora-text-muted hover:bg-aurora-hover-bg focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><X aria-hidden="true" className="size-3" /></button> : null}</div>
           <span className="hidden h-6 w-px bg-aurora-border-default sm:block" aria-hidden="true" />
           <span className="font-mono text-[9px] font-bold uppercase tracking-[.16em] text-aurora-text-muted">Source</span>
-          <label className="relative">
-            <select value={source} onChange={(event) => setSource(event.target.value)} aria-label="Log source" className="h-8 min-w-36 appearance-none rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg pl-3 pr-8 text-xs font-semibold text-aurora-text-primary outline-none focus:border-aurora-accent-primary">
-              <option value="ALL">Gateway (all)</option>
-              {sourceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3 -translate-y-1/2 text-aurora-text-muted" />
-          </label>
+          <Select value={source} onValueChange={setSource}>
+            <SelectTrigger aria-label="Log source" data-visible-label="1" className="data-[size=default]:h-[30px] max-w-[220px] gap-[7px] rounded-[9px] border-aurora-border-default bg-aurora-control-surface px-[11px] py-0 text-xs font-[650] text-aurora-text-primary hover:bg-aurora-hover-bg [&>svg]:size-[11px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start" sideOffset={1} className="max-h-80 w-[220px] rounded-xl border-aurora-border-default bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] text-aurora-text-primary shadow-aurora-strong">
+              {['ALL', ...new Set([...sourceOptions, ...(source === 'ALL' ? [] : [source])])].map((item) => <SelectItem key={item} value={item} textValue={item === 'ALL' ? 'Gateway (all)' : item} className="rounded-lg text-xs data-[state=checked]:bg-aurora-selected-bg data-[state=checked]:text-aurora-accent-strong">
+                <Server aria-hidden="true" className="size-[15px] text-aurora-accent-strong" />
+                <span className="truncate">{item === 'ALL' ? 'Gateway (all)' : item}</span>
+              </SelectItem>)}
+            </SelectContent>
+          </Select>
           <div className="flex rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg">{LEVELS.slice(1).map((item) => <button key={item} type="button" aria-pressed={level === item} className={cn('h-7 px-2 font-mono text-[9px] font-bold transition-colors first:rounded-l-md last:rounded-r-md', level === item ? 'bg-aurora-selected-bg text-aurora-accent-strong' : 'text-aurora-text-muted hover:text-aurora-text-primary')} onClick={() => setLevel(level === item ? 'ALL' : item)}><span className={cn('mr-1', item === 'ERROR' ? 'text-aurora-error' : item === 'WARN' ? 'text-aurora-warn' : item === 'INFO' ? 'text-aurora-accent-primary' : '')}>•</span>{item} {levelCounts[item]}</button>)}</div>
           <div className="ml-auto flex items-center gap-1.5">
             <Button variant="outline" size="sm" className="h-8" title={following ? 'Pause live tail' : 'Follow live tail'} onClick={() => setFollowing((value) => !value)}>{following ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}{following ? 'Pause' : 'Follow'}</Button>
@@ -104,19 +109,19 @@ export function LogsPageContent() {
           </div>
         </form>
         {error ? <div role="alert" className="flex items-center gap-2 border-b border-aurora-error/30 bg-aurora-error/10 px-3 py-2 font-mono text-xs text-aurora-error"><TriangleAlert className="size-4"/>{error}</div> : null}
-        <div className="grid min-w-[760px] grid-cols-[18px_90px_54px_130px_minmax(300px,1fr)] gap-2 border-b border-aurora-border-default bg-aurora-page-bg px-2 py-2 font-mono text-[9px] font-bold uppercase tracking-[.16em] text-aurora-text-muted"><span/><span>Time</span><span>Level</span><span>Source</span><span>Message</span></div>
         <div ref={streamRef} role="log" aria-live={following ? 'polite' : 'off'} className="aurora-scrollbar min-h-0 flex-1 overflow-auto font-mono text-[11px] leading-5 sm:text-xs">
+          <div className="sticky top-0 z-10 grid min-w-[760px] grid-cols-[14px_90px_54px_130px_minmax(300px,1fr)] gap-2 border-b border-aurora-border-default bg-aurora-page-bg px-2 py-2 font-mono text-[9px] font-bold uppercase tracking-[.16em] text-aurora-text-muted"><span/><span>Time</span><span>Level</span><span>Source</span><span>Message</span></div>
           {streamEntries.map((entry, index) => {
             const lineKey = `${entry.timestamp}-${index}`
             const expanded = expandedLine === lineKey
             const levelTone = entry.level === 'ERROR' ? 'text-aurora-error' : entry.level === 'WARN' ? 'text-aurora-warn' : entry.level === 'DEBUG' ? 'text-aurora-text-muted' : 'text-aurora-success'
             const rowTone = entry.level === 'ERROR' ? 'hover:border-aurora-error/80 hover:bg-aurora-error/5' : entry.level === 'INFO' ? 'hover:border-aurora-success/80 hover:bg-aurora-success/5' : 'hover:border-aurora-accent-primary/60 hover:bg-aurora-hover-bg/50'
             return <div key={lineKey} data-zebra-row="1" className={cn('group border-l-2 border-transparent', rowTone)}>
-              <button type="button" onClick={() => setExpandedLine(expanded ? null : lineKey)} className="grid w-full min-w-[760px] grid-cols-[14px_90px_54px_130px_minmax(300px,1fr)] items-baseline gap-2 px-2 py-px text-left">
+              <button type="button" aria-expanded={expanded} onClick={() => setExpandedLine(expanded ? null : lineKey)} className="grid w-full min-w-[760px] grid-cols-[14px_90px_54px_130px_minmax(300px,1fr)] items-baseline gap-2 px-2 py-px text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary">
                 <ChevronRight className={cn('size-3 self-center text-aurora-text-muted transition-transform', expanded && 'rotate-90')}/>
                 <span className="text-aurora-text-muted">{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString([], { hour12: false }) : '--:--:--'}</span>
                 <span className={cn('font-bold', levelTone)}>{(entry.level ?? '—').padEnd(5)}</span>
-                <span className={cn('truncate', entry.level === 'ERROR' ? 'text-aurora-error' : index % 3 === 0 ? 'text-aurora-success' : 'text-aurora-accent-strong')} title={entry.service ?? entry.target ?? ''}>{entry.service ?? entry.target ?? '—'}</span>
+                <span className="truncate text-aurora-accent-strong" title={entry.service ?? entry.target ?? ''}>{entry.service ?? entry.target ?? '—'}</span>
                 <span className="whitespace-pre-wrap break-words text-aurora-text-primary">{entry.message ?? entry.action ?? '—'}</span>
               </button>
               {expanded ? <pre className="mx-4 mb-2 overflow-auto border-l border-aurora-border-strong bg-aurora-page-bg/70 px-4 py-2 text-[11px] leading-5 text-aurora-text-secondary"><code>{JSON.stringify(entry.fields, null, 2)}</code></pre> : null}

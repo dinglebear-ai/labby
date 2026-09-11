@@ -30,12 +30,15 @@ const demoArtifacts = [
   ['Snippet', 'gateway-reconcile', 'Probe disconnected servers and summarize the delta.', '#gateway'],
 ]
 
-export function LibraryTabs({ active }: { active: 'artifacts' | 'loadouts' | 'snippets' }) {
+export function LibraryTabs({ active, attached = false, counts = {} }: { active: 'artifacts' | 'loadouts' | 'snippets'; attached?: boolean; counts?: Partial<Record<'artifacts' | 'loadouts' | 'snippets', number>> }) {
   const tabs = [
     ['artifacts', '/library', 'Artifacts'],
     ['loadouts', '/loadouts', 'Loadouts'],
     ['snippets', '/snippets', 'Snippets'],
   ] as const
+  if (attached) return <nav aria-label="Library sections" className="aurora-scrollbar flex max-w-full gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-subtle bg-aurora-control-surface px-5">
+    {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}<span className={`inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums ${active === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted'}`}>{counts[id] ?? '—'}</span></a>)}
+  </nav>
   return <nav aria-label="Library sections" className="flex max-w-full gap-5 overflow-x-auto border-b border-aurora-border-subtle px-1 sm:gap-6 sm:px-3">
     {tabs.map(([id, href, label]) => <a key={id} href={href} aria-current={active === id ? 'page' : undefined} className="shrink-0 border-b-2 border-transparent px-2 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">{label}</a>)}
   </nav>

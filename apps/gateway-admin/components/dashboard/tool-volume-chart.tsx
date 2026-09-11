@@ -1,6 +1,6 @@
 'use client'
 
-import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts'
+import { Bar, BarChart, XAxis } from 'recharts'
 import {
   ChartContainer,
   ChartTooltip,
@@ -58,16 +58,10 @@ export function ToolVolumeChart({
   }
 
   return (
-    <ChartContainer config={CONFIG} className="aspect-auto h-[200px] w-full">
-      <BarChart data={rows} margin={{ left: 4, right: 4, top: 8, bottom: 0 }} barCategoryGap="8%">
-        <CartesianGrid vertical={false} strokeDasharray="3 3" />
-        <XAxis
-          dataKey="label"
-          tickLine={false}
-          axisLine={false}
-          tickMargin={8}
-          minTickGap={24}
-        />
+    <div className="min-w-0">
+    <ChartContainer config={CONFIG} className="aspect-auto h-[210px] w-full">
+      <BarChart data={rows} margin={{ left: 0, right: 0, top: 0, bottom: 0 }} barCategoryGap={1.5}>
+        <XAxis dataKey="label" hide />
         <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
         <Bar
           dataKey="succeeded"
@@ -89,5 +83,7 @@ export function ToolVolumeChart({
         />
       </BarChart>
     </ChartContainer>
+    {rows.length ? <div aria-label="Chart time range" className="mt-2 flex justify-between text-[10px] tabular-nums text-aurora-text-muted"><span>{rows[0].label}</span><span>{rows.at(-1)!.label}</span></div> : null}
+    </div>
   )
 }

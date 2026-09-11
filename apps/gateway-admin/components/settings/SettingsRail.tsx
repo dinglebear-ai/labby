@@ -51,6 +51,8 @@ export function SettingsRail(): React.ReactElement {
     : ENTRIES
   const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
+  const isOverview = ['/settings', '/settings/', '/settings/core', '/settings/core/'].includes(pathname)
+  if (isOverview) return <></>
   return (
     <nav aria-label="Settings sections">
       <label htmlFor="settings-section" className="sr-only">

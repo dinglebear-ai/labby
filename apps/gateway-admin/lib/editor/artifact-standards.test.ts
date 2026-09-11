@@ -6,6 +6,7 @@ import { composeArtifactSource, validateArtifactDraft } from './artifact-standar
 const metadata = {
   name: 'repo-triage',
   description: 'Triage a repository.',
+  tags: ['review', 'github'],
   license: '',
   compatibility: '',
   allowedTools: 'Read Grep',
@@ -14,6 +15,7 @@ const metadata = {
 test('composes hidden metadata into standards-compatible skill frontmatter', () => {
   const source = composeArtifactSource('Skill', metadata, '# Workflow')
   assert.match(source, /^---\nname: "repo-triage"\ndescription: "Triage a repository\."/)
+  assert.match(source, /tags: \[review, github\]/)
   assert.match(source, /allowed-tools: "Read Grep"\n---\n\n# Workflow$/)
 })
 

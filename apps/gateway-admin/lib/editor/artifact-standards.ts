@@ -6,6 +6,7 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export interface ArtifactMetadata {
   name: string
   description: string
+  tags: string[]
   license: string
   compatibility: string
   allowedTools: string
@@ -40,6 +41,8 @@ function yamlScalar(value: string): string {
 export function composeArtifactSource(kind: ArtifactKind, metadata: ArtifactMetadata, content: string): string {
   if (!MARKDOWN_KINDS.has(kind)) return content
   const lines = ['---', `name: ${yamlScalar(metadata.name.trim())}`, `description: ${yamlScalar(metadata.description.trim())}`]
+  const tags = metadata.tags.map(tag => tag.trim().replace(/^#/, '')).filter(Boolean)
+  if (tags.length) lines.push(`tags: [${tags.map(tag => /^[a-z0-9][a-z0-9-]*$/.test(tag) ? tag : yamlScalar(tag)).join(', ')}]`)
   if (metadata.license.trim()) lines.push(`license: ${yamlScalar(metadata.license.trim())}`)
   if (metadata.compatibility.trim()) lines.push(`compatibility: ${yamlScalar(metadata.compatibility.trim())}`)
   if (metadata.allowedTools.trim()) lines.push(`allowed-tools: ${yamlScalar(metadata.allowedTools.trim())}`)

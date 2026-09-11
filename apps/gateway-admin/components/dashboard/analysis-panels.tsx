@@ -167,54 +167,22 @@ export function CallOutcomesPanel({
   onSelectOutcome?: (outcome: 'ok' | 'failed') => void
   onSelectError?: (kind: string) => void
 }) {
-  const total = Math.max(1, toolCalls.total)
-  const okPct = Math.round((toolCalls.succeeded / total) * 100)
+  const labels: Record<string, string> = { upstream_error: 'Upstream error', timeout: 'Timed out', timed_out: 'Timed out', response_too_large: 'Response too large', connection_failed: 'Connection failed' }
+  const reportedFailures = errors.by_kind.reduce((sum, entry) => sum + entry.count, 0)
+  const items: MetricBarItem[] = [
+    { key: 'succeeded', label: 'Succeeded', value: toolCalls.succeeded, display: formatCompactNumber(toolCalls.succeeded), onSelect: onSelectOutcome ? () => onSelectOutcome('ok') : undefined },
+    ...errors.by_kind.map(entry => ({ key: `error:${entry.kind}`, label: Object.hasOwn(labels, entry.kind) ? labels[entry.kind] : entry.kind, value: entry.count, display: formatCompactNumber(entry.count), tone: entry.kind === 'timeout' || entry.kind === 'timed_out' ? 'warn' as const : 'error' as const, onSelect: onSelectError ? () => onSelectError(entry.kind) : undefined })),
+    ...(toolCalls.failed > reportedFailures ? [{ key: 'other-failures', label: errors.by_kind.length ? 'Other failures' : 'Failed', value: toolCalls.failed - reportedFailures, display: formatCompactNumber(toolCalls.failed - reportedFailures), tone: 'error' as const, onSelect: onSelectOutcome ? () => onSelectOutcome('failed') : undefined }] : []),
+  ]
 
   return (
     <DashboardPanel
       title="Call outcomes"
       icon={<Activity className="size-4" />}
       meta={WINDOW_LABELS[metricsWindow]}
+      action={onSelectOutcome ? <button type="button" onClick={() => onSelectOutcome('failed')} title="Show all failed calls" className="rounded px-1 py-0.5 text-[10px] tabular-nums text-aurora-error hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{formatCompactNumber(toolCalls.failed)} failed</button> : null}
     >
-      <button
-        type="button"
-        onClick={onSelectOutcome ? () => onSelectOutcome('ok') : undefined}
-        disabled={!onSelectOutcome}
-        className="flex min-h-10 w-full items-baseline justify-between gap-3 rounded-md px-1 text-left enabled:hover:bg-aurora-hover-bg"
-      >
-        <span className="text-sm text-aurora-text-primary">{formatCompactNumber(toolCalls.succeeded)} succeeded</span>
-        <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">{okPct}%</span>
-      </button>
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-aurora-control-surface">
-        <div className="h-full bg-aurora-success" style={{ width: `${okPct}%` }} />
-        <div className="h-full flex-1 bg-aurora-error" />
-      </div>
-      <button
-        type="button"
-        onClick={onSelectOutcome ? () => onSelectOutcome('failed') : undefined}
-        disabled={!onSelectOutcome}
-        className="flex min-h-10 w-full items-baseline justify-between gap-3 rounded-md px-1 text-left enabled:hover:bg-aurora-hover-bg"
-      >
-        <span className="text-sm text-aurora-text-primary">{formatCompactNumber(toolCalls.failed)} failed</span>
-        <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">{100 - okPct}%</span>
-      </button>
-      {errors.by_kind.length > 0 ? (
-        <ul className="flex flex-col gap-1 border-t border-aurora-border-default/55 pt-2">
-          {errors.by_kind.slice(0, 3).map((entry) => (
-            <li key={entry.kind}>
-              <button
-                type="button"
-                onClick={onSelectError ? () => onSelectError(entry.kind) : undefined}
-                disabled={!onSelectError}
-                className="flex min-h-8 w-full items-baseline justify-between gap-3 rounded-md px-1 text-left text-[11px] text-aurora-text-muted enabled:hover:bg-aurora-hover-bg"
-              >
-                <span className="min-w-0 truncate font-mono">{entry.kind}</span>
-                <span className="shrink-0 tabular-nums">{entry.count}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <MetricBarList items={items} maxValue={toolCalls.total} />
     </DashboardPanel>
   )
 }

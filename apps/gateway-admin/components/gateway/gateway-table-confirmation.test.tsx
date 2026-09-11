@@ -107,6 +107,35 @@ const gateway: Gateway = {
   updated_at: '2026-06-01T12:00:00Z',
 }
 
+test('column keyboard and drag moves persist while responsive hiding retains all columns', async () => {
+  installDom()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
+  window.localStorage.setItem('labby-gateway-col-order-v2', JSON.stringify(['endpoint', 'endpoint', 'unknown']))
+  const { GatewayTable } = await import('./gateway-table')
+  const view = await renderClient(<GatewayTable gateways={[gateway]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}}/>)
+  const columns = () => [...view.container.querySelectorAll('[data-gateway-column]')].map(node => node.getAttribute('data-gateway-column'))
+  try {
+    assert.deepEqual(columns(), ['endpoint', 'clients', 'exposed', 'uptime'])
+    const handle = view.container.querySelector('[aria-label="Reorder endpoint column"]')!
+    await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
+    assert.deepEqual(columns(), ['clients', 'endpoint', 'exposed', 'uptime'])
+    assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-gateway-col-order-v2')!), columns())
+    const source = view.container.querySelector('[aria-label="Reorder exposed column"]')!
+    await act(async () => { source.dispatchEvent(new Event('dragstart', { bubbles: true })) })
+    await act(async () => { view.container.querySelector('[data-gateway-column="clients"]')!.dispatchEvent(new Event('drop', { bubbles: true })) })
+    assert.deepEqual(columns(), ['exposed', 'clients', 'endpoint', 'uptime'])
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1150 })
+    await act(async () => { window.dispatchEvent(new Event('resize')) })
+    assert.deepEqual(columns(), ['exposed', 'endpoint'])
+    const row = view.container.querySelector<HTMLElement>('[data-gwrow]')!
+    assert.equal(row.style.gridTemplateColumns, view.container.querySelector<HTMLElement>('[data-gwhead]')!.style.gridTemplateColumns)
+    assert.ok(row.children[2].textContent?.includes('Tools:'))
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
+    await act(async () => { window.dispatchEvent(new Event('resize')) })
+    assert.deepEqual(columns(), ['exposed', 'clients', 'endpoint', 'uptime'])
+  } finally { await view.unmount() }
+})
+
 test('gateway table asks before disabling an enabled server', async () => {
   installDom()
   const { GatewayTable } = await import('./gateway-table')

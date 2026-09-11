@@ -572,8 +572,7 @@ export function SnippetsPageContent() {
         breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Snippets' }]}
       />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
-        <div className={AURORA_PAGE_FRAME}>
-          <LibraryTabs active="snippets" />
+        <div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
           {/* Hero — the mock's eyebrow + title + action cluster with the stat
               strip welded to the card's bottom edge, not floating cards. */}
           <ConsoleHero
@@ -581,9 +580,9 @@ export function SnippetsPageContent() {
             title="Snippets"
             actions={
               <>
-                <Button size="sm" onClick={() => setCreateOpen(true)}>
-                  <Plus className="size-4" />
-                  New snippet
+                <Button size="sm" variant="outline" className="h-9 gap-[7px] rounded-aurora-1 border-[color-mix(in_srgb,var(--aurora-accent-primary)_55%,var(--aurora-border-strong))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_9%,var(--aurora-panel-strong))] px-3.5 text-[13px] font-[650] text-[#bfe7fb]" data-visible-label="1" onClick={() => setCreateOpen(true)}>
+                  <Plus className="size-[15px]" />
+                  New Snippet
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => void reload()}>
                   <RefreshCw className="size-4" />
@@ -605,6 +604,7 @@ export function SnippetsPageContent() {
               { label: 'Built-in', value: builtinCount, icon: <Package size={12} strokeWidth={1.8} /> },
               { label: 'Inputs', value: inputCount, icon: <SlidersHorizontal size={12} strokeWidth={1.8} /> },
             ]}
+            footer={<LibraryTabs active="snippets" attached counts={loading || error ? {} : { snippets: snippets.length }} />}
           />
 
           <section style={CARD}>
