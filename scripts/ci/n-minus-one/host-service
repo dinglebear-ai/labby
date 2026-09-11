@@ -26,7 +26,7 @@ require_fixture() {
 require_fixture
 
 case "${1:-}" in
-  install-previous) sudo env LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
+  install-previous) sudo --preserve-env=GH_TOKEN env LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
   seed-state) mkdir -p "$state_root"; sudo install -d -m 0700 -o labby -g labby "$LABBY_HOME"; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; sudo systemctl stop labby.service; sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$LABBY_HOME"; if ! sudo tar -C /home/labby -czf "$state_root/full-durable-state.tar.gz" .labby; then sudo systemctl start labby.service; exit 1; fi; sudo chown -R labby:labby "$LABBY_HOME"; sudo systemctl start labby.service; sudo chown "$(id -u):$(id -g)" "$state_root/full-durable-state.tar.gz"; state_digest >"$state_root/state.sha256" ;;
   verify-previous) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
   verify-provenance) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- true ;;

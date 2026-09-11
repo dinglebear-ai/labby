@@ -178,6 +178,29 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotEqual(0, resolve_baseline([], ["v1.16.1"]).returncode)
         self.assertNotEqual(0, resolve_baseline([release_row("v1.13.3")], ["v1.13.3"], candidate="latest").returncode)
 
+    def test_n_minus_one_legs_can_verify_provenance_on_every_runner(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = {step.get("name"): step for step in release["jobs"]["upgrade-qualification"]["steps"]}
+        # The installers verify the N-1 archive and the adapters verify the
+        # candidate with `gh attestation verify`, which needs a token.
+        qualify = steps["N-1 stateful upgrade and rollback qualification"]
+        self.assertEqual("${{ github.token }}", qualify["env"]["GH_TOKEN"])
+        # GNU sha256sum escapes digests of backslash paths (every Windows path).
+        verify = steps["Verify exact archive provenance before extraction"]["run"]
+        bind = steps["Bind qualification to candidate binary and digest"]["run"]
+        self.assertIn('sha256sum <"$archive"', verify)
+        self.assertIn('sha256sum <"$candidate"', bind)
+        self.assertNotIn('sha256sum "$archive"', verify)
+        self.assertNotIn('sha256sum "$candidate"', bind)
+        host_service = self.text("scripts/ci/n-minus-one/host-service")
+        self.assertIn("install-previous) sudo --preserve-env=GH_TOKEN env", host_service)
+        incus = self.text("scripts/ci/n-minus-one/incus")
+        install_previous = incus[incus.index("install-previous)"):incus.index("seed-state)")]
+        self.assertIn('scripts/install.sh"', install_previous)
+        self.assertIn("--local-binary", install_previous)
+        self.assertNotIn("--version", install_previous)
+        self.assertIn("exec sg incus-admin", incus)
+
     def test_release_has_machine_readable_manifest_and_reconciler(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
         reminder = self.text(".github/workflows/release-publish-reminder.yml")

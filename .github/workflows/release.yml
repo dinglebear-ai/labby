@@ -272,10 +272,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --workflow release.yml \
             --ref "$GITHUB_REF" --artifact "$archive"
           expected=$(awk '{print $1}' "$sidecar")
+          # Hash stdin: GNU sha256sum prefixes the digest with "\" when the
+          # path contains a backslash, which every Windows workspace path does.
           if command -v sha256sum >/dev/null 2>&1; then
-            actual=$(sha256sum "$archive" | awk '{print $1}')
+            actual=$(sha256sum <"$archive" | awk '{print $1}')
           else
-            actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+            actual=$(shasum -a 256 <"$archive" | awk '{print $1}')
           fi
           [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
           {
@@ -295,9 +297,9 @@ jobs:
           candidate="$GITHUB_WORKSPACE/candidate/${{ matrix.binary }}"
           test -f "$candidate"
           if command -v sha256sum >/dev/null 2>&1; then
-            digest=$(sha256sum "$candidate" | awk '{print $1}')
+            digest=$(sha256sum <"$candidate" | awk '{print $1}')
           else
-            digest=$(shasum -a 256 "$candidate" | awk '{print $1}')
+            digest=$(shasum -a 256 <"$candidate" | awk '{print $1}')
           fi
           binding="$RUNNER_TEMP/labby-candidate-binding.json"
           python3 - "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE" \
@@ -338,6 +340,9 @@ jobs:
       - name: N-1 stateful upgrade and rollback qualification
         shell: bash
         env:
+          # The installers and verify-and-activate-release.sh run
+          # `gh attestation verify` on both the N-1 and the candidate archive.
+          GH_TOKEN: ${{ github.token }}
           # Each adapter is an executable deployment-path contract. Until a
           # platform adapter exists, qualification fails closed rather than
           # silently substituting a clean-install smoke.
