@@ -245,6 +245,13 @@ class ContainerTopology(unittest.TestCase):
             "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
             text,
         )
+        # The slim runtime has no /usr/lib/ssl, so apt ignores the seeded bundle
+        # unless the bootstrap calls name it; v1.15.x and v1.16.0 failed here.
+        for verb in ("update", "install"):
+            self.assertIn(
+                f"apt-get -o Acquire::https::CAInfo=/etc/ssl/certs/ca-certificates.crt {verb}",
+                text,
+            )
         dockerignore = self.text(".dockerignore")
         self.assertIn("!apps/gateway-admin/\n", dockerignore)
         self.assertNotIn("!apps/gateway-admin/**\n", dockerignore)

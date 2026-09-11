@@ -153,10 +153,12 @@ ARG LABBY_AGENT_CLIS_LOCK_SHA256
 
 LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 
-# The pinned slim runtime can carry a CA bundle older than the snapshot service's
-# current certificate chain. The builder has already reached that same HTTPS
-# snapshot successfully, so seed runtime TLS from its verified system bundle
-# before the first apt transaction. apt then installs the pinned current bundle.
+# The pinned slim runtime ships neither a CA bundle nor the openssl package, so
+# /usr/lib/ssl is absent and apt's OpenSSL backend has no default trust store.
+# The builder has already reached the same HTTPS snapshot, so seed its verified
+# bundle and name it explicitly on the bootstrap apt calls below. Installing
+# ca-certificates (which pulls in openssl) then restores the normal trust paths
+# for every later HTTPS client in this stage.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
@@ -171,8 +173,8 @@ RUN printf '%s\n' \
       "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${LABBY_DEBIAN_SNAPSHOT}/ trixie-security main" \
       > /etc/apt/sources.list \
  && rm -f /etc/apt/sources.list.d/debian.sources \
- && apt-get update \
- && apt-get install -y --no-install-recommends \
+ && apt-get -o Acquire::https::CAInfo=/etc/ssl/certs/ca-certificates.crt update \
+ && apt-get -o Acquire::https::CAInfo=/etc/ssl/certs/ca-certificates.crt install -y --no-install-recommends \
       ca-certificates curl git \
       bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
       login mount util-linux xz-utils zsh \
