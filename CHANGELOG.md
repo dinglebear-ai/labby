@@ -72,6 +72,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.16.1](https://github.com/dinglebear-ai/labby/compare/v1.16.0...v1.16.1) (2026-09-11)
+
+
+### Fixed
+
+* **release:** stop building the Docker image in releases and CI ([#601](https://github.com/dinglebear-ai/labby/issues/601)) ([51d7366](https://github.com/dinglebear-ai/labby/commit/51d7366afdf7ca5ba665b0b4196e8ff10042b720))
+
 ## [1.16.0](https://github.com/dinglebear-ai/labby/compare/v1.15.1...v1.16.0) (2026-09-11)
 
 
