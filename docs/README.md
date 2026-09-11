@@ -17,6 +17,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Local access bootstrap](./guides/LOCAL_ACCESS_BOOTSTRAP.md) — offline proof preparation, direct-local consume, recovery, revocation, and cleanup.
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — active specification, contract, implementation plan, and progress tracker for universal Skills access.
+- [Verification toolkit](./plans/verification-toolkit/README.md) — proposed design for a reusable Rust correctness-engineering toolkit (invariant catalog, scenario replay, backend adapters). Not implemented.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 

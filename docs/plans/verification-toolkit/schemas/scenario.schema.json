@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/verify/scenario/1",
+  "title": "Verification scenario envelope",
+  "description": "Draft. A replayable trace. The envelope is project-agnostic; `initial` and `steps` are opaque to the toolkit and interpreted only by the project's ScenarioTarget.",
+  "type": "object",
+  "required": ["schema", "project", "model", "invariant", "origin", "steps", "expect"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": 1 },
+    "project": { "type": "string", "minLength": 1 },
+    "model": { "type": "string", "minLength": 1 },
+    "invariant": { "type": "string", "minLength": 1 },
+    "origin": { "$ref": "#/$defs/origin" },
+    "bounds": {
+      "type": "object",
+      "description": "Backend-reported bounds under which this trace was found. Free-form; retained for report honesty.",
+      "additionalProperties": { "type": ["integer", "string", "boolean"] }
+    },
+    "initial": {
+      "description": "Opaque initial state, interpreted by ScenarioTarget::init."
+    },
+    "steps": {
+      "type": "array",
+      "description": "Opaque steps, deserialized into the target's Step type.",
+      "items": {}
+    },
+    "expect": {
+      "enum": ["invariant_violated", "invariant_holds", "unreproduced"],
+      "description": "invariant_violated = regression scenario. invariant_holds = pinned golden trace. unreproduced = incident-derived trace that replay could not reproduce, retained as evidence of a model gap."
+    },
+    "fingerprint": {
+      "type": "string",
+      "description": "Content hash over the normalized scenario, used for corpus dedup."
+    },
+    "status": {
+      "enum": ["active", "quarantined"],
+      "default": "active",
+      "description": "quarantined = failed the determinism check and is not a CI gate."
+    }
+  },
+  "$defs": {
+    "origin": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["stateright", "kani", "loom", "shuttle", "alloy", "tla", "fuzz", "incident", "manual"]
+        },
+        "tool_version": { "type": "string" },
+        "discovered_at": { "type": "string", "format": "date-time" },
+        "seed": { "type": "integer" },
+        "reference": {
+          "type": "string",
+          "description": "Issue, PR, or incident reference. Never a raw log payload."
+        }
+      }
+    }
+  }
+}
