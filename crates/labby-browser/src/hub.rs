@@ -189,6 +189,7 @@ impl BrowserBridge {
 
     /// Issue a one-time challenge.
     pub async fn issue_challenge(&self, browser_id: &str) -> Result<BrowserEnvelope> {
+        let _authority = self.authority.lock().await;
         let challenge = self.store.create_challenge(browser_id).await?;
         Ok(BrowserEnvelope::new(
             None,
@@ -1294,6 +1295,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(authenticated.browser_id, connection.browser_id);
+    }
+
+    #[tokio::test]
+    async fn revoked_browser_cannot_issue_a_new_challenge() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        bridge.revoke_browser(&connection.browser_id).await.unwrap();
+        assert!(matches!(
+            bridge.issue_challenge(&connection.browser_id).await,
+            Err(BrowserError::AuthenticationFailed)
+        ));
     }
 
     #[tokio::test]

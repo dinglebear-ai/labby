@@ -6,7 +6,13 @@ import {cancelWebMcp, invokeWebMcp} from "../src/probe.js";
 
 // Run the actual worker handlers with Chrome boundary fakes; do not start its
 // unrelated identity/scan bootstrap or maintain a second handler implementation.
-function worker({getSettings = async () => ({}), execute = async () => [], identityManager = {revoke: async () => {}}} = {}) {
+function worker({
+  getSettings = async () => ({}),
+  setSettings = async () => {},
+  removeSettings = async () => {},
+  execute = async () => [],
+  identityManager = {ensure: async () => ({publicKey: "fixture-key"}), revoke: async () => {}}
+} = {}) {
   const listener = {addListener() {}};
   const storageWrites = [];
   const context = vm.createContext({
@@ -21,8 +27,8 @@ function worker({getSettings = async () => ({}), execute = async () => [], ident
       alarms: {onAlarm: listener}, permissions: {onAdded: listener, onRemoved: listener},
       storage: {onChanged: listener, local: {
         get: getSettings,
-        set: async (value) => { storageWrites.push({type: "set", value}); },
-        remove: async (value) => { storageWrites.push({type: "remove", value}); }
+        set: async (value) => { storageWrites.push({type: "set", value}); await setSettings(value); },
+        remove: async (value) => { storageWrites.push({type: "remove", value}); await removeSettings(value); }
       }},
       scripting: {executeScript: execute},
     },
@@ -30,7 +36,7 @@ function worker({getSettings = async () => ({}), execute = async () => [], ident
   });
   const source = readFileSync(new URL("../src/service_worker.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace(/\ninitialize\(\);\s*$/, "");
-  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }};`, context);
+  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, handleUiMessage, handleServerEvent, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }, pairingPollActive() { return pairingPollTimer !== undefined; }, clearPairingPoll() { clearTimeout(pairingPollTimer); pairingPollTimer = undefined; }};`, context);
   context.handlers.observations.set(7, {tab_id: 7, document_id: "doc", tools: []});
   context.handlers.storageWrites = storageWrites;
   return context.handlers;
@@ -61,6 +67,45 @@ test("stale pairing failure cannot delete a newer pairing association", async ()
   await handlers.reportBridgeFailure(new Error("pairing_not_pending"), {
     pairingId: "new-pair", pairingGeneration: 0
   });
+  assert.deepEqual(handlers.storageWrites, []);
+});
+
+test("connected resync cannot erase a pairing started by a newer generation", async () => {
+  const settings = deferred();
+  const handlers = worker({getSettings: () => settings.promise});
+  handlers.setChannel({browserId: "paired-browser", message: async () => ({payload: {}})});
+  const resuming = handlers.resumeAndScan();
+  handlers.advancePairingGeneration();
+  settings.resolve({pairingId: "new-pair"});
+  await resuming;
+  assert.deepEqual(handlers.storageWrites, []);
+});
+
+test("failed replacement pairing restores polling for the prior association", async () => {
+  const handlers = worker({getSettings: async () => ({pairingId: "prior-pair"})});
+  handlers.setChannel({browserId: undefined, message: async (type) => {
+    if (type === "pairing.request") throw new Error("transient_pairing_failure");
+    if (type === "pairing.status") return {payload: {status: "pending", pairing_id: "prior-pair", expires_at: Math.floor(Date.now() / 1000) + 60}};
+    return {payload: {}};
+  }});
+  await assert.rejects(handlers.handleUiMessage({type: "pair"}), /transient_pairing_failure/);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(handlers.pairingGeneration(), 2);
+  assert.equal(handlers.pairingPollActive(), true);
+  handlers.clearPairingPoll();
+});
+
+test("approval from an older pairing generation cannot install browser state", async () => {
+  const handlers = worker({getSettings: async () => ({pairingId: "new-pair"})});
+  let closed = false;
+  handlers.setChannel({browserId: undefined, close() { closed = true; }});
+  handlers.advancePairingGeneration();
+  await handlers.handleServerEvent(
+    {type: "pairing.approved", payload: {browser_id: "stale-browser", pairing_id: "old-pair"}},
+    undefined,
+    0
+  );
+  assert.equal(closed, false);
   assert.deepEqual(handlers.storageWrites, []);
 });
 

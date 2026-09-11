@@ -1,5 +1,28 @@
 export const BROAD_ORIGINS = ["http://*/*", "https://*/*"];
 
+/** @param {string} baseUrl */
+export function labbyOriginPermission(baseUrl) {
+  const url = new URL(baseUrl);
+  return `${url.protocol}//${url.hostname}/*`;
+}
+
+/** @param {typeof chrome.permissions} permissionsApi @param {string} baseUrl */
+export async function hasLabbyOriginPermission(permissionsApi, baseUrl) {
+  return permissionsApi.contains({origins: [labbyOriginPermission(baseUrl)]});
+}
+
+/**
+ * Request only the configured Labby host. Chrome match patterns do not carry
+ * ports, so one host permission covers the configured HTTP(S)/WebSocket port.
+ * @param {typeof chrome.permissions} permissionsApi
+ * @param {string} baseUrl
+ */
+export async function ensureLabbyOriginPermission(permissionsApi, baseUrl) {
+  const origins = [labbyOriginPermission(baseUrl)];
+  if (await hasLabbyOriginPermission(permissionsApi, baseUrl)) return true;
+  return permissionsApi.request({origins});
+}
+
 /**
  * @param {typeof chrome.permissions} permissionsApi
  */

@@ -2,7 +2,7 @@ import {LabbyBrowserChannel} from "./channel.js";
 import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
-import {reconcileModeAfterRemoval} from "./permissions.js";
+import {hasLabbyOriginPermission, reconcileModeAfterRemoval} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
@@ -34,6 +34,11 @@ function serializedPairingState(operation) {
   const result = pairingStateLifecycle.then(operation, operation);
   pairingStateLifecycle = result.then(() => undefined, () => undefined);
   return result;
+}
+
+/** @param {number} generation @param {LabbyBrowserChannel} activeChannel */
+function pairingStateIsCurrent(generation, activeChannel) {
+  return generation === pairingGeneration && channel === activeChannel;
 }
 
 const identityManager = createIdentityManager({
@@ -68,10 +73,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "periodic_resync_failed"}));
   }
 });
-chrome.permissions.onAdded.addListener(() => scanAll());
+chrome.permissions.onAdded.addListener(() => {
+  void initialize()
+    .then(() => scanAll())
+    .catch((error) => reportBridgeFailure(error, {kind: "permission_reinitialize_failed"}));
+});
 chrome.permissions.onRemoved.addListener(async () => {
   await reconcileModeAfterRemoval(chrome.permissions, chrome.storage.local);
   await closeIneligibleObservations();
+  if (channel) {
+    channel.close();
+    channel = undefined;
+  }
+  await initialize();
   await scanAll();
 });
 chrome.storage.onChanged.addListener((changes) => {
@@ -96,6 +110,10 @@ async function initialize() {
   try { settings.baseUrl = parseBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
+  }
+  if (!(await hasLabbyOriginPermission(chrome.permissions, settings.baseUrl))) {
+    await chrome.storage.local.set({bridgeStatus: {state: "error", message: "labby_host_permission_required", updatedAt: Date.now()}});
+    return;
   }
   const identity = await ensureIdentity();
   if (!channel) {
@@ -190,7 +208,11 @@ async function resumeAndScan() {
     }
     if (generation !== pairingGeneration) return;
     if (reply?.payload?.status === "approved" && reply.payload.browser_id) {
-      await handleServerEvent({type: "pairing.approved", payload: reply.payload});
+      await handleServerEvent(
+        {type: "pairing.approved", payload: {...reply.payload, pairing_id: pairingId}},
+        undefined,
+        generation
+      );
       return;
     }
     const pairingFingerprint = reply?.payload?.pairing_fingerprint;
@@ -209,10 +231,21 @@ async function resumeAndScan() {
     schedulePairingPoll(reply?.payload?.expires_at, generation);
   }
   if (browserId) {
-    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+    const cleaned = await serializedPairingState(async () => {
+      if (!pairingStateIsCurrent(generation, activeChannel)) return false;
+      await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+      return pairingStateIsCurrent(generation, activeChannel);
+    });
+    if (!cleaned || !pairingStateIsCurrent(generation, activeChannel)) return;
     await syncBrowserSettings();
+    if (!pairingStateIsCurrent(generation, activeChannel)) return;
     await resync();
-    await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
+    if (!pairingStateIsCurrent(generation, activeChannel)) return;
+    await serializedPairingState(async () => {
+      if (pairingStateIsCurrent(generation, activeChannel)) {
+        await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
+      }
+    });
   }
 }
 
@@ -267,21 +300,33 @@ async function syncBrowserSettings() {
 /**
  * @param {{type?: string, payload?: any} | undefined} envelope
  * @param {import('./channel.js').Connection} [connection]
+ * @param {number} [expectedPairingGeneration]
  */
-async function handleServerEvent(envelope, connection) {
+async function handleServerEvent(envelope, connection, expectedPairingGeneration = pairingGeneration) {
   if (envelope?.type === "pairing.approved" && envelope.payload?.browser_id) {
-    const generation = ++pairingGeneration;
-    clearTimeout(pairingPollTimer);
-    pairingPollTimer = undefined;
-    pairingPollExpiresAt = undefined;
-    if (channel?.browserId !== envelope.payload.browser_id) {
-      await chrome.storage.local.set({browserId: envelope.payload.browser_id});
-    }
-    await serializedPairingState(async () => {
-      if (generation === pairingGeneration) await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+    const activeChannel = channel;
+    const appliedGeneration = await serializedPairingState(async () => {
+      if (expectedPairingGeneration !== pairingGeneration) return undefined;
+      if (envelope.payload.pairing_id) {
+        const current = await chrome.storage.local.get("pairingId");
+        if (expectedPairingGeneration !== pairingGeneration || current.pairingId !== envelope.payload.pairing_id) return undefined;
+      }
+      const generation = ++pairingGeneration;
+      clearTimeout(pairingPollTimer);
+      pairingPollTimer = undefined;
+      pairingPollExpiresAt = undefined;
+      if (activeChannel?.browserId !== envelope.payload.browser_id) {
+        await chrome.storage.local.set({browserId: envelope.payload.browser_id});
+      }
+      await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+      return generation;
     });
-    channel?.close();
-    channel = undefined;
+    if (appliedGeneration === undefined || appliedGeneration !== pairingGeneration) return;
+    if (channel === activeChannel) {
+      activeChannel?.close();
+      if (channel === activeChannel) channel = undefined;
+    }
+    if (appliedGeneration !== pairingGeneration) return;
     await initialize();
     return;
   }
@@ -535,27 +580,51 @@ async function resync() {
  */
 async function handleUiMessage(message) {
   if (message.type === "pair") {
-    const generation = ++pairingGeneration;
-    clearTimeout(pairingPollTimer);
-    pairingPollTimer = undefined;
-    pairingPollExpiresAt = undefined;
-    const identity = await ensureIdentity();
-    const reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
-    if (reply?.payload?.pairing_id) {
-      const pairingFingerprint = reply.payload.pairing_fingerprint;
+    const transition = await serializedPairingState(async () => {
+      const previous = await chrome.storage.local.get("pairingId");
+      const previousExpiresAt = pairingPollExpiresAt;
+      const generation = ++pairingGeneration;
+      clearTimeout(pairingPollTimer);
+      pairingPollTimer = undefined;
+      pairingPollExpiresAt = undefined;
+      return {generation, previousPairingId: previous.pairingId, previousExpiresAt};
+    });
+    let reply;
+    try {
+      const identity = await ensureIdentity();
+      reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
+      if (!reply?.payload?.pairing_id) throw new Error("invalid_pairing_reply");
+    } catch (error) {
+      /** @type {number | undefined} */
+      let restoredGeneration;
       await serializedPairingState(async () => {
-        if (generation !== pairingGeneration) return;
-        await chrome.storage.local.set({
-          pairingId: reply.payload.pairing_id,
-          bridgeStatus: {state: "pairing", updatedAt: Date.now()},
-          ...(pairingFingerprint ? {pairingFingerprint} : {})
-        });
-        if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
+        if (transition.generation !== pairingGeneration || !transition.previousPairingId) return;
+        const current = await chrome.storage.local.get("pairingId");
+        if (transition.generation !== pairingGeneration || current.pairingId !== transition.previousPairingId) return;
+        restoredGeneration = ++pairingGeneration;
+        schedulePairingPoll(transition.previousExpiresAt, restoredGeneration);
       });
+      if (restoredGeneration !== undefined) {
+        void resumeAndScan().catch((resumeError) => reportBridgeFailure(resumeError, {
+          kind: "pairing_poll_failed", pairingGeneration: restoredGeneration
+        }));
+      }
+      throw error;
     }
-    if (generation === pairingGeneration) {
-      schedulePairingPoll(reply?.payload?.expires_at, generation);
-      void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed", pairingGeneration: generation}));
+    const pairingFingerprint = reply.payload.pairing_fingerprint;
+    const stored = await serializedPairingState(async () => {
+      if (transition.generation !== pairingGeneration) return false;
+      await chrome.storage.local.set({
+        pairingId: reply.payload.pairing_id,
+        bridgeStatus: {state: "pairing", updatedAt: Date.now()},
+        ...(pairingFingerprint ? {pairingFingerprint} : {})
+      });
+      if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
+      return transition.generation === pairingGeneration;
+    });
+    if (stored) {
+      schedulePairingPoll(reply.payload.expires_at, transition.generation);
+      void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed", pairingGeneration: transition.generation}));
     }
     return {ok: true, ...reply};
   }

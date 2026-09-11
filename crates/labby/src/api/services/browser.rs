@@ -44,12 +44,12 @@ struct ClientAdmission {
 
 impl ClientAdmission {
     fn refresh_pairing_window(&mut self, now: Instant) {
-        if self
-            .pairing_window_started
-            .is_some_and(|started| now.duration_since(started) >= PAIRING_REQUEST_WINDOW)
+        if self.pairing_reserved == 0
+            && self
+                .pairing_window_started
+                .is_some_and(|started| now.duration_since(started) >= PAIRING_REQUEST_WINDOW)
         {
             self.pairing_committed = 0;
-            self.pairing_reserved = 0;
             self.pairing_window_started = None;
         }
     }
@@ -176,7 +176,7 @@ fn admission_client_ip(
             .and_then(|value| value.to_str().ok())
     {
         return forwarded
-            .split(',')
+            .rsplit(',')
             .next()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -425,9 +425,16 @@ async fn run_socket(
                     Some(browser)
                         if browser.extension_id == extension_id && browser.revoked_at.is_none() =>
                     {
-                        let mut challenge = bridge.issue_challenge(&browser_id).await?;
-                        challenge.request_id = request_id;
-                        challenge
+                        match bridge.issue_challenge(&browser_id).await {
+                            Ok(mut challenge) => {
+                                challenge.request_id = request_id;
+                                challenge
+                            }
+                            Err(labby_browser::BrowserError::AuthenticationFailed) => {
+                                authentication_failed(request_id)
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                     _ => authentication_failed(request_id),
                 }
@@ -563,7 +570,7 @@ mod tests {
         );
         assert_eq!(
             admission_client_ip(&headers, true, Some(peer)),
-            Some("203.0.113.9".parse().unwrap())
+            Some("127.0.0.1".parse().unwrap())
         );
         headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
         assert_eq!(admission_client_ip(&headers, true, Some(peer)), None);
@@ -588,6 +595,26 @@ mod tests {
             state.pairing_window_started =
                 Some(Instant::now() - PAIRING_REQUEST_WINDOW - Duration::from_secs(1));
         }
+        permit.reserve_pairing_request().unwrap().commit().unwrap();
+        drop(permit);
+        PREAUTH_CLIENTS.lock().unwrap().remove(&ip);
+    }
+
+    #[test]
+    fn pairing_window_does_not_reset_while_a_reservation_is_live() {
+        let ip: IpAddr = "198.51.100.44".parse().unwrap();
+        let permit = PreauthClientPermit::acquire(ip).unwrap();
+        let held = permit.reserve_pairing_request().unwrap();
+        {
+            let mut clients = PREAUTH_CLIENTS.lock().unwrap();
+            clients.get_mut(&ip).unwrap().pairing_window_started =
+                Some(Instant::now() - PAIRING_REQUEST_WINDOW - Duration::from_secs(1));
+        }
+        for _ in 1..MAX_PAIRING_REQUESTS_PER_CLIENT {
+            permit.reserve_pairing_request().unwrap().commit().unwrap();
+        }
+        assert!(permit.reserve_pairing_request().is_err());
+        drop(held);
         permit.reserve_pairing_request().unwrap().commit().unwrap();
         drop(permit);
         PREAUTH_CLIENTS.lock().unwrap().remove(&ip);

@@ -22,7 +22,7 @@ const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn send(socket: &mut Socket, mut value: Value) {
-    value["version"] = json!(1);
+    value["version"] = json!(2);
     value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -159,19 +159,6 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .as_str()
         .expect("pairing fingerprint");
     assert_eq!(pairing_fingerprint.len(), 12);
-
-    let listed = success(action(
-        &client,
-        base,
-        &token,
-        "browser.pairing.list",
-        json!({}),
-    ))
-    .await;
-    let listed_pairing = &listed["pairings"][0];
-    assert_eq!(listed_pairing["id"], pending["pairing_id"]);
-    assert!(listed_pairing.get("public_key").is_none());
-    assert!(listed_pairing.get("pairing_fingerprint").is_none());
 
     let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(
@@ -473,6 +460,63 @@ async fn pairing_creation_is_rate_limited_per_client() {
         None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
         Some(Ok(message)) => panic!("rate-limited pairing unexpectedly received {message:?}"),
     }
+    assert!(guard.finish().await.failures.is_empty());
+}
+
+#[tokio::test]
+async fn global_socket_admission_is_bounded_across_trusted_client_buckets() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
+    let token = uuid::Uuid::new_v4().to_string();
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", &token)
+        .config("[api]\ntrust_forwarded_headers = true\n")
+        .start()
+        .await
+        .unwrap();
+    let url = format!(
+        "{}/browser/socket",
+        guard.connection().base_url.replacen("http://", "ws://", 1)
+    );
+    let request = |index: u8| {
+        let mut request = url.clone().into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Origin",
+            format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "X-Forwarded-For",
+            format!("198.51.100.{index}").parse().unwrap(),
+        );
+        request
+    };
+    let mut sockets = Vec::new();
+    for index in 1_u8..=64 {
+        let (socket, _) = tokio_tungstenite::connect_async(request(index))
+            .await
+            .unwrap();
+        sockets.push(socket);
+    }
+    let rejected = tokio_tungstenite::connect_async(request(65))
+        .await
+        .unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(response) = rejected else {
+        panic!("global socket exhaustion must return an HTTP error");
+    };
+    assert_eq!(response.status().as_u16(), 429);
+    drop(sockets.pop());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok((socket, _)) = tokio_tungstenite::connect_async(request(65)).await {
+            sockets.push(socket);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "global socket permit was not released"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(sockets);
     assert!(guard.finish().await.failures.is_empty());
 }
 

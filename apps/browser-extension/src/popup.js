@@ -1,4 +1,4 @@
-import {BROAD_ORIGINS, disableAllTabs, enableAllTabs} from "./permissions.js";
+import {BROAD_ORIGINS, disableAllTabs, enableAllTabs, ensureLabbyOriginPermission} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
 
 /**
@@ -61,6 +61,8 @@ required("#save").addEventListener("click", async () => {
     const {removed, stillBroad} = await disableAllTabs(chrome.permissions);
     if (!removed && stillBroad) { mode.value = "all_tabs"; renderDisclosure(); status.textContent = "Chrome did not remove broad permission."; return; }
   }
+  const labbyAccess = await ensureLabbyOriginPermission(chrome.permissions, normalizedBaseUrl);
+  if (!labbyAccess) { status.textContent = "Chrome did not grant access to the configured Labby host."; return; }
   baseUrl.value = normalizedBaseUrl;
   await chrome.storage.local.set({baseUrl: normalizedBaseUrl, scanningMode: mode.value, scanningPaused: paused.checked});
   renderDisclosure();
