@@ -44,6 +44,15 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
     ['Revision ID', artifact.currentRevisionId ?? artifact.currentRevision?.id],
     ['Content digest', artifact.contentDigest ?? artifact.currentRevision?.contentDigest],
   ] as const : []
+  // Provenance rows appear only when the source supplied them; the policy rows always render so an absent value is visible.
+  const detailRows: ReadonlyArray<readonly [string, string | null | undefined]> = artifact ? [
+    ...([['Source format', artifact.provenance?.originalFormat], ['Source format version', artifact.provenance?.originalVersion]] as const).filter(([, value]) => value),
+    ['Declared license', artifact.license?.declared],
+    ['License review', artifact.license?.reviewState],
+    ['Distribution', artifact.publication?.distribution],
+    ['Redistribution', artifact.license?.redistribution],
+    ['Revisions', artifact.revisionCount?.toString()],
+  ] : []
   const metrics = [
     { key: 'stars', label: 'Stars', icon: Star, color: 'var(--aurora-warn)' },
     { key: 'installs', label: 'Installs', icon: Download, color: 'var(--aurora-accent-strong)' },
@@ -99,8 +108,7 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
                   </Button>
                 </div> : null)}
             <dl className="grid grid-cols-2 gap-[var(--space-4)] text-xs">
-              {/* Provenance rows appear only when the source supplied them; the policy rows always render so an absent value is visible. */}
-              {([['Source format', artifact.provenance?.originalFormat, true], ['Source format version', artifact.provenance?.originalVersion, true], ['Declared license', artifact.license?.declared, false], ['License review', artifact.license?.reviewState, false], ['Distribution', artifact.publication?.distribution, false], ['Redistribution', artifact.license?.redistribution, false], ['Revisions', artifact.revisionCount?.toString(), false]] as const).filter(([, value, optional]) => value || !optional).map(([label, value]) =>
+              {detailRows.map(([label, value]) =>
                 <div key={label} className="min-w-0"><dt className={AURORA_MUTED_LABEL}>{label}</dt><dd className="mt-[var(--space-2)] break-words text-aurora-text-muted">{value || 'Not supplied'}</dd></div>
               )}
             </dl>

@@ -12,9 +12,9 @@ export function isConsoleTheme(value: unknown): value is ConsoleTheme {
 
 export function ConsoleThemeControl({ theme, onTheme }: { theme?: ConsoleTheme; onTheme: (theme: ConsoleTheme) => void }) {
   return <div role="group" aria-label="Console theme" className="flex gap-1">
-    {CONSOLE_THEMES.map(([value, label]) => {
-      return <button key={value} type="button" aria-pressed={theme === value} onClick={() => onTheme(value)} style={settingsSegmentStyle(theme === value)} className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{label}</button>
-    })}
+    {CONSOLE_THEMES.map(([value, label]) =>
+      <button key={value} type="button" aria-pressed={theme === value} onClick={() => onTheme(value)} style={settingsSegmentStyle(theme === value)} className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{label}</button>
+    )}
   </div>
 }
 

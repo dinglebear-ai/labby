@@ -44,14 +44,17 @@ type StatusState =
   | { kind: 'ready'; snapshot: ConsoleStatusSnapshot }
   | { kind: 'unavailable'; reason: string }
 
+function failureReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 async function loadConsoleStatus(signal: AbortSignal): Promise<StatusState> {
   const [runtimeResult, clientsResult] = await Promise.allSettled([
     gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
     gatewayAction<GatewayClientView[]>('gateway.clients.list', {}, signal),
   ])
   if (runtimeResult.status !== 'fulfilled') {
-    const reason = runtimeResult.reason
-    return { kind: 'unavailable', reason: reason instanceof Error ? reason.message : String(reason) }
+    return { kind: 'unavailable', reason: failureReason(runtimeResult.reason) }
   }
   return {
     kind: 'ready',
@@ -90,39 +93,25 @@ function Metric({
   )
 }
 
-export function ConsoleStatusStrip() {
-  const [state, setState] = React.useState<StatusState>({ kind: 'loading' })
-
-  React.useEffect(() => {
-    const controller = new AbortController()
-    loadConsoleStatus(controller.signal)
-      .then((next) => {
-        if (!controller.signal.aborted) setState(next)
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        setState({ kind: 'unavailable', reason: error instanceof Error ? error.message : String(error) })
-      })
-    return () => controller.abort()
-  }, [])
-
-  // Status chrome is best-effort: the console stays fully usable when the
-  // snapshot is unavailable (for example when the viewer lacks admin scope),
-  // but the failure is still shown rather than rendered as "nothing to report".
-  return (
-    <div
-      data-console-status-strip="1"
-      className="max-[1040px]:!hidden"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 20,
-        minWidth: 0,
-        marginLeft: 6,
-        flexShrink: 0,
-      }}
-    >
-      {state.kind === 'ready' ? (
+// Status chrome is best-effort: the console stays fully usable when the
+// snapshot is unavailable (for example when the viewer lacks admin scope),
+// but the failure is still shown rather than rendered as "nothing to report".
+function ConsoleStatusContent({ state }: { state: StatusState }): React.ReactElement | null {
+  switch (state.kind) {
+    case 'loading':
+      return null
+    case 'unavailable':
+      return (
+        <span
+          data-console-status-unavailable="1"
+          title={`Gateway status is unavailable: ${state.reason}`}
+          style={{ color: 'var(--aurora-text-muted)', fontSize: 11.5, lineHeight: 'normal', whiteSpace: 'nowrap' }}
+        >
+          status unavailable
+        </span>
+      )
+    case 'ready':
+      return (
         <>
           <Metric
             value={`${state.snapshot.connected}/${state.snapshot.total}`}
@@ -142,15 +131,40 @@ export function ConsoleStatusStrip() {
             color="var(--aurora-accent-strong)"
           />
         </>
-      ) : state.kind === 'unavailable' ? (
-        <span
-          data-console-status-unavailable="1"
-          title={`Gateway status is unavailable: ${state.reason}`}
-          style={{ color: 'var(--aurora-text-muted)', fontSize: 11.5, lineHeight: 'normal', whiteSpace: 'nowrap' }}
-        >
-          status unavailable
-        </span>
-      ) : null}
+      )
+  }
+}
+
+export function ConsoleStatusStrip() {
+  const [state, setState] = React.useState<StatusState>({ kind: 'loading' })
+
+  React.useEffect(() => {
+    const controller = new AbortController()
+    loadConsoleStatus(controller.signal)
+      .then((next) => {
+        if (!controller.signal.aborted) setState(next)
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return
+        setState({ kind: 'unavailable', reason: failureReason(error) })
+      })
+    return () => controller.abort()
+  }, [])
+
+  return (
+    <div
+      data-console-status-strip="1"
+      className="max-[1040px]:!hidden"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 20,
+        minWidth: 0,
+        marginLeft: 6,
+        flexShrink: 0,
+      }}
+    >
+      <ConsoleStatusContent state={state} />
     </div>
   )
 }
