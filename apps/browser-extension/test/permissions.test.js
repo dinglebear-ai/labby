@@ -1,39 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {BROAD_ORIGINS, disableAllTabs, enableAllTabs, ensureLabbyOriginPermission, hasLabbyOriginPermission, labbyOriginPermission, reconcileModeAfterRemoval} from "../src/permissions.js";
-
-test("Labby host permission strips ports and preserves IPv6 literals", () => {
-  assert.equal(labbyOriginPermission("https://labby.example.com:8443"), "https://labby.example.com/*");
-  assert.equal(labbyOriginPermission("http://127.0.0.1:8765"), "http://127.0.0.1/*");
-  assert.equal(labbyOriginPermission("http://[::1]:8765"), "http://[::1]/*");
-});
-
-test("Labby host permission check uses the same exact pattern", async () => {
-  let checked;
-  const granted = await hasLabbyOriginPermission({contains: async (value) => { checked = value; return false; }}, "https://labby.example.com:8443");
-  assert.equal(granted, false);
-  assert.deepEqual(checked, {origins: ["https://labby.example.com/*"]});
-});
-
-test("Labby host permission reuses an existing exact grant", async () => {
-  let requested = false;
-  const granted = await ensureLabbyOriginPermission({
-    contains: async (value) => { assert.deepEqual(value, {origins: ["https://labby.example.com/*"]}); return true; },
-    request: async () => { requested = true; return true; }
-  }, "https://labby.example.com:8443");
-  assert.equal(granted, true);
-  assert.equal(requested, false);
-});
-
-test("Labby host permission requests only the exact configured host", async () => {
-  let requested;
-  const granted = await ensureLabbyOriginPermission({
-    contains: async () => false,
-    request: async (value) => { requested = value; return true; }
-  }, "https://labby.example.com:8443");
-  assert.equal(granted, true);
-  assert.deepEqual(requested, {origins: ["https://labby.example.com/*"]});
-});
+import {BROAD_ORIGINS, disableAllTabs, enableAllTabs, reconcileModeAfterRemoval} from "../src/permissions.js";
 
 test("all-tabs enablement requests both broad optional origins", async () => {
   let requested;

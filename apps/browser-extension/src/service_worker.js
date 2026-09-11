@@ -2,7 +2,7 @@ import {LabbyBrowserChannel} from "./channel.js";
 import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
-import {hasLabbyOriginPermission, reconcileModeAfterRemoval} from "./permissions.js";
+import {reconcileModeAfterRemoval} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
@@ -73,19 +73,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "periodic_resync_failed"}));
   }
 });
-chrome.permissions.onAdded.addListener(() => {
-  void initialize()
-    .then(() => scanAll())
-    .catch((error) => reportBridgeFailure(error, {kind: "permission_reinitialize_failed"}));
-});
+chrome.permissions.onAdded.addListener(() => scanAll());
 chrome.permissions.onRemoved.addListener(async () => {
   await reconcileModeAfterRemoval(chrome.permissions, chrome.storage.local);
   await closeIneligibleObservations();
-  if (channel) {
-    channel.close();
-    channel = undefined;
-  }
-  await initialize();
   await scanAll();
 });
 chrome.storage.onChanged.addListener((changes) => {
@@ -110,10 +101,6 @@ async function initialize() {
   try { settings.baseUrl = parseBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
-  }
-  if (!(await hasLabbyOriginPermission(chrome.permissions, settings.baseUrl))) {
-    await chrome.storage.local.set({bridgeStatus: {state: "error", message: "labby_host_permission_required", updatedAt: Date.now()}});
-    return;
   }
   const identity = await ensureIdentity();
   if (!channel) {
