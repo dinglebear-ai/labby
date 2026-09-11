@@ -29,10 +29,8 @@
     "scripts/ci/n-minus-one/macos",
     "scripts/ci/n-minus-one/incus",
     "scripts/ci/n-minus-one/host-service",
-    "scripts/ci/n-minus-one/compose",
     "scripts/ci/promote-incus-pointer.sh",
     "scripts/ci/promote-release.sh",
-    "scripts/ci/release-image-rollback.sh",
     "scripts/ci/generate-release-sboms.sh",
     "scripts/ci/manage-release-incident.sh",
     "scripts/ci/qualify-n-minus-one.sh",
@@ -60,14 +58,16 @@
   "powershell": [
     "scripts/install.ps1"
   ],
-  "public_copies": ["apps/gateway-admin/public/install.sh"],
+  "public_copies": [
+    "apps/gateway-admin/public/install.sh"
+  ],
   "tests": [
     "scripts/tests/installers.sh",
     "scripts/tests/install.ps1.Tests.ps1",
     "scripts/tests/n-minus-one-installers.sh",
     "scripts/tests/incus-bootstrap-transaction.sh",
     "scripts/tests/incus-bootstrap-full-fake.py",
-    "scripts/ci/test-container-topology.py",
+    "scripts/ci/test-incus-contract.py",
     "scripts/ci/test-build-on-tootie-incus.py"
   ]
 }

@@ -1436,45 +1436,23 @@ jobs:
           bash scripts/check-version-sync.sh
           bash scripts/check-rust-toolchain-sync.sh
 
-  container-contract:
-    name: Container source contract
+  incus-contract:
+    name: Incus source contract
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
+    # Incus supply inputs live under config/ and scripts/, which the changed-path
+    # classifier routes through its `docker` key.
     if: ${{ needs.changes.outputs.docker == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - name: Validate container source inputs
+      - name: Validate Incus supply and rolling-pointer contracts
         run: |
           set -euo pipefail
-          test -f config/Dockerfile
-          test -f .dockerignore
-          test -f apps/gateway-admin/package.json
-          # These are literal Dockerfile contracts.
-          # shellcheck disable=SC2016
-          grep -Fq 'FROM ${LABBY_BUILDER_IMAGE}' config/Dockerfile
-          # shellcheck disable=SC2016
-          grep -Fq 'FROM ${LABBY_RUNTIME_IMAGE}' config/Dockerfile
-          set -a
-          source config/container-supply.conf
-          set +a
           scripts/ci/validate-supply-manifest.py
-          LABBY_IMAGE="ghcr.io/dinglebear-ai/labby@sha256:$(printf 'a%.0s' {1..64})" scripts/ci/validate-container-inputs.sh
-          python3 scripts/ci/test-container-topology.py
-          # The action catalog embeds UI source as well as the static export.
-          grep -Fxq 'COPY apps/gateway-admin apps/gateway-admin' config/Dockerfile
-          grep -Fq 'ARG LABBY_NPM_VERSION' config/Dockerfile
-          grep -Fq 'ARG LABBY_NPM_SHA512' config/Dockerfile
-          grep -Fq 'registry.npmjs.org/npm/-/npm-' config/Dockerfile
-          grep -Fq 'tar/package.json' config/Dockerfile
-          grep -Fq 'undici/package.json' config/Dockerfile
-          grep -Fq '7.5.19' config/Dockerfile
-          grep -Fq '6.27.0' config/Dockerfile
-          grep -Fq 'crates/labby/tests/fixtures/stdio_mcp_fixture.rs' config/Dockerfile
-          grep -Fq 'node node_modules/@anthropic-ai/claude-code/install.cjs' config/Dockerfile
-          grep -Fq 'HEALTHCHECK' config/Dockerfile
+          python3 scripts/ci/test-incus-contract.py
 
   desktop-web:
     name: Labby desktop shell
@@ -1664,7 +1642,7 @@ jobs:
       - mcp-regressions
       - mcp-conformance
       - release-contract
-      - container-contract
+      - incus-contract
       - desktop-web
       - desktop-rust
       - rust-coverage
@@ -1750,7 +1728,7 @@ jobs:
           require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"
           require_success_or_skipped mcp-conformance "${{ needs.mcp-conformance.result }}"
           require_success_or_skipped release-contract "${{ needs.release-contract.result }}"
-          require_success_or_skipped container-contract "${{ needs.container-contract.result }}"
+          require_success_or_skipped incus-contract "${{ needs.incus-contract.result }}"
           require_success_or_skipped desktop-web "${{ needs.desktop-web.result }}"
           require_success_or_skipped desktop-rust "${{ needs.desktop-rust.result }}"
           require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"

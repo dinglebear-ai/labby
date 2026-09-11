@@ -1,10 +1,16 @@
 ---
 title: "Container Runtime Contract"
 created: "2026-09-04"
-updated: "2026-09-04"
+updated: "2026-09-11"
 ---
 
 # Container Runtime Contract
+
+Releases do not build or publish a container image; Labby's supported deployment
+is Incus ([INCUS.md](INCUS.md)). The Compose files remain for local use: build
+`config/Dockerfile` yourself and point `LABBY_IMAGE` at that image. The
+attestation-verifying `scripts/run-compose-prod.sh` launcher only accepts images
+that an earlier release published and attested.
 
 The production Compose file is a minimal, local-only gateway baseline. Set
 `LABBY_IMAGE` to an immutable `ghcr.io/dinglebear-ai/labby@sha256:...` reference
