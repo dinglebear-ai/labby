@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use futures::{SinkExt as _, StreamExt as _};
-use labby_browser::{BrowserEnvelope, BrowserMessage, PairingStatus};
+use labby_browser::{BrowserEnvelope, BrowserMessage, LEGACY_PROTOCOL_VERSION, PairingStatus};
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -334,6 +334,7 @@ async fn run_socket(
         .map_err(|error| labby_browser::BrowserError::InvalidRequest(error.to_string()))?;
     let (mut sink, mut source) = socket.split();
     let mut authenticated = None;
+    let mut negotiated_version = None;
     let mut preauth_permit = Some(preauth_permit);
 
     let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
@@ -354,9 +355,26 @@ async fn run_socket(
             continue;
         };
         let envelope: BrowserEnvelope = serde_json::from_str(text.as_str())?;
-        envelope.validate_version()?;
+        envelope.validate_server_version()?;
+        let protocol_version = match negotiated_version {
+            Some(version) if version == envelope.version => version,
+            Some(_) => {
+                return Err(labby_browser::BrowserError::InvalidRequest(
+                    "browser protocol version changed during connection".to_string(),
+                ));
+            }
+            None => {
+                negotiated_version = Some(envelope.version);
+                envelope.version
+            }
+        };
         let request_id = envelope.request_id.clone();
         let reply = match envelope.message {
+            (BrowserMessage::PairingRequest { .. } | BrowserMessage::PairingStatus { .. })
+                if protocol_version == LEGACY_PROTOCOL_VERSION =>
+            {
+                protocol_upgrade_required(protocol_version, request_id)
+            }
             BrowserMessage::PairingRequest {
                 display_name,
                 extension_id: claimed_extension_id,
@@ -374,7 +392,8 @@ async fn run_socket(
                     .await?;
                 pairing_reservation.commit()?;
                 let pairing_fingerprint = pairing.pairing_fingerprint();
-                BrowserEnvelope::new(
+                BrowserEnvelope::for_version(
+                    protocol_version,
                     request_id,
                     BrowserMessage::PairingPending {
                         pairing_id: pairing.id,
@@ -389,11 +408,15 @@ async fn run_socket(
                     Some(pairing) if pairing.extension_id == extension_id => {
                         let pairing_fingerprint = pairing.pairing_fingerprint();
                         match (pairing.status, pairing.browser_id) {
-                            (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
-                                request_id,
-                                BrowserMessage::PairingApproved { browser_id },
-                            ),
-                            (PairingStatus::Pending, None) => BrowserEnvelope::new(
+                            (PairingStatus::Approved, Some(browser_id)) => {
+                                BrowserEnvelope::for_version(
+                                    protocol_version,
+                                    request_id,
+                                    BrowserMessage::PairingApproved { browser_id },
+                                )
+                            }
+                            (PairingStatus::Pending, None) => BrowserEnvelope::for_version(
+                                protocol_version,
                                 request_id,
                                 BrowserMessage::PairingPending {
                                     pairing_id: pairing.id,
@@ -401,7 +424,8 @@ async fn run_socket(
                                     pairing_fingerprint,
                                 },
                             ),
-                            (status, _) => BrowserEnvelope::new(
+                            (status, _) => BrowserEnvelope::for_version(
+                                protocol_version,
                                 request_id,
                                 BrowserMessage::Error {
                                     kind: "pairing_not_pending".to_string(),
@@ -411,7 +435,8 @@ async fn run_socket(
                             ),
                         }
                     }
-                    Some(_) | None => BrowserEnvelope::new(
+                    Some(_) | None => BrowserEnvelope::for_version(
+                        protocol_version,
                         request_id,
                         BrowserMessage::Error {
                             kind: "pairing_not_pending".to_string(),
@@ -427,16 +452,17 @@ async fn run_socket(
                     {
                         match bridge.issue_challenge(&browser_id).await {
                             Ok(mut challenge) => {
+                                challenge.version = protocol_version;
                                 challenge.request_id = request_id;
                                 challenge
                             }
                             Err(labby_browser::BrowserError::AuthenticationFailed) => {
-                                authentication_failed(request_id)
+                                authentication_failed(protocol_version, request_id)
                             }
                             Err(error) => return Err(error),
                         }
                     }
-                    _ => authentication_failed(request_id),
+                    _ => authentication_failed(protocol_version, request_id),
                 }
             }
             BrowserMessage::AuthResponse {
@@ -447,20 +473,26 @@ async fn run_socket(
                     let browser_id = connection.browser_id.clone();
                     authenticated = Some(connection);
                     drop(preauth_permit.take());
-                    BrowserEnvelope::new(request_id, BrowserMessage::Authenticated { browser_id })
+                    BrowserEnvelope::for_version(
+                        protocol_version,
+                        request_id,
+                        BrowserMessage::Authenticated { browser_id },
+                    )
                 }
                 Err(labby_browser::BrowserError::AuthenticationFailed) => {
-                    authentication_failed(request_id)
+                    authentication_failed(protocol_version, request_id)
                 }
                 Err(error) => return Err(error),
             },
-            BrowserMessage::Heartbeat => BrowserEnvelope::new(
+            BrowserMessage::Heartbeat => BrowserEnvelope::for_version(
+                protocol_version,
                 request_id,
                 BrowserMessage::Acknowledged {
                     received: "heartbeat".to_string(),
                 },
             ),
-            _ => BrowserEnvelope::new(
+            _ => BrowserEnvelope::for_version(
+                protocol_version,
                 request_id,
                 BrowserMessage::Error {
                     kind: "not_authenticated".to_string(),
@@ -476,6 +508,7 @@ async fn run_socket(
         }
     }
 
+    let protocol_version = negotiated_version.expect("protocol version negotiated before auth");
     let mut connection = authenticated.expect("authenticated connection set");
     let browser_id = connection.browser_id.clone();
     let connection_id = connection.connection_id.clone();
@@ -483,7 +516,8 @@ async fn run_socket(
       loop {
         tokio::select! {
             outbound = connection.receiver.recv() => {
-                let Some(event) = outbound else { break; };
+                let Some(mut event) = outbound else { break; };
+                event.0.version = protocol_version;
                 send_envelope(&mut sink, &event.0).await?;
             }
             inbound = source.next() => {
@@ -491,7 +525,12 @@ async fn run_socket(
                 let message = inbound.map_err(|_| labby_browser::BrowserError::ConnectionClosed)?;
                 let Message::Text(text) = message else { continue; };
                 let envelope: BrowserEnvelope = serde_json::from_str(text.as_str())?;
-                envelope.validate_version()?;
+                envelope.validate_server_version()?;
+                if envelope.version != protocol_version {
+                    return Err(labby_browser::BrowserError::InvalidRequest(
+                        "browser protocol version changed during connection".to_string(),
+                    ));
+                }
                 let request_id = envelope.request_id.clone();
                 let received = match envelope.message {
                     BrowserMessage::Heartbeat => "heartbeat",
@@ -502,12 +541,12 @@ async fn run_socket(
                         "tool_completion"
                     }
                     _ => {
-                        send_envelope(&mut sink, &BrowserEnvelope::new(request_id, BrowserMessage::Error { kind: "invalid_message_for_state".to_string(), message: "message is not valid after authentication".to_string() })).await?;
+                        send_envelope(&mut sink, &BrowserEnvelope::for_version(protocol_version, request_id, BrowserMessage::Error { kind: "invalid_message_for_state".to_string(), message: "message is not valid after authentication".to_string() })).await?;
                         continue;
                     },
                 };
                 if request_id.is_some() {
-                    send_envelope(&mut sink, &BrowserEnvelope::new(request_id, BrowserMessage::Acknowledged { received: received.to_string() })).await?;
+                    send_envelope(&mut sink, &BrowserEnvelope::for_version(protocol_version, request_id, BrowserMessage::Acknowledged { received: received.to_string() })).await?;
                 }
             }
         }
@@ -530,12 +569,24 @@ async fn run_socket(
     }
 }
 
-fn authentication_failed(request_id: Option<String>) -> BrowserEnvelope {
-    BrowserEnvelope::new(
+fn authentication_failed(protocol_version: u32, request_id: Option<String>) -> BrowserEnvelope {
+    BrowserEnvelope::for_version(
+        protocol_version,
         request_id,
         BrowserMessage::Error {
             kind: "auth_failed".to_string(),
             message: "browser authentication failed".to_string(),
+        },
+    )
+}
+
+fn protocol_upgrade_required(protocol_version: u32, request_id: Option<String>) -> BrowserEnvelope {
+    BrowserEnvelope::for_version(
+        protocol_version,
+        request_id,
+        BrowserMessage::Error {
+            kind: "protocol_upgrade_required".to_string(),
+            message: "browser pairing requires protocol version 2".to_string(),
         },
     )
 }

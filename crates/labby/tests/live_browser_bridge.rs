@@ -21,8 +21,8 @@ type Socket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpS
 const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn send(socket: &mut Socket, mut value: Value) {
-    value["version"] = json!(2);
+async fn send_version(socket: &mut Socket, version: u32, mut value: Value) {
+    value["version"] = json!(version);
     value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -30,6 +30,10 @@ async fn send(socket: &mut Socket, mut value: Value) {
         ))
         .await
         .unwrap();
+}
+
+async fn send(socket: &mut Socket, value: Value) {
+    send_version(socket, 2, value).await;
 }
 
 async fn receive(socket: &mut Socket) -> Value {
@@ -160,6 +164,29 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .expect("pairing fingerprint");
     assert_eq!(pairing_fingerprint.len(), 12);
 
+    let mut legacy_request = socket_url.clone().into_client_request().unwrap();
+    legacy_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut legacy_socket, _) = tokio_tungstenite::connect_async(legacy_request)
+        .await
+        .unwrap();
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({
+            "type":"pairing_request", "display_name":"Legacy client",
+            "extension_id":EXTENSION,
+            "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+        }),
+    )
+    .await;
+    let legacy_pairing = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_pairing["version"], 1);
+    assert_eq!(legacy_pairing["type"], "error");
+    assert_eq!(legacy_pairing["kind"], "protocol_upgrade_required");
+
     let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(
         "Origin",
@@ -192,6 +219,40 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     ))
     .await;
     let browser_id = approved["id"].as_str().expect("approved browser identity");
+
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({"type":"auth_challenge","browser_id":browser_id}),
+    )
+    .await;
+    let legacy_nonce = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_nonce["version"], 1);
+    assert_eq!(legacy_nonce["type"], "auth_nonce");
+    let legacy_signature = signing.sign(
+        &URL_SAFE_NO_PAD
+            .decode(legacy_nonce["nonce"].as_str().unwrap())
+            .unwrap(),
+    );
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({
+            "type":"auth_response",
+            "challenge_id":legacy_nonce["challenge_id"],
+            "signature":URL_SAFE_NO_PAD.encode(legacy_signature.to_bytes())
+        }),
+    )
+    .await;
+    let legacy_authenticated = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_authenticated["version"], 1);
+    assert_eq!(legacy_authenticated["type"], "authenticated");
+    send_version(&mut legacy_socket, 1, json!({"type":"heartbeat"})).await;
+    let legacy_heartbeat = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_heartbeat["version"], 1);
+    assert_eq!(legacy_heartbeat["type"], "acknowledged");
+    legacy_socket.close(None).await.unwrap();
+
     send(
         &mut socket,
         json!({"type":"auth_challenge","browser_id":browser_id}),
