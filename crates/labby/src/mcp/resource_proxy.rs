@@ -34,6 +34,49 @@ use crate::mcp::resource_errors::render as resource_render_error;
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
+    /// Warm only regular resource upstreams before taking a listing snapshot.
+    /// Relay and OAuth peers are separate and must not become global discovery.
+    pub(crate) async fn ensure_resource_upstreams_ready(&self, pool: &Arc<UpstreamPool>) {
+        let Some(manager) = &self.gateway_manager else {
+            return;
+        };
+        let config = manager.current_config().await;
+        let concurrency = crate::dispatch::upstream::pool::upstream_discovery_concurrency(
+            config.gateway.upstream_discovery_concurrency,
+        );
+        let upstreams = config.upstream.into_iter().filter(|upstream| {
+            upstream.enabled
+                && upstream.proxy_resources
+                && upstream.oauth.is_none()
+                && self.route_scope.allows_upstream(&upstream.name)
+        });
+        use futures::StreamExt as _;
+        let mut discoveries = futures::stream::iter(upstreams)
+            .map(|upstream| async move {
+                // Resource-only servers may have no tools. An existing peer is
+                // sufficient; do not reconnect them on every resource listing.
+                if pool
+                    .upstream_runtime_metadata(&upstream.name)
+                    .await
+                    .is_some()
+                {
+                    return;
+                }
+                if let Err(error) = pool.ensure_tools_for_upstream(&upstream, None, None).await {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "labby",
+                        action = "list_resources",
+                        upstream = %upstream.name,
+                        error = %error,
+                        "resource upstream discovery failed"
+                    );
+                }
+            })
+            .buffer_unordered(concurrency);
+        while discoveries.next().await.is_some() {}
+    }
+
     /// Gateway-synthetic resource branch (`lab://gateway/...`). Returns
     /// unconditionally; the caller invokes this only when the URI prefix
     /// matches.

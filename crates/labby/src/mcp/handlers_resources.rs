@@ -976,6 +976,7 @@ impl LabMcpServer {
         if !resources.finished()
             && let Some(pool) = self.current_upstream_pool().await
         {
+            self.ensure_resource_upstreams_ready(&pool).await;
             for resource in pool
                 .gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
                 .await
@@ -2797,6 +2798,129 @@ mod tests {
 
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    #[derive(Clone)]
+    struct ColdResourceServer;
+
+    impl ServerHandler for ColdResourceServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(
+                ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_resources()
+                    .build(),
+            )
+        }
+
+        async fn list_resources(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new("qa-vm-service://skill", "skill"),
+                Resource::new("qa-vm-service://private", "private"),
+            ]))
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_resource_listing_discovers_only_allowed_resource_upstreams() {
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = StreamableHttpService::new(
+            || Ok(ColdResourceServer),
+            Arc::new(NeverSessionManager::default()),
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(vec![address.to_string()])
+                .with_json_response(true),
+        );
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+                .await
+                .unwrap();
+        });
+        for route in [
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "qa",
+                ["qa-vm-service"],
+                std::iter::empty::<&str>(),
+                false,
+            ),
+        ] {
+            let restricted = !route.is_root();
+            let configs = ["qa-vm-service", "not-exposed", "outside-route"].map(|name| {
+                serde_json::from_value::<crate::config::UpstreamConfig>(json!({
+                    "name": name, "enabled": true, "url": format!("http://{address}/mcp"),
+                    "proxy_resources": name != "not-exposed",
+                    "expose_resources": ["qa-vm-service://skill"]
+                }))
+                .unwrap()
+            });
+            let pool = Arc::new(UpstreamPool::new());
+            pool.seed_lazy_upstreams(&configs).await;
+            let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+            runtime.swap(Some(Arc::clone(&pool))).await;
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    std::path::PathBuf::from("config.toml"),
+                    runtime,
+                ),
+            );
+            let mut config = crate::config::LabConfig::default();
+            config.code_mode.enabled = true;
+            config.upstream = configs.into();
+            manager
+                .seed_config_unchecked_for_tests(config.to_gateway_config())
+                .await;
+            let mut server = code_mode_server_with_scope(route).await;
+            server.gateway_manager = Some(manager);
+            let (transport, _client) = tokio::io::duplex(64);
+            let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                server, transport, None,
+            );
+            let result = running
+                .service()
+                .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+                .await
+                .unwrap();
+            let proxied: Vec<_> = result
+                .resources
+                .iter()
+                .filter(|resource| resource.uri.starts_with("lab://upstream/"))
+                .map(|resource| resource.uri.as_str())
+                .collect();
+            if restricted {
+                assert_eq!(
+                    proxied,
+                    ["lab://upstream/qa-vm-service/qa-vm-service://skill"]
+                );
+                assert!(
+                    pool.upstream_runtime_metadata("outside-route")
+                        .await
+                        .is_none()
+                );
+            } else {
+                assert_eq!(
+                    proxied,
+                    [
+                        "lab://upstream/outside-route/qa-vm-service://skill",
+                        "lab://upstream/qa-vm-service/qa-vm-service://skill",
+                    ]
+                );
+            }
+            assert!(
+                pool.upstream_runtime_metadata("not-exposed")
+                    .await
+                    .is_none()
+            );
+        }
+        upstream_task.abort();
+    }
 
     #[test]
     fn builtin_action_resource_parser_accepts_only_exact_canonical_family() {
