@@ -72,6 +72,28 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.16.0](https://github.com/dinglebear-ai/labby/compare/v1.15.1...v1.16.0) (2026-09-11)
+
+
+### Added
+
+* **depot:** add full administration control plane ([#567](https://github.com/dinglebear-ai/labby/issues/567)) ([c83333c](https://github.com/dinglebear-ai/labby/commit/c83333c8bc1704a804801cdb2c480b09d1ddc438))
+
+
+### Fixed
+
+* **auth:** support Codex native loopback OAuth redirects ([#573](https://github.com/dinglebear-ai/labby/issues/573)) ([163ef53](https://github.com/dinglebear-ai/labby/commit/163ef53fbe3943c723ff76b2495e8b10d184332b))
+* **cli:** report rejected gateway config as invalid_param instead of panicking ([#580](https://github.com/dinglebear-ai/labby/issues/580)) ([f56822e](https://github.com/dinglebear-ai/labby/commit/f56822ef1b521dd3dde9501867f15e1ac2cca09e))
+* **codemode:** bound one-shot CLI catalog cold connects and persist partial results ([#579](https://github.com/dinglebear-ai/labby/issues/579)) ([f66a3b7](https://github.com/dinglebear-ai/labby/commit/f66a3b7737dec95a111f87c632daba33d0098ad1))
+* **codemode:** discover read-ready upstream resource URIs ([#592](https://github.com/dinglebear-ai/labby/issues/592)) ([5c6af13](https://github.com/dinglebear-ai/labby/commit/5c6af131d1cdf2a23a86eb1a215ac1748068bd06))
+* **codemode:** negative-cache failed one-shot catalog upstream probes ([#584](https://github.com/dinglebear-ai/labby/issues/584)) ([d29bb30](https://github.com/dinglebear-ai/labby/commit/d29bb308465c82245638227b40a16a349bf3b929))
+* **deploy:** keep the team-labby example route loadable on current main ([#585](https://github.com/dinglebear-ai/labby/issues/585)) ([00b375f](https://github.com/dinglebear-ai/labby/commit/00b375ff34ba87776dfc3a2486c741dc33d84dfc))
+* **file-stash:** own the upload reservation in the spawned finalize task ([#590](https://github.com/dinglebear-ai/labby/issues/590)) ([2fb1f86](https://github.com/dinglebear-ai/labby/commit/2fb1f8626cf85c15b6ddf16ea049fba44a2cd08f))
+* **gateway:** classify stdio lifecycle from the MCP error, not child stderr ([#586](https://github.com/dinglebear-ai/labby/issues/586)) ([60cf776](https://github.com/dinglebear-ai/labby/commit/60cf7764c8553bd737054544eae3690e8464974c))
+* **gateway:** do not respawn stdio upstreams that exit before the handshake ([#582](https://github.com/dinglebear-ai/labby/issues/582)) ([9f7fb59](https://github.com/dinglebear-ai/labby/commit/9f7fb592f1da476a859df6958941e622242554a5))
+* preserve Skills over MCP across client and server transports ([#571](https://github.com/dinglebear-ai/labby/issues/571)) ([b6ad223](https://github.com/dinglebear-ai/labby/commit/b6ad2238518300138627624191eab302c54f01ab))
+* **release:** test joined output in the Windows packaged smoke ([#599](https://github.com/dinglebear-ai/labby/issues/599)) ([3d34d2b](https://github.com/dinglebear-ai/labby/commit/3d34d2bab02a0f29ec6948beb5ba257d3e47c6ee))
+
 ## [1.15.1](https://github.com/dinglebear-ai/labby/compare/v1.15.0...v1.15.1) (2026-09-05)
 
 
