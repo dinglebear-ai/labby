@@ -282,6 +282,38 @@ fn shared_rust_setup_does_not_require_desktop_packages() {
 }
 
 #[test]
+fn verification_workspace_changes_route_to_their_own_job_only() {
+    // `verification/` is a separate Cargo workspace that matches none of the
+    // `rust_sources` prefixes, so without a dedicated routing key a change
+    // confined to it would enable nothing and CI would report green having
+    // built and tested none of it.
+    let out = classify(
+        "pull_request",
+        &[
+            "verification/crates/verify-core/src/lib.rs",
+            "verification/Cargo.toml",
+        ],
+    );
+    assert_eq!(out["verification"], "true");
+    // The toolkit is not the product: it must not drag in the product Rust
+    // matrix, the web build, or the container smoke.
+    assert_eq!(out["rust_compile"], "false");
+    assert_eq!(out["rust_test"], "false");
+    assert_eq!(out["web"], "false");
+    assert_eq!(out["docker"], "false");
+    assert_eq!(out["release"], "false");
+}
+
+#[test]
+fn product_changes_do_not_enable_the_verification_workspace_job() {
+    // The inverse direction: the two workspaces are independent, so a product
+    // source edit has no reason to rebuild the toolkit.
+    let out = classify("pull_request", &["crates/labby/src/lib.rs"]);
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["verification"], "false");
+}
+
+#[test]
 fn docs_only_changes_skip_expensive_runtime_categories() {
     let out = classify("pull_request", &["docs/runtime/CICD.md", "docs/README.md"]);
     assert_eq!(out["docs"], "true");

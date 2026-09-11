@@ -1,0 +1,25 @@
+[package]
+name = "verify-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["verification", "replay", "cli", "testing"]
+categories = ["development-tools"]
+publish = false
+description = "Target registry, replay engine, and the `verify` command line."
+
+[dependencies]
+verify-core = { workspace = true }
+verify-scenario = { workspace = true }
+verify-report = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

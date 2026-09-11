@@ -1,0 +1,69 @@
+# Verification toolkit workspace.
+#
+# This is deliberately a SEPARATE Cargo workspace from the product workspace at
+# the repository root. Backend adapters (Stateright, Kani, Loom, Alloy, TLC)
+# arrive in later milestones and drag in Java/CBMC-adjacent dependency trees;
+# keeping them out of `cargo check --workspace --all-features` is the whole
+# point of the split. See docs/plans/verification-toolkit/SPEC.md §14.
+#
+# The root workspace needs no `exclude` entry: its `members` list is explicit,
+# and a directory that declares its own `[workspace]` is resolved independently.
+#
+# rust-toolchain.toml at the repository root applies to this subdirectory too,
+# so there is no second toolchain file and no way for the two workspaces to
+# drift onto different compilers.
+[workspace]
+resolver = "3"
+members = [
+  "crates/verify-core",
+  "crates/verify-scenario",
+  "crates/verify-report",
+  "crates/verify-runner",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-only"
+repository = "https://github.com/dinglebear-ai/labby"
+authors = ["jmagar"]
+
+[workspace.dependencies]
+verify-core = { path = "crates/verify-core" }
+verify-scenario = { path = "crates/verify-scenario" }
+verify-report = { path = "crates/verify-report" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+thiserror = "2"
+sha2 = "0.11"
+clap = { version = "4", features = ["derive"] }
+schemars = "1.2"
+insta = { version = "1", features = ["json"] }
+
+# Mirrors [workspace.lints.clippy] in the root Cargo.toml. The two tables are
+# intentionally kept in sync: a contributor moving between the workspaces should
+# not meet different lint rules. clippy.toml at the repository root is found by
+# walking up from each crate, so the `#[async_trait]` ban applies here with no
+# duplication.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+mod_module_files = "deny"
+disallowed_macros = "deny"
+disallowed_methods = "deny"
+missing_safety_doc = "deny"
+
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+multiple_crate_versions = "allow"

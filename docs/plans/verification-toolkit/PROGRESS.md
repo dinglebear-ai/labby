@@ -8,7 +8,7 @@
       production incidents reduce to the same artifact.
 - [x] Agreed a cross-backend spec DSL is out of scope.
 - [x] Researched and pinned candidate upstream versions (SPEC §3.1).
-- [ ] M0 incubation workspace.
+- [x] M0 incubation workspace, CI routing key, and `just verify-*` recipes.
 - [ ] M1 core vocabulary and catalog.
 - [ ] M2 scenario format and replay engine.
 - [ ] M3 first Labby model (`crates/labby-model`, request lifecycle).
@@ -17,6 +17,29 @@
 - [ ] M6 Loom/Shuttle, Kani, TLA+, Alloy backends.
 - [ ] M7 incident-to-scenario pipeline.
 - [ ] M8 second adopter and extraction decision.
+
+## Decisions Made During M0
+
+1. **No `exclude` in the root manifest.** Verified empirically: with an explicit
+   `members` list, the root workspace ignores a nested directory that declares
+   its own `[workspace]`. The product `Cargo.toml` is untouched.
+2. **`verification` is its own CI routing key**, not an extension of
+   `rust_sources`. A product change should not build the toolkit and a toolkit
+   change should not run the full product Rust matrix. Without the key a
+   verification-only change routed to nothing and CI reported green having built
+   nothing; `crates/labby/tests/ci_changed_paths.rs` now guards both directions.
+3. **`cargo deny` runs against `verification/Cargo.lock` in that job.** The root
+   `deny` recipe reads only the root lockfile.
+4. **SHA-256 (`s256:`) fingerprints, not blake3.** `sha2` is already pinned in
+   the root workspace; a dedup hash does not justify a new dependency family.
+5. **`verify-report` exists from M2, not M5.** SPEC §3 has `verify-runner`
+   depending on it and `ReplayReport` has to live somewhere; starting it minimal
+   avoids moving a public type later.
+6. **`DynTarget` bridges object safety.** `ScenarioTarget` has associated types,
+   so the registry holds an object-safe erased trait with a blanket impl.
+   Projects never see it.
+7. **Normalization is split across two crates.** The replay-driven passes cannot
+   live in `verify-scenario` without a dependency cycle.
 
 ## Open Decisions
 

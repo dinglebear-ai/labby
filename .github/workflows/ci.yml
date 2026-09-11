@@ -94,6 +94,7 @@ jobs:
       security: ${{ steps.classify.outputs.security }}
       javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
       release: ${{ steps.classify.outputs.release }}
+      verification: ${{ steps.classify.outputs.verification }}
       # Comma-separated routing keys this workflow gates on that the trusted
       # base-branch classifier could not emit. The classify step already forced
       # them to `true`; this output only reports the drift to `ci-gate`.
@@ -945,6 +946,32 @@ jobs:
           install_args: just
       - run: just docs-check
 
+  verification:
+    name: Verification workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: changes
+    # `verification/` is a separate Cargo workspace, so none of the product Rust
+    # jobs above touch it. Without this job and its routing key a change
+    # confined to that directory would build and test nothing while CI reported
+    # green. See verification/CLAUDE.md.
+    if: ${{ needs.changes.outputs.verification == 'true' || needs.changes.outputs.workflow == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just
+      - run: just verify-lint
+      - run: just verify-check
+      - run: just verify-test
+      # The root `Cargo Deny` job reads the root lockfile only and never sees
+      # verification/Cargo.lock. A license gate nobody runs is worse than none.
+      - run: just verify-deny
+
   rustdoc:
     name: Rustdoc
     runs-on: ubuntu-24.04
@@ -1634,6 +1661,7 @@ jobs:
       - extracted-crate-slices
       - docs-check
       - rustdoc
+      - verification
       - clippy
       - test
       - test-windows
