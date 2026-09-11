@@ -185,16 +185,20 @@ jobs:
           LABBY_CODE_MODE_POOL_SIZE: "0"
         run: |
           $ErrorActionPreference = "Stop"
-          $output = & ".\dist\${{ matrix.binary }}" --json gateway code exec --code "async () => ({ ok: true, sum: 1 + 1 })"
+          # Native output is captured as an array of lines. On an array, -notmatch
+          # returns the non-matching lines, so it is truthy for any multi-line
+          # output even when the expected text is present. Out-String joins the
+          # lines so each check tests one string.
+          $output = & ".\dist\${{ matrix.binary }}" --json gateway code exec --code "async () => ({ ok: true, sum: 1 + 1 })" | Out-String
           if ($LASTEXITCODE -ne 0) {
             throw "Code Mode packaged smoke failed with exit code $LASTEXITCODE"
           }
           if ($output -notmatch '"sum":2') {
             throw "Code Mode packaged smoke did not return expected result: $output"
           }
-          $skillsHelp = & ".\dist\${{ matrix.binary }}" skills --help
+          $skillsHelp = & ".\dist\${{ matrix.binary }}" skills --help | Out-String
           if ($LASTEXITCODE -ne 0 -or $skillsHelp -notmatch 'Read Agent Skills visible to the local CLI') {
-            throw "Packaged binary does not expose the required Skills surface"
+            throw "Packaged binary does not expose the required Skills surface: $skillsHelp"
           }
 
       - name: Attest exact platform candidate archive
