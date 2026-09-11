@@ -1,0 +1,156 @@
+name: N-1 rehearsal (temporary, never merge)
+
+# Throwaway branch-only workflow. It replays release.yml's
+# upgrade-qualification legs against the already built and attested v1.16.1
+# candidate (release run 34638681150), with the N-1 baseline the new resolver
+# picks from published releases. It publishes nothing and exists only on the
+# rehearsal/n1-v1.13.3 branch.
+on:
+  push:
+    branches: [rehearsal/n1-v1.13.3]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CANDIDATE_TAG: v1.16.1
+  CANDIDATE_RUN_ID: "34638681150"
+
+jobs:
+  rehearse:
+    name: N-1 rehearsal (${{ matrix.deployment }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deployment: unix
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: windows
+            runner: windows-latest
+            artifact: lab-x86_64-pc-windows-msvc
+            archive: lab-x86_64-pc-windows-msvc.zip
+            binary: labby.exe
+          - deployment: incus
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: host-service
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download exact tested candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ matrix.artifact }}
+          path: candidate-archive
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Verify exact archive provenance before extraction
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_NAME: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          archive="$GITHUB_WORKSPACE/candidate-archive/$ARCHIVE_NAME"
+          sidecar="$archive.sha256"
+          scripts/ci/verify-release-provenance.sh \
+            --repo "$GITHUB_REPOSITORY" --workflow release.yml \
+            --ref "refs/tags/$CANDIDATE_TAG" --artifact "$archive"
+          expected=$(awk '{print $1}' "$sidecar")
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$archive" | awk '{print $1}')
+          else
+            actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+          fi
+          [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
+          {
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE=$archive"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256=$actual"
+          } >> "$GITHUB_ENV"
+      - name: Bind qualification to candidate binary and digest
+        shell: bash
+        env:
+          ARCHIVE_NAME: ${{ matrix.archive }}
+          BINARY_NAME: ${{ matrix.binary }}
+        run: |
+          set -euo pipefail
+          mkdir candidate
+          case "$ARCHIVE_NAME" in
+            *.zip) unzip -q "candidate-archive/$ARCHIVE_NAME" -d candidate ;;
+            *.tar.gz) tar -C candidate -xzf "candidate-archive/$ARCHIVE_NAME" ;;
+            *) echo "::error::unsupported candidate archive"; exit 1 ;;
+          esac
+          candidate="$GITHUB_WORKSPACE/candidate/$BINARY_NAME"
+          test -f "$candidate"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest=$(sha256sum "$candidate" | awk '{print $1}')
+          else
+            digest=$(shasum -a 256 "$candidate" | awk '{print $1}')
+          fi
+          binding="$RUNNER_TEMP/labby-candidate-binding.json"
+          python3 - "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE" \
+            "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256" "$candidate" "$digest" "$binding" <<'PY'
+          import json, pathlib, sys
+          archive, archive_sha256, binary, binary_sha256, output = sys.argv[1:]
+          pathlib.Path(output).write_text(json.dumps({
+              "attested_archive": {"path": archive, "sha256": archive_sha256},
+              "extracted_binary": {"path": binary, "sha256": binary_sha256},
+          }, sort_keys=True) + "\n")
+          PY
+          {
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_BINARY=$candidate"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_SHA256=$digest"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_BINDING=$binding"
+          } >> "$GITHUB_ENV"
+      - name: Resolve N-1 release
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          releases="$RUNNER_TEMP/labby-releases.json"
+          merged="$RUNNER_TEMP/labby-merged-tags.txt"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$releases"
+          git tag --merged "$CANDIDATE_TAG" 'v*' >"$merged"
+          previous=$(python3 scripts/ci/resolve-n-minus-one-baseline.py \
+            --candidate "$CANDIDATE_TAG" --releases "$releases" --merged-tags "$merged" \
+            --asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256")
+          test -n "$previous"
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+      - name: N-1 stateful upgrade and rollback qualification
+        shell: bash
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          LABBY_N_MINUS_ONE_INSTALL_PREVIOUS: scripts/ci/n-minus-one/${{ matrix.deployment }} install-previous
+          LABBY_N_MINUS_ONE_SEED_STATE: scripts/ci/n-minus-one/${{ matrix.deployment }} seed-state
+          LABBY_N_MINUS_ONE_VERIFY_PREVIOUS: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-previous
+          LABBY_N_MINUS_ONE_VERIFY_PROVENANCE: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-provenance
+          LABBY_N_MINUS_ONE_UPGRADE: scripts/ci/n-minus-one/${{ matrix.deployment }} upgrade
+          LABBY_N_MINUS_ONE_VERIFY_CANDIDATE: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-candidate
+          LABBY_N_MINUS_ONE_AUTHENTICATED_ACTION: scripts/ci/n-minus-one/${{ matrix.deployment }} authenticated-action
+          LABBY_N_MINUS_ONE_RESTART: scripts/ci/n-minus-one/${{ matrix.deployment }} restart
+          LABBY_N_MINUS_ONE_VERIFY_RESTART: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-restart
+          LABBY_N_MINUS_ONE_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} rollback
+          LABBY_N_MINUS_ONE_VERIFY_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-rollback
+        # The adapters read GITHUB_REF for candidate provenance; point it at the
+        # candidate tag, as the real tag-push run would.
+        run: |
+          GITHUB_REF="refs/tags/$CANDIDATE_TAG" GITHUB_REF_NAME="$CANDIDATE_TAG" \
+            scripts/ci/qualify-n-minus-one.sh "$DEPLOYMENT" "$PREVIOUS_TAG" "$CANDIDATE_TAG"
