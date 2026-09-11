@@ -12,7 +12,8 @@ test('profile table expands existing controls without inventing endpoint health 
   installTestDom()
   const view = await renderClient(<LoadoutProfileLayout view="table" loadouts={[loadout]} routes={[]} routeStateUnavailable={false}><button>Existing edit control</button></LoadoutProfileLayout>)
   try {
-    assert.match(view.container.textContent ?? '', /Calls 24h/)
+    // No column promises call metrics that this tree does not collect.
+    assert.doesNotMatch(view.container.textContent ?? '', /Calls 24h/)
     assert.match(view.container.textContent ?? '', /Not hosted/)
     assert.doesNotMatch(view.container.textContent ?? '', /Endpoint live|Existing edit control/)
     const toggle = view.container.querySelector('button')!
