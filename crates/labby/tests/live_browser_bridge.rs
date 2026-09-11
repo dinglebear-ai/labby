@@ -198,8 +198,6 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     assert_eq!(legacy_status["type"], "pairing_pending");
     assert_eq!(legacy_status["pairing_id"], pending["pairing_id"]);
     assert_eq!(legacy_status["pairing_fingerprint"], pairing_fingerprint);
-    legacy_socket.close(None).await.unwrap();
-
     let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(
         "Origin",
@@ -531,7 +529,7 @@ async fn pairing_creation_is_rate_limited_per_client() {
         .await
         .expect("rate-limited socket must terminate promptly");
     match terminal {
-        None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
+        None | Some(Err(_) | Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
         Some(Ok(message)) => panic!("rate-limited pairing unexpectedly received {message:?}"),
     }
     assert!(guard.finish().await.failures.is_empty());

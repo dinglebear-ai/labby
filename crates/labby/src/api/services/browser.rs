@@ -627,8 +627,11 @@ mod tests {
         {
             let mut clients = PREAUTH_CLIENTS.lock().unwrap();
             let state = clients.get_mut(&ip).unwrap();
-            state.pairing_window_started =
-                Some(Instant::now() - PAIRING_REQUEST_WINDOW - Duration::from_secs(1));
+            state.pairing_window_started = Some(
+                Instant::now()
+                    .checked_sub(PAIRING_REQUEST_WINDOW + Duration::from_secs(1))
+                    .expect("pairing window fits within monotonic clock"),
+            );
         }
         permit.reserve_pairing_request().unwrap().commit().unwrap();
         drop(permit);
@@ -642,8 +645,11 @@ mod tests {
         let held = permit.reserve_pairing_request().unwrap();
         {
             let mut clients = PREAUTH_CLIENTS.lock().unwrap();
-            clients.get_mut(&ip).unwrap().pairing_window_started =
-                Some(Instant::now() - PAIRING_REQUEST_WINDOW - Duration::from_secs(1));
+            clients.get_mut(&ip).unwrap().pairing_window_started = Some(
+                Instant::now()
+                    .checked_sub(PAIRING_REQUEST_WINDOW + Duration::from_secs(1))
+                    .expect("pairing window fits within monotonic clock"),
+            );
         }
         for _ in 1..MAX_PAIRING_REQUESTS_PER_CLIENT {
             permit.reserve_pairing_request().unwrap().commit().unwrap();
