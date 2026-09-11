@@ -36,7 +36,7 @@ function worker({
   });
   const source = readFileSync(new URL("../src/service_worker.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace(/\ninitialize\(\);\s*$/, "");
-  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, handleUiMessage, handleServerEvent, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }, pairingPollActive() { return pairingPollTimer !== undefined; }, clearPairingPoll() { clearTimeout(pairingPollTimer); pairingPollTimer = undefined; }};`, context);
+  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, handleUiMessage, handleServerEvent, schedulePairingPoll, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }, pairingPollActive() { return pairingPollTimer !== undefined; }, pairingPollHandle() { return pairingPollTimer; }, clearPairingPoll() { clearTimeout(pairingPollTimer); pairingPollTimer = undefined; }};`, context);
   context.handlers.observations.set(7, {tab_id: 7, document_id: "doc", tools: []});
   context.handlers.storageWrites = storageWrites;
   return context.handlers;
@@ -79,6 +79,18 @@ test("connected resync cannot erase a pairing started by a newer generation", as
   settings.resolve({pairingId: "new-pair"});
   await resuming;
   assert.deepEqual(handlers.storageWrites, []);
+});
+
+test("stale scheduling cannot replace the current pairing poll", () => {
+  const handlers = worker();
+  handlers.advancePairingGeneration();
+  const expiresAt = Math.floor(Date.now() / 1000) + 60;
+  handlers.schedulePairingPoll(expiresAt, handlers.pairingGeneration());
+  const current = handlers.pairingPollHandle();
+  assert.ok(current);
+  handlers.schedulePairingPoll(expiresAt, 0);
+  assert.equal(handlers.pairingPollHandle(), current);
+  handlers.clearPairingPoll();
 });
 
 test("failed replacement pairing restores polling for the prior association", async () => {

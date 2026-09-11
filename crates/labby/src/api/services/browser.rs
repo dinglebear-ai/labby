@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use futures::{SinkExt as _, StreamExt as _};
-use labby_browser::{BrowserEnvelope, BrowserMessage, LEGACY_PROTOCOL_VERSION, PairingStatus};
+use labby_browser::{BrowserEnvelope, BrowserMessage, PairingStatus};
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -176,7 +176,7 @@ fn admission_client_ip(
             .and_then(|value| value.to_str().ok())
     {
         return forwarded
-            .rsplit(',')
+            .split(',')
             .next()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -370,11 +370,6 @@ async fn run_socket(
         };
         let request_id = envelope.request_id.clone();
         let reply = match envelope.message {
-            BrowserMessage::PairingRequest { .. } | BrowserMessage::PairingStatus { .. }
-                if protocol_version == LEGACY_PROTOCOL_VERSION =>
-            {
-                protocol_upgrade_required(protocol_version, request_id)
-            }
             BrowserMessage::PairingRequest {
                 display_name,
                 extension_id: claimed_extension_id,
@@ -580,17 +575,6 @@ fn authentication_failed(protocol_version: u32, request_id: Option<String>) -> B
     )
 }
 
-fn protocol_upgrade_required(protocol_version: u32, request_id: Option<String>) -> BrowserEnvelope {
-    BrowserEnvelope::for_version(
-        protocol_version,
-        request_id,
-        BrowserMessage::Error {
-            kind: "protocol_upgrade_required".to_string(),
-            message: "browser pairing requires protocol version 2".to_string(),
-        },
-    )
-}
-
 async fn send_envelope(
     sink: &mut futures::stream::SplitSink<WebSocket, Message>,
     envelope: &BrowserEnvelope,
@@ -621,7 +605,7 @@ mod tests {
         );
         assert_eq!(
             admission_client_ip(&headers, true, Some(peer)),
-            Some("127.0.0.1".parse().unwrap())
+            Some("203.0.113.9".parse().unwrap())
         );
         headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
         assert_eq!(admission_client_ip(&headers, true, Some(peer)), None);

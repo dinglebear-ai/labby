@@ -238,6 +238,7 @@ async function resumeAndScan() {
 
 /** @param {number | undefined} expiresAt @param {number} [generation] */
 function schedulePairingPoll(expiresAt, generation = pairingGeneration) {
+  if (generation !== pairingGeneration) return;
   clearTimeout(pairingPollTimer);
   pairingPollExpiresAt = expiresAt ?? pairingPollExpiresAt;
   if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) {

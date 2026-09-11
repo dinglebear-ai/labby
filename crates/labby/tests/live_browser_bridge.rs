@@ -184,8 +184,21 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     .await;
     let legacy_pairing = receive(&mut legacy_socket).await;
     assert_eq!(legacy_pairing["version"], 1);
-    assert_eq!(legacy_pairing["type"], "error");
-    assert_eq!(legacy_pairing["kind"], "protocol_upgrade_required");
+    assert_eq!(legacy_pairing["type"], "pairing_pending");
+    assert_eq!(legacy_pairing["pairing_id"], pending["pairing_id"]);
+    assert_eq!(legacy_pairing["pairing_fingerprint"], pairing_fingerprint);
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({"type":"pairing_status","pairing_id":pending["pairing_id"]}),
+    )
+    .await;
+    let legacy_status = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_status["version"], 1);
+    assert_eq!(legacy_status["type"], "pairing_pending");
+    assert_eq!(legacy_status["pairing_id"], pending["pairing_id"]);
+    assert_eq!(legacy_status["pairing_fingerprint"], pairing_fingerprint);
+    legacy_socket.close(None).await.unwrap();
 
     let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
     other_extension_request.headers_mut().insert(
