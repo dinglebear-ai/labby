@@ -76,6 +76,12 @@ export async function bootstrapOwner(
       typeof payload?.message === 'string' && payload.message
         ? payload.message
         : `Owner bootstrap failed (HTTP ${response.status}).`
+    if (response.status === 409) {
+      // A conflict still opens the access store, and this identity may already
+      // hold owner authority through another linked identity. Reload so a
+      // session that is now ready replaces the setup screen.
+      await loadBrowserSession()
+    }
     throw new OwnerBootstrapError(response.status, message, kind)
   }
   if (payload?.status !== 'created' && payload?.status !== 'already_applied') {

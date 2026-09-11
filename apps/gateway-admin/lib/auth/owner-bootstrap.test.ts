@@ -62,24 +62,58 @@ test('bootstrapOwner posts trimmed names with the session CSRF token, then reloa
   assert.equal(getSessionAuthority()?.principalId, 'bootstrap-owner')
 })
 
-test('bootstrapOwner surfaces a conflict as an actionable error and leaves the session alone', async () => {
-  pendingOwnerSession()
-  let calls = 0
-  globalThis.fetch = (async () => {
-    calls += 1
-    return new Response(
-      JSON.stringify({ kind: 'conflict', message: 'access owner bootstrap conflicts with existing state' }),
-      { status: 409 },
-    )
+const pendingSessionBody = {
+  authenticated: true,
+  authority_state: 'transport',
+  authority: null,
+  remediation: 'Complete owner bootstrap to enable multi-user authority.',
+  user: { sub: 'owner-subject', email: 'owner@example.com' },
+  owner: null,
+  organization_id: null,
+  teams: [],
+  projects: [],
+  capabilities: [],
+  authority_generation: null,
+  expires_at: 125,
+  csrf_token: 'csrf-owner-2',
+}
+
+function conflictThenSession(sessionBody: unknown) {
+  const calls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url) === '/v1/access/bootstrap-owner') {
+      return new Response(
+        JSON.stringify({ kind: 'conflict', message: 'access owner bootstrap conflicts with existing state' }),
+        { status: 409 },
+      )
+    }
+    return new Response(JSON.stringify(sessionBody), { status: 200 })
   }) as FetchMock
+  return calls
+}
+
+test('bootstrapOwner surfaces a conflict as an actionable error without retrying', async () => {
+  pendingOwnerSession()
+  const calls = conflictThenSession(pendingSessionBody)
 
   await assert.rejects(
     bootstrapOwner({ organizationName: 'Local', projectName: 'Default' }),
     (error: unknown) => error instanceof OwnerBootstrapError && error.status === 409 && error.kind === 'conflict',
   )
-  assert.equal(calls, 1)
+  assert.deepEqual(calls, ['/v1/access/bootstrap-owner', '/auth/session'])
   const state = getBrowserSessionState()
   assert.equal(state.status === 'authenticated' ? state.authorityState : undefined, 'transport')
+})
+
+test('a conflict for an owner linked through another identity reloads into a ready session', async () => {
+  pendingOwnerSession()
+  conflictThenSession(readySession)
+
+  await assert.rejects(bootstrapOwner({ organizationName: 'Unraid', projectName: 'Team-Skills' }), OwnerBootstrapError)
+  const state = getBrowserSessionState()
+  assert.equal(state.status === 'authenticated' ? state.authorityState : undefined, 'ready')
+  assert.equal(getSessionAuthority()?.principalId, 'bootstrap-owner')
 })
 
 test('bootstrapOwner refuses to post without a CSRF token', async () => {
