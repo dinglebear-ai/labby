@@ -28,10 +28,21 @@ export async function probeWebMcp() {
   const context = document.modelContext;
   if (!context || typeof context.getTools !== "function") return {supported: false, tools: []};
   try {
+    /**
+     * @param {unknown} root
+     * @param {number} maxBytes
+     * @param {string} kind
+     * @returns {unknown}
+     */
     const boundedJson = (root, maxBytes, kind) => {
       const encoder = new TextEncoder();
       const active = new WeakSet();
       let nodes = 0;
+      /**
+       * @param {unknown} value
+       * @param {number} depth
+       * @returns {unknown}
+       */
       const visit = (value, depth) => {
         if (depth > 32 || ++nodes > 8192) throw new Error(kind);
         if (value === null || typeof value === "boolean") return value;
@@ -53,12 +64,13 @@ export async function probeWebMcp() {
         } else {
           cloned = {};
           let scanned = 0;
-          for (const key in value) {
+          const record = /** @type {Record<string, unknown>} */ (value);
+          for (const key in record) {
             if (++scanned > 8192) throw new Error(kind);
-            if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+            if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
             if (key.length > maxBytes) throw new Error(kind);
             Object.defineProperty(cloned, key, {
-              value: visit(value[key], depth + 1),
+              value: visit(record[key], depth + 1),
               enumerable: true,
               configurable: true,
               writable: true
@@ -83,6 +95,7 @@ export async function probeWebMcp() {
       // handled below. The snake_case read separately tolerates a browser
       // spelling the field differently. Rename `inputSchema` upstream and the
       // type check fails.
+      /** @type {unknown} */
       let inputSchema = tool.inputSchema ?? /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (tool)).input_schema ?? {};
       if (typeof inputSchema === "string") {
         if (inputSchema.length > 65_536) return [];
@@ -145,10 +158,21 @@ export async function probeWebMcp() {
  */
 export async function invokeWebMcp(toolName, input, callId, expectedCatalog, transportEnvelope = false) {
   try {
+  /**
+   * @param {unknown} root
+   * @param {number} maxBytes
+   * @param {string} kind
+   * @returns {unknown}
+   */
   const boundedJson = (root, maxBytes, kind) => {
     const encoder = new TextEncoder();
     const active = new WeakSet();
     let nodes = 0;
+    /**
+     * @param {unknown} value
+     * @param {number} depth
+     * @returns {unknown}
+     */
     const visit = (value, depth) => {
       if (depth > 32 || ++nodes > 8192) throw new Error(kind);
       if (value === null || typeof value === "boolean") return value;
@@ -170,12 +194,13 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
       } else {
         cloned = {};
         let scanned = 0;
-        for (const key in value) {
+        const record = /** @type {Record<string, unknown>} */ (value);
+        for (const key in record) {
           if (++scanned > 8192) throw new Error(kind);
-          if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+          if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
           if (key.length > maxBytes) throw new Error(kind);
           Object.defineProperty(cloned, key, {
-            value: visit(value[key], depth + 1),
+            value: visit(record[key], depth + 1),
             enumerable: true,
             configurable: true,
             writable: true
@@ -228,6 +253,7 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
     const normalized = tools.slice(0, 64).flatMap((tool) => {
       if (!tool || typeof tool.name !== "string") return [];
       if (tool.name.length < 1 || tool.name.length > 128) return [];
+      /** @type {unknown} */
       let schema = tool.inputSchema ?? /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (tool)).input_schema ?? {};
       if (typeof schema === "string") {
         if (schema.length > 65_536) return [];
