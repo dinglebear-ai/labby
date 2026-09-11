@@ -885,9 +885,9 @@ jobs:
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
       - name: Run standalone skills-slice regressions
         if: matrix.slice == 'skills'
-        run: >-
-          cargo test -p labby --no-default-features --features skills --locked
-          skills::
+        run: |
+          cargo test -p labby --no-default-features --features skills --locked skills::
+          cargo test -p labby --no-default-features --features skills --locked skill_library
 
   extracted-crate-slices:
     name: Extracted crate slices

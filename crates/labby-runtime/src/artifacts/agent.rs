@@ -104,7 +104,7 @@ pub fn materialize_logical_agent(
     }
     let (yaml, body) = split_frontmatter(&file.content)?;
     let frontmatter: AgentFrontmatter =
-        serde_yaml_ng::from_str(yaml).map_err(|_| invalid("frontmatter", "invalid_yaml"))?;
+        serde_saphyr::from_str(yaml).map_err(|_| invalid("frontmatter", "invalid_yaml"))?;
     if frontmatter.name != name {
         return Err(invalid("name", "frontmatter_mismatch"));
     }

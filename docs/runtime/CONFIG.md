@@ -94,7 +94,7 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[[protected_mcp_routes]]`: route-scoped OAuth resource servers.
 - `[[virtual_servers]]`: virtual servers backed by registered Labby services.
 - `[public_urls]`: canonical external URLs.
-- `[[skill_library.sources]]`: server-owned exact Artifact acquisition
+- `[[artifacts.sources]]`: server-owned exact Artifact acquisition
   connections used by durable Skill Library imports.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
@@ -264,11 +264,11 @@ journals and recovery checks remain active on both platforms.
 
 `proxy_skills` is live MCP catalog federation; it does not install anything.
 To make a Depot Skill survive a Depot outage or Labby restart, configure an
-exact acquisition source and call `skill_library.import`, followed by the
-separate `skill_library.activate` mutation.
+exact acquisition source and call `artifacts.import`, followed by the
+separate `artifacts.activate` mutation.
 
 ```toml
-[[skill_library.sources]]
+[[artifacts.sources]]
 id = "unraid-team-depot"
 kind = "depot"
 endpoint = "https://depot.example.invalid/artifacts/acquire"
@@ -288,13 +288,13 @@ URLs, digest mismatches, and oversized responses. Put the bearer value in
 UNRAID_TEAM_DEPOT_TOKEN=replace-with-the-worker-machine-token
 ```
 
-With a Labby OAuth or configured static bearer identity, call `skill_library.list`
+With a Labby OAuth or configured static bearer identity, call `artifacts.list`
 to obtain its current `library_version`. Then submit the immutable Depot Artifact
-and `sha256:` revision through `POST /v1/skills`, including both required request
+and `sha256:` revision through `POST /v1/artifacts`, including both required request
 headers:
 
 ```sh
-curl --request POST https://labby.example.invalid/v1/skills \
+curl --request POST https://labby.example.invalid/v1/artifacts \
   --header "Authorization: Bearer $LABBY_CLIENT_TOKEN" \
   --header "X-Labby-Project-Id: $LABBY_PROJECT_ID" \
   --header "Content-Type: application/json" \
@@ -306,8 +306,8 @@ access. The bearer above is the inbound caller credential, not
 `UNRAID_TEAM_DEPOT_TOKEN`; the latter remains server-held and is used only for
 Labby-to-Depot acquisition. A project product credential is bound to its
 configured protected MCP resource and therefore must invoke the same
-`skill_library.import` tool through that protected MCP route, not through the
-generic `/v1/skills` endpoint.
+`artifacts.import` tool through that protected MCP route, not through the
+generic `/v1/artifacts` endpoint.
 
 The ProductCredential route must expose the skills service through its bound
 loadout:
@@ -341,7 +341,7 @@ activation, and other mutations require `lab` or `lab:admin`.
 
 ```json
 {
-  "action": "skill_library.import",
+  "action": "artifacts.import",
   "params": {
     "source": {
       "kind": "depot",
@@ -357,7 +357,7 @@ activation, and other mutations require `lab` or `lab:admin`.
 
 The import receipt identifies the locally persisted revision but leaves it
 inactive. Use the returned library version as `expected_library_version` in an
-explicit `skill_library.activate` request. Reuse the same idempotency key when
+explicit `artifacts.activate` request. Reuse the same idempotency key when
 reconciling an uncertain response; do not mint a new key until the prior result
 is known.
 
