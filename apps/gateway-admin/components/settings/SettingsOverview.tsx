@@ -120,7 +120,7 @@ export function SettingsOverview({ console }: { console: ReactNode }): React.Rea
   }, [])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 4 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <SettingsOverviewCards snapshot={snapshot} console={console} />
     </div>
   )

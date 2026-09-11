@@ -45,6 +45,9 @@ test('settings overview follows the mock Gateway, Console, Diagnostics order', a
       'Usage Telemetry',
     ])
     assert.ok(switches.every((element) => element.getAttribute('aria-readonly') === 'true'))
+    const values = Array.from(view.container.querySelectorAll('code'))
+    assert.equal(values.length, 2)
+    assert.ok(values.every((element) => element.style.lineHeight === 'normal'))
   } finally {
     await view.unmount()
   }

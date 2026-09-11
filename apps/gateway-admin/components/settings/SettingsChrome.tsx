@@ -103,6 +103,7 @@ export const SETTINGS_VALUE_STYLE: CSSProperties = {
   flexShrink: 0,
   fontFamily: 'inherit',
   fontSize: 11,
+  lineHeight: 'normal',
   color: 'var(--aurora-text-muted)',
 }
 
@@ -255,7 +256,7 @@ export function SettingsRow({
   return (
     <div style={ROW_STYLE}>
       {labelBlock}
-      {control ? <div style={{ flexShrink: 0 }}>{control}</div> : null}
+      {control ? <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{control}</div> : null}
       {children}
     </div>
   )

@@ -19,8 +19,6 @@ import {
   Zap,
 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -182,6 +180,9 @@ function UsageExplorer() {
   const showIps = collected?.ips ?? false
   const showTokens = collected?.tokens ?? false
   const tableColumns = 7 + Number(showTokens)
+  const activityGridColumns = showTokens
+    ? '96px minmax(0, 1.6fr) minmax(0, 1fr) 70px 110px 80px 80px 80px'
+    : '96px minmax(0, 1.6fr) minmax(0, 1fr) 70px 110px 80px 80px'
 
   const filtered = data?.filtered ?? 0
   const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
@@ -193,46 +194,46 @@ function UsageExplorer() {
       label: 'Matched',
       tone: 'var(--aurora-accent-strong)',
       value: data ? formatCompactNumber(data.filtered) : '—',
-      icon: <Activity size={12} strokeWidth={1.8} />,
+      icon: <Activity size={11} strokeWidth={1.8} />,
     },
     {
       label: 'In window',
       value: data ? formatCompactNumber(data.total) : '—',
-      icon: <Clock size={12} strokeWidth={1.8} />,
+      icon: <Clock size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Failed',
       tone: 'var(--aurora-error)',
       value: data ? formatCompactNumber(data.analytics.failed) : '—',
-      icon: <AlertTriangle size={12} strokeWidth={1.8} />,
+      icon: <AlertTriangle size={11} strokeWidth={1.8} />,
     },
     {
       label: 'P95 latency',
       tone: 'var(--aurora-warn)',
       value: data ? formatDuration(data.analytics.p95_elapsed_ms) : '—',
-      icon: <Gauge size={12} strokeWidth={1.8} />,
+      icon: <Gauge size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Peak / min',
       tone: 'var(--aurora-success)',
       value: data ? formatCompactNumber(data.analytics.peak_per_min) : '—',
-      icon: <Zap size={12} strokeWidth={1.8} />,
+      icon: <Zap size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Targets',
       value: data ? data.facets.tools.length : '—',
-      icon: <Wrench size={12} strokeWidth={1.8} />,
+      icon: <Wrench size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Agents',
       tone: 'var(--aurora-accent-pink)',
       value: data ? data.facets.agents.length : '—',
-      icon: <Users size={12} strokeWidth={1.8} />,
+      icon: <Users size={11} strokeWidth={1.8} />,
     },
     ...(showIps ? [{
       label: 'Source IPs',
       value: data ? data.facets.ips.length : '—',
-      icon: <Network size={12} strokeWidth={1.8} />,
+      icon: <Network size={11} strokeWidth={1.8} />,
     }] : []),
   ]
 
@@ -275,7 +276,7 @@ function UsageExplorer() {
     <>
       <AppHeader icon={<Activity className="size-3.5" />} breadcrumbs={[{ label: 'Activity' }]} />
 
-      <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
+      <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)} style={{ gap: 14 }}>
         {/* Hero — the mock's eyebrow + title + action cluster with the stat
             strip welded to the card's bottom edge, not floating cards. */}
         <ConsoleHero
@@ -303,44 +304,70 @@ function UsageExplorer() {
           </div>
         ) : null}
 
+        {hasTimeSlice ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 9,
+              padding: '9px 14px',
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid color-mix(in srgb, var(--aurora-accent-primary) 25%, transparent)',
+              background: 'color-mix(in srgb, var(--aurora-accent-primary) 5%, var(--aurora-panel-strong))',
+              fontSize: 12,
+            }}
+          >
+            <Clock size={13} strokeWidth={1.8} className="shrink-0 text-aurora-accent-strong" />
+            <span className="text-aurora-text-primary">
+              Time slice: {sinceMs ? formatSliceTime(sinceMs) : 'window start'} → {untilMs ? formatSliceTime(untilMs) : 'now'}
+            </span>
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              onClick={() => { setSinceMs(undefined); setUntilMs(undefined); resetPaging() }}
+              className="inline-flex items-center gap-[5px] rounded-[7px] px-[9px] text-[11.5px] font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
+              style={{ height: 26 }}
+            >
+              <X size={11} strokeWidth={2} /> Clear slice
+            </button>
+          </div>
+        ) : null}
+
         <DashboardPanel
           title="Upstream calls"
           iconVariant="plain"
           icon={<SlidersHorizontal className="size-4" />}
           meta={`${tableMeta} · ${WINDOW_LABELS[window]}`}
+          headerStyle={{ padding: '10px 15px', lineHeight: 'normal' }}
+          titleStyle={{ fontSize: 9.5, lineHeight: 'normal', letterSpacing: '0.13em' }}
+          metaStyle={{ fontSize: 11, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}
+          bodyStyle={{ padding: 0, gap: 0 }}
         >
           <div className="space-y-3">
-            {hasTimeSlice ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-aurora-accent-primary/25 bg-aurora-accent-primary/5 px-3 py-2 text-xs">
-                <Clock className="size-3.5 text-aurora-accent-strong" />
-                <span className="text-aurora-text-primary">
-                  Time slice: {sinceMs ? formatSliceTime(sinceMs) : 'window start'} → {untilMs ? formatSliceTime(untilMs) : 'now'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => { setSinceMs(undefined); setUntilMs(undefined); resetPaging() }}
-                  className="ml-auto inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
-                >
-                  <X className="size-3.5" /> Clear slice
-                </button>
-              </div>
-            ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
-              <div className="relative min-w-0">
-                <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted" />
-                <Input name="search" aria-label="Search upstream calls" value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-[34px] pl-9 text-[12.5px]" />
+            <div data-activity-filters="1" className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+              <div className="flex h-[36px] min-w-0 items-center gap-2 rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px]">
+                <Search aria-hidden="true" className="size-3.5 shrink-0 text-aurora-text-muted" strokeWidth={1.7} />
+                <input
+                  name="search"
+                  aria-label="Search upstream calls"
+                  value={search}
+                  onChange={(event) => { setSearch(event.target.value); resetPaging() }}
+                  placeholder="Search target, operation, agent, error…"
+                  className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted"
+                  style={{ height: 17, lineHeight: 'normal' }}
+                />
               </div>
               <Select value={upstream} onValueChange={(value) => { setUpstream(value); resetPaging() }}>
-                <SelectTrigger aria-label="Server" className="h-[34px] w-full text-xs"><SelectValue placeholder="Server" /></SelectTrigger>
+                <SelectTrigger aria-label="Server" style={{ height: 34 }} className="w-full gap-[6px] rounded-[9px] border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold shadow-none [&_svg]:size-[11px]"><SelectValue placeholder="Server" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All servers</SelectItem>{upstreamOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
               </Select>
               <Select value={outcome} onValueChange={(value) => { setOutcome(value); if (value !== 'failed') setErrorKind(ALL); resetPaging() }}>
-                <SelectTrigger aria-label="Outcome" className="h-[34px] w-full text-xs"><SelectValue placeholder="Outcome" /></SelectTrigger>
+                <SelectTrigger aria-label="Outcome" style={{ height: 34 }} className="w-full gap-[6px] rounded-[9px] border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold shadow-none [&_svg]:size-[11px]"><SelectValue placeholder="Outcome" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
               </Select>
               <details className="group relative">
-                <summary className="flex h-[34px] cursor-pointer list-none items-center justify-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-xs font-medium text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden">
-                  <SlidersHorizontal className="size-3.5" /> More filters
+                <summary className="flex h-[34px] min-w-[115.765625px] cursor-pointer list-none items-center justify-center gap-[6px] rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold leading-normal text-aurora-text-primary hover:border-aurora-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden">
+                  <SlidersHorizontal className="size-[13px]" strokeWidth={1.8} /> More filters
                 </summary>
                 <div className="absolute right-0 z-30 mt-2 grid w-[min(44rem,85vw)] grid-cols-2 gap-2 rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-aurora-panel md:grid-cols-3">
                   <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
@@ -354,26 +381,35 @@ function UsageExplorer() {
               </details>
             </div>
           </div>
-          <div className="my-3 border-t border-aurora-border-subtle" />
           <div className="md:hidden">
             <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} onSelectCall={setSelectedCall} />
           </div>
           {/* Dense desktop table. Phones get purpose-built cards above instead of horizontal scrolling. */}
-          <div className="aurora-scrollbar hidden overflow-x-auto md:block" style={{ margin: '-12px -14px' }}>
-            <Table data-density="default" className="table-fixed text-xs [&_th]:h-8 [&_th]:text-[9.5px] [&_td]:h-11 [&_td]:py-[7px] [&_td]:px-[15px]">
-              <TableHeader>
-                <TableRow>
+          <div className="aurora-scrollbar hidden overflow-x-auto md:block">
+            <Table data-density="default" className="block w-full text-xs [&_th]:h-auto [&_th]:p-0 [&_th]:text-[9px] [&_th]:leading-normal [&_td]:h-auto [&_td]:p-0">
+              <TableHeader className="block bg-[var(--gw0-0_30)]">
+                <TableRow
+                  className="w-full border-b-0 bg-[var(--gw0-0_30)]"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: activityGridColumns,
+                    gap: 12,
+                    height: 28,
+                    padding: '8px 15px',
+                    borderTop: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+                  }}
+                >
                   <TableHead className="w-[96px]">Time</TableHead>
                   <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead className="w-[80px]">Surface</TableHead>
+                  <TableHead className="w-[70px]">Surface</TableHead>
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
-                  <TableHead className="w-[90px] text-right">Response</TableHead>
-                  <TableHead className="w-[90px] text-right">Latency</TableHead>
+                  <TableHead className="w-[80px] text-right">Response</TableHead>
+                  <TableHead className="w-[80px] text-right">Latency</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="block">
                 {error && !data ? (
                   <TableRow>
                       <TableCell colSpan={tableColumns} className="py-8 text-center">
@@ -404,7 +440,16 @@ function UsageExplorer() {
                   data.calls.map((call) => (
                     <TableRow
                       key={call.id}
-                      className="cursor-pointer"
+                      className="cursor-pointer border-t border-b-0 border-aurora-border-default/35 odd:bg-[var(--gw1-0_62)] even:bg-[var(--gw2-0_55)] hover:!bg-aurora-hover-bg"
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: activityGridColumns,
+                        gap: 12,
+                        alignItems: 'center',
+                        width: '100%',
+                        height: 59,
+                        padding: '7px 15px',
+                      }}
                       tabIndex={0}
                       aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')}`}
                       onClick={(event) => {
@@ -464,35 +509,56 @@ function UsageExplorer() {
         </DashboardPanel>
 
         {/* Cursor pagination keeps deep pages O(page size), even over large retained windows. */}
-        {pageIndex > 0 || data?.next_cursor ? (
-          <div className="flex items-center justify-between gap-2 sm:justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              className="min-h-10 flex-1 sm:h-8 sm:min-h-8 sm:flex-none"
-              disabled={pageIndex === 0}
-              onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
-            >
-              <ChevronLeft className="size-4" /> Prev
-            </Button>
-            <span className="hidden text-xs text-aurora-text-muted sm:inline">Page {pageIndex + 1}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="min-h-10 flex-1 sm:h-8 sm:min-h-8 sm:flex-none"
-              disabled={!data?.next_cursor}
-              onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
-            >
-              Next <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        ) : null}
-
-        <div>
-          <Button variant="ghost" size="sm" asChild>
-            <Link href="/">← Back to overview</Link>
-          </Button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            type="button"
+            disabled={pageIndex === 0}
+            onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
+              background: 'var(--aurora-control-surface)',
+              color: 'var(--aurora-text-muted)',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: 'pointer',
+              opacity: pageIndex === 0 ? 0.4 : 1,
+            }}
+          >
+            <ChevronLeft size={12} strokeWidth={2} /> Prev
+          </button>
+          <span style={{ fontSize: 11, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}>Page {pageIndex + 1}</span>
+          <button
+            type="button"
+            disabled={!data?.next_cursor}
+            onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
+              background: 'var(--aurora-control-surface)',
+              color: 'var(--aurora-text-muted)',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: 'pointer',
+              opacity: data?.next_cursor ? 1 : 0.4,
+            }}
+          >
+            Next <ChevronRight size={12} strokeWidth={2} />
+          </button>
         </div>
+
       </div>
 
       <UsageCallDetail

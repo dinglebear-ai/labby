@@ -125,7 +125,7 @@ export function ConsoleHero({
             {title}
           </h1>
           {description ? (
-            <div style={{ marginTop: compact ? 4 : 8, maxWidth: compact ? 560 : 660, fontSize: 12.5, lineHeight: compact ? 1.45 : 1.55, color: 'var(--aurora-text-muted)' }}>
+            <div style={{ marginTop: compact ? 4 : 7, maxWidth: 560, fontSize: 12.5, lineHeight: compact ? 1.45 : 1.55, color: 'var(--aurora-text-muted)' }}>
               {description}
             </div>
           ) : null}
@@ -142,11 +142,11 @@ export function ConsoleHero({
       {stats || children ? (
         <div
           style={{
-            padding: compact ? '11px 12px 12px' : '12px 14px',
+            padding: '11px 12px 12px',
             marginTop: compact ? 14 : undefined,
             borderTop:
               '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-            background: compact ? undefined : 'var(--gw0-0_28)',
+            background: compact ? undefined : 'var(--gw0-0_30)',
             borderRadius: '0 0 var(--radius-3) var(--radius-3)',
           }}
         >
@@ -166,6 +166,10 @@ export function ConsoleHero({
                   data-console-hero-stat={stat.label}
                   style={{
                     minWidth: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    lineHeight: 'normal',
                     padding: '2px 12px',
                     borderRight:
                       index === stats.length - 1
@@ -203,7 +207,6 @@ export function ConsoleHero({
                   <div
                     data-console-hero-stat-value="1"
                     style={{
-                      marginTop: 6,
                       fontFamily: 'var(--font-display)',
                       fontSize: 21,
                       lineHeight: 1,

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 /**
@@ -18,6 +18,10 @@ export function DashboardPanel({
   action,
   className,
   bodyClassName,
+  headerStyle,
+  titleStyle,
+  metaStyle,
+  bodyStyle,
   variant = 'card',
   children,
 }: {
@@ -29,6 +33,10 @@ export function DashboardPanel({
   action?: ReactNode
   className?: string
   bodyClassName?: string
+  headerStyle?: CSSProperties
+  titleStyle?: CSSProperties
+  metaStyle?: CSSProperties
+  bodyStyle?: CSSProperties
   variant?: 'card' | 'inline'
   children: ReactNode
 }) {
@@ -57,6 +65,7 @@ export function DashboardPanel({
           borderBottom:
             '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
           background: variant === 'inline' ? 'var(--gw0-0_30)' : 'var(--gw0-0_38)',
+          ...headerStyle,
         }}
       >
         {icon ? (
@@ -71,6 +80,7 @@ export function DashboardPanel({
             letterSpacing: '0.14em',
             textTransform: 'uppercase',
             color: 'var(--aurora-text-muted)',
+            ...titleStyle,
           }}
         >
           {title}
@@ -83,6 +93,7 @@ export function DashboardPanel({
               color: 'color-mix(in srgb, var(--aurora-text-muted) 80%, transparent)',
               fontVariantNumeric: 'tabular-nums',
               flexShrink: 0,
+              ...metaStyle,
             }}
           >
             {meta}
@@ -94,7 +105,7 @@ export function DashboardPanel({
       <div
         data-panel-body="1"
         className={bodyClassName}
-        style={{ display: 'flex', flexDirection: 'column', gap: variant === 'inline' ? 11 : 9, padding: variant === 'inline' ? '12px 16px 14px' : '12px 14px' }}
+        style={{ display: 'flex', flexDirection: 'column', gap: variant === 'inline' ? 11 : 9, padding: variant === 'inline' ? '12px 16px 14px' : '12px 14px', ...bodyStyle }}
       >
         {children}
       </div>

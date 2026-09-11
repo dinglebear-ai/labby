@@ -35,6 +35,14 @@ test('metric units stay separate from values and are omitted when not supplied',
   assert.match(markup, />Not reported<\/div>/)
 })
 
+test('default hero uses the measured full-screen description and stat strip geometry', () => {
+  const markup = renderToStaticMarkup(<ConsoleHero eyebrow="Observe" title="Usage Explorer" description="Reference description" stats={[{ label: 'Matched', value: 3 }]} />)
+  assert.match(markup, /margin-top:7px;max-width:560px/)
+  assert.match(markup, /padding:11px 12px 12px/)
+  assert.match(markup, /background:var\(--gw0-0_30\)/)
+  assert.match(markup, /display:flex;flex-direction:column;gap:6px;line-height:normal/)
+})
+
 test('Discover uses the compact reference hero without changing other pages', () => {
   const markup = renderToStaticMarkup(<ConsoleHero variant="discover" eyebrow="Depot" title="Discover" icon={<svg />} description="Reference description" stats={[{ label: 'Indexed', value: 26 }]}><div data-search-slot="true" /></ConsoleHero>)
   assert.match(markup, /data-console-hero-variant="discover"/)
