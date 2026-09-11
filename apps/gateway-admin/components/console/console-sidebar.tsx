@@ -50,8 +50,8 @@ const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
-const SIDEBAR_WIDTH_EXPANDED = '236px'
-const SIDEBAR_WIDTH_COLLAPSED = '52px'
+const SIDEBAR_WIDTH_EXPANDED = '224px'
+const SIDEBAR_WIDTH_COLLAPSED = '58px'
 
 /** The sidebar's own tinted plate — the mock lifts it off the page background. */
 const SIDEBAR_BG = 'color-mix(in srgb, #0f2334 48%, transparent)'
@@ -537,10 +537,10 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 9,
-          width: placement === 'topbar' ? 38 : '100%',
-          height: placement === 'topbar' ? 38 : undefined,
-          padding: placement === 'topbar' ? 3 : '7px 8px',
+          gap: placement === 'topbar' ? 7 : 9,
+          width: placement === 'topbar' ? 60 : '100%',
+          height: placement === 'topbar' ? 36 : undefined,
+          padding: placement === 'topbar' ? '3px 8px 3px 3px' : '7px 8px',
           borderRadius: placement === 'topbar' ? 999 : 'var(--radius-1)',
           border: `1px solid ${
             hovered
@@ -566,8 +566,8 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
           }
           style={{
             position: 'relative',
-            width: 30,
-            height: 30,
+            width: placement === 'topbar' ? 28 : 30,
+            height: placement === 'topbar' ? 28 : 30,
             flexShrink: 0,
             borderRadius: 999,
             display: 'grid',
@@ -594,6 +594,10 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
             }}
           />
         </div>
+
+        {placement === 'topbar' ? (
+          <ChevronDown size={12} strokeWidth={1.8} style={{ flexShrink: 0, color: 'var(--aurora-text-muted)' }} />
+        ) : null}
 
         {collapsed ? null : (
           <>
@@ -976,7 +980,11 @@ export function ConsoleSidebar() {
             type="button"
             aria-label="Switch workspace"
             aria-expanded={workspaceOpen}
-            onClick={() => setWorkspaceOpen((value) => !value)}
+            onClick={() => {
+              // The menu only has room on the expanded rail, so open the rail first.
+              if (visuallyCollapsed) { toggleCollapsed(); setWorkspaceOpen(true); return }
+              setWorkspaceOpen((value) => !value)
+            }}
             style={{
               width: '100%', minHeight: visuallyCollapsed ? 40 : 38, borderRadius: 10,
               border: workspaceOpen ? '1px solid var(--aurora-warn)' : '1px solid color-mix(in srgb, var(--aurora-border-strong) 75%, transparent)',

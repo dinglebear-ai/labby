@@ -1,61 +1,24 @@
 'use client'
 
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from '@/components/ui/chart'
 import type { ToolUsageEntry } from '@/lib/types/metrics'
 
-const CONFIG: ChartConfig = {
-  calls: { label: 'Calls', color: 'var(--aurora-accent-primary)' },
-}
-
-export function TopToolsChart({
-  tools,
-  onSelect,
-}: {
-  tools: ToolUsageEntry[]
-  onSelect?: (tool: string) => void
-}) {
-  const rows = tools.map((tool) => ({
-    id: tool.id ?? tool.name,
-    name: tool.label ?? tool.name,
-    tool: tool.name,
-    calls: tool.calls,
-  }))
-
-  return (
-    <ChartContainer config={CONFIG} className="aspect-auto h-[200px] w-full">
-      <BarChart
-        data={rows}
-        layout="vertical"
-        margin={{ left: 8, right: 16, top: 4, bottom: 0 }}
-      >
-        <CartesianGrid horizontal={false} strokeDasharray="3 3" />
-        <XAxis type="number" hide />
-        <YAxis
-          dataKey="name"
-          type="category"
-          tickLine={false}
-          axisLine={false}
-          width={96}
-          tickMargin={6}
-          className="font-mono text-[11px]"
-        />
-        <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-        <Bar
-          dataKey="calls"
-          fill="var(--color-calls)"
-          radius={[0, 6, 6, 0]}
-          barSize={18}
-          isAnimationActive={false}
-          className={onSelect ? 'cursor-pointer' : undefined}
-          onClick={onSelect ? (entry: { tool?: string }) => entry?.tool && onSelect(entry.tool) : undefined}
-        />
-      </BarChart>
-    </ChartContainer>
-  )
+export function TopToolsChart({ tools, onSelect }: { tools: ToolUsageEntry[]; onSelect?: (tool: string) => void }) {
+  const maximum = Math.max(0, ...tools.map(tool => tool.calls))
+  return <ol aria-label="Top tools by supplied order" className="flex min-w-0 flex-col gap-2.5">
+    {tools.map((tool, index) => {
+      const label = tool.label ?? tool.name
+      const content = <>
+        <span className="mb-1 flex min-w-0 items-baseline gap-2">
+          <span className="w-[18px] shrink-0 text-[10px] font-semibold tabular-nums text-aurora-text-muted">{index + 1}</span>
+          <span title={label} className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-aurora-text-primary">{label}</span>
+          {tool.failed > 0 ? <span className="shrink-0 text-[10px] font-semibold tabular-nums text-aurora-error">{tool.failed} failed</span> : null}
+          <span className="shrink-0 text-[11px] font-semibold tabular-nums text-aurora-text-muted">{tool.calls.toLocaleString('en-US')}</span>
+        </span>
+        <span aria-hidden="true" className="ml-[26px] block h-1 overflow-hidden rounded-full bg-aurora-control-surface"><span className="block h-full rounded-full bg-gradient-to-r from-aurora-accent-deep to-aurora-accent-primary" style={{ width: `${maximum > 0 ? Math.max(0, tool.calls) / maximum * 100 : 0}%` }}/></span>
+      </>
+      return <li key={tool.id ?? tool.name} className="min-w-0">{onSelect
+        ? <button type="button" onClick={() => onSelect(tool.name)} aria-label={`Inspect ${label}: ${tool.calls} calls, ${tool.failed} failed`} className="-mx-2 block w-[calc(100%+16px)] min-w-0 rounded-lg px-2 py-1 text-left hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{content}</button>
+        : <div className="min-w-0 py-1">{content}</div>}</li>
+    })}
+  </ol>
 }

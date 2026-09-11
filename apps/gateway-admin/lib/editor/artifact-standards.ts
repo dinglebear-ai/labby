@@ -6,6 +6,7 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export interface ArtifactMetadata {
   name: string
   description: string
+  tags: string[]
   license: string
   compatibility: string
   allowedTools: string
@@ -37,9 +38,19 @@ function yamlScalar(value: string): string {
   return JSON.stringify(value)
 }
 
+/** Trims, strips a leading `#`, drops empties, and dedupes while preserving first-seen order. */
+export function normalizeArtifactTags(tags: readonly string[]): string[] {
+  return Array.from(new Set(tags.map(tag => tag.trim().replace(/^#/, '')).filter(Boolean)))
+}
+
+export const ARTIFACT_TAG_LIMIT = 64
+export const ARTIFACT_TAG_MAX_BYTES = 64
+
 export function composeArtifactSource(kind: ArtifactKind, metadata: ArtifactMetadata, content: string): string {
   if (!MARKDOWN_KINDS.has(kind)) return content
   const lines = ['---', `name: ${yamlScalar(metadata.name.trim())}`, `description: ${yamlScalar(metadata.description.trim())}`]
+  const tags = normalizeArtifactTags(metadata.tags)
+  if (tags.length) lines.push(`tags: [${tags.map(tag => /^[a-z0-9][a-z0-9-]*$/.test(tag) ? tag : yamlScalar(tag)).join(', ')}]`)
   if (metadata.license.trim()) lines.push(`license: ${yamlScalar(metadata.license.trim())}`)
   if (metadata.compatibility.trim()) lines.push(`compatibility: ${yamlScalar(metadata.compatibility.trim())}`)
   if (metadata.allowedTools.trim()) lines.push(`allowed-tools: ${yamlScalar(metadata.allowedTools.trim())}`)
@@ -71,6 +82,11 @@ export function validateArtifactDraft(kind: ArtifactKind, metadata: ArtifactMeta
   if (metadata.name.includes('/') || metadata.name.includes('\\')) {
     issues.push(issue('name', 'error', 'Names cannot contain path separators.'))
   }
+
+  // Depot bounds descriptor tags to 64 entries of 1–64 UTF-8 bytes; surface that before publishing.
+  const tags = normalizeArtifactTags(metadata.tags)
+  if (tags.length > ARTIFACT_TAG_LIMIT) issues.push(issue('tags', 'error', `Use at most ${ARTIFACT_TAG_LIMIT} tags.`))
+  if (tags.some(tag => new TextEncoder().encode(tag).length > ARTIFACT_TAG_MAX_BYTES)) issues.push(issue('tags', 'error', `Tags cannot exceed ${ARTIFACT_TAG_MAX_BYTES} bytes each.`))
 
   if (!content.trim()) {
     issues.push(issue('content', 'error', `${kind} content cannot be empty.`, content))

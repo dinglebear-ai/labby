@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { Suspense, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
   Activity,
@@ -35,7 +36,17 @@ function valueLabel(value: unknown): string {
 }
 
 export default function TracesPage() {
-  const [search, setSearch] = useState('')
+  return <Suspense fallback={null}><TracesRoute /></Suspense>
+}
+
+function TracesRoute() {
+  const params = useSearchParams()
+  const initialSearch = params.get('search') ?? ''
+  return <TracesExplorer key={initialSearch} initialSearch={initialSearch} />
+}
+
+function TracesExplorer({ initialSearch }: { initialSearch: string }) {
+  const [search, setSearch] = useState(initialSearch)
   const { data, error, isLoading, isValidating, mutate } = useSWR(
     ['server-traces', TRACE_QUERY_LIMIT],
     () => queryServerLogs({
@@ -65,8 +76,8 @@ export default function TracesPage() {
     : summary.traces
 
   const heroStats = [
-    { label: 'Requests', value: summary.total, icon: <GitBranch size={12} /> },
-    { label: 'Failed', value: summary.failed, icon: <AlertTriangle size={12} /> },
+    { label: 'Requests', value: summary.total, icon: <GitBranch size={12} />, tone: 'var(--aurora-accent-strong)' },
+    { label: 'Failed', value: summary.failed, icon: <AlertTriangle size={12} />, tone: 'var(--aurora-error)' },
     { label: 'P50', value: formatDuration(summary.p50_ms), icon: <Clock3 size={12} /> },
     { label: 'P95', value: formatDuration(summary.p95_ms), icon: <Activity size={12} /> },
     { label: 'Upstreams', value: summary.upstreams.length, icon: <Network size={12} /> },
@@ -79,28 +90,32 @@ export default function TracesPage() {
         <ConsoleHero
           eyebrow="Observe"
           title="Request Traces"
+          description="Correlated request flows reconstructed from the retained server log window. Requires the lab:admin scope."
+          pulse={{ color: 'var(--aurora-accent-primary)', label: `correlated_only · ${TRACE_QUERY_LIMIT} line window` }}
           actions={
             <Button variant="outline" size="sm" onClick={() => void mutate()} disabled={isValidating}>
-              <RefreshCw className={cn('mr-2 size-4', isValidating && 'animate-spin')} />
+              <RefreshCw className={cn('size-3.5', isValidating && 'animate-spin')} />
               Refresh
             </Button>
           }
           stats={heroStats}
         />
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="grid items-start gap-3.5 xl:grid-cols-[minmax(0,1fr)_280px]">
           <DashboardPanel
             title="Request flow"
             icon={<GitBranch className="size-4" />}
             meta={data?.truncated ? 'Bounded log sample' : `${traces.length} correlated requests`}
           >
-            <div className="relative mb-3">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
+            <div className="relative">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted" />
               <Input
+                name="search"
+                aria-label="Search request traces"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search request, service, action, upstream, or error…"
-                className="pl-9"
+                className="h-[34px] pl-9 text-[12.5px]"
               />
             </div>
 
@@ -117,13 +132,13 @@ export default function TracesPage() {
                 {isLoading ? 'Loading retained traces…' : 'No request traces match this search.'}
               </div>
             ) : (
-              <div className="divide-y divide-aurora-border-subtle overflow-hidden rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-low/55">
+              <div className="-mx-3.5 -mb-3 divide-y divide-aurora-border-subtle" data-density="comfortable">
                 {traces.map((trace) => (
                   <details
                     key={trace.id}
                     className="group overflow-hidden transition-colors open:bg-aurora-selected-bg/35 hover:bg-aurora-hover-bg"
                   >
-                    <summary className="grid min-h-14 cursor-pointer list-none grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] items-center gap-3 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                    <summary className="grid min-h-[52px] cursor-pointer list-none grid-cols-[60px_minmax(0,1fr)_54px_14px] items-center gap-2 px-[15px] py-[9px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary sm:grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] sm:gap-3 [&::-webkit-details-marker]:hidden">
                       <span className="text-[11px] tabular-nums text-aurora-text-muted">
                         {formatRelativeTime(trace.started_at)}
                       </span>
@@ -141,11 +156,11 @@ export default function TracesPage() {
                           {trace.id} {trace.upstreams.length > 0 ? `· ${trace.upstreams.join(', ')}` : ''}
                         </span>
                       </span>
-                      <Badge variant="outline" className="justify-self-start">{trace.surface}</Badge>
+                      <Badge variant="outline" className="hidden h-[18px] justify-self-start px-[7px] text-[9px] sm:inline-flex">{trace.surface}</Badge>
                       <span className="text-right text-[11px] tabular-nums text-aurora-text-muted">{formatDuration(trace.elapsed_ms)}</span>
-                      <ChevronRight className="size-4 text-aurora-text-muted transition-transform group-open:rotate-90" />
+                      <ChevronRight className="size-3.5 text-aurora-text-muted transition-transform group-open:rotate-90" />
                     </summary>
-                    <div className="border-t border-aurora-border-subtle bg-aurora-page-bg/25 px-4 py-4">
+                    <div className="border-t border-aurora-border-subtle bg-aurora-page-bg/25 px-4 pb-4 pt-3">
                       <div className="mb-3 flex flex-wrap gap-2 text-[10px] text-aurora-text-muted">
                         <Badge variant="outline">{trace.events.length} events</Badge>
                         {trace.actor_key ? <Badge variant="outline">actor {trace.actor_key.slice(0, 12)}</Badge> : null}
@@ -184,7 +199,7 @@ export default function TracesPage() {
             )}
           </DashboardPanel>
 
-          <div className="space-y-4">
+          <div className="space-y-3">
             <DashboardPanel title="Surfaces" icon={<Activity className="size-4" />}>
               <RankedList items={summary.surfaces} empty="No surface fields in the retained window." />
             </DashboardPanel>

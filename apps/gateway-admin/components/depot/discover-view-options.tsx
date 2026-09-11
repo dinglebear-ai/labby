@@ -1,6 +1,6 @@
 'use client'
 
-import { Grid2X2, List, SlidersHorizontal } from 'lucide-react'
+import { Check, Grid2X2, List, ListCollapse, Rows2, Rows3, SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { DiscoverySort } from './discover-model'
@@ -17,20 +17,37 @@ export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density,
   setDensity: (value: DiscoveryDensity) => void
 }) {
   return <Popover>
-    <PopoverTrigger asChild><Button variant="outline" size="icon-sm" aria-label="Sort, density and layout"><SlidersHorizontal aria-hidden="true" className="size-4" /></Button></PopoverTrigger>
-    <PopoverContent align="end" aria-label="Sort, density and layout" className="w-80 max-w-[calc(100vw-2rem)] space-y-4 rounded-aurora-2 border-aurora-border-strong bg-aurora-panel-strong text-aurora-text-primary">
-      <label className="block space-y-2 text-sm">Sort retained results
-        <select value={sort} onChange={event => setSort(event.target.value as DiscoverySort)} className="block w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-2 text-aurora-text-primary">
-          <option value="catalog">Catalog order</option><option value="newest">Latest revision</option><option value="name">Name</option>
-        </select>
-      </label>
-      <fieldset className="space-y-2"><legend className="text-sm">Layout</legend><div className="flex gap-2">
-        {([['cards', Grid2X2], ['list', List]] as const).map(([value, Icon]) => <Button key={value} variant={layout === value ? 'secondary' : 'ghost'} aria-label={value === 'cards' ? 'Cards' : 'List'} aria-pressed={layout === value} onClick={() => setLayout(value)}><Icon aria-hidden="true" className="size-4" />{value}</Button>)}
-      </div></fieldset>
-      <fieldset className="space-y-2"><legend className="text-sm">Density</legend><div className="flex flex-wrap gap-2">
-        {(['compact', 'default', 'comfortable'] as const).map(value => <Button key={value} size="sm" variant={density === value ? 'secondary' : 'ghost'} aria-pressed={density === value} onClick={() => setDensity(value)}>{value === 'default' ? 'Default' : value === 'compact' ? 'Compact' : 'Comfortable'}</Button>)}
-      </div></fieldset>
-      <p className="text-xs text-aurora-text-muted">Sorting applies to loaded results, not the entire source catalog.</p>
+    <PopoverTrigger asChild><Button variant="outline" size="icon-sm" className="size-[26px] rounded-[8px]" aria-label="Sort, density and layout"><SlidersHorizontal aria-hidden="true" className="size-3" /></Button></PopoverTrigger>
+    <PopoverContent align="end" aria-label="Sort, density and layout" className="w-[220px] max-w-[calc(100vw-2rem)] space-y-3 rounded-[12px] border-aurora-border-strong bg-aurora-panel-strong p-2 text-aurora-text-primary">
+      <div role="group" aria-label="Sort retained results" className="space-y-0.5">
+        {([['catalog', 'Catalog order'], ['newest', 'Recently updated'], ['name', 'Name']] as const).map(([value, label]) => <Button
+          key={value} variant={sort === value ? 'secondary' : 'ghost'} data-visible-label
+          className="h-7 w-full justify-between rounded-[8px] px-[9px] text-xs font-semibold"
+          aria-pressed={sort === value} onClick={() => setSort(value)}
+        ><span>{label}</span>{sort === value ? <Check aria-hidden="true" className="size-3 text-aurora-accent-strong" /> : null}</Button>)}
+      </div>
+      <div className="mx-1.5 border-t border-aurora-border-default" />
+      <div role="group" aria-label="Density" className="flex items-center gap-2 px-2">
+        <span className="flex-1 text-[9px] font-bold uppercase tracking-[0.13em] text-aurora-text-muted">Density</span>
+        <div className="flex gap-[3px] rounded-[9px] border border-aurora-border-default bg-aurora-control-surface p-[3px]">
+          {([['compact', 'Compact', ListCollapse], ['default', 'Default', Rows3], ['comfortable', 'Comfortable', Rows2]] as const).map(([value, label, Icon]) => <Button
+            key={value} size="icon-sm" className="h-[22px] w-7 rounded-[6px]"
+            variant={density === value ? 'secondary' : 'ghost'} aria-label={label} title={label}
+            aria-pressed={density === value} onClick={() => setDensity(value)}
+          ><Icon aria-hidden="true" className="size-3.5" /></Button>)}
+        </div>
+      </div>
+      <div role="group" aria-label="Layout" className="flex items-center gap-2 px-2">
+        <span className="flex-1 text-[9px] font-bold uppercase tracking-[0.13em] text-aurora-text-muted">Layout</span>
+        <div className="flex gap-[3px] rounded-[9px] border border-aurora-border-default bg-aurora-control-surface p-[3px]">
+          {([['cards', 'Cards', Grid2X2], ['list', 'List', List]] as const).map(([value, label, Icon]) => <Button
+            key={value} size="icon-sm" className="h-[22px] w-7 rounded-[6px]"
+            variant={layout === value ? 'secondary' : 'ghost'} aria-label={label} title={label}
+            aria-pressed={layout === value} onClick={() => setLayout(value)}
+          ><Icon aria-hidden="true" className="size-3.5" /></Button>)}
+        </div>
+      </div>
+      <p className="px-2 text-[10px] leading-snug text-aurora-text-muted">Sorting applies to loaded results, not the entire source catalog.</p>
     </PopoverContent>
   </Popover>
 }

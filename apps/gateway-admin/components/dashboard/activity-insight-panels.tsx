@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { Bot, Globe, HardDrive, Network, TrendingDown } from 'lucide-react'
 import { DashboardPanel } from './panel'
+import { MetricBarList } from './metric-bars'
 import { DASH_METRIC_SM, dashPill } from './ui'
 import { formatCompactNumber } from '@/lib/dashboard/dashboard-metrics'
 import type {
@@ -49,25 +50,27 @@ function ActorIcon({ kind }: { kind: ActorKind }) {
   return <Globe className="size-3.5 shrink-0 text-aurora-text-muted" />
 }
 
-function ActorRowContent({ entry, index }: { entry: ActorUsageEntry; index: number }) {
+function ActorRowContent({ entry, maxCalls }: { entry: ActorUsageEntry; maxCalls: number }) {
+  const ratio = maxCalls > 0 ? Math.max(0, Math.min(100, entry.calls / maxCalls * 100)) : 0
+  const initials = entry.label.split(/\s+/).filter(Boolean).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase()
   return (
-    <>
-      <span className="w-4 shrink-0 text-center text-xs font-semibold tabular-nums text-aurora-text-muted">
-        {index + 1}
-      </span>
-      <ActorIcon kind={entry.kind} />
+    <span className="flex min-w-0 flex-1 flex-col gap-1.5 py-0.5">
+      <span className="flex min-w-0 items-center gap-2">
+      {entry.kind === 'agent' ? <span aria-hidden="true" className="grid size-6 shrink-0 place-items-center rounded-[7px] border border-aurora-accent-pink-deep/35 bg-aurora-accent-pink/10 text-[9px] font-bold text-aurora-accent-pink">{initials}</span> : <ActorIcon kind={entry.kind} />}
       <span
         className={cn(
-          'min-w-0 flex-1 truncate text-sm text-aurora-text-primary',
+          'min-w-0 flex-1 truncate text-[12.5px] font-semibold text-aurora-text-primary',
           entry.kind === 'ip' && 'font-mono text-[13px]',
         )}
       >
         {entry.label}
       </span>
-      <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-primary">
-        {formatCompactNumber(entry.calls)}
+      <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">
+        {formatCompactNumber(entry.calls)} calls
       </span>
-    </>
+      </span>
+      <span aria-hidden="true" className="h-[3px] overflow-hidden rounded-full bg-aurora-control-surface"><span data-actor-volume-bar className="block h-full rounded-full bg-gradient-to-r from-aurora-accent-pink-deep to-aurora-accent-pink" style={{ width: `${ratio}%` }}/></span>
+    </span>
   )
 }
 
@@ -90,10 +93,12 @@ export function MostActivePanel({
   const current = actors[facet]
   const meta = ACTOR_FACETS.find((f) => f.key === facet)!
   const top = current.top.slice(0, 5)
+  const maxCalls = Math.max(0, ...top.map(entry => entry.calls))
 
   return (
     <DashboardPanel
       title={actorKindsCollected ? 'Most active' : 'Most active subjects'}
+      iconTone="pink"
       icon={<Bot className="size-4" />}
       meta={actorKindsCollected
         ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
@@ -129,20 +134,20 @@ export function MostActivePanel({
         <p className="text-sm text-aurora-text-muted">No {meta.unit} activity in this window.</p>
       ) : (
         <ul className="flex flex-col gap-0.5">
-          {top.map((entry, index) =>
+          {top.map((entry) =>
             entry.kind === 'ip' ? (
               <li key={entry.id}>
                 <Link
                   href={`/usage?ip=${encodeURIComponent(entry.id)}&window=${window}`}
                   className={cn(ROW_BASE, ROW_INTERACTIVE)}
                 >
-                  <ActorRowContent entry={entry} index={index} />
+                  <ActorRowContent entry={entry} maxCalls={maxCalls} />
                 </Link>
               </li>
             ) : (
               <li key={entry.id}>
                 <RowShell onClick={() => onSelectActor(entry)}>
-                  <ActorRowContent entry={entry} index={index} />
+                  <ActorRowContent entry={entry} maxCalls={maxCalls} />
                 </RowShell>
               </li>
             ),
@@ -207,28 +212,12 @@ export function LeastUsedPanel({
   onSelect?: (tool: string) => void
 }) {
   return (
-    <DashboardPanel title="Least used" icon={<TrendingDown className="size-4" />}>
-      {tools.length === 0 ? (
-        <p className="text-sm text-aurora-text-muted">No upstream calls in this window.</p>
-      ) : (
-        <ul className="flex flex-col gap-0.5">
-          {tools.map((tool) => (
-            <li key={tool.name}>
-              <RowShell onClick={onSelect ? () => onSelect(tool.name) : undefined}>
-                <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-aurora-text-primary">
-                  {tool.name}
-                </span>
-                <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">
-                  {formatCompactNumber(tool.calls)}
-                </span>
-              </RowShell>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="mt-1 text-xs text-aurora-text-muted">
-        {distinct} distinct target{distinct === 1 ? '' : 's'} dispatched.
-      </p>
+    <DashboardPanel title="Least used" iconTone="warn" icon={<TrendingDown className="size-4" />} meta={`of ${distinct} distinct`}>
+      <MetricBarList tone="warn" empty="No upstream calls in this window." items={tools.slice(0, 4).map(tool => ({
+        key: tool.id ?? tool.name, label: tool.label ?? tool.name, value: tool.calls,
+        display: `${formatCompactNumber(tool.calls)} calls`,
+        onSelect: onSelect ? () => onSelect(tool.name) : undefined,
+      }))}/>
     </DashboardPanel>
   )
 }

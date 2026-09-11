@@ -73,3 +73,39 @@ test('Discover removes retained private results and rejects late details across 
     globalThis.fetch = originalFetch
   }
 })
+
+const provider = (id: string, enabled: boolean) => ({ id, name: id, enabled, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } })
+const plainPage = () => <AppRouterContext.Provider value={router as never}>
+  <PathnameContext.Provider value="/depot"><SearchParamsContext.Provider value={new URLSearchParams()}>
+    <DepotPageContent />
+  </SearchParamsContext.Provider></PathnameContext.Provider>
+</AppRouterContext.Provider>
+// The value element also carries the unit suffix; the metric itself is its first text node.
+const statValue = (label: string) => document.querySelector(`[data-console-hero-stat="${label}"] [data-console-hero-stat-value="1"]`)?.firstChild?.textContent?.trim()
+
+test('Discover hero counts only enabled sources and relabels the count once a query is active', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async url => {
+    if (url === '/v1/depot/providers') return Response.json([provider('team', true), provider('archive', false)])
+    if (url === '/v1/depot/discover') return listing('Indexed catalog item')
+    throw new Error('unexpected endpoint')
+  }
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, csrfToken: 'csrf', expiresAt: 1000 })
+  const view = await renderClient(plainPage())
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Indexed catalog item/))
+    await waitFor(() => assert.equal(statValue('Sources'), '1'))
+    assert.ok(document.querySelector('[data-console-hero-stat="Indexed"]'), 'the count is labelled Indexed without a query')
+    assert.equal(document.querySelector('[data-console-hero-stat="Matches"]'), null)
+    const input = view.container.querySelector<HTMLInputElement>('input[name="artifact-search"]')!
+    assert.ok(input)
+    const key = Object.keys(input).find(name => name.startsWith('__reactProps$'))!
+    const props = (input as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key]
+    await act(async () => props.onChange({ target: { value: 'python' } }))
+    await waitFor(() => assert.ok(document.querySelector('[data-console-hero-stat="Matches"]'), 'an active query relabels the count as Matches'))
+    assert.equal(document.querySelector('[data-console-hero-stat="Indexed"]'), null)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+  }
+})

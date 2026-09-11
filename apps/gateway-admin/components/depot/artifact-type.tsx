@@ -1,36 +1,41 @@
-import type { ComponentType } from 'react'
-import { Bot, Boxes, Braces, Command, MessagesSquare, PackageSearch, PlugZap, Sparkles } from 'lucide-react'
+import { PackageSearch } from 'lucide-react'
 
 import { artifactKind, type ArtifactType } from './library-model'
 import type { DepotArtifact } from '@/lib/api/depot-client'
-
-type TypeDefinition = { label: string; color: string; icon: ComponentType<{ className?: string }> }
+import { discoverKindPresentation } from './discover-kind-presentation'
 
 export const ARTIFACT_TYPES: ArtifactType[] = ['mcp', 'acp', 'agent', 'skill', 'command', 'plugin', 'marketplace', 'prompt']
 
-const TYPE_DEFINITIONS: Record<ArtifactType, TypeDefinition> = {
-  mcp: { label: 'MCP', color: 'var(--artifact-mcp)', icon: Boxes },
-  acp: { label: 'ACP', color: 'var(--artifact-acp)', icon: Braces },
-  agent: { label: 'Agents', color: 'var(--artifact-agent)', icon: Bot },
-  skill: { label: 'Skills', color: 'var(--artifact-skill)', icon: Sparkles },
-  command: { label: 'Commands', color: 'var(--artifact-command)', icon: Command },
-  plugin: { label: 'Plugins', color: 'var(--artifact-plugin)', icon: PlugZap },
-  marketplace: { label: 'Marketplaces', color: 'var(--artifact-marketplace)', icon: PackageSearch },
-  prompt: { label: 'Prompts', color: 'var(--artifact-prompt)', icon: MessagesSquare },
+const LABELS: Record<string, [string, string]> = {
+  mcp: ['MCP', 'MCP'], acp: ['ACP', 'ACP'], agent: ['Agents', 'Agent'],
+  skill: ['Skills', 'Skill'], command: ['Commands', 'Command'], plugin: ['Plugins', 'Plugin'],
+  marketplace: ['Marketplaces', 'Marketplace'], prompt: ['Prompts', 'Prompt'],
+  hook: ['Hooks', 'Hook'], extension: ['Extensions', 'Extension'],
+  loadout: ['Loadouts', 'Loadout'], snippet: ['Snippets', 'Snippet'],
 }
 
-export function artifactTypeDefinition(kind: string): TypeDefinition {
-  return TYPE_DEFINITIONS[kind as ArtifactType] ?? { label: kind || 'Artifact', color: 'var(--aurora-text-muted)', icon: Boxes }
+export function artifactTypeDefinition(kind: string) {
+  const key = kind.toLowerCase()
+  const [label, singularLabel] = Object.hasOwn(LABELS, key) ? LABELS[key] : [kind || 'Artifact', kind || 'Artifact']
+  const presentation = discoverKindPresentation(key)
+  // Marketplace is an existing catalog kind outside the Discover kind taxonomy.
+  // Preserve it without reusing a different kind's icon or suggesting support.
+  if (key === 'marketplace') {
+    const color = 'var(--artifact-marketplace)'
+    return { ...presentation, label, singularLabel, color, tone: color, icon: PackageSearch,
+      iconStyle: { color, backgroundColor: `color-mix(in srgb, ${color} 10%, transparent)`, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` } }
+  }
+  return { ...presentation, label, singularLabel }
 }
 
 export function ArtifactTypeMark({ artifact, compact = false }: { artifact: DepotArtifact; compact?: boolean }) {
   const kind = artifactKind(artifact)
   const definition = artifactTypeDefinition(kind)
   const Icon = definition.icon
-  return <span className="inline-flex shrink-0 items-center gap-2 font-bold uppercase tracking-[.12em]" style={{ color: definition.color }}>
-    <span className={`${compact ? 'size-7' : 'size-9'} grid place-items-center rounded-aurora-1 border bg-[color-mix(in_srgb,currentColor_10%,transparent)]`} style={{ borderColor: `color-mix(in srgb, ${definition.color} 38%, transparent)` }}>
-      <Icon className={compact ? 'size-3.5' : 'size-4'} />
+  return <span data-artifact-kind={kind} className="inline-flex shrink-0 items-center gap-1.5 font-bold uppercase tracking-[.07em]" style={{ color: definition.color }}>
+    <span className={`${compact ? 'size-[18px] rounded-[5px]' : 'size-8 rounded-[9px]'} grid shrink-0 place-items-center border`} style={definition.iconStyle}>
+      <Icon aria-hidden="true" className={compact ? 'size-[13px]' : 'size-4'} />
     </span>
-    <span className="text-[10px]">{definition.label}</span>
+    <span className={compact ? 'text-[9px]' : 'text-[10px]'}>{definition.singularLabel}</span>
   </span>
 }

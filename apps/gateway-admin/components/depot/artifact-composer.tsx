@@ -2,11 +2,11 @@
 
 import * as React from 'react'
 import {
-  Check, ChevronDown, CircleAlert, CircleCheck, Clipboard,
-  FileType2, MoreHorizontal, RotateCcw, Settings2,
+  Clipboard, ShieldCheck,
+  MoreHorizontal, RotateCcw, Settings2, CircleHelp, PencilLine, X,
 } from 'lucide-react'
 
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
@@ -17,13 +17,25 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
-  ARTIFACT_KINDS, composeArtifactSource,
+  composeArtifactSource, artifactPath,
   type ArtifactKind, type ArtifactMetadata, validateArtifactDraft,
 } from '@/lib/editor/artifact-standards'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { consumeOwnerLinkApproval, depotPublishCapability, publishDepotSkill, type DepotPublishCapability } from '@/lib/api/depot-client'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
+import { ArtifactFrontmatterPreview } from './artifact-frontmatter-preview'
+import { ArtifactValidationPanel } from './artifact-validation-panel'
+import { ArtifactWritingExample } from './artifact-writing-example'
+import { ArtifactFormattingToolbar } from './artifact-formatting-toolbar'
+import { formatArtifactSelection } from '@/lib/editor/artifact-formatting'
+import { artifactLanguage } from '@/lib/editor/artifact-standards'
+import { SafeMarkdown } from '@/components/markdown/safe-markdown'
+import { ArtifactWorkspaceSwitch } from './artifact-workspace-switch'
+import { ArtifactKindPicker } from './artifact-kind-picker'
+import { ArtifactDescriptionField } from './artifact-description-field'
+import { ArtifactFieldIndicator } from './artifact-field-indicator'
+import { artifactValidationSummary, skillAuthoringSummary } from '@/lib/editor/artifact-validation-summary'
 
 const STARTER_BODY = `## When to use
 
@@ -33,11 +45,12 @@ Invoke when the user asks to triage, group, or summarize open work in a reposito
 
 1. List open PRs and issues with labels and last activity.
 2. Cluster by touched subsystem, not by label.
-3. For each cluster write what it is, who owns it, and what unblocks it.`
+3. For each cluster write: what it is, who owns it, what unblocks it.`
 
 const STARTER_METADATA: ArtifactMetadata = {
   name: 'repo-triage',
-  description: 'Cluster open PRs and issues, then draft a triage note per cluster.',
+  description: 'Cluster open PRs and issues by subsystem, then draft a triage note per cluster.',
+  tags: ['review', 'github'],
   license: '',
   compatibility: '',
   allowedTools: '',
@@ -47,7 +60,12 @@ export function ArtifactComposer() {
   const [kind, setKind] = React.useState<ArtifactKind>('Skill')
   const [metadata, setMetadata] = React.useState<ArtifactMetadata>(STARTER_METADATA)
   const [content, setContent] = React.useState(STARTER_BODY)
+  const [tagInput, setTagInput] = React.useState('')
+  const contentRef = React.useRef<HTMLTextAreaElement>(null)
+  const gutterRef = React.useRef<HTMLDivElement>(null)
+  const [documentView, setDocumentView] = React.useState<'source' | 'preview'>('source')
   const [frontmatterOpen, setFrontmatterOpen] = React.useState(false)
+  const [tipsOpen, setTipsOpen] = React.useState(true)
   const [workspaceMode, setWorkspaceMode] = React.useState<'artifact' | 'bundle'>('artifact')
   const [publishCapability, setPublishCapability] = React.useState<DepotPublishCapability | null>(null)
   const [publishing, setPublishing] = React.useState(false)
@@ -72,6 +90,10 @@ export function ArtifactComposer() {
 
   const source = React.useMemo(() => composeArtifactSource(kind, metadata, content), [content, kind, metadata])
   const issues = React.useMemo(() => validateArtifactDraft(kind, metadata, content), [content, kind, metadata])
+  const authoringValidation = React.useMemo(
+    () => kind === 'Skill' ? skillAuthoringSummary(metadata, content, issues) : artifactValidationSummary(issues),
+    [content, issues, kind, metadata],
+  )
   const errors = issues.filter((entry) => entry.severity === 'error')
   const unavailableReason = publishCapability?.reason === 'project_session_required'
     ? 'Open an authenticated team project session to publish. Your current sign-in has no project publishing authority.'
@@ -123,7 +145,14 @@ export function ArtifactComposer() {
     }
   }
 
-  const updateMetadata = (field: keyof ArtifactMetadata) => (value: string) => setMetadata((current) => ({ ...current, [field]: value }))
+  const updateMetadata = (field: Exclude<keyof ArtifactMetadata, 'tags'>) => (value: string) => setMetadata((current) => ({ ...current, [field]: value }))
+  const addTag = () => {
+    const tag = tagInput.trim().replace(/^#/, '').toLowerCase()
+    if (!tag) return
+    setMetadata(current => current.tags.includes(tag) ? current : { ...current, tags: [...current.tags, tag] })
+    setTagInput('')
+  }
+  const removeTag = (tag: string) => setMetadata(current => ({ ...current, tags: current.tags.filter(item => item !== tag) }))
   const copySource = React.useCallback(async () => {
     try {
       await navigator.clipboard.writeText(source)
@@ -137,61 +166,107 @@ export function ArtifactComposer() {
     setKind('Skill')
     setMetadata(STARTER_METADATA)
     setContent(STARTER_BODY)
+    setTagInput('')
   }
 
-  const headerActions = <div className="flex items-center gap-1.5">
+  const headerActions = <div className="flex translate-x-[2px] flex-wrap items-center gap-[7px]">
+        <Button asChild variant="outline" className="h-9 gap-[7px] rounded-[10px] px-[13px] text-[12.5px] font-[650]" data-visible-label="1"><a href="/administration/" title="Depot operations — Administration"><ShieldCheck className="size-[13px]" />Depot Operations</a></Button>
         <DropdownMenu>
-          <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label={`Artifact type: ${kind}`}><FileType2 /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>Artifact type · {kind}</TooltipContent></Tooltip>
-          <DropdownMenuContent align="start" className="min-w-48 border-aurora-border-strong bg-aurora-panel-strong">
-            <DropdownMenuLabel>Artifact type</DropdownMenuLabel><DropdownMenuSeparator />
-            {ARTIFACT_KINDS.map((option) => <DropdownMenuItem key={option} onSelect={() => setKind(option)}>{option === kind ? <Check /> : <span className="size-4" />}{option}</DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button size="sm" disabled={!canPublish || publishing} onClick={() => void publish()}>{publishing ? 'Submitting…' : 'Publish skill'}</Button>
-        <DropdownMenu>
-          <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" aria-label="More artifact actions"><MoreHorizontal /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
+          <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" className="size-9 rounded-[10px]" aria-label="More artifact actions"><MoreHorizontal className="size-[15px]" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
           <DropdownMenuContent align="end" className="min-w-52 border-aurora-border-strong bg-aurora-panel-strong">
             <DropdownMenuLabel>Artifact actions</DropdownMenuLabel><DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void copySource()}><Clipboard />Copy complete source</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => setFrontmatterOpen(true)}><Settings2 />Edit frontmatter</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setTipsOpen(open => !open)}><CircleHelp />{tipsOpen ? 'Hide writing tips' : 'Show writing tips'}</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={reset}><RotateCcw />Restore starter</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <Button size="sm" aria-label="Publish skill" className="h-9 w-[100px] rounded-[10px] px-4 text-[13px] font-bold" disabled={!canPublish || publishing} onClick={() => void publish()}>{publishing ? 'Submitting…' : 'Publish'}</Button>
       </div>
 
   const bundleGroups = [['Agent',['rust-reviewer']],['Command',['/ship','/scope-audit']],['Skill',['repo-triage','changelog-writer']],['Hook',['pre-commit-guard']],['MCP',['labby','axon']],['Prompt',[]]] as const
   return <>
-    <div className="px-space-5 py-space-2 text-sm text-aurora-text-muted" aria-live="polite">
-      {publishError ? <p role="alert" className="text-aurora-error">{publishError}</p> : ownerLinkPending ? <div className="flex flex-wrap items-center gap-space-4"><p>An operator approved linking this signed-in account to the existing team owner. Existing owner logins will be preserved.</p><Button variant="outline" size="sm" disabled={linkingOwner} onClick={() => void confirmOwnerLink()}>{linkingOwner ? 'Confirming owner link…' : 'Confirm owner link'}</Button></div> : publishMessage ? <p>{publishMessage} <a className="underline" href="/administration/">Open Depot operations</a></p> : kind !== 'Skill' || workspaceMode !== 'artifact' ? <p>Publishing supports skills. Other artifact types and bundles remain editable previews.</p> : publishCapability?.available ? <p>Publish to Team Depot{publishCapability.projectId ? ` · ${publishCapability.projectId}` : ''}.</p> : <p>{unavailableReason ?? (publishCapability ? 'Publishing is unavailable for this session.' : 'Checking publishing access…')}</p>}
-    </div>
-    <AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Create' }]} actions={headerActions} />
-    <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={cn(AURORA_PAGE_FRAME, 'min-h-[calc(100vh-5.5rem)]')}>
+    {publishError || ownerLinkPending || publishMessage || unavailableReason ? (
+      <div className="px-space-5 py-space-2 text-sm text-aurora-text-muted" aria-live="polite">
+        {publishError ? <p role="alert" className="text-aurora-error">{publishError}</p> : ownerLinkPending ? <div className="flex flex-wrap items-center gap-space-4"><p>An operator approved linking this signed-in account to the existing team owner. Existing owner logins will be preserved.</p><Button variant="outline" size="sm" disabled={linkingOwner} onClick={() => void confirmOwnerLink()}>{linkingOwner ? 'Confirming owner link…' : 'Confirm owner link'}</Button></div> : publishMessage ? <p>{publishMessage} <a className="underline" href="/administration/">Open Depot operations</a></p> : <p>{unavailableReason}</p>}
+      </div>
+    ) : null}
+    <AppHeader icon={<PencilLine className="size-[18px] text-aurora-accent-pink" />} breadcrumbs={[{ label: 'Create' }]} />
+    <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={cn(AURORA_PAGE_FRAME, 'min-h-[calc(100vh-5.5rem)] gap-3.5')}>
       <ConsoleHero
-        eyebrow="Depot · Studio"
-        title="Create artifact"
+        variant="authoring"
+        eyebrow="Depot · Authoring"
+        title="Create"
+        icon={<PencilLine className="size-[21px] text-aurora-accent-pink" />}
+        description="Author an artifact in one document. Validation updates as you type. Skill publishing is available when your session permits it."
+        actions={headerActions}
         pulse={{ color: 'var(--aurora-success)', label: 'local draft' }}
         stats={[
-          { label: 'Kind', value: kind, icon: <FileType2 className="size-3" /> },
-          { label: 'Workspace', value: workspaceMode === 'artifact' ? 'Artifact' : 'Bundle', icon: <Settings2 className="size-3" /> },
-          { label: 'Validation', value: errors.length ? 'Needs work' : 'Passing', icon: errors.length ? <CircleAlert className="size-3" /> : <CircleCheck className="size-3" />, tone: errors.length ? 'var(--aurora-warn)' : 'var(--aurora-success)' },
+          { label: 'Kind', value: workspaceMode === 'artifact' ? kind : 'Bundle', suffix: workspaceMode === 'artifact' ? 'artifact' : 'preview' },
+          { label: 'Validation', value: authoringValidation.passing < authoringValidation.total ? 'Needs work' : 'Passing', suffix: `${authoringValidation.passing}/${authoringValidation.total} checks`, tone: authoringValidation.passing < authoringValidation.total ? 'var(--aurora-warn)' : 'var(--aurora-success)' },
+          { label: 'Formats', value: workspaceMode === 'artifact' ? '1' : '0', suffix: workspaceMode === 'artifact' ? `${artifactLanguage(kind) === 'markdown' ? 'Markdown' : artifactLanguage(kind) === 'bash' ? 'Shell' : 'JSON'} source` : 'bundle export unavailable', tone: 'var(--aurora-accent-strong)' },
         ]}
-      />
-      <div className="mx-auto mt-4 max-w-5xl">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <DropdownMenu><DropdownMenuTrigger className={buttonVariants({ variant: 'outline' })}><FileType2/>{kind}<ChevronDown/></DropdownMenuTrigger><DropdownMenuContent>{ARTIFACT_KINDS.map((option)=><DropdownMenuItem key={option} onSelect={()=>setKind(option)}>{option===kind?<Check/>:<span className="size-4"/>}{option}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
-          <div className="flex items-center gap-2"><Badge variant="outline" className={issues.length?'border-aurora-warn/50 text-aurora-warn':'border-aurora-success/50 text-aurora-success'}>{issues.length} issue{issues.length===1?'':'s'}</Badge><div className="flex rounded-full border border-aurora-border-subtle bg-aurora-control-surface p-0.5"><button onClick={()=>setWorkspaceMode('artifact')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='artifact'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Artifact</button><button onClick={()=>setWorkspaceMode('bundle')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='bundle'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Bundle</button></div></div>
-        </div>
-        {workspaceMode==='artifact'?<div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_270px]">
-          <section className="min-h-[680px] rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-8 shadow-aurora-panel">
-            <input aria-label="Artifact name" value={metadata.name} onChange={(event)=>updateMetadata('name')(event.target.value)} className="w-full bg-transparent text-3xl font-bold text-aurora-text-primary outline-none"/>
-            <textarea aria-label="Artifact description" value={metadata.description} onChange={(event)=>updateMetadata('description')(event.target.value)} rows={2} className="mt-3 w-full resize-none bg-transparent text-sm leading-6 text-aurora-text-muted outline-none"/>
-            <div className="mt-2 flex gap-2"><Badge variant="outline" className="text-aurora-accent-primary">#review</Badge><Badge variant="outline" className="text-aurora-accent-primary">#github</Badge></div>
-            <div className="my-6 border-t border-aurora-border-subtle"/>
-            <textarea aria-label="Artifact content" value={content} onChange={(event)=>setContent(event.target.value)} className="min-h-[430px] w-full resize-none bg-transparent font-mono text-sm leading-8 text-aurora-text-primary outline-none"/>
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-aurora-border-subtle pt-4">{['When to use','Steps','Examples','Constraints'].map((item)=><button key={item} onClick={()=>append(`## ${item}`)} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-xs text-aurora-text-muted hover:text-aurora-text-primary">/ {item}</button>)}<button onClick={()=>setFrontmatterOpen(!frontmatterOpen)} className="ml-auto text-xs text-aurora-text-muted">Frontmatter</button></div>
+      ><ArtifactWorkspaceSwitch value={workspaceMode} onChange={setWorkspaceMode} tabs /></ConsoleHero>
+      <div className="w-full min-w-0">
+        {workspaceMode==='artifact'?<div className={cn('grid items-start gap-3', tipsOpen && 'lg:grid-cols-[minmax(0,1fr)_272px]')}>
+          <section className="min-w-0 overflow-hidden rounded-aurora-3 border border-aurora-border-strong bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-strong">
+            <div aria-label="Document controls" className="flex flex-wrap items-center gap-2 border-b border-aurora-border-default bg-aurora-control-surface py-[9px] pl-3.5 pr-3">
+              <ArtifactKindPicker value={kind} onChange={setKind} />
+              <span className="ml-auto text-[11px] text-aurora-text-muted" title="This draft exists only in this browser view and has not been saved.">Unsaved draft</span>
+            <div role="group" aria-label="Document view" className="flex w-fit shrink-0 gap-0.5 rounded-lg border border-aurora-border-default bg-aurora-page-bg p-0.5">
+              {(['source', 'preview'] as const).map(mode => <button key={mode} type="button" aria-pressed={documentView === mode} onClick={() => setDocumentView(mode)} className={cn('h-[22px] rounded px-2.5 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary', documentView === mode ? 'bg-aurora-selected-bg text-aurora-accent-strong' : 'text-aurora-text-muted hover:text-aurora-text-primary')}>{mode === 'source' ? 'Source' : 'Preview'}</button>)}
+            </div>
+            </div>
+            <div className="px-5 pb-[22px] pt-[26px] sm:px-[34px]">
+            <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3">
+            <ArtifactFieldIndicator field="name" issues={issues} className="mt-[18px]" />
+            <input aria-label="Artifact name" placeholder="untitled-artifact" spellCheck={false} value={metadata.name} onChange={(event)=>updateMetadata('name')(event.target.value)} className="-mx-1.5 h-12 w-[calc(100%+12px)] rounded-t-lg border border-transparent border-b-aurora-border-strong bg-transparent px-1.5 py-1 font-display text-[28px] font-extrabold tracking-[-.015em] text-aurora-text-primary outline-none transition-colors [border-bottom-style:dotted] hover:bg-aurora-hover-bg focus:rounded-lg focus:border-aurora-accent-primary focus:bg-aurora-control-surface focus:shadow-[var(--aurora-focus-ring-strong)] focus:[border-bottom-style:solid]"/>
+            <ArtifactFieldIndicator field="description" issues={issues} className="mt-[17px]" />
+            <ArtifactDescriptionField value={metadata.description} onChange={updateMetadata('description')} />
+            </div>
+            <div className="mt-3 grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3">
+              <ArtifactFieldIndicator field="tags" issues={issues} className="mt-2" />
+              <div className="flex h-6 min-w-0 items-center gap-1.5">
+                {metadata.tags.map(tag => <span key={tag} className="inline-flex h-6 shrink-0 items-center gap-[5px] rounded-full border border-aurora-accent-primary/25 bg-aurora-accent-primary/8 pl-[10px] pr-1.5 text-[11.5px] text-aurora-accent-strong"><span>#{tag}</span><button type="button" aria-label={`Remove tag ${tag}`} onClick={() => removeTag(tag)} className="grid size-[14px] place-items-center rounded-full text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><X className="size-2.5" /></button></span>)}
+                <input aria-label="Add a tag" value={tagInput} onChange={event => setTagInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTag() } }} onBlur={addTag} placeholder="add tag…" className="h-[18px] min-w-[80px] flex-1 bg-transparent px-0 py-0.5 text-[11.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted" />
+              </div>
+            </div>
+            {frontmatterOpen ? <fieldset className="mb-6 grid gap-3 rounded-lg border border-aurora-border-default bg-aurora-control-surface p-4">
+              <legend className="px-1 text-xs font-semibold text-aurora-text-muted">Frontmatter fields</legend>
+              {(['license', 'compatibility', 'allowedTools'] as const).map(field => <label key={field} className="grid gap-1 text-xs text-aurora-text-muted">{field === 'allowedTools' ? 'Allowed tools' : field === 'license' ? 'License' : 'Compatibility'}<input value={metadata[field]} onChange={event => updateMetadata(field)(event.target.value)} className="h-8 rounded border border-aurora-border-default bg-aurora-page-bg px-2 text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary" /></label>)}
+            </fieldset> : null}
+            </div>
+            <div data-artifact-source="1" hidden={documentView !== 'source'} className="border-t border-aurora-border-subtle [&[hidden]]:hidden">
+            {artifactLanguage(kind) === 'markdown' ? <ArtifactFormattingToolbar indicator={<ArtifactFieldIndicator field="content" issues={issues} className="mr-2" />} onSection={section => append(`## ${section}`)} onFormat={format => {
+              const editor = contentRef.current
+              if (!editor) return
+              const result = formatArtifactSelection(content, editor.selectionStart, editor.selectionEnd, format)
+              setContent(result.content)
+              requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(result.cursor, result.cursor) })
+            }} /> : null}
+            <div className="relative min-w-0 bg-aurora-control-surface pl-11">
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-11 select-none overflow-hidden border-r border-aurora-border-subtle bg-aurora-page-bg text-right font-mono text-[12.5px] leading-[1.7] tabular-nums text-aurora-text-muted"><div ref={gutterRef} className="whitespace-pre py-3.5 pr-2.5 opacity-70">{Array.from({ length: content.split('\n').length }, (_, index) => index + 1).join('\n')}</div></div>
+              <textarea ref={contentRef} aria-label="Artifact content" wrap="off" spellCheck={false} placeholder="Write the instructions…" value={content} onScroll={event => { if (gutterRef.current) gutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)` }} onChange={(event)=>setContent(event.target.value)} className="aurora-scrollbar block min-h-[360px] w-full resize-y overflow-x-auto whitespace-pre bg-transparent pb-[18px] pl-3.5 pr-[18px] pt-3.5 font-mono text-[12.5px] leading-[1.7] text-aurora-text-primary outline-none [tab-size:2]"/>
+            </div>
+            </div>
+            {documentView === 'preview' ? <div aria-label="Artifact preview" title="Double-click to edit source" onDoubleClick={() => { setDocumentView('source'); requestAnimationFrame(() => contentRef.current?.focus()) }} className="min-h-[360px] cursor-text border-t border-aurora-border-subtle px-5 pb-[26px] pt-[22px] sm:px-[34px]">{artifactLanguage(kind) === 'markdown' ? <SafeMarkdown text={content} className="max-w-[78ch] text-sm leading-[1.65]" /> : <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6">{content}</pre>}</div> : null}
+            <div aria-label="Artifact document status" className="flex items-center gap-2.5 border-t border-aurora-border-subtle bg-aurora-control-surface px-4 py-1.5 text-[10.5px] tabular-nums text-aurora-text-muted"><span className="min-w-0 flex-1 truncate">{artifactPath(kind, metadata.name)}</span><span className="shrink-0" title="Approximate tokens (characters ÷ 4)">~{Math.ceil(content.length / 4)} tokens · {content.trim() ? content.trim().split(/\s+/).length : 0} words · {content.length} chars</span></div>
           </section>
-          <aside className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium"><div className="border-b border-aurora-border-subtle px-4 py-3 text-[10px] font-bold uppercase tracking-[.16em] text-aurora-text-muted">Writing a {kind.toLowerCase()}</div>{[['Name is a slug',Boolean(metadata.name)],['Description is loadable',Boolean(metadata.description)],['At least two tags',true],['Body has sections',content.includes('## ')],['Body has substance',content.length>160],['Example transcript',content.includes('Example')]].map(([label,ok])=><div key={String(label)} className="flex gap-3 border-b border-aurora-border-subtle px-4 py-3"><span className={ok?'text-aurora-success':'text-aurora-warn'}>{ok?<CircleCheck className="size-4"/>:<CircleAlert className="size-4"/>}</span><div><strong className="block text-xs text-aurora-text-primary">{label}</strong><span className="text-[11px] text-aurora-text-muted">{ok?'Looks good.':'Optional — this makes the artifact easier to reuse.'}</span></div></div>)}</aside>
+          <div id="artifact-writing-tips" hidden={!tipsOpen} className="flex flex-col [&[hidden]]:hidden [&>section]:order-2">
+          <ArtifactFrontmatterPreview kind={kind} metadata={metadata} />
+          <ArtifactWritingExample kind={kind} />
+          <ArtifactValidationPanel kind={kind} metadata={metadata} content={content} issues={issues} onField={field => {
+            if (field === 'content') {
+              setDocumentView('source')
+              requestAnimationFrame(() => contentRef.current?.focus())
+              return
+            }
+            const labels = { name: 'Artifact name', description: 'Artifact description', tags: 'Add a tag', content: 'Artifact content' }
+            if (field in labels) document.querySelector<HTMLElement>(`[aria-label="${labels[field as keyof typeof labels]}"]`)?.focus()
+            else setFrontmatterOpen(true)
+          }} />
+          </div>
         </div>:<section className="rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-8 shadow-aurora-panel"><h1 className="text-3xl font-bold">{metadata.name}</h1><div className="mt-4 flex flex-wrap gap-2 text-xs text-aurora-text-muted"><span className="font-bold uppercase tracking-wider">Potential targets</span>{['Loadout','Claude plugin.json','marketplace.json','gemini-extension.json','Agent Plugins','ARD ai-catalog.json'].map((item)=><Badge key={item} variant="outline">{item}</Badge>)}</div><div className="mt-7 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{bundleGroups.map(([group,items])=><div key={group} className="min-h-36 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-3"><div className="flex justify-between text-xs font-bold uppercase tracking-wider text-aurora-accent-primary"><span>{group}</span><span>{items.length}</span></div><div className="mt-3 space-y-2">{items.map((item)=><div key={item} className="rounded-aurora-1 bg-aurora-control-surface px-3 py-2 text-sm"><span>{item}</span></div>)}</div></div>)}</div></section>}
       </div>
     </div></div>

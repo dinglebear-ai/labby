@@ -93,6 +93,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
   const [results, setResults] = useState<ToolSearchHit[]>([])
   const [total, setTotal] = useState(0)
   const [detail, setDetail] = useState<ToolDescription | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<BrowserError | null>(null)
   // The query that produced `results`/`total`, NOT the live input value.
@@ -107,7 +108,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     const clearForSessionChange = () => {
       activeRequest.current?.abort()
       activeRequest.current = null
-      setResults([]); setTotal(0); setDetail(null); setError(null); setLoading(false); setExecutedQuery(null)
+      setResults([]); setTotal(0); setDetail(null); setSelectedId(null); setError(null); setLoading(false); setExecutedQuery(null)
     }
     const unsubscribe = subscribeToBrowserSession(clearForSessionChange)
     return () => { unsubscribe(); activeRequest.current?.abort() }
@@ -115,7 +116,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
 
   async function runSearch(value: string) {
     activeRequest.current?.abort(); const controller = new AbortController(); activeRequest.current = controller
-    setDetail(null); setError(null); setResults([]); setTotal(0)
+    setDetail(null); setSelectedId(null); setError(null); setResults([]); setTotal(0)
     setLoading(true)
     try {
       const response = await searchCodeModeTools(value, controller.signal)
@@ -129,6 +130,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
   }
 
   async function selectTool(hit: ToolSearchHit) {
+    setSelectedId(hit.id)
     await loadDetail(hit.id)
   }
 
@@ -166,13 +168,14 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     <main className={`${AURORA_PAGE_SHELL} flex-1`}>
       <div className={AURORA_PAGE_FRAME}>
         <ConsoleHero
-          eyebrow="Live catalog"
+          eyebrow="Depot · Library · Live catalog"
           title="Tools"
+          description="Search the live Code Mode catalog across every connected upstream. Select a tool to inspect its generated TypeScript signature."
           pulse={codeModeConfig?.enabled ? { color: 'var(--aurora-success)', label: 'Code Mode enabled' } : undefined}
           stats={[
             { label: 'Matches', value: total, icon: <Wrench className="size-3" /> },
             { label: 'Visible', value: results.length, icon: <SearchCode className="size-3" /> },
-            { label: 'Read only', value: readOnlyCount, icon: <ShieldCheck className="size-3" /> },
+            { label: 'Read only', value: readOnlyCount, tone: 'var(--aurora-success)', icon: <ShieldCheck className="size-3" /> },
             { label: 'Destructive', value: destructiveCount, tone: 'var(--aurora-error)', icon: <TriangleAlert className="size-3" /> },
           ]}
         />
@@ -189,25 +192,25 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
 
           {error && <div role="alert" className="m-3 flex items-center gap-2 rounded-aurora-1 border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
 
-          <div className="grid min-h-[32rem] lg:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
+          <div className="grid min-h-[420px] lg:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)]">
             <section aria-label="Tool results" className="min-w-0 border-r border-aurora-border-default">
               <p className="border-b border-aurora-border-subtle px-4 py-2 text-xs text-aurora-text-muted md:hidden">{summary}</p>
               {results.length === 0 && !loading ? <div className="grid min-h-64 place-items-center px-6 text-center text-sm text-aurora-text-muted">Browse the live catalog or search for a tool.</div> : null}
               <div className="divide-y divide-aurora-border-subtle">
-                {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full px-4 py-3 text-left transition hover:bg-aurora-hover-bg focus-visible:bg-aurora-selected-bg">
-                  <div className="flex items-center justify-between gap-3"><code className="truncate text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
-                  <p className="mt-1 line-clamp-1 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>
-                  <p className="mt-1 truncate font-mono text-[11px] text-aurora-text-muted">{hit.signature}</p>
+                {results.map((hit) => <button key={hit.id} type="button" aria-pressed={selectedId === hit.id} onClick={() => void selectTool(hit)} className="block w-full px-4 py-[11px] text-left transition hover:bg-aurora-hover-bg aria-pressed:bg-aurora-accent-primary/12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary">
+                  <div className="flex items-center justify-between gap-2.5"><code className="truncate text-[12.5px] font-semibold text-aurora-accent-strong">{hit.path}</code><Safety safety={hit.safety} /></div>
+                  <p className="mt-[3px] line-clamp-1 text-xs leading-[1.45] text-aurora-text-primary">{hit.description || 'No description provided.'}</p>
+                  <p className="mt-[3px] truncate font-mono text-[10.5px] text-aurora-text-muted">{hit.signature}</p>
                 </button>)}
               </div>
             </section>
-            <aside aria-label="Tool details" className="min-w-0 bg-aurora-panel-medium/35 p-5 lg:sticky lg:top-14 lg:self-start">
+            <aside aria-label="Tool details" className="min-w-0 bg-aurora-panel-medium/35 px-5 py-[18px] lg:sticky lg:top-14 lg:self-start">
               {!detail ? <div className="flex min-h-64 items-center justify-center text-center text-sm text-aurora-text-muted">Select a tool to inspect its live definition.</div> : <div>
-                <div className="flex items-center justify-between gap-3"><code className="min-w-0 break-all text-lg font-semibold text-aurora-accent-primary">{detail.path}</code><Safety safety={detail.safety} /></div>
-                <p className="mt-3 text-sm text-aurora-text-secondary">{detail.description}</p>
-                <dl className="mt-5 grid gap-3 text-xs"><div><dt className="uppercase tracking-wider text-aurora-text-muted">ID</dt><dd className="mt-1 break-all font-mono text-aurora-text-primary">{detail.id}</dd></div><div><dt className="uppercase tracking-wider text-aurora-text-muted">Helper</dt><dd className="mt-1 break-all font-mono text-aurora-text-primary">{detail.helper}</dd></div></dl>
-                <h2 className="mt-6 text-xs font-semibold uppercase tracking-wider text-aurora-text-muted">Parameters · TypeScript</h2>
-                {detail.typescript ? <pre className="mt-2 max-h-[32rem] overflow-auto rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg p-4 text-xs text-aurora-text-primary"><code>{detail.typescript}</code></pre> : <p className="mt-2 text-sm text-aurora-text-muted">Parameters unavailable{detail.typescript_omitted === 'size_limit' ? ' because the declaration exceeds the response limit.' : '.'}</p>}
+                <div className="flex items-center justify-between gap-2.5"><code className="min-w-0 break-all text-base font-bold text-aurora-accent-strong">{detail.path}</code><Safety safety={detail.safety} /></div>
+                <p className="mt-3.5 text-pretty text-[12.5px] leading-[1.55] text-aurora-text-primary">{detail.description}</p>
+                <dl className="mt-3.5 grid gap-2.5 text-[11px]"><div><dt className="text-[9.5px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">ID</dt><dd className="mt-[3px] break-all font-mono text-aurora-text-primary">{detail.id}</dd></div><div><dt className="text-[9.5px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">Helper</dt><dd className="mt-[3px] break-all font-mono text-aurora-text-primary">{detail.helper}</dd></div></dl>
+                <h2 className="mt-3.5 text-[9.5px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">Parameters · TypeScript</h2>
+                {detail.typescript ? <pre className="mt-2 max-h-[360px] overflow-auto rounded-[10px] border border-aurora-border-default bg-aurora-page-bg px-3.5 py-3 text-[11.5px] leading-[1.6] text-aurora-text-primary"><code>{detail.typescript}</code></pre> : <p className="mt-2 text-sm text-aurora-text-muted">Parameters unavailable{detail.typescript_omitted === 'size_limit' ? ' because the declaration exceeds the response limit.' : '.'}</p>}
               </div>}
             </aside>
           </div>
@@ -219,7 +222,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
 
 function Safety({ safety }: { safety?: { read_only?: boolean; destructive?: boolean } }) {
   if (!safety) return <span className="text-xs text-aurora-text-muted">Safety unknown</span>
-  if (safety.destructive) return <span className="inline-flex items-center gap-1 text-xs text-aurora-warning"><TriangleAlert className="size-3" />Destructive</span>
+  if (safety.destructive) return <span className="inline-flex items-center gap-1 text-xs text-aurora-warn"><TriangleAlert className="size-3" />Destructive</span>
   if (safety.read_only) return <span className="inline-flex items-center gap-1 text-xs text-aurora-success"><ShieldCheck className="size-3" />Read only</span>
   return <span className="text-xs text-aurora-text-muted">Safety unspecified</span>
 }

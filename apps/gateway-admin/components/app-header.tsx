@@ -15,13 +15,15 @@ interface AppBreadcrumb {
 interface AppHeaderProps {
   breadcrumbs?: AppBreadcrumb[]
   actions?: React.ReactNode
+  icon?: React.ReactNode
 }
 
 const CRUMB_RAIL_STYLE: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 7,
-  fontSize: 13,
+  gap: 11,
+  fontSize: 12.5,
+  lineHeight: 'normal',
   minWidth: 0,
 }
 
@@ -43,8 +45,9 @@ function BreadcrumbTrail({ breadcrumbs }: { breadcrumbs: AppBreadcrumb[] }) {
               <Link
                 href={crumb.href}
                 style={{
-                  fontSize: 13,
-                  fontWeight: 560,
+                  fontSize: 12.5,
+                  lineHeight: 'normal',
+                  fontWeight: 600,
                   color: 'var(--aurora-text-muted)',
                   whiteSpace: 'nowrap',
                   textDecoration: 'none',
@@ -56,8 +59,9 @@ function BreadcrumbTrail({ breadcrumbs }: { breadcrumbs: AppBreadcrumb[] }) {
               <span
                 data-crumbleaf={isLeaf ? '1' : undefined}
                 style={{
-                  fontSize: 13,
-                  fontWeight: 560,
+                  fontSize: 12.5,
+                  lineHeight: 'normal',
+                  fontWeight: 600,
                   color: isLeaf ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)',
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
@@ -84,8 +88,9 @@ function BreadcrumbTrail({ breadcrumbs }: { breadcrumbs: AppBreadcrumb[] }) {
  * — unit tests, isolated stories, the standalone Code Mode route — it falls
  * back to an inline header so the same content still appears.
  */
-export function AppHeader({ breadcrumbs = [], actions }: AppHeaderProps) {
+export function AppHeader({ breadcrumbs = [], actions, icon }: AppHeaderProps) {
   const shell = useOptionalConsoleShell()
+  const trail = <>{icon ? <span aria-hidden="true" className="grid shrink-0 place-items-center text-aurora-accent-strong">{icon}</span> : null}<BreadcrumbTrail breadcrumbs={breadcrumbs} /></>
 
   if (!shell) {
     return (
@@ -94,7 +99,7 @@ export function AppHeader({ breadcrumbs = [], actions }: AppHeaderProps) {
         className="flex h-14 shrink-0 items-center gap-3 border-b border-aurora-border-default/70 px-4"
       >
         <div style={CRUMB_RAIL_STYLE}>
-          <BreadcrumbTrail breadcrumbs={breadcrumbs} />
+          {trail}
         </div>
         <div style={{ flex: 1 }} />
         <div data-actioncluster="1" className="flex shrink-0 items-center gap-1.5">
@@ -109,7 +114,7 @@ export function AppHeader({ breadcrumbs = [], actions }: AppHeaderProps) {
   return (
     <>
       {crumbSlot
-        ? createPortal(<BreadcrumbTrail breadcrumbs={breadcrumbs} />, crumbSlot)
+        ? createPortal(trail, crumbSlot)
         : null}
       {actionSlot && actions ? createPortal(<>{actions}</>, actionSlot) : null}
     </>

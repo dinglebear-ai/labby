@@ -3,12 +3,10 @@
 // Section nav for /settings/*. Static list of panels; URL-driven "active"
 // state via usePathname.
 //
-// The mock's Settings screen is a single 760px column with no sub-nav, so
-// there is nothing to copy for a vertical rail. Rather than invent one, this
-// renders the panels as the mock's own segmented-button control (28px tall,
-// 8px radius, 11.5px/650, accent-tinted when active) in a horizontal strip
-// above the column — which keeps the body sitting exactly where the mock puts
-// it. Links, active state, and the mobile <select> fallback are unchanged.
+// Settings has no vertical rail. The panels are exposed as a segmented-button
+// strip (28px tall, 8px radius, 11.5px/650, accent-tinted when active) that
+// sits above the single settings column, so the body keeps the same
+// position on every panel.
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
@@ -51,6 +49,7 @@ export function SettingsRail(): React.ReactElement {
     : ENTRIES
   const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
+
   return (
     <nav aria-label="Settings sections">
       <label htmlFor="settings-section" className="sr-only">

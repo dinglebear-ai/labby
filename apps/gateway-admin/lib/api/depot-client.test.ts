@@ -11,6 +11,21 @@ async function withFetch(response: Response, run: () => Promise<void>) {
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
 
+test('v1 descriptors retain bounded supplied tags without inventing missing metadata', async () => {
+  for (const tags of [undefined, [], ['review', 'rust']]) {
+    const row = { ...artifact, descriptor: { tags } }
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [row] } }), async () => {
+      const response = await depotCall<{ result: { artifacts: Array<{ descriptor?: { tags?: string[] } }> } }>('depot.artifacts.list', {})
+      assert.deepEqual(response.result.artifacts[0].descriptor?.tags, tags)
+    })
+  }
+  for (const tags of [['duplicate', 'duplicate'], [''], ['x'.repeat(65)], Array(65).fill('tag'), ['bad\0tag'], [42]]) {
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: { ...artifact, descriptor: { tags } } } }), async () => {
+      await assert.rejects(depotCall('depot.artifacts.get', {}), /incompatible artifact detail response/)
+    })
+  }
+})
+
 test('owner link confirmation sends only session CSRF and an empty body', async () => {
   const original = globalThis.fetch
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'google-user' }, expiresAt: Date.now() + 60000, csrfToken: 'csrf-link' })
@@ -377,6 +392,23 @@ test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', asyn
   await withFetch(json({ ...v2Page, scope: 'team' }), async () => assert.rejects(listArtifacts(), /wrong discovery scope/i))
 })
 
+
+
+test('v2 list and detail preserve only bounded integer file counts', async () => {
+  for (const fileCount of [undefined, 0, 1, 2000, null, -1, 1.5, '3', {}, [], 2001]) {
+    const currentRevision = fileCount === undefined ? {} : { fileCount }
+    const valid = fileCount === undefined || (typeof fileCount === 'number' && Number.isInteger(fileCount) && fileCount >= 0 && fileCount <= 2000)
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], currentRevision }] }), async () => {
+      if (valid) assert.equal((await listArtifacts()).items[0]?.currentRevision?.fileCount, fileCount)
+      else await assert.rejects(listArtifacts())
+    })
+    await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', currentRevision } }), async () => {
+      if (valid) assert.equal((await getArtifact('public', 'artifact-1')).artifact.currentRevision?.fileCount, fileCount)
+      else await assert.rejects(getArtifact('public', 'artifact-1'))
+    })
+  }
+})
+
 test('v2 exact detail preserves raw IDs and verifies every identity field', async () => {
   const artifactId = 'space + % / 雪'
   const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId, artifact: { id: artifactId } }
@@ -452,5 +484,90 @@ test('kind filter is validated and sent with cursor before accepting typed resul
   } finally { globalThis.fetch = original }
   await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], kind: 'mcp' }] }), async () => {
     await assert.rejects(listArtifacts({ kind: 'skill' }), /wrong kind/)
+  })
+})
+
+test('catalog display evidence preserves known zero and rejects malformed metrics or verification', async () => {
+  const evidence = { publisherVerified: true, metrics: { stars: 0, installs: 58000, forks: 1240 } }
+  await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...evidence }] }), async () => {
+    const item = (await listArtifacts()).items[0]
+    assert.equal(item.publisherVerified, true)
+    assert.deepEqual(item.metrics, evidence.metrics)
+  })
+  for (const invalid of [{ publisherVerified: 'true' }, { metrics: { stars: -1 } }, { metrics: { installs: 1.5 } }, { metrics: { forks: Number.MAX_SAFE_INTEGER + 1 } }, { metrics: { unsupported: 3 } }]) {
+    await withFetch(json({ ...v2Page, items: [{ ...v2Page.items[0], ...invalid }] }), async () => assert.rejects(listArtifacts()))
+  }
+  await withFetch(json(v2Page), async () => {
+    const item = (await listArtifacts()).items[0]
+    assert.equal(item.publisherVerified, undefined)
+    assert.equal(item.metrics, undefined)
+  })
+})
+
+test('lineage preserves authorized exact identifiers and rejects malformed relationships', async () => {
+  const lineage = { upstreamArtifactId: 'parent', upstreamRevisionId: 'sha256:' + 'a'.repeat(64), forkedFromArtifactId: null, forkedFromRevisionId: null, following: false, lastObservedUpstreamRevisionId: null }
+  const envelope = (value: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', lineage: value } })
+  await withFetch(json(envelope(lineage)), async () => assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.lineage, lineage))
+  for (const value of [{ ...lineage, upstreamArtifactId: null }, { ...lineage, forkedFromRevisionId: 'revision' }, { ...lineage, following: 'yes' }, { ...lineage, metadata: {} }, { ...lineage, upstreamArtifactId: 'private/path' }, { ...lineage, upstreamRevisionId: 'sha256:' + 'A'.repeat(64) }]) {
+    await withFetch(json(envelope(value)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('source format projection preserves bounded evidence and excludes private provenance', async () => {
+  const envelope = (provenance: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', provenance } })
+  for (const provenance of [undefined, {}, { originalFormat: 'agent-skill', originalVersion: null }, { originalFormat: '', originalVersion: 'é'.repeat(64) }]) {
+    await withFetch(json(envelope(provenance)), async () => assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.provenance, provenance))
+  }
+  for (const provenance of [{ originalFormat: 'é'.repeat(65) }, { originalVersion: 'a\0b' }, { originalFormat: 42 }, { metadata: {} }, { sourceUri: 'https://example.com/private' }]) {
+    await withFetch(json(envelope(provenance)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('source origins accept only explicit catalog classifications', async () => {
+  const envelope = (sourceOrigin: unknown) => ({ schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', sourceOrigin } })
+  for (const sourceOrigin of [undefined, null, 'mcp-registry', 'acp-registry', 'ard', 'skills-sh', 'github', 'claude', 'gemini', 'agent-plugins', 'web-crawl']) {
+    await withFetch(json(envelope(sourceOrigin)), async () => assert.equal((await getArtifact('public', 'artifact-1')).artifact.sourceOrigin, sourceOrigin))
+  }
+  for (const sourceOrigin of ['unclassified', '', 'https://private.invalid', {}, 42]) {
+    await withFetch(json(envelope(sourceOrigin)), async () => assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/))
+  }
+})
+
+test('federated details retain optional bounded source tags without normalization', async () => {
+  for (const tags of [undefined, [], ['Browser', ' browser ', 'é'.repeat(32)], Array.from({ length: 64 }, (_, index) => `tag-${index}`)]) {
+    const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', descriptor: { tags } } }
+    await withFetch(json(response), async () => {
+      assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.descriptor?.tags, tags)
+    })
+  }
+})
+
+test('federated details reject malformed, duplicate and oversized tags', async () => {
+  for (const tags of [null, 'browser', [''], ['a\0b'], ['same', 'same'], ['é'.repeat(33)], [42], Array.from({ length: 65 }, (_, index) => `tag-${index}`)]) {
+    const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1', artifact: { id: 'artifact-1', descriptor: { tags } } }
+    await withFetch(json(response), async () => {
+      await assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/)
+    })
+  }
+})
+
+test('v2 detail README must belong to the current revision and match its declared path', async () => {
+  const base = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1' }
+  const readme = { state: 'available', kind: 'readme', path: 'README.md', revisionId: 'r1', content: '# Release helper' }
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r1' }, readme } }), async () => {
+    const detail = await getArtifact('public', 'artifact-1')
+    assert.equal(detail.artifact.readme?.state, 'available')
+    if (detail.artifact.readme?.state === 'available') assert.equal(detail.artifact.readme.content, '# Release helper')
+  })
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r2' }, readme } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match the current revision/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevisionId: 'r2', currentRevision: { id: 'r1' }, readme } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match the current revision/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r1' }, readme: { ...readme, kind: 'skill' } } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match its path/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', readme: { state: 'unavailable', reason: 'missing' } } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /incompatible/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', readme: { state: 'unavailable', reason: 'too_large' } } }), async () => {
+    assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.readme, { state: 'unavailable', reason: 'too_large' })
   })
 })

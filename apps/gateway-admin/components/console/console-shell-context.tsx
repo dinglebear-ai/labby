@@ -5,7 +5,7 @@ import * as React from 'react'
 /**
  * Shell coordination for the Gateway Console chrome.
  *
- * The mock renders exactly one topbar for the whole console, with each screen
+ * The console renders exactly one topbar for the whole console, with each screen
  * contributing only its breadcrumb leaf and its action cluster. Pages keep
  * using `<AppHeader />`, which portals those two fragments into the slots the
  * shell exposes here — no per-page header markup, no state round-trips.
@@ -40,9 +40,9 @@ export function useOptionalConsoleShell() {
 }
 
 export function ConsoleShellProvider({ children }: { children: React.ReactNode }) {
-  // The product reference opens with the full workspace/navigation rail.
-  // A user's explicit compact-mode choice still wins.
-  const [collapsed, setCollapsed] = React.useState(false)
+  // The console opens on the compact 58px icon rail. A user's explicit
+  // persisted sidebar choice still wins after mount.
+  const [collapsed, setCollapsed] = React.useState(true)
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false)
   const [crumbSlot, setCrumbSlot] = React.useState<HTMLElement | null>(null)
   const [actionSlot, setActionSlot] = React.useState<HTMLElement | null>(null)
@@ -51,7 +51,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
   React.useEffect(() => {
     try {
       const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
-      setCollapsed(saved === null ? false : saved === '1')
+      setCollapsed(saved === null ? true : saved === '1')
     } catch {
       /* storage unavailable — keep the compact default */
     }

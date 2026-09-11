@@ -219,7 +219,7 @@ test('desktop shell exposes the full palette trigger, Settings, and Discover voc
   const paletteTrigger = page.getByRole('button', { name: 'Search and filter' })
   const paletteBox = await paletteTrigger.boundingBox()
   assert.ok(paletteBox && paletteBox.width >= 220, `expected full palette trigger, got ${paletteBox?.width ?? 0}px`)
-  await assert.doesNotReject(() => paletteTrigger.getByText(/Search —/).waitFor())
+  await assert.doesNotReject(() => paletteTrigger.getByText('Search', { exact: true }).waitFor())
 
   await page.getByRole('button', { name: 'Account menu' }).click()
   const settingsLink = page.getByRole('link', { name: 'Settings', exact: true })
@@ -233,7 +233,7 @@ test('desktop shell exposes the full palette trigger, Settings, and Discover voc
   const mobilePaletteTrigger = page.getByRole('button', { name: 'Search and filter' })
   const mobilePaletteBox = await mobilePaletteTrigger.boundingBox()
   assert.equal(mobilePaletteBox?.width, 44)
-  assert.equal(await mobilePaletteTrigger.getByText(/Search —/).isVisible(), false)
+  assert.equal(await mobilePaletteTrigger.getByText('Search', { exact: true }).isVisible(), false)
 })
 
 test('gateway list stays compact without horizontal overflow in mock preview', { concurrency: false }, async (t) => {
@@ -383,20 +383,20 @@ test('Depot Discovery recovers from exact-import prerequisites and imports only 
   await assert.doesNotReject(() => page.getByRole('link', { name: /Release helper/ }).waitFor())
   await page.goto(`${baseUrl}/depot/?artifactProvider=team-depot&artifact=artifact-1`, { waitUntil: 'networkidle' })
 
-  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByRole('button', { name: 'Add to Library' }).click()
   await page.getByText('Configure an Artifact acquisition connection named “team-depot” before importing from this provider.').waitFor()
   assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
 
   connections = [{ id: 'team-depot' }]
   libraryVersion = 'not-a-version'
-  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByRole('button', { name: 'Add to Library' }).click()
   await page.getByText('Labby did not return a valid current library version.').waitFor()
   assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Send to Labby' }).isEnabled(), true))
+  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
 
   libraryVersion = 12
-  await page.getByRole('button', { name: 'Send to Labby' }).click()
+  await page.getByRole('button', { name: 'Add to Library' }).click()
   await page.getByText('Exact Artifact imported into Labby').waitFor()
 
   const importCall = actionCalls.find(call => call.action === 'artifacts.import')
@@ -525,19 +525,21 @@ test('icon-led actions are square, touch-sized, and retain accessible labels', {
   assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
 
   await page.goto(`${baseUrl}/create/`, { waitUntil: 'networkidle' })
-  const artifactTypeMenu = page.getByRole('button', { name: 'Skill', exact: true })
-  await assert.doesNotReject(() => artifactTypeMenu.waitFor())
-  assert.equal(await artifactTypeMenu.getAttribute('data-slot'), 'dropdown-menu-trigger')
-  const exportStyle = await artifactTypeMenu.evaluate((element) => ({
+  // The kind picker keeps its visible label on every viewport, so it is not icon-led;
+  // it must still be touch-sized and keep an accessible name that contains the label.
+  const artifactKindPicker = page.getByRole('button', { name: 'Change artifact kind: Skill', exact: true })
+  await assert.doesNotReject(() => artifactKindPicker.waitFor())
+  assert.equal(await artifactKindPicker.getAttribute('data-slot'), 'dropdown-menu-trigger')
+  const pickerStyle = await artifactKindPicker.evaluate((element) => ({
     fontSize: getComputedStyle(element).fontSize,
     width: element.getBoundingClientRect().width,
     height: element.getBoundingClientRect().height,
-    label: element.getAttribute('aria-label'),
+    text: element.textContent?.trim(),
   }))
-  assert.equal(exportStyle.fontSize, '0px')
-  assert.ok(exportStyle.width >= 44 && exportStyle.height >= 44)
-  assert.equal(exportStyle.label, 'Skill')
-  await artifactTypeMenu.click()
+  assert.notEqual(pickerStyle.fontSize, '0px')
+  assert.equal(pickerStyle.text, 'Skill')
+  assert.ok(pickerStyle.width >= 44 && pickerStyle.height >= 44, `expected a touch-sized kind picker, got ${pickerStyle.width}x${pickerStyle.height}`)
+  await artifactKindPicker.click()
   await assert.doesNotReject(() => page.getByRole('menu').waitFor())
 })
 
@@ -888,6 +890,8 @@ test('Discover cards preserve source filters and centered inspection on desktop 
   const dialog = page.getByRole('dialog')
   await dialog.waitFor()
   await dialog.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
+  // Source and revision details are collapsed by default in the inspection dialog.
+  await dialog.getByText('Source and revision', { exact: true }).click()
   await dialog.getByText('Declared license', { exact: true }).waitFor()
   await dialog.getByText('MIT', { exact: true }).waitFor()
   const box = await dialog.boundingBox()
@@ -1051,7 +1055,7 @@ test('Discover discards delayed detail and import preparation after inspection c
   assert.equal(await page.getByRole('dialog').count(), 0)
   assert.equal(await page.getByRole('heading', { name: 'Skill initial', exact: true }).count(), 0)
   await page.getByRole('heading', { name: 'Skill python', exact: true }).click()
-  await page.getByRole('button', { name: 'Send to Labby', exact: true }).click()
+  await page.getByRole('button', { name: 'Add to Library', exact: true }).click()
   await importRequested
   await page.keyboard.press('Escape')
   await input.fill('frontend')

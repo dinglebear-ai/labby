@@ -19,8 +19,6 @@ import {
   Zap,
 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -42,6 +40,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { WindowSelector } from '@/components/dashboard/window-selector'
 import { OutcomeDot, SurfaceTag } from '@/components/dashboard/recent-calls'
 import { UsageCallCards } from '@/components/dashboard/usage-call-cards'
+import { UsageCallDetail } from '@/components/dashboard/usage-call-detail'
 import { useToolCalls } from '@/lib/hooks/use-usage-drilldown'
 import {
   WINDOW_LABELS,
@@ -49,9 +48,10 @@ import {
   formatDuration,
   formatRelativeTime,
 } from '@/lib/dashboard/dashboard-metrics'
-import { METRICS_WINDOWS, type CallOutcome, type MetricsWindow } from '@/lib/types/metrics'
+import { METRICS_WINDOWS, type CallOutcome, type MetricsWindow, type ToolCallRecord } from '@/lib/types/metrics'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { cn, getErrorMessage } from '@/lib/utils'
+import { usageTraceHref } from '@/lib/observability/usage-trace-link'
 
 const PAGE_SIZE = 50
 const ALL = 'all'
@@ -114,6 +114,7 @@ function UsageExplorer() {
   const [outcome, setOutcome] = useState<string>(params.get('outcome') ?? ALL)
   const [errorKind, setErrorKind] = useState<string>(params.get('error') ?? ALL)
   const [search, setSearch] = useState(params.get('search') ?? '')
+  const [selectedCall, setSelectedCall] = useState<ToolCallRecord | null>(null)
   const [sinceMs, setSinceMs] = useState<number | undefined>(() => parseEpochMs(params.get('from')))
   const [untilMs, setUntilMs] = useState<number | undefined>(() => parseEpochMs(params.get('to')))
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
@@ -180,6 +181,10 @@ function UsageExplorer() {
   const showSurfaces = collected?.surfaces ?? false
   const showTokens = collected?.tokens ?? false
   const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
+  const activityGridColumns = [
+    '96px', 'minmax(0, 1.6fr)', 'minmax(0, 1fr)',
+    showSurfaces ? '70px' : null, '110px', showTokens ? '80px' : null, '80px', '80px',
+  ].filter(Boolean).join(' ')
 
   const filtered = data?.filtered ?? 0
   const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
@@ -189,43 +194,48 @@ function UsageExplorer() {
   const heroStats = [
     {
       label: 'Matched',
+      tone: 'var(--aurora-accent-strong)',
       value: data ? formatCompactNumber(data.filtered) : '—',
-      icon: <Activity size={12} strokeWidth={1.8} />,
+      icon: <Activity size={11} strokeWidth={1.8} />,
     },
     {
       label: 'In window',
       value: data ? formatCompactNumber(data.total) : '—',
-      icon: <Clock size={12} strokeWidth={1.8} />,
+      icon: <Clock size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Failed',
+      tone: 'var(--aurora-error)',
       value: data ? formatCompactNumber(data.analytics.failed) : '—',
-      icon: <AlertTriangle size={12} strokeWidth={1.8} />,
+      icon: <AlertTriangle size={11} strokeWidth={1.8} />,
     },
     {
       label: 'P95 latency',
+      tone: 'var(--aurora-warn)',
       value: data ? formatDuration(data.analytics.p95_elapsed_ms) : '—',
-      icon: <Gauge size={12} strokeWidth={1.8} />,
+      icon: <Gauge size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Peak / min',
+      tone: 'var(--aurora-success)',
       value: data ? formatCompactNumber(data.analytics.peak_per_min) : '—',
-      icon: <Zap size={12} strokeWidth={1.8} />,
+      icon: <Zap size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Targets',
       value: data ? data.facets.tools.length : '—',
-      icon: <Wrench size={12} strokeWidth={1.8} />,
+      icon: <Wrench size={11} strokeWidth={1.8} />,
     },
     {
       label: 'Agents',
+      tone: 'var(--aurora-accent-pink)',
       value: data ? data.facets.agents.length : '—',
-      icon: <Users size={12} strokeWidth={1.8} />,
+      icon: <Users size={11} strokeWidth={1.8} />,
     },
     ...(showIps ? [{
       label: 'Source IPs',
       value: data ? data.facets.ips.length : '—',
-      icon: <Network size={12} strokeWidth={1.8} />,
+      icon: <Network size={11} strokeWidth={1.8} />,
     }] : []),
   ]
 
@@ -266,14 +276,16 @@ function UsageExplorer() {
 
   return (
     <>
-      <AppHeader breadcrumbs={[{ label: 'Usage' }]} />
+      <AppHeader icon={<Activity className="size-3.5" />} breadcrumbs={[{ label: 'Activity' }]} />
 
-      <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
-        {/* Hero — the mock's eyebrow + title + action cluster with the stat
+      <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)} style={{ gap: 14 }}>
+        {/* Hero — eyebrow + title + action cluster with the stat
             strip welded to the card's bottom edge, not floating cards. */}
         <ConsoleHero
           eyebrow="Observe"
+          pulse={{ color: 'var(--aurora-success)', label: 'complete-window analytics' }}
           title="Usage Explorer"
+          description="Every retained upstream call in the selected slice. Filters and chart drill-downs stay in the URL so this view can be shared or reloaded."
           actions={
             <WindowSelector
               value={window}
@@ -294,46 +306,70 @@ function UsageExplorer() {
           </div>
         ) : null}
 
+        {hasTimeSlice ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 9,
+              padding: '9px 14px',
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid color-mix(in srgb, var(--aurora-accent-primary) 25%, transparent)',
+              background: 'color-mix(in srgb, var(--aurora-accent-primary) 5%, var(--aurora-panel-strong))',
+              fontSize: 12,
+            }}
+          >
+            <Clock size={13} strokeWidth={1.8} className="shrink-0 text-aurora-accent-strong" />
+            <span className="text-aurora-text-primary">
+              Time slice: {sinceMs ? formatSliceTime(sinceMs) : 'window start'} → {untilMs ? formatSliceTime(untilMs) : 'now'}
+            </span>
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              onClick={() => { setSinceMs(undefined); setUntilMs(undefined); resetPaging() }}
+              className="inline-flex items-center gap-[5px] rounded-[7px] px-[9px] text-[11.5px] font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
+              style={{ height: 26 }}
+            >
+              <X size={11} strokeWidth={2} /> Clear slice
+            </button>
+          </div>
+        ) : null}
+
         <DashboardPanel
           title="Upstream calls"
+          iconVariant="plain"
           icon={<SlidersHorizontal className="size-4" />}
           meta={`${tableMeta} · ${WINDOW_LABELS[window]}`}
+          headerStyle={{ padding: '10px 15px', lineHeight: 'normal' }}
+          titleStyle={{ fontSize: 9.5, lineHeight: 'normal', letterSpacing: '0.13em' }}
+          metaStyle={{ fontSize: 11, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}
+          bodyStyle={{ padding: 0, gap: 0 }}
         >
           <div className="space-y-3">
-            <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
-              Every retained upstream call in the selected slice. Filters and chart drill-downs stay in the URL so this view can be shared or reloaded.
-            </p>
-            {hasTimeSlice ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-aurora-accent-primary/25 bg-aurora-accent-primary/5 px-3 py-2 text-xs">
-                <Clock className="size-3.5 text-aurora-accent-strong" />
-                <span className="text-aurora-text-primary">
-                  Time slice: {sinceMs ? formatSliceTime(sinceMs) : 'window start'} → {untilMs ? formatSliceTime(untilMs) : 'now'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => { setSinceMs(undefined); setUntilMs(undefined); resetPaging() }}
-                  className="ml-auto inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
-                >
-                  <X className="size-3.5" /> Clear slice
-                </button>
-              </div>
-            ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_12rem_10rem_auto]">
-              <div className="relative min-w-0">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
-                <Input value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-10 pl-9" />
+            <div data-activity-filters="1" className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+              <div className="flex h-[36px] min-w-0 items-center gap-2 rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px]">
+                <Search aria-hidden="true" className="size-3.5 shrink-0 text-aurora-text-muted" strokeWidth={1.7} />
+                <input
+                  name="search"
+                  aria-label="Search upstream calls"
+                  value={search}
+                  onChange={(event) => { setSearch(event.target.value); resetPaging() }}
+                  placeholder="Search target, operation, agent, error…"
+                  className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted"
+                  style={{ height: 17, lineHeight: 'normal' }}
+                />
               </div>
               <Select value={upstream} onValueChange={(value) => { setUpstream(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Server" /></SelectTrigger>
+                <SelectTrigger aria-label="Server" style={{ height: 34 }} className="w-full gap-[6px] rounded-[9px] border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold shadow-none [&_svg]:size-[11px]"><SelectValue placeholder="Server" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All servers</SelectItem>{upstreamOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
               </Select>
               <Select value={outcome} onValueChange={(value) => { setOutcome(value); if (value !== 'failed') setErrorKind(ALL); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Outcome" /></SelectTrigger>
+                <SelectTrigger aria-label="Outcome" style={{ height: 34 }} className="w-full gap-[6px] rounded-[9px] border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold shadow-none [&_svg]:size-[11px]"><SelectValue placeholder="Outcome" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
               </Select>
               <details className="group relative">
-                <summary className="flex h-10 cursor-pointer list-none items-center justify-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-muted hover:text-aurora-text-primary [&::-webkit-details-marker]:hidden">
-                  <SlidersHorizontal className="size-4" /> More filters
+                <summary className="flex h-[34px] min-w-[115.765625px] cursor-pointer list-none items-center justify-center gap-[6px] rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold leading-normal text-aurora-text-primary hover:border-aurora-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden">
+                  <SlidersHorizontal className="size-[13px]" strokeWidth={1.8} /> More filters
                 </summary>
                 <div className="absolute right-0 z-30 mt-2 grid w-[min(44rem,85vw)] grid-cols-2 gap-2 rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-aurora-panel md:grid-cols-3">
                   <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
@@ -347,26 +383,35 @@ function UsageExplorer() {
               </details>
             </div>
           </div>
-          <div className="my-3 border-t border-aurora-border-subtle" />
           <div className="md:hidden">
-            <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} />
+            <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} onSelectCall={setSelectedCall} />
           </div>
           {/* Dense desktop table. Phones get purpose-built cards above instead of horizontal scrolling. */}
-          <div className="hidden overflow-x-auto md:block" style={{ margin: '-12px -14px' }}>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[120px]">Time</TableHead>
+          <div className="aurora-scrollbar hidden overflow-x-auto md:block">
+            <Table data-density="default" className="block w-full text-xs [&_th]:h-auto [&_th]:p-0 [&_th]:text-[9px] [&_th]:leading-normal [&_td]:h-auto [&_td]:p-0">
+              <TableHeader className="block bg-[var(--gw0-0_30)]">
+                <TableRow
+                  className="w-full border-b-0 bg-[var(--gw0-0_30)]"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: activityGridColumns,
+                    gap: 12,
+                    height: 28,
+                    padding: '8px 15px',
+                    borderTop: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+                  }}
+                >
+                  <TableHead className="w-[96px]">Time</TableHead>
                   <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
-                  {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
+                  {showSurfaces ? <TableHead className="w-[70px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
-                  <TableHead className="w-[90px] text-right">Response</TableHead>
-                  <TableHead className="w-[90px] text-right">Latency</TableHead>
+                  <TableHead className="w-[80px] text-right">Response</TableHead>
+                  <TableHead className="w-[80px] text-right">Latency</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="block">
                 {error && !data ? (
                   <TableRow>
                       <TableCell colSpan={tableColumns} className="py-8 text-center">
@@ -395,19 +440,43 @@ function UsageExplorer() {
                   </TableRow>
                 ) : (
                   data.calls.map((call) => (
-                    <TableRow key={call.id}>
-                      <TableCell className="text-aurora-text-muted">{formatRelativeTime(call.ts)}</TableCell>
-                      <TableCell>
-                        <span className="font-mono text-[13px] text-aurora-text-primary">{call.tool}</span>
+                    <TableRow
+                      key={call.id}
+                      className="cursor-pointer border-t border-b-0 border-aurora-border-default/35 odd:bg-[var(--gw1-0_62)] even:bg-[var(--gw2-0_55)] hover:!bg-aurora-hover-bg"
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: activityGridColumns,
+                        gap: 12,
+                        alignItems: 'center',
+                        width: '100%',
+                        height: 59,
+                        padding: '7px 15px',
+                      }}
+                      onClick={(event) => {
+                        if (!(event.target as HTMLElement).closest('a, button')) setSelectedCall(call)
+                      }}
+                    >
+                      <TableCell className="text-[11px] tabular-nums text-aurora-text-muted">
+                        <button
+                          type="button"
+                          aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')} from ${formatRelativeTime(call.ts)}`}
+                          onClick={() => setSelectedCall(call)}
+                          className="rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"
+                        >
+                          {formatRelativeTime(call.ts)}
+                        </button>
+                      </TableCell>
+                      <TableCell className="truncate" title={[call.tool, call.action].filter(Boolean).join('.')}>
+                        <Link href={usageTraceHref(call.tool)} aria-label={`View traces for ${call.tool}`} className="rounded font-mono text-[12.5px] text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{call.tool}</Link>
                         {call.action ? (
-                          <span className="font-mono text-[12px] text-aurora-text-muted">.{call.action}</span>
+                          <span className="font-mono text-[11.5px] text-aurora-text-muted">.{call.action}</span>
                         ) : null}
                         {call.capability && call.capability !== 'tools' ? (
                           <span className="ml-2 text-[11px] text-aurora-text-muted">{call.capability}</span>
                         ) : null}
                       </TableCell>
                       <TableCell>
-                        <div className="text-aurora-text-primary">
+                        <div className="truncate text-aurora-text-primary" title={call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}>
                           {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
                         </div>
                         {showIps ? (
@@ -443,36 +512,65 @@ function UsageExplorer() {
         </DashboardPanel>
 
         {/* Cursor pagination keeps deep pages O(page size), even over large retained windows. */}
-        {pageIndex > 0 || data?.next_cursor ? (
-          <div className="flex items-center justify-between gap-2 sm:justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              className="min-h-10 flex-1 sm:flex-none"
-              disabled={pageIndex === 0}
-              onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
-            >
-              <ChevronLeft className="size-4" /> Prev
-            </Button>
-            <span className="hidden text-xs text-aurora-text-muted sm:inline">Page {pageIndex + 1}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="min-h-10 flex-1 sm:flex-none"
-              disabled={!data?.next_cursor}
-              onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
-            >
-              Next <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        ) : null}
-
-        <div>
-          <Button variant="ghost" size="sm" asChild>
-            <Link href="/">← Back to overview</Link>
-          </Button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            type="button"
+            disabled={pageIndex === 0}
+            onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
+              background: 'var(--aurora-control-surface)',
+              color: 'var(--aurora-text-muted)',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: 'pointer',
+              opacity: pageIndex === 0 ? 0.4 : 1,
+            }}
+          >
+            <ChevronLeft size={12} strokeWidth={2} /> Prev
+          </button>
+          <span style={{ fontSize: 11, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}>Page {pageIndex + 1}</span>
+          <button
+            type="button"
+            disabled={!data?.next_cursor}
+            onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
+              background: 'var(--aurora-control-surface)',
+              color: 'var(--aurora-text-muted)',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: 'pointer',
+              opacity: data?.next_cursor ? 1 : 0.4,
+            }}
+          >
+            Next <ChevronRight size={12} strokeWidth={2} />
+          </button>
         </div>
+
       </div>
+
+      <UsageCallDetail
+        call={selectedCall}
+        onClose={() => setSelectedCall(null)}
+        tokensCollected={showTokens}
+        ipsCollected={showIps}
+        surfacesCollected={showSurfaces}
+      />
     </>
   )
 }

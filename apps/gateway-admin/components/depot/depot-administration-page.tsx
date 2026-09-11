@@ -1,15 +1,14 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Boxes, Database, KeyRound, Loader2, Play, RefreshCw, Search, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Boxes, Database, Loader2, Play, RefreshCw, Search, ShieldCheck, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
-import { AURORA_BADGE_LABEL, AURORA_CARD_TITLE, AURORA_DENSE_META, AURORA_MUTED_LABEL, AURORA_PAGE_FRAME } from '@/components/aurora/tokens'
+import { AURORA_MUTED_LABEL, AURORA_PAGE_FRAME } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
+import { AdministrationOverview } from './administration-overview'
 import { DashboardPanel } from '@/components/dashboard/panel'
-import { ArtifactControlPlane } from '@/components/skills/artifact-control-plane'
-import { DepotProvidersPage } from '@/components/settings/depot-providers-page'
 import { initialOperationForm, isDestructiveOperation, operationParams, type OperationFormState, type OperationProperty } from '@/components/depot/operation-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -34,7 +33,7 @@ function operationWorkspace(operation: DepotOperation): Exclude<Workspace, 'over
   return operation.group ?? 'catalog'
 }
 
-function OperationGrid({ operations, workspace }: { operations: DepotOperation[]; workspace: Exclude<Workspace, 'overview'> }) {
+export function OperationGrid({ operations, workspace }: { operations: DepotOperation[]; workspace: Exclude<Workspace, 'overview'> }) {
   const [selected, setSelected] = useState<DepotOperation | null>(null)
   const [form, setForm] = useState<OperationFormState>({})
   const [confirmed, setConfirmed] = useState(false)
@@ -98,23 +97,25 @@ function OperationGrid({ operations, workspace }: { operations: DepotOperation[]
   }
 
   return <>
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <label className="relative min-w-64 flex-1" htmlFor={`depot-operation-search-${workspace}`}><Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-subtle"/><span className="sr-only">Search {workspace} operations</span><Input id={`depot-operation-search-${workspace}`} value={query} onChange={event => { setQuery(event.target.value); setLimit(48) }} className="pl-9" placeholder="Search operations" /></label>
-      <span className={AURORA_DENSE_META}>{matching.length} operations</span>
+    <section aria-label={`${workspace} operation catalog`} className="min-w-0 overflow-hidden rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-medium),inset_0_1px_0_rgba(255,255,255,0.04)]">
+    <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] px-3 py-2.5">
+      <label className="relative min-w-0 flex-1" htmlFor={`depot-operation-search-${workspace}`}><Search aria-hidden="true" className="pointer-events-none absolute left-[11px] top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><span className="sr-only">Search {workspace} operations</span><Input id={`depot-operation-search-${workspace}`} value={query} onChange={event => { setQuery(event.target.value); setLimit(48) }} className="h-8 rounded-[9px] border-aurora-border-default bg-aurora-control-surface pl-9 text-[12.5px]" placeholder="Search operations" /></label>
+      <span className="whitespace-nowrap text-[11px] text-aurora-text-muted">{matching.length} operations</span>
     </div>
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2.5 p-3">
       {visible.map(operation => {
         const readOnly = operation.annotations?.readOnlyHint === true
         const destructive = isDestructiveOperation(operation.annotations)
-        return <button key={operation.name} type="button" onClick={() => open(operation)} className="group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium p-4 text-left shadow-[var(--aurora-shadow-subtle)] transition-[border-color,background-color,transform] duration-150 hover:-translate-y-0.5 hover:border-aurora-accent-primary/40 hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-focus-ring">
-          <div className="flex items-start justify-between gap-3"><span className={AURORA_CARD_TITLE}>{operation.title}</span><Badge variant="outline" className={destructive ? 'text-destructive' : readOnly ? 'text-aurora-success' : 'text-aurora-warn'}>{destructive ? 'Destructive' : readOnly ? 'Read' : 'Admin'}</Badge></div>
-          <p className="mt-2 text-sm leading-[1.55] text-aurora-text-muted">{operation.description}</p>
-          <code className={cn(AURORA_DENSE_META, 'mt-3 block truncate text-aurora-accent-primary')}>{operation.name}</code>
+        return <button key={operation.name} type="button" onClick={() => open(operation)} className="group flex min-w-0 flex-col gap-2 rounded-xl border border-[color-mix(in_srgb,var(--aurora-border-default)_60%,var(--aurora-page-bg))] bg-aurora-control-surface p-3.5 text-left transition-colors duration-150 hover:border-[color-mix(in_srgb,var(--aurora-accent-primary)_40%,transparent)] hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
+          <div className="flex w-full items-start justify-between gap-2.5"><span className="font-display text-sm font-[760] text-aurora-text-primary">{operation.title}</span><Badge variant="outline" className={cn('h-[18px] shrink-0 rounded border-[color-mix(in_srgb,currentColor_30%,transparent)] bg-[color-mix(in_srgb,currentColor_11%,transparent)] px-[7px] text-[9px] font-bold uppercase tracking-[.1em]', destructive ? 'text-aurora-error' : readOnly ? 'text-aurora-success' : 'text-aurora-warn')}>{destructive ? 'Destructive' : readOnly ? 'Read' : 'Admin'}</Badge></div>
+          <p className="text-pretty text-xs leading-[1.55] text-aurora-text-muted">{operation.description}</p>
+          <code className="block max-w-full truncate font-mono text-[10.5px] text-aurora-accent-strong">{operation.name}</code>
         </button>
       })}
     </div>
     {visible.length < matching.length ? <div className="mt-4 flex justify-center"><Button variant="outline" onClick={() => setLimit(current => Math.min(current + 48, matching.length))}>Show more ({matching.length - visible.length} remaining)</Button></div> : null}
     {matching.length === 0 ? <p className="rounded-aurora-2 border border-aurora-border-subtle p-6 text-center text-sm text-aurora-text-muted">No operations match this search.</p> : null}
+    </section>
     <Dialog open={Boolean(selected)} onOpenChange={openState => !openState && close()}>
       <DialogContent className="max-h-[min(780px,calc(100vh-2rem))] max-w-2xl overflow-y-auto border-aurora-border-strong bg-aurora-panel-medium">
         <DialogHeader><DialogTitle>{selected?.title}</DialogTitle><DialogDescription>{selected?.description}</DialogDescription></DialogHeader>
@@ -180,19 +181,16 @@ export function DepotAdministrationPage() {
   }), [operations])
   const authority = !status?.enabled ? 'offline' : status.authority ?? (operations.length === 0 ? 'unknown' : operations.some(operation => operation.annotations?.readOnlyHint === false) ? 'write' : 'read')
 
-  return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={AURORA_PAGE_FRAME}>
-    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate every capability published by the selected Depot authority through Labby’s authenticated control plane." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? 'Authority connected' : 'Authority unavailable' }} actions={<div className="flex gap-2"><Button variant="outline" size="sm" asChild><a href="/settings/depot/"><Database className="size-4" />Authorities</a></Button><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Refresh</Button></div>} stats={[
-      { label: 'Canonical operations', value: operations.length || '—', icon: <Activity size={12}/> },
-      { label: 'Catalog', value: counts.catalog || '—', icon: <Boxes size={12}/>, tone: 'var(--aurora-accent-strong)' },
-      { label: 'Access', value: counts.access || '—', icon: <KeyRound size={12}/>, tone: 'var(--aurora-warn)' },
-      { label: 'Operations', value: counts.operations || '—', icon: <Wrench size={12}/>, tone: 'var(--aurora-success)' },
-      { label: 'Authority', value: authority, icon: <ShieldCheck size={12}/> },
-    ]} />
-    <nav aria-label="Depot administration workspaces" className="flex overflow-x-auto border-b border-aurora-border-subtle px-1 sm:px-3">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex shrink-0 items-center gap-2 border-b-2 border-transparent px-4 py-3 text-sm font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-4" />{label}{id !== 'overview' ? <span className={cn(AURORA_BADGE_LABEL, 'opacity-70')}>{counts[id]}</span> : null}</button>)}</nav>
+  return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
+    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate every capability published by the selected Depot authority through Labby’s authenticated control plane." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? 'Authority connected' : 'Authority unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" asChild><a href="/settings/depot/"><Database className="size-[13px]" />Authorities</a></Button><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[13px] animate-spin" /> : <RefreshCw className="size-[13px]" />}Refresh</Button></div>} stats={[
+      { label: 'Canonical operations', value: loading || error ? '—' : operations.length },
+      { label: 'Catalog', value: loading || error ? '—' : counts.catalog, tone: 'var(--aurora-accent-strong)' },
+      { label: 'Access', value: loading || error ? '—' : counts.access, tone: 'var(--aurora-warn)' },
+      { label: 'Operations', value: loading || error ? '—' : counts.operations, tone: 'var(--aurora-success)' },
+      { label: 'Authority', value: authority },
+    ]} footer={<nav aria-label="Depot administration workspaces" className="aurora-scrollbar flex gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-default bg-aurora-control-surface px-5">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-[13px]" />{label}{id !== 'overview' ? <span className={cn('inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums', workspace === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted')}>{counts[id]}</span> : null}</button>)}</nav>} />
     {error ? <DashboardPanel title="Depot unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
-    {!error && workspace === 'overview' ? <div className="grid gap-4 lg:grid-cols-3"><DashboardPanel title="Catalog lifecycle" icon={<Boxes className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Discovery, canonical artifacts, sources, durable jobs, uploads, bundles, and publication share one workspace.</p><Button className="mt-4" size="sm" onClick={() => setWorkspace('catalog')}>Open Catalog</Button></DashboardPanel><DashboardPanel title="Access & governance" icon={<ShieldCheck className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Token administration and publication policy use Depot’s canonical schemas and Labby’s admin guard.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('access')}>Open Access</Button></DashboardPanel><DashboardPanel title="System operations" icon={<Wrench className="size-4" />}><p className="text-sm leading-6 text-aurora-text-muted">Status, CAS audits, maintenance, and migrations remain explicit, reviewable operations.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => setWorkspace('operations')}>Open Operations</Button></DashboardPanel></div> : null}
-    {!error && workspace === 'catalog' ? <div className="space-y-5"><ArtifactControlPlane /><DashboardPanel title="Canonical catalog operations" icon={<Boxes className="size-4" />}><p className="mb-4 text-sm text-aurora-text-muted">Direct access to every catalog operation advertised by this Depot authority.</p><OperationGrid operations={operations} workspace="catalog" /></DashboardPanel></div> : null}
-    {!error && workspace === 'access' ? <OperationGrid operations={operations} workspace="access" /> : null}
-    {!error && workspace === 'operations' ? <div className="space-y-5"><DepotProvidersPage /><DashboardPanel title="Depot maintenance" icon={<Wrench className="size-4" />}><OperationGrid operations={operations} workspace="operations" /></DashboardPanel></div> : null}
+    {!error && workspace === 'overview' ? <AdministrationOverview onOpen={setWorkspace} /> : null}
+    {!error && workspace !== 'overview' ? <OperationGrid key={workspace} operations={operations} workspace={workspace} /> : null}
   </div></>
 }
