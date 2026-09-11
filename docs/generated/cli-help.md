@@ -1964,10 +1964,35 @@ Export, verify, or restore the complete durable installation state offline
 Usage: state [OPTIONS] <COMMAND>
 
 Commands:
-  export   Export an authenticated disaster-recovery bundle using LABBY_RECOVERY_KEY_PATH
-  verify   Verify a bundle's HMAC, schema, compatibility, paths, sizes, and digests
-  restore  Restore an authenticated bundle offline using LABBY_RECOVERY_KEY_PATH
-  help     Print this message or the help of the given subcommand(s)
+  migrate-access  Migrate an existing AccessStore offline using LABBY_ACCESS_MIGRATION_EVIDENCE
+  export          Export an authenticated disaster-recovery bundle using LABBY_RECOVERY_KEY_PATH
+  verify          Verify a bundle's HMAC, schema, compatibility, paths, sizes, and digests
+  restore         Restore an authenticated bundle offline using LABBY_RECOVERY_KEY_PATH
+  help            Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby state migrate-access`
+
+```text
+Migrate an existing AccessStore offline using LABBY_ACCESS_MIGRATION_EVIDENCE
+
+Usage: migrate-access [OPTIONS]
 
 Options:
       --json
