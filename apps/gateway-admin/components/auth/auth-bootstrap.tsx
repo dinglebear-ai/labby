@@ -3,6 +3,7 @@
 import * as React from 'react'
 
 import { LoginScreen } from './login-screen.tsx'
+import { OwnerSetupScreen } from './owner-setup-screen.tsx'
 import { shouldBypassBrowserSessionAuth } from '../../lib/auth/auth-mode.ts'
 import { loadBrowserSession, useBrowserSession } from '../../lib/auth/session.ts'
 
@@ -47,6 +48,16 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
         errorMessage={session.message}
         requestId={session.requestId}
         returnTo={returnTo}
+      />
+    )
+  }
+
+  if (session.authorityState === 'transport' || session.authorityState === 'unprovisioned') {
+    return (
+      <OwnerSetupScreen
+        authorityState={session.authorityState}
+        email={session.user.email}
+        remediation={session.remediation}
       />
     )
   }

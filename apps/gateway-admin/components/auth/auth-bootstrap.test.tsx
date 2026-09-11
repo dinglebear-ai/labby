@@ -73,3 +73,51 @@ test('AuthBootstrap does not bypass hosted auth when NEXT_PUBLIC_API_TOKEN is se
 
   assert.equal(markup.includes('children'), false)
 })
+
+function renderGate() {
+  return withAuthEnv(() =>
+    renderToStaticMarkup(
+      React.createElement(AuthBootstrap, null, React.createElement('div', null, 'children')),
+    ),
+  )
+}
+
+const signedIn = {
+  status: 'authenticated' as const,
+  user: { sub: 'owner-subject', email: 'owner@example.com' },
+  expiresAt: 124,
+  csrfToken: 'csrf-owner',
+}
+
+test('AuthBootstrap shows owner setup instead of the app while owner bootstrap is pending', () => {
+  __setBrowserSessionStateForTests({
+    ...signedIn,
+    authorityState: 'transport',
+    remediation: 'Complete owner bootstrap to enable multi-user authority.',
+  })
+
+  const markup = renderGate()
+  assert.match(markup, /Finish setting up Labby/)
+  assert.match(markup, /Complete owner bootstrap to enable multi-user authority\./)
+  assert.match(markup, /owner@example\.com/)
+  assert.match(markup, /name="organization_name"/)
+  assert.match(markup, /name="project_name"/)
+  assert.match(markup, /Complete owner bootstrap/)
+  assert.equal(markup.includes('children'), false)
+  assert.equal(markup.includes('Authentication Error'), false)
+})
+
+test('AuthBootstrap shows the no-access state for an unprovisioned identity', () => {
+  __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'unprovisioned' })
+
+  const markup = renderGate()
+  assert.match(markup, /No access yet/)
+  assert.match(markup, /Ask an administrator/)
+  assert.equal(markup.includes('children'), false)
+})
+
+test('AuthBootstrap renders the app for a ready session', () => {
+  __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'ready' })
+
+  assert.match(renderGate(), /children/)
+})

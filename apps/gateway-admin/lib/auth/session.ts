@@ -18,6 +18,7 @@ export {
   type AuthorityOwner,
   type BrowserSessionState,
   type SessionAuthority,
+  type SessionAuthorityState,
 } from './session-store.ts'
 export {
   AUTHORITY_COMPATIBILITY_GENERATION,
