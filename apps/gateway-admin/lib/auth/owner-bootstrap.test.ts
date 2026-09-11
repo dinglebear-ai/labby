@@ -108,3 +108,38 @@ test('describeOwnerBootstrapError maps server kinds to recovery guidance', () =>
   assert.equal(describeOwnerBootstrapError(new OwnerBootstrapError(500, 'store unavailable', 'internal_error')), 'store unavailable')
   assert.match(describeOwnerBootstrapError(new TypeError('fetch failed')), /could not reach the server/)
 })
+
+test('bootstrapOwner retries an edge timeout because owner bootstrap is idempotent', async () => {
+  pendingOwnerSession()
+  let posts = 0
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url) === '/v1/access/bootstrap-owner') {
+      posts += 1
+      return posts === 1
+        ? new Response('<html>522</html>', { status: 522 })
+        : new Response(JSON.stringify({ status: 'already_applied' }), { status: 200 })
+    }
+    return new Response(JSON.stringify(readySession), { status: 200 })
+  }) as FetchMock
+
+  const outcome = await bootstrapOwner({ organizationName: 'Unraid', projectName: 'Team-Skills' }, { retryDelaysMs: [0] })
+  assert.equal(outcome, 'already_applied')
+  assert.equal(posts, 2)
+})
+
+test('bootstrapOwner stops after its retry budget and explains an edge failure', async () => {
+  pendingOwnerSession()
+  let posts = 0
+  globalThis.fetch = (async () => {
+    posts += 1
+    return new Response('<html>522</html>', { status: 522 })
+  }) as FetchMock
+
+  let caught: unknown
+  await bootstrapOwner({ organizationName: 'Unraid', projectName: 'Team-Skills' }, { retryDelaysMs: [0, 0] }).catch((error: unknown) => {
+    caught = error
+  })
+  assert.ok(caught instanceof OwnerBootstrapError && caught.status === 522)
+  assert.equal(posts, 3)
+  assert.match(describeOwnerBootstrapError(caught), /could not reach the server \(HTTP 522\).*repeating owner bootstrap is safe/)
+})

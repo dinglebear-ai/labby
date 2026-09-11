@@ -7,6 +7,27 @@ export type OwnerBootstrapInput = {
 
 export type OwnerBootstrapOutcome = 'created' | 'already_applied'
 
+/**
+ * Gateway statuses from a reverse proxy or CDN edge that never reached Labby
+ * (for example Cloudflare's 522 origin timeout). Owner bootstrap is idempotent,
+ * so a repeat returns `already_applied` rather than creating anything twice.
+ */
+const EDGE_RETRY_STATUSES = new Set([502, 503, 504, 520, 521, 522, 523, 524])
+const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [1000, 2500]
+
+async function postWithEdgeRetries(init: RequestInit, retryDelaysMs: readonly number[]): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const canRetry = attempt < retryDelaysMs.length
+    try {
+      const response = await fetch('/v1/access/bootstrap-owner', init)
+      if (!canRetry || !EDGE_RETRY_STATUSES.has(response.status)) return response
+    } catch (error) {
+      if (!canRetry) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]))
+  }
+}
+
 export class OwnerBootstrapError extends Error {
   readonly status: number
   readonly kind?: string
@@ -25,21 +46,27 @@ export class OwnerBootstrapError extends Error {
  * only sends the two display names. On success the browser session is
  * reloaded so the new durable authority replaces the pending state.
  */
-export async function bootstrapOwner(input: OwnerBootstrapInput): Promise<OwnerBootstrapOutcome> {
+export async function bootstrapOwner(
+  input: OwnerBootstrapInput,
+  options: { retryDelaysMs?: readonly number[] } = {},
+): Promise<OwnerBootstrapOutcome> {
   const csrfToken = getSessionCsrfToken()
   if (!csrfToken) {
     throw new OwnerBootstrapError(0, 'Your browser session has no CSRF token. Sign in again.', 'auth_failed')
   }
-  const response = await fetch('/v1/access/bootstrap-owner', {
-    method: 'POST',
-    credentials: 'include',
-    cache: 'no-store',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
-    body: JSON.stringify({
-      organization_name: input.organizationName.trim(),
-      project_name: input.projectName.trim(),
-    }),
-  })
+  const response = await postWithEdgeRetries(
+    {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+      body: JSON.stringify({
+        organization_name: input.organizationName.trim(),
+        project_name: input.projectName.trim(),
+      }),
+    },
+    options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS,
+  )
   const payload = (await response.json().catch(() => null)) as
     | { status?: unknown; kind?: unknown; message?: unknown }
     | null
@@ -62,6 +89,13 @@ export async function bootstrapOwner(input: OwnerBootstrapInput): Promise<OwnerB
 export function describeOwnerBootstrapError(error: unknown): string {
   if (!(error instanceof OwnerBootstrapError)) {
     return 'Labby could not reach the server to complete owner bootstrap. Try again.'
+  }
+  if (EDGE_RETRY_STATUSES.has(error.status)) {
+    return (
+      `Labby's public address could not reach the server (HTTP ${error.status}). ` +
+      'This is a network problem between the edge proxy and your server, not your input. ' +
+      'Try again; repeating owner bootstrap is safe.'
+    )
   }
   switch (error.kind) {
     case 'conflict':
