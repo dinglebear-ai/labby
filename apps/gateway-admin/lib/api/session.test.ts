@@ -335,3 +335,86 @@ test('shouldBypassBrowserSessionAuth bypasses hosted auth when a token is set or
   assert.equal(shouldBypassBrowserSessionAuth('dev-token', 'false'), false)
   assert.equal(shouldBypassBrowserSessionAuth(undefined, 'true'), true)
 })
+
+// Mirrors `authenticated_session_body` in crates/labby/src/api/browser_session.rs
+// for the two states where the server holds a valid session but no durable
+// authority yet (owner bootstrap pending, or an identity with no memberships).
+function noAuthoritySessionBody(authorityState: 'transport' | 'unprovisioned', remediation: string) {
+  return {
+    authenticated: true,
+    login_available: true,
+    authority_state: authorityState,
+    authority: null,
+    remediation,
+    is_admin: authorityState === 'transport',
+    user: { sub: 'owner-subject', email: 'owner@example.com' },
+    project_id: null,
+    owner: null,
+    organization_id: null,
+    teams: [],
+    projects: [],
+    project: null,
+    capabilities: [],
+    authority_generation: null,
+    expires_at: 124,
+    csrf_token: 'csrf-owner',
+  }
+}
+
+for (const [authorityState, remediation] of [
+  ['transport', 'Durable access authority is not initialized on this process; complete owner bootstrap.'],
+  ['unprovisioned', 'This identity is authenticated but has no access authority yet.'],
+] as const) {
+  test(`a ${authorityState} session stays signed in with no authority instead of failing as malformed`, async () => {
+    __setBrowserSessionStateForTests({ status: 'loading' })
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(noAuthoritySessionBody(authorityState, remediation)), { status: 200 })) as FetchMock
+
+    const state = await loadBrowserSession()
+    assert.equal(state.status, 'authenticated', JSON.stringify(state))
+    assert.equal(getSessionAuthority(), undefined)
+    assert.equal(state.status === 'authenticated' ? state.isAdmin : true, false)
+    assert.equal(sessionHasCapability('platform.manage'), false)
+  })
+}
+
+test('a ready session parses the server projection shape', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    login_available: true,
+    authority_state: 'ready',
+    authority: { principal_id: 'principal-1', organization_id: 'org-1', authority_generation: 5 },
+    is_admin: true,
+    user: { sub: 'owner-subject', email: 'owner@example.com' },
+    project_id: null,
+    owner: { kind: 'personal', id: 'principal-1' },
+    organization_id: 'org-1',
+    teams: [],
+    projects: [],
+    project: null,
+    capabilities: ['platform.manage', 'scope.read'],
+    authority_generation: 5,
+    expires_at: 124,
+    csrf_token: 'csrf-owner',
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status, 'authenticated', JSON.stringify(state))
+  assert.equal(getSessionAuthority()?.principalId, 'principal-1')
+  assert.equal(getSessionAuthority()?.generation, 5)
+  assert.equal(sessionHasCapability('platform.manage'), true)
+})
+
+test('an unknown authority_state fails closed as an incompatible authority error', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    ...noAuthoritySessionBody('transport', 'n/a'),
+    authority_state: 'some-future-state',
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status, 'auth_error')
+  assert.equal(state.status === 'auth_error' ? state.kind : undefined, 'incompatible_authority')
+  assert.equal(getSessionAuthority(), undefined)
+})
