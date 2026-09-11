@@ -809,3 +809,677 @@ pub async fn dispatch_unbound(name: &str, params: Value) -> Result<Value, ToolEr
         return Ok(crate::dispatch::helpers::help_payload("tasks", ACTIONS));
     }
     if name == "schema" {
+        return crate::dispatch::helpers::action_schema(ACTIONS, &required(&params, "action")?);
+    }
+    Err(denied())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::{AccessStore, AddTeamMemberInput, TeamRole};
+    use crate::dispatch::agents::{
+        self,
+        test_support::{
+            BOOTSTRAP_PRINCIPAL, agent_context, agent_params, browser, digest, fixture,
+        },
+    };
+    use labby_runtime::{agent_runtime::AgentRuntimeError, authority::AuthorityLeaseError};
+
+    /// Team the bootstrap flow creates with the bootstrap owner as its owner.
+    const BOOTSTRAP_TEAM: &str = "bootstrap-initial-team";
+    /// Second principal linked to `browser("member-subject")`.
+    const MEMBER_PRINCIPAL: &str = "member-1";
+
+    fn envelope(error: &ToolError) -> Value {
+        serde_json::from_str(&error.to_string()).unwrap()
+    }
+    fn task_context(store: &AccessStore, identity: &VerifiedIdentity) -> TaskDispatchContext {
+        TaskDispatchContext {
+            store: store.clone(),
+            identity: identity.clone(),
+            ceiling: AuthorityCeiling::trusted_local(),
+        }
+    }
+    fn task_params(task_id: &str, agent_id: &str) -> Value {
+        json!({
+            "task_id": task_id,
+            "idempotency_key": format!("{task_id}-key"),
+            "owner_kind": "personal",
+            "owner_id": BOOTSTRAP_PRINCIPAL,
+            "agent_id": agent_id,
+            "input_digest": digest('1'),
+        })
+    }
+    async fn wait_for_task_terminal(
+        store: &AccessStore,
+        task_id: &str,
+    ) -> crate::access::TaskRecord {
+        for _ in 0..200 {
+            let record = store
+                .get_agent_task(task_id.to_owned())
+                .await
+                .unwrap()
+                .expect("task exists");
+            if record.state.terminal() {
+                return record;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("task `{task_id}` did not settle");
+    }
+
+    async fn create_agent(store: &AccessStore, owner: &VerifiedIdentity, agent_id: &str) {
+        agents::dispatch(
+            agent_context(store, owner),
+            "agents.create",
+            agent_params(agent_id),
+        )
+        .await
+        .unwrap();
+    }
+    /// Add a second principal to the bootstrap team as a team admin (not the
+    /// creator of anything) and return its identity.
+    async fn add_team_admin(store: &AccessStore, owner: &VerifiedIdentity) -> VerifiedIdentity {
+        store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES('member-1','bootstrap-local','user','active','Member',10,10);
+                 INSERT INTO principal_links VALUES('member-link','member-1','external','https://accounts.google.com','member-subject',NULL,'active',1,1,10,10);",
+            )
+            .await
+            .unwrap();
+        store
+            .add_team_member(
+                AddTeamMemberInput::new(
+                    owner.clone(),
+                    BOOTSTRAP_TEAM,
+                    MEMBER_PRINCIPAL,
+                    TeamRole::Admin,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        browser("member-subject")
+    }
+    fn assert_summary_shape(value: &Value) {
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("output_digest"), "{value}");
+        assert!(!object.contains_key("error_code"), "{value}");
+        for key in [
+            "task_id",
+            "owner_kind",
+            "owner_id",
+            "agent_id",
+            "agent_version",
+            "state",
+            "attempt",
+        ] {
+            assert!(object.contains_key(key), "missing {key}: {value}");
+        }
+    }
+
+    #[test]
+    fn every_action_has_a_capability_and_none_is_platform_scoped() {
+        for spec in ACTIONS {
+            let capability = required_capability(spec.name);
+            assert!(capability.is_some(), "{}", spec.name);
+            assert_eq!(
+                spec.requires_admin,
+                capability.is_some_and(Capability::is_platform),
+                "{}",
+                spec.name
+            );
+        }
+        assert_eq!(required_capability("tasks.bogus"), None);
+    }
+
+    #[test]
+    fn catalog_is_complete() {
+        assert_eq!(ACTIONS.len(), 6);
+        assert!(ACTIONS.iter().all(|a| a.name.starts_with("tasks.")));
+        let create = ACTIONS
+            .iter()
+            .find(|action| action.name == "tasks.create")
+            .unwrap();
+        assert!(
+            create
+                .params
+                .iter()
+                .any(|param| param.name == "input_digest" && param.required)
+        );
+    }
+    #[tokio::test]
+    async fn unbound_is_non_enumerating() {
+        assert_eq!(
+            dispatch_unbound("tasks.get", json!({"task_id":"guessed"}))
+                .await
+                .unwrap_err()
+                .kind(),
+            "forbidden"
+        );
+    }
+
+    // B-C2: summary renderers never carry result material.
+    #[test]
+    fn summary_render_omits_result_material_and_result_render_includes_it() {
+        let record = crate::access::TaskRecord {
+            intent: TaskIntent {
+                id: "t-1".into(),
+                idempotency_key: "k-1".into(),
+                owner: OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+                project: None,
+                creator: PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap(),
+                agent_id: "a-1".into(),
+                agent_version: 1,
+                agent_revision_digest: digest('a'),
+                input_digest: digest('1'),
+                catalog_generation: "catalog-1".into(),
+                authority_fingerprint: "fp".into(),
+            },
+            state: TaskState::Succeeded,
+            attempt: 1,
+            output_digest: Some(digest('9')),
+            error_code: Some("secret-reason".into()),
+        };
+        let summary = render_summary(&record);
+        assert_summary_shape(&summary);
+        assert!(!summary.to_string().contains("secret-reason"));
+        assert!(!summary.to_string().contains(&digest('9')));
+        let result = render_result(&record);
+        assert_eq!(result["output_digest"], digest('9'));
+        assert_eq!(result["error_code"], "secret-reason");
+        assert_eq!(result["state"], "succeeded");
+    }
+
+    // B-C2: a team admin who did not create the Task sees the summary through
+    // `tasks.get`/`tasks.list` and is denied by `tasks.result`; the creator
+    // receives the full result only once the Task is terminal.
+    #[tokio::test]
+    async fn result_material_is_creator_only_and_terminal_only() {
+        let (_dir, store, owner) = fixture().await;
+        let admin = add_team_admin(&store, &owner).await;
+        let mut agent = agent_params("team-agent");
+        agent["owner_kind"] = json!("team");
+        agent["owner_id"] = json!(BOOTSTRAP_TEAM);
+        agents::dispatch(agent_context(&store, &owner), "agents.create", agent)
+            .await
+            .unwrap();
+        let mut task = task_params("team-task", "team-agent");
+        task["owner_kind"] = json!("team");
+        task["owner_id"] = json!(BOOTSTRAP_TEAM);
+        let created = dispatch(task_context(&store, &owner), "tasks.create", task)
+            .await
+            .unwrap();
+        assert_eq!(created["task_id"], "team-task");
+        let stored = store
+            .get_agent_task("team-task".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.intent.creator.as_str(), BOOTSTRAP_PRINCIPAL);
+
+        // The admin can read the summary but never the result.
+        let admin_context = task_context(&store, &admin);
+        let got = dispatch(
+            admin_context.clone(),
+            "tasks.get",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap();
+        assert_summary_shape(&got);
+        assert_eq!(got["state"], "created");
+        let listed = dispatch(admin_context.clone(), "tasks.list", json!({}))
+            .await
+            .unwrap();
+        let listed = listed["tasks"].as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_summary_shape(&listed[0]);
+        let admin_denied = dispatch(
+            admin_context.clone(),
+            "tasks.result",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(admin_denied.kind(), "forbidden");
+        assert_eq!(envelope(&admin_denied)["message"], "access denied");
+
+        // The creator is denied while the Task is not terminal.
+        let owner_context = task_context(&store, &owner);
+        let early = dispatch(
+            owner_context.clone(),
+            "tasks.result",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(early.kind(), "forbidden");
+
+        // Queueing is durable and service-owned: the call returns as soon as
+        // the Task is queued, while the detached attempt owns execution and
+        // terminal settlement even if the request future is dropped.
+        let queued = dispatch(
+            owner_context.clone(),
+            "tasks.queue",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued["state"], "queued");
+        let settled = wait_for_task_terminal(&store, "team-task").await;
+        assert!(settled.state.terminal(), "{:?}", settled.state);
+
+        let result = dispatch(
+            owner_context.clone(),
+            "tasks.result",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap();
+        let object = result.as_object().unwrap();
+        assert!(object.contains_key("output_digest"), "{result}");
+        assert!(object.contains_key("error_code"), "{result}");
+        if settled.state == TaskState::Failed {
+            assert_eq!(result["error_code"], "execution_failed");
+        }
+        // Terminal state does not widen the audience.
+        let still_denied = dispatch(
+            admin_context.clone(),
+            "tasks.result",
+            json!({"task_id":"team-task"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(still_denied.kind(), "forbidden");
+        let got = dispatch(admin_context, "tasks.get", json!({"task_id":"team-task"}))
+            .await
+            .unwrap();
+        assert_summary_shape(&got);
+        let got = dispatch(owner_context, "tasks.get", json!({"task_id":"team-task"}))
+            .await
+            .unwrap();
+        assert_summary_shape(&got);
+    }
+
+    // B-I11: runtime failures keep their typed reason.
+    #[test]
+    fn runtime_errors_keep_their_typed_reason() {
+        let table = [
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::Revoked),
+                "authority_changed",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::Lease(AuthorityLeaseError::Expired)),
+                "authority_changed",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::AuthorityUnavailable),
+                "source_unavailable",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::ResourceLimit),
+                "quota_exceeded",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::Cancelled),
+                "cancelled",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::ExecutorFailed),
+                "service_unavailable",
+            ),
+            (
+                TaskRuntimeError::Agent(AgentRuntimeError::PinnedDefinitionMismatch),
+                "forbidden",
+            ),
+            (TaskRuntimeError::FencedConflict, "conflict"),
+            (TaskRuntimeError::Unavailable, "service_unavailable"),
+            (TaskRuntimeError::InvalidLease, "internal_error"),
+            (TaskRuntimeError::InvalidQuota, "internal_error"),
+        ];
+        for (error, kind) in table {
+            let mapped = map_task_runtime_error("t-1", &error);
+            assert_eq!(mapped.kind(), kind, "{error:?}");
+        }
+        let fenced = envelope(&map_task_runtime_error(
+            "t-1",
+            &TaskRuntimeError::FencedConflict,
+        ));
+        assert_eq!(fenced["existing_id"], "t-1");
+        assert_eq!(
+            envelope(&map_task_runtime_error(
+                "t-1",
+                &TaskRuntimeError::Agent(AgentRuntimeError::ExecutorFailed)
+            ))["message"],
+            "Agent execution backend is not configured"
+        );
+    }
+
+    // B-I11: store denials collapse through the shared mapper.
+    #[test]
+    fn store_denials_collapse_to_one_non_enumerating_error() {
+        for error in [
+            AccessStoreError::NotAuthorized,
+            AccessStoreError::IdentityUnavailable,
+            AccessStoreError::ProjectAccessUnavailable,
+            AccessStoreError::TeamUnavailable,
+            AccessStoreError::ForeignKeyViolation,
+        ] {
+            let mapped = map(error);
+            assert_eq!(mapped.kind(), "forbidden");
+            assert_eq!(envelope(&mapped)["message"], "access denied");
+        }
+        assert_eq!(map(AccessStoreError::Locked).kind(), "service_unavailable");
+        assert_eq!(map(AccessStoreError::Corrupt).kind(), "service_unavailable");
+    }
+
+    // B-I12(a): installation is not a Task owner.
+    #[test]
+    fn installation_owner_is_rejected_as_invalid_input() {
+        let error = owner(&json!({"owner_kind":"installation","owner_id":"local"})).unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "owner_kind");
+        assert!(owner(&json!({"owner_kind":"personal","owner_id":"p1"})).is_ok());
+        assert!(owner(&json!({"owner_kind":"team","owner_id":"t1"})).is_ok());
+        assert!(owner(&json!({"owner_kind":"project","owner_id":"pr1"})).is_ok());
+    }
+    #[tokio::test]
+    async fn installation_owned_task_create_is_invalid_and_nothing_is_stored() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let mut params = task_params("install-task", "agent-1");
+        params["owner_kind"] = json!("installation");
+        params["owner_id"] = json!("local");
+        let error = dispatch(task_context(&store, &owner), "tasks.create", params)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(envelope(&error)["param"], "owner_kind");
+        assert!(
+            store
+                .get_agent_task("install-task".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    // B-I12(b): caller-supplied epochs are refused before anything is stored.
+    #[tokio::test]
+    async fn create_refuses_caller_epochs_and_nothing_is_stored() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        for key in ["authority_epoch", "publication_epoch"] {
+            let mut params = task_params("epoch-task", "agent-1");
+            params[key] = json!(99);
+            let error = dispatch(context.clone(), "tasks.create", params)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), "invalid_param");
+            assert_eq!(envelope(&error)["param"], key);
+        }
+        assert!(
+            store
+                .get_agent_task("epoch-task".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let created = dispatch(
+            context,
+            "tasks.create",
+            task_params("epoch-task", "agent-1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created["task_id"], "epoch-task");
+        assert_eq!(created["state"], "created");
+    }
+
+    // B-I12(c): a taken identifier is indistinguishable from a denial.
+    #[tokio::test]
+    async fn taken_identifier_is_indistinguishable_from_denial() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("taken", "agent-1"),
+        )
+        .await
+        .unwrap();
+        // Same identifier, different intent content.
+        let mut reused = task_params("taken", "agent-1");
+        reused["idempotency_key"] = json!("another-key");
+        let duplicate = dispatch(context.clone(), "tasks.create", reused)
+            .await
+            .unwrap_err();
+        // A stranger with no principal is denied for a free identifier.
+        let stranger = task_context(&store, &browser("stranger-subject"));
+        let unauthorized = dispatch(stranger, "tasks.create", task_params("free", "agent-1"))
+            .await
+            .unwrap_err();
+        assert_eq!(duplicate.kind(), "forbidden");
+        assert_eq!(envelope(&duplicate), envelope(&unauthorized));
+        assert_eq!(envelope(&duplicate)["message"], "access denied");
+        // Same identifier and key, different input: still a denial.
+        let mut drifted = task_params("taken", "agent-1");
+        drifted["input_digest"] = json!(digest('2'));
+        let drifted = dispatch(context.clone(), "tasks.create", drifted)
+            .await
+            .unwrap_err();
+        assert_eq!(envelope(&drifted), envelope(&unauthorized));
+        // An exact replay keeps the store's idempotent-create contract.
+        let replay = dispatch(context, "tasks.create", task_params("taken", "agent-1"))
+            .await
+            .unwrap();
+        assert_eq!(replay["task_id"], "taken");
+        // The store's own duplicate signals map the same way.
+        for raced in [
+            AccessStoreError::IntegrityViolation {
+                check: "task_idempotency",
+            },
+            AccessStoreError::Unavailable(
+                "UNIQUE constraint failed: agent_tasks.task_id".to_owned(),
+            ),
+        ] {
+            assert_eq!(envelope(&map_create(raced)), envelope(&duplicate));
+        }
+        assert_eq!(
+            map_create(AccessStoreError::Corrupt).kind(),
+            "service_unavailable"
+        );
+        assert_eq!(
+            map_create(AccessStoreError::Unavailable("disk gone".into())).kind(),
+            "service_unavailable"
+        );
+        // The original record is untouched.
+        let stored = store.get_agent_task("taken".into()).await.unwrap().unwrap();
+        assert_eq!(stored.intent.idempotency_key, "taken-key");
+        assert_eq!(stored.intent.input_digest, digest('1'));
+        assert_eq!(stored.state, TaskState::Created);
+    }
+
+    // B-I12(d): the pinned Agent revision is revalidated before execution.
+    #[test]
+    fn pinned_revision_check_rejects_every_drift() {
+        use labby_primitives::agent::{AgentRevision, RunningRevocationPolicy};
+        let created = AgentDefinition {
+            id: "a1".into(),
+            owner: OwnerScope::Personal(PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap()),
+            revision: AgentRevision {
+                version: 1,
+                content_digest: digest('a'),
+                repository_digest: digest('b'),
+                image_digest: digest('c'),
+                harness_digest: digest('d'),
+                loadout_digest: digest('e'),
+                catalog_generation: "catalog-1".into(),
+                credential_references: Vec::new(),
+            },
+            state: AgentState::Active,
+            required_capabilities: vec![Capability::ScopeOperate],
+            authority_epoch: 1,
+            publication_epoch: 1,
+            revocation_policy: RunningRevocationPolicy::StopAtSafeBoundary,
+        };
+        let intent = TaskIntent {
+            id: "t-1".into(),
+            idempotency_key: "k-1".into(),
+            owner: created.owner.clone(),
+            project: None,
+            creator: PrincipalId::new(BOOTSTRAP_PRINCIPAL).unwrap(),
+            agent_id: created.id.clone(),
+            agent_version: created.revision.version,
+            agent_revision_digest: created.revision.content_digest.clone(),
+            input_digest: digest('1'),
+            catalog_generation: created.revision.catalog_generation.clone(),
+            authority_fingerprint: "fp".into(),
+        };
+        assert!(pinned_revision_matches(&created, &intent));
+        let mut bumped = created.clone();
+        bumped.revision.version += 1;
+        assert!(!pinned_revision_matches(&bumped, &intent));
+        let mut rewritten = created.clone();
+        rewritten.revision.content_digest = digest('f');
+        assert!(!pinned_revision_matches(&rewritten, &intent));
+        let mut suspended = created.clone();
+        suspended.state = AgentState::Suspended;
+        assert!(!pinned_revision_matches(&suspended, &intent));
+        let mut moved = created;
+        moved.owner = OwnerScope::Team(TeamId::new("other-team").unwrap());
+        assert!(!pinned_revision_matches(&moved, &intent));
+    }
+    #[tokio::test]
+    async fn queue_denies_when_pinned_agent_revision_drifted() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("pinned", "agent-1"),
+        )
+        .await
+        .unwrap();
+        // A new Agent revision invalidates the pin.
+        agents::dispatch(
+            agent_context(&store, &owner),
+            "agents.update",
+            json!({"agent_id":"agent-1","content_digest":digest('f')}),
+        )
+        .await
+        .unwrap();
+        let error = dispatch(context.clone(), "tasks.queue", json!({"task_id":"pinned"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+        assert_eq!(envelope(&error)["message"], "access denied");
+        let stored = store
+            .get_agent_task("pinned".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, TaskState::Created, "no lease was acquired");
+        assert_eq!(stored.attempt, 0);
+        // The authoritative execution-time check denies for a drifted record
+        // even when the caller already holds an authority lease.
+        let lease = authorize(
+            &context,
+            "tasks.queue",
+            &stored.intent.owner,
+            stored.intent.id.clone(),
+            Capability::ScopeOperate,
+            now().unwrap(),
+        )
+        .await
+        .unwrap();
+        let error = execute_queued(
+            &context,
+            &stored,
+            lease,
+            Cancellation::new(),
+            now().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+    }
+    #[tokio::test]
+    async fn queue_denies_when_pinned_agent_is_suspended() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("suspended-pin", "agent-1"),
+        )
+        .await
+        .unwrap();
+        agents::dispatch(
+            agent_context(&store, &owner),
+            "agents.suspend",
+            json!({"agent_id":"agent-1"}),
+        )
+        .await
+        .unwrap();
+        let error = dispatch(context, "tasks.queue", json!({"task_id":"suspended-pin"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+        let stored = store
+            .get_agent_task("suspended-pin".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, TaskState::Created);
+    }
+
+    // Release-profile guard: without `proxy-testkit` the deterministic branch
+    // of the shared placeholder executor is compiled out, so
+    // `LABBY_E2E_DETERMINISTIC_EXECUTORS` cannot turn a product build into a
+    // fake-success backend. The crate forbids `unsafe`, so the variable cannot
+    // be set from inside the test; run the suite with it exported to exercise
+    // the guard in both states.
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn disabled_executor_fails_closed_without_testkit() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("closed", "agent-1"),
+        )
+        .await
+        .unwrap();
+        let error = dispatch(context, "tasks.queue", json!({"task_id":"closed"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            "service_unavailable",
+            "deterministic hook must be inert (env set: {})",
+            std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
+        );
+        assert_eq!(
+            envelope(&error)["message"],
+            "Agent execution backend is not configured"
+        );
+        let stored = store
+            .get_agent_task("closed".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, TaskState::Failed);
+        assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
+        assert_eq!(stored.output_digest, None);
+    }
+}

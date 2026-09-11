@@ -830,4 +830,161 @@ setTimeout(() => {{
             let (origin, request) = mock_once(move |_| {
                 let body = serde_json::json!({"ready": ready, "expires_at": 2_000}).to_string();
                 format!(
-                    "HTTP/1.1 {status} Test\r\ncontent-type: applica
+                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            });
+            assert_eq!(
+                run_async(post_poll(&test_client(), &origin, "poll-secret", 1_000)).unwrap(),
+                if expected {
+                    PollResult::Ready
+                } else {
+                    PollResult::RetryAfter(POLL_INTERVAL)
+                }
+            );
+            let request = request.join().unwrap();
+            assert!(request.starts_with("POST /auth/desktop/poll HTTP/1.1\r\n"));
+            assert!(request.contains("\"poll_token\":\"poll-secret\""));
+        }
+    }
+
+    #[test]
+    fn mock_poll_rejects_inconsistent_or_expired_response() {
+        for (status, ready, expires_at) in
+            [(200, false, 2_000), (202, true, 2_000), (202, false, 999)]
+        {
+            let (origin, request) = mock_once(move |_| {
+                let body =
+                    serde_json::json!({"ready": ready, "expires_at": expires_at}).to_string();
+                format!(
+                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            });
+            assert!(run_async(post_poll(&test_client(), &origin, "poll", 1_000)).is_err());
+            request.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_new_flow_invalidates_the_previous_generation() {
+        let state = DesktopAuthState::default();
+        let first = state.begin();
+        assert!(state.is_current(first));
+        let second = state.begin();
+        assert!(!state.is_current(first));
+        assert!(state.is_current(second));
+    }
+
+    #[test]
+    fn redeem_is_same_origin_cookie_fetch_and_requires_no_content() {
+        let response = StartResponse {
+            authorization_url: "https://labby.example.com/auth/desktop/authorize?state=s".into(),
+            poll_token: "poll".into(),
+            redeem_code: "code\"</script>".into(),
+            expires_at: i64::MAX,
+        };
+        let script = redeem_script(
+            &response,
+            "verifier",
+            "/settings/",
+            "https://labby.example.com",
+            7,
+        );
+        assert!(script.contains("fetch('/auth/desktop/redeem'"));
+        assert!(script.contains("credentials: 'include'"));
+        assert!(script.contains("response.status !== 204"));
+        assert!(script.contains("location.origin !== \"https://labby.example.com\""));
+        assert!(script.contains("location.replace(\"/settings/\")"));
+        assert!(!script.contains("code\"</script>"));
+    }
+
+    #[test]
+    fn progress_overlay_keeps_the_hosted_document_and_is_accessible() {
+        let script = status_script("Continue in browser", false, 3);
+        assert!(script.contains("aria-live"));
+        assert!(script.contains("role', 'status"));
+        assert!(!script.contains("document.body.innerHTML"));
+    }
+
+    #[test]
+    fn executed_status_script_creates_accessible_live_region() {
+        let result = execute_browser_script(&status_script("Continue in browser", false, 7), "");
+        assert_eq!(result["generation"], 7);
+        assert_eq!(result["status"]["role"], "status");
+        assert_eq!(result["status"]["live"], "polite");
+        assert_eq!(result["status"]["text"], "Continue in browser");
+    }
+
+    #[test]
+    fn executed_redeem_on_204_navigates_to_internal_return() {
+        let result = execute_browser_script(
+            &format!(
+                "{};\n{}",
+                status_script("Completing", false, 7),
+                redeem_test_script(7)
+            ),
+            "",
+        );
+        assert_eq!(result["fetchCalls"], 1);
+        assert_eq!(result["navigations"], serde_json::json!(["/settings/"]));
+    }
+
+    #[test]
+    fn executed_redeem_failures_show_error_without_navigation() {
+        for prelude in [
+            "global.fetch = async () => { result.fetchCalls += 1; return {status: 500}; };",
+            "global.fetch = async () => { result.fetchCalls += 1; throw new Error('offline'); };",
+        ] {
+            let result = execute_browser_script(
+                &format!(
+                    "{};\n{}",
+                    status_script("Completing", false, 7),
+                    redeem_test_script(7)
+                ),
+                prelude,
+            );
+            assert_eq!(result["fetchCalls"], 1);
+            assert_eq!(result["navigations"], serde_json::json!([]));
+            assert_eq!(result["status"]["role"], "alert");
+            assert!(
+                result["status"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Sign-in failed")
+            );
+        }
+    }
+
+    #[test]
+    fn stale_generation_and_wrong_origin_never_execute_fetch() {
+        for prelude in [
+            "window.__labbyDesktopAuthGeneration = 8;",
+            "window.__labbyDesktopAuthGeneration = 7; location.origin = 'https://attacker.invalid';",
+        ] {
+            let result = execute_browser_script(&redeem_test_script(7), prelude);
+            assert_eq!(result["fetchCalls"], 0);
+            assert_eq!(result["navigations"], serde_json::json!([]));
+        }
+    }
+
+    #[test]
+    fn replacement_attempt_suppresses_stale_completion_after_fetch() {
+        let result = execute_browser_script(
+            &redeem_test_script(7),
+            r#"
+window.__labbyDesktopAuthGeneration = 7;
+global.fetch = () => {
+  result.fetchCalls += 1;
+  return new Promise(resolve => {
+    setTimeout(() => { window.__labbyDesktopAuthGeneration = 8; }, 0);
+    setTimeout(() => resolve({status: 204}), 5);
+  });
+};
+"#,
+        );
+        assert_eq!(result["fetchCalls"], 1);
+        assert_eq!(result["generation"], 8);
+        assert_eq!(result["navigations"], serde_json::json!([]));
+    }
+}

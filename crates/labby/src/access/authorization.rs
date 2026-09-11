@@ -740,4 +740,37 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(act
+        assert_eq!(active.team_ids, ["library-team"]);
+        assert_eq!(active.team_management_ids, ["library-team"]);
+
+        store
+            .execute_test_statement(
+                "UPDATE groups SET status='suspended', policy_epoch=policy_epoch+1
+                 WHERE group_id='library-team';",
+            )
+            .await
+            .unwrap();
+
+        let suspended = store
+            .authorize_skill_library(member, "member-project".to_owned(), Permission::AssetUse)
+            .await
+            .unwrap();
+        assert!(suspended.team_ids.is_empty());
+        assert!(suspended.team_management_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_persisted_vocabulary_remains_typed() {
+        let (_directory, store, owner) = fixture().await;
+        store
+            .execute_test_statement(
+                "UPDATE project_loadouts SET loadout_name='bad
+name'
+                 WHERE project_id='member-project';",
+            )
+            .await
+            .unwrap();
+        let result = decision(&store, owner, "member-project", Permission::ProjectRead).await;
+        assert!(matches!(result, Err(AccessStoreError::MalformedVocabulary)));
+    }
+}

@@ -841,4 +841,94 @@ mod tests {
             windows[0] <= windows[1] && windows[1] <= windows[2],
             "window should escalate: {windows:?}"
         );
-        let (_, max_jitter) =
+        let (_, max_jitter) = labby_runtime::backoff::jitter_window(negative_backoff(u32::MAX));
+        assert!(
+            windows.iter().all(|w| *w <= max_jitter.as_secs()),
+            "window must stay capped: {windows:?}"
+        );
+    }
+
+    #[test]
+    fn changing_upstream_config_retries_immediately() {
+        let mut cache = empty_cache();
+        merge_failure_into_cache(&mut cache, failure("alpha", "fp"), now_unix());
+        assert!(cache.probe_suppressed("alpha", "fp"));
+        assert!(
+            !cache.probe_suppressed("alpha", "edited-fp"),
+            "a config edit must clear suppression rather than wait out the backoff"
+        );
+    }
+
+    #[test]
+    fn a_successful_probe_clears_suppression_and_restores_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+        let now = now_unix();
+
+        let mut seeded = empty_cache();
+        seeded.version = CACHE_VERSION;
+        merge_failure_into_cache(&mut seeded, failure("alpha", "fp"), now);
+        persist_atomic(&path, &seeded).expect("seed cache");
+        assert!(CatalogCache::load_from(&path).probe_suppressed("alpha", "fp"));
+
+        // A tool that did not exist while the upstream was failing must still be
+        // discovered on recovery.
+        merge_and_store_blocking(
+            &path,
+            vec![CatalogCacheUpdate {
+                upstream_name: "alpha".to_string(),
+                fingerprint: "fp".to_string(),
+                tools: vec![test_tool("brand_new_tool")],
+            }],
+            Vec::new(),
+        );
+
+        let reloaded = CatalogCache::load_from(&path);
+        assert!(!reloaded.probe_suppressed("alpha", "fp"));
+        let tools = reloaded
+            .fresh_tools("alpha", "fp")
+            .expect("recovered tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool.name, "brand_new_tool");
+    }
+
+    #[test]
+    fn failures_round_trip_to_disk_and_expired_ones_are_pruned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+
+        merge_and_store_blocking(&path, Vec::new(), vec![failure("dead", "fp")]);
+        assert!(CatalogCache::load_from(&path).probe_suppressed("dead", "fp"));
+
+        let mut stale = empty_cache();
+        stale.version = CACHE_VERSION;
+        merge_failure_into_cache(
+            &mut stale,
+            failure("stale", "fp"),
+            now_unix() - negative_backoff(1).as_secs() * 2,
+        );
+        assert!(prune_expired_failures(&mut stale, now_unix()));
+        assert!(stale.failures.is_empty());
+    }
+
+    #[test]
+    fn cache_written_without_negative_entries_still_loads() {
+        let legacy = serde_json::json!({
+            "version": CACHE_VERSION,
+            "upstreams": {
+                "alpha": { "fingerprint": "fp", "saved_at_unix": now_unix(), "tools": [] }
+            }
+        });
+        let cache: CatalogCache =
+            serde_json::from_value(legacy).expect("legacy cache must deserialize");
+        assert!(cache.failures.is_empty());
+        assert!(!cache.probe_suppressed("alpha", "fp"));
+        assert!(cache.fresh_tools("alpha", "fp").is_some());
+    }
+
+    #[test]
+    fn jitter_seed_is_stable_per_upstream_and_differs_across_upstreams() {
+        assert_eq!(jitter_seed("alpha"), jitter_seed("alpha"));
+        assert_ne!(jitter_seed("alpha"), jitter_seed("beta"));
+    }
+}

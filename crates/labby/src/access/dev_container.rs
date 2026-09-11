@@ -768,4 +768,467 @@ pub(crate) fn recovery_inventory(
         .prepare(
             "SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state
              FROM dev_container_instances
-             WHERE obs
+             WHERE observed_state != 'deleted' ORDER BY instance_id",
+        )
+        .map_err(storage)?;
+    statement
+        .query_map([], |row| {
+            let owner_kind = owner_kind(&row.get::<_, String>(1)?)?;
+            let desired = desired_state(&row.get::<_, String>(4)?)?;
+            let observed = observed_state(&row.get::<_, String>(5)?)?;
+            Ok(RecoveryRecord {
+                instance_id: row.get(0)?,
+                owner_kind,
+                owner_id: row.get(2)?,
+                lifecycle_nonce: row.get(3)?,
+                desired_state: desired,
+                observed_state: observed,
+            })
+        })
+        .map_err(storage)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage)
+}
+
+pub(crate) fn recovery_inventory_page(
+    connection: &Connection,
+    after: &str,
+    limit: usize,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    if limit == 0 || limit > 100 {
+        return Err(DevContainerLedgerError::InvalidInput);
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state
+         FROM dev_container_instances WHERE observed_state != 'deleted' AND instance_id>?1
+         ORDER BY instance_id LIMIT ?2",
+        )
+        .map_err(storage)?;
+    statement
+        .query_map(
+            params![
+                after,
+                i64::try_from(limit).map_err(|_| DevContainerLedgerError::InvalidInput)?
+            ],
+            |row| {
+                Ok(RecoveryRecord {
+                    instance_id: row.get(0)?,
+                    owner_kind: owner_kind(&row.get::<_, String>(1)?)?,
+                    owner_id: row.get(2)?,
+                    lifecycle_nonce: row.get(3)?,
+                    desired_state: desired_state(&row.get::<_, String>(4)?)?,
+                    observed_state: observed_state(&row.get::<_, String>(5)?)?,
+                })
+            },
+        )
+        .map_err(storage)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage)
+}
+
+pub(super) fn authorized_recovery_inventory_page(
+    connection: &Connection,
+    after: &str,
+    limit: usize,
+    principal_id: &str,
+    platform_admin: bool,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    if limit == 0 || limit > 100 {
+        return Err(DevContainerLedgerError::InvalidInput);
+    }
+    let sql = format!(
+        "WITH {}, visible AS (SELECT d.* FROM dev_container_instances d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.observed_state!='deleted' UNION ALL SELECT d.* FROM dev_container_instances d WHERE ?4 AND d.owner_kind='installation' AND d.observed_state!='deleted') SELECT instance_id,owner_kind,owner_id,lifecycle_nonce,desired_state,observed_state FROM visible WHERE instance_id>?1 ORDER BY instance_id LIMIT ?2",
+        super::store::AUTHORIZED_OWNERS_CTE
+    );
+    let mut statement = connection.prepare(&sql).map_err(storage)?;
+    statement
+        .query_map(
+            params![
+                after,
+                i64::try_from(limit).map_err(|_| DevContainerLedgerError::InvalidInput)?,
+                principal_id,
+                platform_admin
+            ],
+            |row| {
+                Ok(RecoveryRecord {
+                    instance_id: row.get(0)?,
+                    owner_kind: owner_kind(&row.get::<_, String>(1)?)?,
+                    owner_id: row.get(2)?,
+                    lifecycle_nonce: row.get(3)?,
+                    desired_state: desired_state(&row.get::<_, String>(4)?)?,
+                    observed_state: observed_state(&row.get::<_, String>(5)?)?,
+                })
+            },
+        )
+        .map_err(storage)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage)
+}
+
+pub(crate) async fn recovery_inventory_for_store(
+    store: &super::AccessStore,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    store
+        .with_connection(|connection| Ok(recovery_inventory(connection)))
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+pub(crate) async fn recovery_inventory_page_for_store(
+    store: &super::AccessStore,
+    after: String,
+    limit: usize,
+) -> Result<Vec<RecoveryRecord>, DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| Ok(recovery_inventory_page(connection, &after, limit)))
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+pub(crate) async fn set_desired_for_store(
+    store: &super::AccessStore,
+    instance_id: String,
+    nonce: String,
+    desired: DesiredState,
+    event_id: String,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| {
+            Ok(set_desired_state(
+                connection,
+                &instance_id,
+                &nonce,
+                desired,
+                &event_id,
+                now,
+            ))
+        })
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+/// Persist an engine observation (for example `Failed` after a reconcile
+/// found the container missing) under the instance's lifecycle nonce.
+pub(crate) async fn set_observed_for_store(
+    store: &super::AccessStore,
+    instance_id: String,
+    lifecycle_nonce: String,
+    next: ObservedState,
+    event_id: String,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    store
+        .with_connection(move |connection| {
+            let nonce = labby_primitives::dev_container::LifecycleNonce::new(lifecycle_nonce)
+                .map_err(|_| DevContainerLedgerError::InvalidInput);
+            Ok(nonce.and_then(|nonce| {
+                record_observation(connection, &instance_id, &nonce, next, &event_id, now)
+            }))
+        })
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+pub(crate) fn set_desired_state(
+    connection: &mut Connection,
+    instance_id: &str,
+    lifecycle_nonce: &str,
+    desired: DesiredState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    set_desired_state_in(
+        &transaction,
+        instance_id,
+        lifecycle_nonce,
+        desired,
+        event_id,
+        now,
+    )?;
+    transaction.commit().map_err(storage)
+}
+
+fn set_desired_state_in(
+    transaction: &Transaction<'_>,
+    instance_id: &str,
+    lifecycle_nonce: &str,
+    desired: DesiredState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    if event_id.trim().is_empty() || now < 0 {
+        return Err(DevContainerLedgerError::InvalidInput);
+    }
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM dev_container_instances WHERE instance_id=?1 AND lifecycle_nonce=?2",
+            params![instance_id, lifecycle_nonce],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or(DevContainerLedgerError::InvalidInput)?
+        .checked_add(1)
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let desired = desired_state_name(desired);
+    transaction
+        .execute(
+            "UPDATE dev_container_instances SET desired_state=?1,revision=?2,updated_at=?3,
+             deleted_at=CASE WHEN ?1='deleted' THEN ?3 ELSE NULL END
+             WHERE instance_id=?4 AND lifecycle_nonce=?5",
+            params![desired, revision, now, instance_id, lifecycle_nonce],
+        )
+        .map_err(storage)?;
+    transaction
+        .execute(
+            "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'desired_changed',?5,?6)",
+            params![
+                event_id,
+                instance_id,
+                lifecycle_nonce,
+                revision,
+                now,
+                format!("{{\"desired_state\":\"{desired}\"}}")
+            ],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+
+pub(crate) fn record_observation(
+    connection: &mut Connection,
+    instance_id: &str,
+    nonce: &labby_primitives::dev_container::LifecycleNonce,
+    next: ObservedState,
+    event_id: &str,
+    now: i64,
+) -> Result<(), DevContainerLedgerError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let (desired, prior, revision, durable_nonce) = transaction
+        .query_row(
+            "SELECT desired_state,observed_state,revision,lifecycle_nonce FROM dev_container_instances WHERE instance_id=?1",
+            [instance_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let durable_nonce = labby_primitives::dev_container::LifecycleNonce::new(durable_nonce)
+        .map_err(|_| {
+            DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+        })?;
+    labby_runtime::dev_container::validate_observation(
+        &durable_nonce,
+        nonce,
+        desired_state(&desired).map_err(storage)?,
+        observed_state(&prior).map_err(storage)?,
+        next,
+    )
+    .map_err(|_| DevContainerLedgerError::InvalidInput)?;
+    let revision = revision
+        .checked_add(1)
+        .ok_or(DevContainerLedgerError::InvalidInput)?;
+    let next = observed_state_name(next);
+    transaction.execute("UPDATE dev_container_instances SET observed_state=?1,revision=?2,updated_at=?3 WHERE instance_id=?4", params![next,revision,now,instance_id]).map_err(storage)?;
+    transaction
+        .execute(
+            "INSERT INTO dev_container_ledger VALUES(?1,?2,?3,?4,'observed_changed',?5,?6)",
+            params![
+                event_id,
+                instance_id,
+                nonce.as_str(),
+                revision,
+                now,
+                format!("{{\"observed_state\":\"{next}\"}}")
+            ],
+        )
+        .map_err(storage)?;
+    transaction.commit().map_err(storage)
+}
+
+fn desired_state(value: &str) -> rusqlite::Result<DesiredState> {
+    match value {
+        "running" => Ok(DesiredState::Running),
+        "stopped" => Ok(DesiredState::Stopped),
+        "deleted" => Ok(DesiredState::Deleted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+fn owner_kind(value: &str) -> rusqlite::Result<OwnerKind> {
+    match value {
+        "installation" => Ok(OwnerKind::Installation),
+        "team" => Ok(OwnerKind::Team),
+        "project" => Ok(OwnerKind::Project),
+        "personal" => Ok(OwnerKind::Personal),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+fn observed_state(value: &str) -> rusqlite::Result<ObservedState> {
+    match value {
+        "pending" => Ok(ObservedState::Pending),
+        "starting" => Ok(ObservedState::Starting),
+        "running" => Ok(ObservedState::Running),
+        "stopping" => Ok(ObservedState::Stopping),
+        "stopped" => Ok(ObservedState::Stopped),
+        "failed" => Ok(ObservedState::Failed),
+        "deleted" => Ok(ObservedState::Deleted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+fn desired_state_name(value: DesiredState) -> &'static str {
+    match value {
+        DesiredState::Running => "running",
+        DesiredState::Stopped => "stopped",
+        DesiredState::Deleted => "deleted",
+    }
+}
+fn observed_state_name(value: ObservedState) -> &'static str {
+    match value {
+        ObservedState::Pending => "pending",
+        ObservedState::Starting => "starting",
+        ObservedState::Running => "running",
+        ObservedState::Stopping => "stopping",
+        ObservedState::Stopped => "stopped",
+        ObservedState::Failed => "failed",
+        ObservedState::Deleted => "deleted",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use labby_primitives::access::PrincipalId;
+    use labby_primitives::dev_container::{
+        DevContainerId, DevContainerQuota, DevContainerTemplateId, HostCapabilityPolicy,
+        ImageDigest, LifecycleNonce,
+    };
+
+    fn fixture() -> (ApprovedTemplate, OwnedDevContainer) {
+        let template = ApprovedTemplate::new(
+            DevContainerTemplateId::new("rust").unwrap(),
+            ImageDigest::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
+            DevContainerQuota {
+                max_active_instances: 1,
+                cpu_millis: 1_000,
+                memory_bytes: 2_000,
+                disk_bytes: 3_000,
+                max_lifetime_seconds: 60,
+            },
+            HostCapabilityPolicy::deny_all(),
+        )
+        .unwrap();
+        let instance = OwnedDevContainer::new(
+            DevContainerId::new("dc-1").unwrap(),
+            OwnerScope::Personal(PrincipalId::new("principal-1").unwrap()),
+            &template,
+            LifecycleNonce::new("11111111111111111111111111111111").unwrap(),
+            vec![SecretReference::new("secret-ref").unwrap()],
+        )
+        .unwrap();
+        (template, instance)
+    }
+
+    #[test]
+    fn create_is_atomic_and_owner_quota_is_durable() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        install_schema(&connection).unwrap();
+        let (template, first) = fixture();
+        approve_template(&connection, &template, 1).unwrap();
+        set_owner_quota(&connection, first.owner(), 1, 1).unwrap();
+        let resources = ReservedResources {
+            cpu_millis: 500,
+            memory_bytes: 1_000,
+            disk_bytes: 2_000,
+            lifetime_seconds: 30,
+        };
+        create_instance(
+            &mut connection,
+            &CreateInstance {
+                instance: &first,
+                resources,
+                authority_fingerprint: "sha256:authority",
+                event_id: "event-1",
+                occurred_at: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM dev_container_ledger", [], |row| row
+                    .get::<_, u32>(
+                    0
+                ))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            recovery_inventory(&connection).unwrap(),
+            vec![RecoveryRecord {
+                instance_id: "dc-1".into(),
+                owner_kind: OwnerKind::Personal,
+                owner_id: "principal-1".into(),
+                lifecycle_nonce: "11111111111111111111111111111111".into(),
+                desired_state: DesiredState::Running,
+                observed_state: ObservedState::Pending,
+            }]
+        );
+        assert_eq!(
+            record_observation(
+                &mut connection,
+                "dc-1",
+                &LifecycleNonce::new("99999999999999999999999999999999").unwrap(),
+                ObservedState::Starting,
+                "stale-event",
+                3,
+            ),
+            Err(DevContainerLedgerError::InvalidInput)
+        );
+        set_desired_state(
+            &mut connection,
+            "dc-1",
+            first.lifecycle_nonce().as_str(),
+            DesiredState::Deleted,
+            "delete-event",
+            3,
+        )
+        .unwrap();
+
+        let second = OwnedDevContainer::new(
+            DevContainerId::new("dc-2").unwrap(),
+            first.owner().clone(),
+            &template,
+            LifecycleNonce::new("22222222222222222222222222222222").unwrap(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            create_instance(
+                &mut connection,
+                &CreateInstance {
+                    instance: &second,
+                    resources,
+                    authority_fingerprint: "sha256:authority",
+                    event_id: "event-2",
+                    occurred_at: 3,
+                }
+            ),
+            Err(DevContainerLedgerError::QuotaExhausted)
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM dev_container_instances", [], |row| {
+                    row.get::<_, u32>(0)
+                })
+                .unwrap(),
+            1
+        );
+    }
+}
