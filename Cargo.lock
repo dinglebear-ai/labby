@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "labby-apis"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "futures",
  "jiff",
@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "labby-auth"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "labby-browser"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "labby-codemode"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "labby-gateway"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "labby-openapi"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "futures",
  "labby-primitives",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "labby-primitives"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.2",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "labby-runtime"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "atomic-write-file",
  "base64 0.22.1",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "labby-web"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "tempfile",
  "thiserror 2.0.18",
@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "labby-winjob"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "tempfile",
  "tracing",
@@ -5184,7 +5184,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",
