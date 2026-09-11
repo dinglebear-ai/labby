@@ -277,91 +277,124 @@ pub(crate) async fn dispatch(
                 Capability::ScopeOperate,
                 now,
             )?;
-            let next = if name == "tasks.queue" {
-                TaskState::Queued
-            } else {
-                TaskState::Cancelling
-            };
-            let authority_lease = context
-                .store
-                .authorize_and_transition_agent_task(
-                    request,
-                    record.intent.id.clone(),
-                    record.state,
-                    next,
-                    context.identity.safe_fingerprint(),
-                    record.attempt,
-                    i64::try_from(now).map_err(|_| internal())?,
-                )
-                .await
-                .map_err(map)?;
+            let task_id = record.intent.id.clone();
+            let transition_now = i64::try_from(now).map_err(|_| internal())?;
             let response_state = if name == "tasks.queue" {
+                // Own the durable queue transition before awaiting it from the
+                // request. AccessStore work may commit on its blocking worker
+                // even when this request future is dropped; keeping the
+                // transition, cancellation registration, and execution handoff
+                // in one spawned owner closes that post-commit abandonment gap.
                 let attempt = record.attempt.saturating_add(1);
-                let cancellation = Cancellation::new();
-                register_task_cancellation(record.intent.id.clone(), attempt, cancellation.clone());
                 let owned_context = context.clone();
                 let owned_record = record.clone();
                 tokio::spawn(async move {
-                    let task_id = owned_record.intent.id.clone();
-                    let result = execute_queued(
-                        &owned_context,
-                        &owned_record,
-                        authority_lease,
-                        cancellation,
-                        now,
-                    )
-                    .await;
-                    unregister_task_cancellation(&task_id, attempt);
-                    if let Err(error) = result {
-                        tracing::warn!(
-                            task_id = %task_id,
-                            kind = error.kind(),
-                            "detached Agent Task attempt did not complete normally"
-                        );
-                        // A failure before lease acquisition otherwise leaves
-                        // a durable queued row with no owner. Expire only when
-                        // this attempt still owns the queued state; concurrent
-                        // cancellation or execution wins through the state fence.
-                        if let Ok(Some(current)) =
-                            owned_context.store.get_agent_task(task_id.clone()).await
-                            && current.state == TaskState::Queued
-                        {
-                            drop(
-                                owned_context
-                                    .store
-                                    .transition_agent_task(
-                                        task_id,
-                                        TaskState::Queued,
-                                        TaskState::Expired,
-                                        owned_context.identity.safe_fingerprint(),
-                                        current.attempt,
-                                        i64::try_from(now).unwrap_or(i64::MAX),
-                                    )
-                                    .await,
-                            );
-                        }
-                    }
-                });
-                "queued"
-            } else {
-                let live_owner = signal_task_cancellation(&record.intent.id);
-                if record.state == TaskState::Running && live_owner {
-                    "cancelling"
-                } else {
-                    context
+                    let authority_lease = owned_context
                         .store
-                        .transition_agent_task(
-                            record.intent.id.clone(),
-                            TaskState::Cancelling,
-                            TaskState::Cancelled,
-                            context.identity.safe_fingerprint(),
-                            record.attempt,
-                            i64::try_from(now).map_err(|_| internal())?,
+                        .authorize_and_transition_agent_task(
+                            request,
+                            task_id.clone(),
+                            owned_record.state,
+                            TaskState::Queued,
+                            owned_context.identity.safe_fingerprint(),
+                            owned_record.attempt,
+                            transition_now,
                         )
                         .await
                         .map_err(map)?;
-                    "cancelled"
-                }
+                    let cancellation = Cancellation::new();
+                    register_task_cancellation(task_id.clone(), attempt, cancellation.clone());
+                    let execution_context = owned_context.clone();
+                    let execution_record = owned_record.clone();
+                    tokio::spawn(async move {
+                        let result = execute_queued(
+                            &execution_context,
+                            &execution_record,
+                            authority_lease,
+                            cancellation,
+                            now,
+                        )
+                        .await;
+                        unregister_task_cancellation(&task_id, attempt);
+                        if let Err(error) = result {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                kind = error.kind(),
+                                "detached Agent Task attempt did not complete normally"
+                            );
+                            // A failure before lease acquisition otherwise leaves
+                            // a durable queued row with no owner. Expire only when
+                            // this attempt still owns the queued state; concurrent
+                            // cancellation or execution wins through the state fence.
+                            if let Ok(Some(current)) = execution_context
+                                .store
+                                .get_agent_task(task_id.clone())
+                                .await
+                                && current.state == TaskState::Queued
+                            {
+                                drop(
+                                    execution_context
+                                        .store
+                                        .transition_agent_task(
+                                            task_id,
+                                            TaskState::Queued,
+                                            TaskState::Expired,
+                                            execution_context.identity.safe_fingerprint(),
+                                            current.attempt,
+                                            transition_now,
+                                        )
+                                        .await,
+                                );
+                            }
+                        }
+                    });
+                    Ok::<(), ToolError>(())
+                })
+                .await
+                .map_err(|_| internal())??;
+                "queued"
+            } else {
+                // The transition and same-process live-token signal must have
+                // the same owned lifetime. Otherwise the durable Cancelling row
+                // can commit after a dropped request without the executor ever
+                // observing the cancellation request.
+                let owned_context = context.clone();
+                let owned_record = record.clone();
+                tokio::spawn(async move {
+                    owned_context
+                        .store
+                        .authorize_and_transition_agent_task(
+                            request,
+                            task_id.clone(),
+                            owned_record.state,
+                            TaskState::Cancelling,
+                            owned_context.identity.safe_fingerprint(),
+                            owned_record.attempt,
+                            transition_now,
+                        )
+                        .await
+                        .map_err(map)?;
+                    let live_owner = signal_task_cancellation(&task_id);
+                    if owned_record.state == TaskState::Running && live_owner {
+                        Ok::<_, ToolError>("cancelling")
+                    } else {
+                        owned_context
+                            .store
+                            .transition_agent_task(
+                                task_id,
+                                TaskState::Cancelling,
+                                TaskState::Cancelled,
+                                owned_context.identity.safe_fingerprint(),
+                                owned_record.attempt,
+                                transition_now,
+                            )
+                            .await
+                            .map_err(map)?;
+                        Ok("cancelled")
+                    }
+                })
+                .await
+                .map_err(|_| internal())??
             };
             Ok(json!({"task_id":record.intent.id,"state":response_state}))
         }
