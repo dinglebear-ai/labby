@@ -2389,6 +2389,12 @@ mod tests {
     async fn ready_endpoint_open_without_auth() {
         // /ready must be reachable by monitoring probes without any token (lab-3qn.5).
         let state = AppState::new();
+        let expected = if state.registry.service("stash").is_some() {
+            // The default fixture has an enabled but unwired Stash runtime.
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::OK
+        };
         let app = build_router_with_bearer(state, Some("secret-token".into()), None);
         let response = app
             .oneshot(
@@ -2400,12 +2406,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), expected);
     }
 
     #[tokio::test]
     async fn public_health_ready_and_discovery_stay_outside_bearer_protection() {
         let state = AppState::new();
+        let stash_unwired = state.registry.service("stash").is_some();
         let app = build_router_with_bearer(state, Some("secret-token".into()), None);
         for path in ["/health", "/ready", "/.well-known/labby.json"] {
             let response = app
@@ -2419,7 +2426,12 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{path} became protected");
+            let expected = if path == "/ready" && stash_unwired {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::OK
+            };
+            assert_eq!(response.status(), expected, "{path} became protected");
         }
         let protected = app
             .oneshot(

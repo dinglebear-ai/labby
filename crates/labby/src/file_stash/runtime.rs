@@ -704,8 +704,18 @@ mod tests {
         )
         .unwrap();
 
-        let restarted = FileStashRuntime::initialize(root).await;
+        let restarted = Arc::new(FileStashRuntime::initialize(root).await);
         assert_eq!(restarted.status().await, FileStashStatus::Recovering);
+        use axum::{extract::State as AxumState, http::StatusCode, response::IntoResponse as _};
+        let app_state =
+            crate::api::state::AppState::new().with_file_stash_runtime(Arc::clone(&restarted));
+        assert_eq!(
+            crate::api::health::ready(AxumState(app_state.clone()))
+                .await
+                .into_response()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert!(matches!(
             &*restarted.state.lock().await,
             State::Recovering(_)
@@ -720,6 +730,21 @@ mod tests {
         super::super::blob::TEST_RECOVERY_RESUME.notify_one();
         assert_eq!(restarted.wait_for_recovery().await, FileStashStatus::Ready);
         assert!(restarted.store().await.is_ok());
+        assert_eq!(
+            crate::api::health::ready(AxumState(app_state.clone()))
+                .await
+                .into_response()
+                .status(),
+            StatusCode::OK
+        );
+        restarted.shutdown().await;
+        assert_eq!(
+            crate::api::health::ready(AxumState(app_state))
+                .await
+                .into_response()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]
