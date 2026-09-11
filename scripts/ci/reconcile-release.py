@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 
-SURFACES = ("github", "npm", "ghcr", "incus", "mcp")
+SURFACES = ("github", "npm", "incus", "mcp")
 parser = argparse.ArgumentParser()
 parser.add_argument("--manifest", type=Path, required=True)
 parser.add_argument("--observed", type=Path, required=True)
@@ -16,9 +16,6 @@ if expected.get("schema") != "ai.dinglebear.labby/release-manifest/v1":
 want = {row["name"]: row["sha256"] for row in expected["subjects"]}
 for row in expected["subjects"]:
     want[row["sbom"]["name"]] = row["sbom"]["sha256"]
-image_sbom = expected.get("distributions", {}).get("ghcr", {}).get("sbom")
-if image_sbom:
-    want[image_sbom["name"]] = image_sbom["sha256"]
 for row in expected.get("auxiliary", []):
     want[row["name"]] = row["sha256"]
 got = {row["name"]: row["sha256"] for row in observed.get("subjects", [])}

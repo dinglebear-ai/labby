@@ -6,7 +6,7 @@ name: release-please
 # bumps `.release-please-manifest.json` and updates CHANGELOG.md. Merging that
 # PR creates the git tag (vX.Y.Z) and a draft GitHub Release. Pushing that tag
 # triggers the GitHub-hosted candidate qualification for Linux/macOS/Windows
-# archives, the GHCR image, and the Incus artifact before release promotion.
+# archives and the Incus artifact before release promotion.
 #
 # release-type is "simple", NOT "rust". release-please's rust/cargo-workspace
 # support cannot handle this workspace's structure: the root Cargo.toml is a
@@ -143,8 +143,6 @@ jobs:
           server["version"] = new_version
           for server_package in server.get("packages", []):
               server_package["version"] = new_version
-              if server_package.get("registryType") == "oci":
-                  server_package["identifier"] = f"ghcr.io/dinglebear-ai/labby:v{new_version}"
           publisher = server.get("_meta", {}).get("io.modelcontextprotocol.registry/publisher-provided", {})
           distribution = publisher.get("distribution")
           if isinstance(distribution, dict):

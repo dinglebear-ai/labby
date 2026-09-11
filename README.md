@@ -615,8 +615,8 @@ Codex, and Gemini CLIs for stdio upstreams that invoke provider tools.
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. The stable
 tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux,
-macOS, and Windows archives with checksums, builds and scans the GHCR image,
-builds and smokes the Incus image, publishes the npm launcher, and publishes Labby's
+macOS, and Windows archives with checksums, builds and smokes the Incus image,
+publishes the npm launcher, and publishes Labby's
 `server.json` metadata to the official MCP Registry. Only after qualification
 and publication succeed does the workflow promote the draft GitHub release.
 

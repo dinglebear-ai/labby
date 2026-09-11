@@ -20,5 +20,3 @@ for installer in labby-install.sh labby-install.ps1; do
   "$syft_bin" "dir:$subject_dir" -o "spdx-json=$installer.spdx.json"
   rm -rf "$subject_dir"
 done
-[[ -f lab-container-image.tar ]] || { echo 'missing tested container image' >&2; exit 1; }
-"$syft_bin" "docker-archive:lab-container-image.tar" -o spdx-json=lab-container-image.spdx.json
