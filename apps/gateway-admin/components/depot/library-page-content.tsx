@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
+import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
@@ -66,18 +67,6 @@ export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag }: { art
     </section>
     </div>
   </aside>
-}
-
-export function LibraryNavigation({ total }: { total?: number }) {
-  return <nav aria-label="Library sections" data-library-tabs="1" className="aurora-scrollbar flex gap-0.5 overflow-x-auto border-t border-aurora-border-subtle bg-aurora-control-surface px-5">
-    {([
-      ['/library', 'Artifacts', Box], ['/loadouts', 'Loadouts', Archive],
-      ['/snippets', 'Snippets', FileText], ['/tools', 'Tools', Search],
-    ] as const).map(([href, label, Icon]) => <a key={href} href={href} aria-current={href === '/library' ? 'page' : undefined} className="inline-flex h-[38px] shrink-0 items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-3.5 text-[12.5px] font-semibold text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary">
-      <Icon aria-hidden="true" className="size-3.5" />{label}
-      {href === '/library' && total !== undefined ? <span className="rounded border border-aurora-border-subtle bg-aurora-selected-bg px-1.5 text-[10.5px] tabular-nums">{total}</span> : null}
-    </a>)}
-  </nav>
 }
 
 export function LibraryVisibility({ visibility }: { visibility?: string }) {
@@ -254,15 +243,12 @@ function SessionLibraryPage() {
   return <>
     <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
     <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
-      <div data-library-header="1" className="overflow-hidden rounded-aurora-3 border border-aurora-border-subtle [&>div]:!rounded-none [&>div]:!border-0">
-      <ConsoleHero eyebrow="Depot · Library" title="Library" pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'live catalog' : 'Depot unavailable' }} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button><Button variant="outline" size="sm" disabled={state.loading} onClick={() => void load(activeQuery)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}Refresh</Button></div>} stats={[
+      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={state.error || state.total === undefined ? {} : { artifacts: state.total }} />} pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'live catalog' : 'Depot unavailable' }} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button><Button variant="outline" size="sm" disabled={state.loading} onClick={() => void load(activeQuery)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}Refresh</Button></div>} stats={[
         { label: activeQuery ? 'Matches' : 'Published artifacts', value: state.total ?? '—', icon: <Archive size={12}/> },
         { label: 'Loaded', value: state.artifacts.length, icon: <Box size={12}/> },
         { label: 'Kinds loaded', value: kinds.length, icon: <FileText size={12}/> },
         { label: 'Your access', value: state.publishing?.available ? 'Read + publish' : state.publishing?.reason === 'owner_link_approval_pending' ? 'Confirm owner link' : state.publishing ? 'Read only' : 'Unknown', icon: <ShieldCheck size={12}/> },
       ]}/>
-      <LibraryNavigation total={state.total} />
-      </div>
       {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Refresh after Depot is connected.</p></DashboardPanel> : null}
       <div data-lbgrid="1" className="grid min-w-0 items-start gap-3.5 min-[901px]:grid-cols-[214px_minmax(0,1fr)]">
       <LibraryFilterRail artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />

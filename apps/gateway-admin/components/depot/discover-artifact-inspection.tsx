@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { Check, Copy, Download, GitFork, Link2, Loader2, PackagePlus, Send, Star } from 'lucide-react'
+import { Check, Copy, Download, GitFork, Link2, Loader2, PackagePlus, Star } from 'lucide-react'
 import { AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { Badge } from '@/components/ui/badge'
 import { DiscoverFileCount } from './discover-file-count'
@@ -22,17 +22,14 @@ const readmeUnavailable = {
   invalid_text: 'The source document is not valid UTF-8 text.',
 } as const
 
-export function DiscoverArtifactInspection({ artifact, loading, open, copied, focusKey, importing, inLibrary = false, onImport, onSend, onFork, onOpenChange, onCopy, onExport }: {
+export function DiscoverArtifactInspection({ artifact, loading, open, copied, focusKey, importing, onImport, onOpenChange, onCopy, onExport }: {
   artifact: FederatedArtifact | null
   loading: boolean
   open: boolean
   copied?: string
   focusKey?: string
   importing: boolean
-  inLibrary?: boolean
   onImport: (artifact: FederatedArtifact) => Promise<void>
-  onSend?: (artifact: FederatedArtifact) => void
-  onFork?: (artifact: FederatedArtifact) => void
   onOpenChange: (open: boolean) => void
   onCopy: (label: string, value?: string) => void
   onExport: (artifact: FederatedArtifact) => void
@@ -102,7 +99,8 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
                   </Button>
                 </div> : null)}
             <dl className="grid grid-cols-2 gap-[var(--space-4)] text-xs">
-              {([['Source format', artifact.provenance?.originalFormat], ['Source format version', artifact.provenance?.originalVersion], ['Declared license', artifact.license?.declared], ['License review', artifact.license?.reviewState], ['Distribution', artifact.publication?.distribution], ['Redistribution', artifact.license?.redistribution], ['Revisions', artifact.revisionCount?.toString()]] as const).map(([label, value]) =>
+              {/* Provenance rows appear only when the source supplied them; the policy rows always render so an absent value is visible. */}
+              {([['Source format', artifact.provenance?.originalFormat, true], ['Source format version', artifact.provenance?.originalVersion, true], ['Declared license', artifact.license?.declared, false], ['License review', artifact.license?.reviewState, false], ['Distribution', artifact.publication?.distribution, false], ['Redistribution', artifact.license?.redistribution, false], ['Revisions', artifact.revisionCount?.toString(), false]] as const).filter(([, value, optional]) => value || !optional).map(([label, value]) =>
                 <div key={label} className="min-w-0"><dt className={AURORA_MUTED_LABEL}>{label}</dt><dd className="mt-[var(--space-2)] break-words text-aurora-text-muted">{value || 'Not supplied'}</dd></div>
               )}
             </dl>
@@ -119,11 +117,9 @@ export function DiscoverArtifactInspection({ artifact, loading, open, copied, fo
             </div>
             <Button variant="outline" size="sm" title="Export metadata" onClick={() => onExport(artifact)}><Download aria-hidden="true"/><span className="sr-only">Export metadata</span></Button>
             <Button variant="outline" size="sm" title="Copy link" onClick={() => onCopy('Artifact link', window.location.href)}><Link2 aria-hidden="true"/><span className="sr-only">Copy link</span></Button>
-            {onFork ? <Button variant="outline" size="sm" title="Fork into your Library" className="border-aurora-accent-pink-deep/40 bg-aurora-accent-pink/10 text-aurora-accent-pink" onClick={() => onFork(artifact)}><GitFork aria-hidden="true"/><span className="sr-only">Fork</span></Button> : null}
-            {onSend ? <Button variant="outline" size="sm" title="Send to your Labby instance" className="border-aurora-accent-primary/40 bg-aurora-accent-primary/10 text-aurora-accent-strong" onClick={() => onSend(artifact)}><Send aria-hidden="true"/><span className="sr-only">Send to Labby</span></Button> : null}
             <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-aurora-border-default"/>
-            <Button size="sm" title={inLibrary ? 'In Library' : importing ? 'Adding…' : 'Add to Library'} disabled={inLibrary || importing || !(artifact.currentRevisionId || artifact.currentRevision?.id)} onClick={() => void onImport(artifact)}>
-              {inLibrary ? <Check aria-hidden="true"/> : importing ? <Loader2 aria-hidden="true" className="animate-spin"/> : <PackagePlus aria-hidden="true"/>}<span className="sr-only">{inLibrary ? 'In Library' : importing ? 'Adding…' : 'Add to Library'}</span>
+            <Button size="sm" title={importing ? 'Adding…' : 'Add to Library'} disabled={importing || !(artifact.currentRevisionId || artifact.currentRevision?.id)} onClick={() => void onImport(artifact)}>
+              {importing ? <Loader2 aria-hidden="true" className="animate-spin"/> : <PackagePlus aria-hidden="true"/>}<span className="sr-only">{importing ? 'Adding…' : 'Add to Library'}</span>
             </Button>
           </DialogFooter>
         </> : <p role="status" className="p-[var(--space-7)] text-sm text-aurora-text-muted">Artifact details are unavailable. Close this dialog and retry from the catalog.</p>}

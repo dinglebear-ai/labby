@@ -1,6 +1,6 @@
 import { Layers3, createLucideIcon, type LucideIcon } from 'lucide-react'
 
-// Fixed, reviewed glyph geometry from the approved Gateway Console export.
+// Fixed, reviewed glyph geometry vendored as Lucide-compatible paths.
 // Keep the Lucide rendering/accessibility contract; never load SVG from catalog data.
 export const DiscoverPublisherVerifiedIcon = createLucideIcon('DiscoverPublisherVerified', [
   ['path', { d: 'm12 15 2 2 4-4', key: 'check' }],
@@ -48,41 +48,46 @@ const Hook = createLucideIcon('DiscoverHook', [
   ['path', { d: 'M7 3v10a5 5 0 0 0 10 0V8M17 8V5M14 5h6', key: 'hook' }],
 ])
 
-const kinds: Record<string, { family: string; icon: LucideIcon }> = {
-  mcp: { family: 'Protocol', icon: Server },
-  acp: { family: 'Protocol', icon: Activity },
-  skill: { family: 'Capability', icon: Shield },
-  command: { family: 'Capability', icon: Terminal },
-  snippet: { family: 'Capability', icon: SquareCode },
-  agent: { family: 'Authored', icon: Bot },
-  prompt: { family: 'Authored', icon: MessageSquareText },
-  plugin: { family: 'Bundle', icon: Plug },
-  extension: { family: 'Bundle', icon: Extension },
-  loadout: { family: 'Bundle', icon: Loadout },
-  hook: { family: 'Guard', icon: Hook },
+export type DiscoverKind = 'mcp' | 'acp' | 'skill' | 'command' | 'snippet' | 'agent' | 'prompt' | 'plugin' | 'extension' | 'loadout' | 'hook'
+type KindPresentation = { family: string; icon: LucideIcon; tone: string; color?: string }
+
+// One row per kind keeps family, glyph, tint tone, and (optional) foreground together,
+// so a kind cannot be present in one table and missing from another.
+const KIND_PRESENTATIONS: Record<DiscoverKind, KindPresentation> = {
+  mcp: { family: 'Protocol', icon: Server, tone: 'var(--aurora-protocol)', color: 'var(--aurora-protocol-strong)' },
+  acp: { family: 'Protocol', icon: Activity, tone: 'var(--aurora-protocol)', color: 'var(--aurora-protocol-strong)' },
+  skill: { family: 'Capability', icon: Shield, tone: 'var(--aurora-accent-primary)', color: 'var(--aurora-accent-strong)' },
+  command: { family: 'Capability', icon: Terminal, tone: 'var(--aurora-success)' },
+  snippet: { family: 'Capability', icon: SquareCode, tone: 'var(--aurora-accent-primary)', color: 'var(--aurora-accent-strong)' },
+  agent: { family: 'Authored', icon: Bot, tone: 'var(--aurora-accent-pink-deep)', color: 'var(--aurora-accent-pink)' },
+  prompt: { family: 'Authored', icon: MessageSquareText, tone: 'var(--aurora-accent-pink-deep)', color: 'var(--aurora-accent-pink-strong)' },
+  plugin: { family: 'Bundle', icon: Plug, tone: 'var(--aurora-success)' },
+  extension: { family: 'Bundle', icon: Extension, tone: 'var(--aurora-success)' },
+  loadout: { family: 'Bundle', icon: Loadout, tone: 'var(--aurora-success)' },
+  hook: { family: 'Guard', icon: Hook, tone: 'var(--aurora-warn)' },
 }
 
-const colors: Record<string, string> = {
-  mcp: 'var(--aurora-protocol)', acp: 'var(--aurora-protocol)',
-  skill: 'var(--aurora-accent-primary)', command: 'var(--aurora-success)',
-  snippet: 'var(--aurora-accent-primary)', agent: 'var(--aurora-accent-pink-deep)',
-  prompt: 'var(--aurora-accent-pink-deep)', plugin: 'var(--aurora-success)',
-  extension: 'var(--aurora-success)', loadout: 'var(--aurora-success)', hook: 'var(--aurora-warn)',
+function isDiscoverKind(key: string): key is DiscoverKind {
+  return Object.hasOwn(KIND_PRESENTATIONS, key)
 }
 
-const foregrounds: Record<string, string> = {
-  mcp: 'var(--aurora-protocol-strong)', acp: 'var(--aurora-protocol-strong)',
-  skill: 'var(--aurora-accent-strong)', snippet: 'var(--aurora-accent-strong)',
-  agent: 'var(--aurora-accent-pink)', prompt: 'var(--aurora-accent-pink-strong)',
+export interface DiscoverKindPresentation {
+  family: string | null
+  icon: LucideIcon
+  color: string
+  tone: string
+  iconStyle: { color: string; backgroundColor: string; borderColor: string }
 }
 
 /** Presentation taxonomy only; this never implies runtime support or permissions. */
-export function discoverKindPresentation(kind: string) {
+export function discoverKindPresentation(kind: string): DiscoverKindPresentation {
   const key = kind.toLowerCase()
-  const tone = Object.hasOwn(colors, key) ? colors[key] : 'var(--aurora-text-muted)'
-  const color = Object.hasOwn(foregrounds, key) ? foregrounds[key] : tone
+  const known = isDiscoverKind(key) ? KIND_PRESENTATIONS[key] : undefined
+  const tone = known?.tone ?? 'var(--aurora-text-muted)'
+  const color = known?.color ?? tone
   return {
-    ...(Object.hasOwn(kinds, key) ? kinds[key] : { family: null, icon: Layers3 }),
+    family: known?.family ?? null,
+    icon: known?.icon ?? Layers3,
     color,
     tone,
     iconStyle: {

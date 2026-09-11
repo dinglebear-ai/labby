@@ -3,7 +3,7 @@ import { GitFork } from 'lucide-react'
 import { AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import type { FederatedArtifact } from '@/lib/api/depot-client'
 
-/** Relationships are shown only after the source has authorized every referenced Artifact. */
+/** Depot returns lineage ids only for Artifacts the caller may see; this renders them without further checks. */
 export function DiscoverUpstream({ artifact }: { artifact: FederatedArtifact }) {
   const lineage = artifact.lineage
   if (!lineage || (!lineage.upstreamArtifactId && !lineage.forkedFromArtifactId)) return null

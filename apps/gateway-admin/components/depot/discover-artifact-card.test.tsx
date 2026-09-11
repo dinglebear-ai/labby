@@ -3,59 +3,6 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DiscoverArtifactCard } from './discover-artifact-card'
-import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils'
-import { act } from 'react'
-
-test('card import is a separate action with exact identity and unavailable revision protection', async () => {
-  const window = installTestDom()
-  Object.defineProperty(globalThis, 'self', { value: window, configurable: true })
-  const artifact = { providerId: 'catalog', artifactId: 'exact', title: 'Exact artifact', currentRevisionId: 'revision-1' }
-  const imports: unknown[] = []
-  const onImport = async (value: unknown) => { imports.push(value) }
-  const card = (revision?: string, importing = false, importDisabled = false) => <DiscoverArtifactCard artifact={{ ...artifact, currentRevisionId: revision }} compact={false} selected={false} href="/depot?artifact=exact" onImport={onImport} importing={importing} importDisabled={importDisabled} />
-  const view = await renderClient(card('revision-1'))
-  try {
-    const button = view.container.querySelector('button')!
-    assert.ok(button)
-    assert.equal(button.closest('a'), null)
-    await act(async () => { button.click() })
-    assert.deepEqual(imports, [artifact])
-    await view.rerender(card(undefined))
-    assert.equal(view.container.querySelector('button')?.disabled, true)
-    await view.rerender(card('revision-1', true))
-    assert.equal(view.container.querySelector('button')?.disabled, true)
-    assert.match(view.container.textContent ?? '', /Adding…/)
-    await view.rerender(card('revision-1', false, true))
-    assert.equal(view.container.querySelector('button')?.disabled, true)
-    assert.doesNotMatch(view.container.textContent ?? '', /Adding…/)
-    assert.match(view.container.textContent ?? '', /Add to Library/)
-    await view.rerender(<DiscoverArtifactCard artifact={artifact} compact={false} selected={false} href="/depot?artifact=exact" onImport={onImport} inLibrary />)
-    assert.equal(view.container.querySelector('button')?.disabled, true)
-    assert.match(view.container.textContent ?? '', /In Library/)
-    assert.equal(view.container.querySelector('button')?.getAttribute('aria-label'), 'Exact artifact is in your library')
-    assert.equal(imports.length, 1)
-    let forked: unknown
-    await view.rerender(<DiscoverArtifactCard artifact={artifact} compact={false} selected={false} href="/depot?artifact=exact" onFork={value => { forked = value }} />)
-    const fork = view.container.querySelector<HTMLButtonElement>('button[title="Fork"]')!
-    assert.ok(fork)
-    assert.equal(fork.closest('a'), null)
-    await act(async () => { fork.click() })
-    assert.equal(forked, artifact)
-    assert.equal(imports.length, 1)
-    let sent: unknown
-    await view.rerender(<DiscoverArtifactCard artifact={artifact} compact={false} selected={false} href="/depot?artifact=exact" onImport={onImport} onSend={value => { sent = value }} inLibrary />)
-    const send = view.container.querySelector<HTMLButtonElement>('button[title="Send to Labby"]')!
-    assert.ok(send)
-    assert.equal(send.disabled, false)
-    assert.equal(send.closest('a'), null)
-    await act(async () => { send.click() })
-    assert.equal(sent, artifact)
-    assert.equal(imports.length, 1)
-  } finally {
-    await view.unmount()
-    await window.happyDOM.close()
-  }
-})
 
 test('cards distinguish known zero, singular, plural and unknown file counts', () => {
   for (const compact of [false, true]) {
@@ -123,7 +70,7 @@ test('card displays a relative revision age without losing its exact timestamp',
   assert.match(markup, /dateTime="2026-09-08T10:00:00Z"/)
 })
 
-test('grid card uses the reference inset kind stripe and compact header geometry', () => {
+test('grid card uses the inset kind stripe and compact header geometry', () => {
   const markup = renderToStaticMarkup(<DiscoverArtifactCard artifact={{ providerId: 'catalog', artifactId: 'mcp', kind: 'mcp', title: 'Server' }} compact={false} selected={false} href="/depot?artifact=mcp" />)
   assert.match(markup, /data-kind-stripe="true"/)
   assert.match(markup, /bottom-3\.5 left-0 top-3\.5 w-0\.5/)
@@ -133,14 +80,6 @@ test('grid card uses the reference inset kind stripe and compact header geometry
   assert.doesNotMatch(markup, /Verified|Installs|Stars/)
 })
 
-test('reference-sized icon actions retain accessible names and hidden action text', () => {
-  const markup = renderToStaticMarkup(<DiscoverArtifactCard artifact={{ providerId: 'catalog', artifactId: 'one', title: 'One', currentRevisionId: 'r1' }} compact={false} selected={false} href="/depot" onImport={async () => {}} onSend={() => {}} onFork={() => {}} />)
-  assert.equal((markup.match(/size-\[26px\]/g) ?? []).length, 3)
-  assert.match(markup, /aria-label="Add One to your library"/)
-  assert.match(markup, /class="sr-only">Add to Library<\/span>/)
-  assert.match(markup, /aria-label="Fork One"/)
-  assert.match(markup, /aria-label="Send One to Labby"/)
-})
 test('reported verification and safe metrics render without inferring missing evidence', () => {
   const base = { providerId: 'catalog', artifactId: 'reported', title: 'Reported' }
   const render = (extra: object) => renderToStaticMarkup(<DiscoverArtifactCard artifact={{ ...base, ...extra }} compact={false} selected={false} href="/depot" />)

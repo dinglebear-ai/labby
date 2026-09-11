@@ -295,8 +295,8 @@ These are the only place in Labby where saturated/neon color and decorative grad
 
 Artifact protocol identity uses `--aurora-protocol` (`#ff9645` dark,
 `#a8540e` light) for tints and `--aurora-protocol-strong` (`#ffb066` dark,
-`#934908` light) for foregrounds. This matches the Gateway Console reference's
-MCP/ACP orange and must not be substituted for operational warning gold.
+`#934908` light) for foregrounds. This is the protocol orange for MCP-family
+kinds and must not be substituted for operational warning gold.
 Artifact icon tiles use a 10% identity tint with a 30% border; foreground and
 tint tones are deliberately separate for blue capabilities and rose authored
 artifacts as well. These are identity treatments, not status indicators.
@@ -593,13 +593,13 @@ When these primitives exist, ad-hoc equivalents in `app/**` are contract violati
 
 Labby uses `lucide-react` for product UI icons.
 
-Artifact kind glyphs are the reviewed paths from the approved Gateway Console
-reference, rendered through `createLucideIcon` in
+Artifact kind glyphs are reviewed, vendored paths rendered through
+`createLucideIcon` in
 `components/depot/discover-kind-presentation.ts`. Library and Discover share
 this mapping rather than choosing separate approximate glyphs. Compact Library
 table marks use an 18px tile, 5px radius, and 13px glyph; the default artifact
 tile is 32px with a 9px radius and 16px glyph. These are deliberate
-reference-alignment exceptions to the general radius/icon scale below.
+exceptions to the general radius/icon scale below.
 
 Rules:
 

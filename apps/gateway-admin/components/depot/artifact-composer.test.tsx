@@ -2,10 +2,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
+import { installTestDom as installModuleDom } from '@/lib/testing/dom-install'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ArtifactComposer } from './artifact-composer'
 
-test('artifact title has the reference editable display treatment without enabling publishing', () => {
+// Radix resolves its layout-effect shim when its modules are first evaluated, so a
+// document must exist before the composer (and its portal-based menus) is imported;
+// otherwise the actions menu reports open but never mounts its content.
+installModuleDom()
+let ArtifactComposer: typeof import('./artifact-composer').ArtifactComposer
+test.before(async () => { ({ ArtifactComposer } = await import('./artifact-composer')) })
+
+test('artifact title is editable inline without enabling publishing', () => {
   const html = renderToStaticMarkup(<ArtifactComposer />)
   const name = html.match(/<input[^>]*aria-label="Artifact name"[^>]*>/)?.[0]
   assert.ok(name)
@@ -21,7 +28,7 @@ test('artifact title has the reference editable display treatment without enabli
   assert.match(html, /grid items-start gap-3 lg:grid-cols/)
   assert.match(html, /data-console-hero-variant="authoring"/)
   assert.match(html, /Depot · Authoring/)
-  assert.match(html, /aria-label="Creation toolbar" hidden=""/)
+  assert.doesNotMatch(html, /Creation toolbar/)
   assert.doesNotMatch(html, /compiles to every install format/)
   assert.ok(html.indexOf('Depot Operations') < html.indexOf('aria-label="More artifact actions"'))
   assert.ok(html.indexOf('aria-label="More artifact actions"') < html.indexOf('aria-label="Publish skill"'))
@@ -52,11 +59,26 @@ test('artifact title has the reference editable display treatment without enabli
 test('writing tips toggle reclaims editor width without resetting the draft', async () => {
   const window = installTestDom()
   Object.defineProperty(globalThis, 'self', { value: window, configurable: true })
+  // Radix measures the menu trigger with ResizeObserver, which happy-dom does not expose globally.
+  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: window.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} } })
   const priorFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({ available: false, reason: 'fixture_read_only' }))
   const view = await renderClient(<ArtifactComposer />)
   try {
-    const toggle = view.container.querySelector<HTMLButtonElement>('[aria-controls="artifact-writing-tips"]')!
+    // The writing-tips toggle lives in the "More artifact actions" menu. Radix opens
+    // the menu on pointerdown, so a plain click on the trigger is not enough.
+    const toggleTips = async () => {
+      const trigger = view.container.querySelector<HTMLButtonElement>('[aria-label="More artifact actions"]')!
+      assert.ok(trigger)
+      await act(async () => {
+        trigger.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0 }) as unknown as Event)
+        trigger.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, button: 0 }) as unknown as Event)
+        trigger.dispatchEvent(new window.MouseEvent('click', { bubbles: true }) as unknown as Event)
+      })
+      const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(node => /writing tips/.test(node.textContent ?? ''))!
+      assert.ok(item, 'the writing tips toggle must be listed in the actions menu')
+      await act(async () => item.dispatchEvent(new window.MouseEvent('click', { bubbles: true }) as unknown as Event))
+    }
     const tips = view.container.querySelector<HTMLElement>('#artifact-writing-tips')!
     const editor = view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!
     const chrome = view.container.querySelector('[aria-label="Document controls"]')!
@@ -73,12 +95,11 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     assert.equal(gutter.style.transform, 'translateY(-42px)')
     assert.doesNotMatch(editor.closest('section')!.className, /min-h-\[680px\]/)
     assert.equal(tips.hidden, false)
-    await act(async () => toggle.dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
+    await toggleTips()
     assert.equal(tips.hidden, true)
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false')
     assert.doesNotMatch(tips.parentElement!.className, /lg:grid-cols/)
     assert.equal(editor.value, draft)
-    await act(async () => toggle.dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
+    await toggleTips()
     assert.equal(tips.hidden, false)
     assert.equal(editor.value, draft)
     const preview = Array.from(view.container.querySelectorAll<HTMLButtonElement>('[aria-label="Document view"] button')).find(button => button.textContent === 'Preview')!

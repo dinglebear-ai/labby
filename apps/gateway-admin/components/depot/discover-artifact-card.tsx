@@ -1,10 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { Check, Download, GitFork, Loader2, PackagePlus, Send, Star } from 'lucide-react'
+import { Download, GitFork, Star } from 'lucide-react'
 import { AURORA_BADGE_LABEL, AURORA_CARD_TITLE, AURORA_DENSE_META } from '@/components/aurora/tokens'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+
 import { DiscoverFileCount } from './discover-file-count'
 import { DiscoverFormatMark } from './discover-format-mark'
 import { DiscoverSourceBadge } from './discover-source-badge'
@@ -15,20 +15,13 @@ import type { DiscoveryDensity } from './discover-view-options'
 import { discoverKindPresentation, DiscoverPublisherVerifiedIcon } from './discover-kind-presentation'
 
 /** Source identity remains explicit even when two providers return the same artifact. */
-export function DiscoverArtifactCard({ artifact, compact, selected, href, now, onImport, onSend, onFork, importing = false, importDisabled = false, inLibrary = false, density = compact ? 'compact' : 'default' }: {
+export function DiscoverArtifactCard({ artifact, compact, selected, href, now, density = compact ? 'compact' : 'default' }: {
   artifact: FederatedArtifact
   compact: boolean
   selected: boolean
   href: string
   density?: DiscoveryDensity
   now?: number
-  onImport?: (artifact: FederatedArtifact) => Promise<void>
-  onSend?: (artifact: FederatedArtifact) => void
-  onFork?: (artifact: FederatedArtifact) => void
-  importing?: boolean
-  importDisabled?: boolean
-  /** True only after an authorized exact source-and-revision membership lookup. */
-  inLibrary?: boolean
 }) {
   const kind = artifactKind(artifact)
   const { family, icon: Icon, color, tone, iconStyle } = discoverKindPresentation(kind)
@@ -84,23 +77,8 @@ export function DiscoverArtifactCard({ artifact, compact, selected, href, now, o
         </div>
       </div>
     </Link>
-    {reportedMetrics.length || onImport || onSend || onFork ? <div className="mx-4 flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-[color-mix(in_srgb,var(--aurora-border-default)_45%,transparent)] pb-[13px] pt-2">
+    {reportedMetrics.length ? <div className="mx-4 flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-[color-mix(in_srgb,var(--aurora-border-default)_45%,transparent)] pb-[13px] pt-2">
       {reportedMetrics.map(({ key, label, icon: MetricIcon, color: metricColor }) => <span key={key} title={label} aria-label={`${artifact.metrics![key]} ${label.toLowerCase()}`} className="inline-flex items-center gap-1 text-[10.5px] font-[650] tabular-nums text-aurora-text-muted"><MetricIcon aria-hidden="true" className="size-[11px]" style={{ color: metricColor }} />{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(artifact.metrics![key]!)}</span>)}
-      {onImport || onSend || onFork ? <div className="ml-auto inline-flex items-center gap-1">
-      {onFork ? <Button variant="outline" size="icon-sm" className="size-[26px] rounded-lg text-aurora-text-muted hover:text-aurora-accent-pink" aria-label={`Fork ${artifactTitle(artifact)}`} title="Fork" onClick={() => onFork(artifact)}>
-        <GitFork aria-hidden="true" className="size-[13px]" />
-      </Button> : null}
-      {onSend ? <Button variant="outline" size="icon-sm" className="size-[26px] rounded-lg text-aurora-text-muted hover:text-aurora-accent-primary" aria-label={`Send ${artifactTitle(artifact)} to Labby`} title="Send to Labby" onClick={() => onSend(artifact)}>
-        <Send aria-hidden="true" className="size-[13px]" />
-      </Button> : null}
-      {onImport ? <Button size="icon-sm" className="size-[26px] rounded-lg text-aurora-accent-primary" variant="outline" disabled={inLibrary || importDisabled || importing || !(artifact.currentRevisionId || artifact.currentRevision?.id)}
-        aria-label={inLibrary ? `${artifactTitle(artifact)} is in your library` : `Add ${artifactTitle(artifact)} to your library`}
-        title={artifact.currentRevisionId || artifact.currentRevision?.id ? undefined : 'This source has not supplied an exact revision to import.'}
-        onClick={() => void onImport(artifact)}>
-        {inLibrary ? <Check aria-hidden="true" className="size-[13px]" /> : importing ? <Loader2 aria-hidden="true" className="size-[13px] animate-spin" /> : <PackagePlus aria-hidden="true" className="size-[13px]" />}
-        <span className="sr-only">{inLibrary ? 'In Library' : importing ? 'Adding…' : 'Add to Library'}</span>
-      </Button> : null}
-      </div> : null}
     </div> : null}
   </article>
 }

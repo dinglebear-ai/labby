@@ -1,9 +1,10 @@
-import type { ArtifactIssue, ArtifactMetadata } from './artifact-standards'
+import { normalizeArtifactTags, type ArtifactIssue, type ArtifactMetadata } from './artifact-standards'
 
+// Every field validateArtifactDraft can report is listed, so no issue is dropped from the pass count.
 export const ARTIFACT_VALIDATION_FIELDS = [
-  ['name', 'Name'], ['description', 'Description'], ['content', 'Body'],
+  ['name', 'Name'], ['description', 'Description'], ['tags', 'Tags'], ['content', 'Body'],
   ['license', 'License'], ['compatibility', 'Compatibility'], ['allowedTools', 'Allowed tools'],
-] as const
+] as const satisfies ReadonlyArray<readonly [ArtifactIssue['field'], string]>
 
 export function artifactValidationSummary(issues: ArtifactIssue[]) {
   const total = ARTIFACT_VALIDATION_FIELDS.length
@@ -23,7 +24,7 @@ export interface ArtifactAuthoringCheck {
 export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string): ArtifactAuthoringCheck[] {
   const name = metadata.name.trim()
   const description = metadata.description.trim()
-  const tags = Array.from(new Set(metadata.tags.map(tag => tag.trim().replace(/^#/, '')).filter(Boolean)))
+  const tags = normalizeArtifactTags(metadata.tags)
   const body = content.trim()
   const hasWhenToUse = /^##\s+When to use\b/im.test(content)
   const hasSteps = /^##\s+(Steps|Workflow|Instructions)\b/im.test(content)
@@ -56,7 +57,7 @@ export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string
       passing: body.length >= 160,
     },
     {
-      id: 'example', field: 'content', label: 'No example transcript',
+      id: 'example', field: 'content', label: 'Has a worked example',
       description: 'Optional — adding one worked example measurably improves adherence.',
       passing: hasExample,
       optional: true,

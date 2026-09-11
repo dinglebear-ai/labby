@@ -580,7 +580,7 @@ export function SnippetsPageContent() {
             title="Snippets"
             actions={
               <>
-                <Button size="sm" variant="outline" className="h-9 gap-[7px] rounded-aurora-1 border-[color-mix(in_srgb,var(--aurora-accent-primary)_55%,var(--aurora-border-strong))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_9%,var(--aurora-panel-strong))] px-3.5 text-[13px] font-[650] text-[#bfe7fb]" data-visible-label="1" onClick={() => setCreateOpen(true)}>
+                <Button size="sm" variant="outline" className="h-9 gap-[7px] rounded-aurora-1 border-[color-mix(in_srgb,var(--aurora-accent-primary)_55%,var(--aurora-border-strong))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_9%,var(--aurora-panel-strong))] px-3.5 text-[13px] font-[650] text-aurora-accent-strong" data-visible-label="1" onClick={() => setCreateOpen(true)}>
                   <Plus className="size-[15px]" />
                   New Snippet
                 </Button>

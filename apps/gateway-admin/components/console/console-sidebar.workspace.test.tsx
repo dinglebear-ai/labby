@@ -34,7 +34,10 @@ test.afterEach(() => {
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
 })
 
-async function renderSidebar(snapshot: AuthoritySnapshot | undefined) {
+const SIDEBAR_KEY = 'labby-sidebar-collapsed-v2'
+
+/** Mounts the sidebar with the given persisted rail choice (`null` clears it, which is the compact default). */
+async function mountSidebar(snapshot: AuthoritySnapshot | undefined, persisted: '0' | '1' | null) {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', authority: snapshot })
   globalThis.fetch = (async () => Response.json([])) as typeof globalThis.fetch
   const [{ ConsoleSidebar }, { ConsoleShellProvider }, { renderClient }] = await Promise.all([
@@ -43,9 +46,8 @@ async function renderSidebar(snapshot: AuthoritySnapshot | undefined) {
     import('@/lib/testing/dom-test-utils.tsx'),
   ])
   document.body.replaceChildren()
-  // The console now opens on the compact icon rail to match the reference; this
-  // test exercises the expanded workspace switcher, so pin the persisted choice.
-  window.localStorage.setItem('labby-sidebar-collapsed-v2', '0')
+  if (persisted === null) window.localStorage.removeItem(SIDEBAR_KEY)
+  else window.localStorage.setItem(SIDEBAR_KEY, persisted)
   const view = await renderClient(
     <AppRouterContext.Provider value={router as never}>
       <PathnameContext.Provider value="/">
@@ -57,6 +59,14 @@ async function renderSidebar(snapshot: AuthoritySnapshot | undefined) {
   )
   const switcher = view.container.querySelector<HTMLButtonElement>('button[aria-label="Switch workspace"]')
   assert.ok(switcher, 'the workspace switcher must render')
+  const rail = () => view.container.querySelector('[data-collapsed]')?.getAttribute('data-collapsed')
+  return { view, switcher, rail }
+}
+
+async function renderSidebar(snapshot: AuthoritySnapshot | undefined) {
+  // The console opens on the compact icon rail; these tests exercise the
+  // expanded workspace switcher, so pin the persisted choice to expanded.
+  const { view, switcher } = await mountSidebar(snapshot, '0')
   await act(async () => { switcher.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
   const rows = [...view.container.querySelectorAll<HTMLButtonElement>('button[data-menurow="1"]')]
   assert.ok(rows.length > 0, 'opening the switcher must list workspace rows')
@@ -97,5 +107,29 @@ test('with a projection the Personal row is enabled, switches the workspace, and
   assert.equal(state.status, 'authenticated')
   assert.deepEqual(state.status === 'authenticated' ? state.authority?.activeOwner : undefined, { kind: 'personal', id: 'principal-1' })
   assert.deepEqual(pushed, ['/'], 'a successful switch navigates home')
+  await view.unmount()
+})
+
+test('the console opens on the compact rail when no sidebar choice is persisted', async () => {
+  const { view, rail } = await mountSidebar(authority, null)
+  assert.equal(rail(), '1')
+  await view.unmount()
+})
+
+test('a persisted expanded choice restores the full rail after mount', async () => {
+  const { view, rail } = await mountSidebar(authority, '0')
+  assert.equal(rail(), '0')
+  await view.unmount()
+})
+
+test('the compact workspace switcher expands the rail and opens the menu', async () => {
+  const { view, switcher, rail } = await mountSidebar(authority, null)
+  assert.equal(rail(), '1')
+  await act(async () => { switcher.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+  assert.equal(rail(), '0', 'the rail must expand so the menu has room')
+  assert.equal(switcher.getAttribute('aria-expanded'), 'true')
+  const rows = [...view.container.querySelectorAll<HTMLButtonElement>('button[data-menurow="1"]')]
+  assert.ok(rows.length > 0, 'the workspace rows must be listed after expanding')
+  assert.equal(window.localStorage.getItem(SIDEBAR_KEY), '0', 'the explicit expansion is persisted')
   await view.unmount()
 })

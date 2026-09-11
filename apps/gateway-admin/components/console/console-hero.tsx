@@ -37,7 +37,11 @@ export function ConsoleHero({
   footer,
   variant = 'default',
 }: {
-  /** Discover's compact composition follows the supplied Gateway Console export. */
+  /**
+   * `default` renders `children` inside the stats strip. `discover` and `authoring`
+   * use the compact composition, where `children` follow the stats strip and
+   * `footer` comes last.
+   */
   variant?: 'default' | 'discover' | 'authoring'
   eyebrow: string
   /** Optional page identity beside the heading; omitted on existing heroes. */
@@ -47,7 +51,7 @@ export function ConsoleHero({
   description?: React.ReactNode
   actions?: React.ReactNode
   stats?: ConsoleHeroStat[]
-  /** Custom strip content, when `stats` is not expressive enough. */
+  /** Custom strip content, when `stats` is not expressive enough; see `variant` for placement. */
   children?: React.ReactNode
   /** Navigation or other content attached below the stats, outside their padding. */
   footer?: React.ReactNode
@@ -139,7 +143,7 @@ export function ConsoleHero({
         ) : null}
       </div>
 
-      {stats || children ? (
+      {stats?.length || (!compact && children) ? (
         <div
           style={{
             padding: '11px 12px 12px',

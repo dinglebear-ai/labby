@@ -13,7 +13,7 @@ Object.defineProperty(globalThis, 'HTMLInputElement', { value: dom.HTMLInputElem
 let LibraryPageContent: typeof import('./library-page-content.tsx').LibraryPageContent
 test.before(async () => { ({ LibraryPageContent } = await import('./library-page-content.tsx')) })
 
-test('visibility uses reference icons only for explicitly reported known values', async () => {
+test('known visibility values render icons and unknown values do not', async () => {
   const { LibraryVisibility } = await import('./library-page-content.tsx')
   for (const [visibility, icon] of [['public', 'globe'], ['team', 'users'], ['private', 'lock-keyhole']]) {
     const html = renderToStaticMarkup(<LibraryVisibility visibility={visibility} />)
@@ -135,14 +135,15 @@ test('sort menu exposes only supported loaded-result orders', async () => {
   } finally { await view.unmount() }
 })
 
-test('Library navigation exposes existing routes and only authoritative counts', async () => {
-  const { LibraryNavigation } = await import('./library-page-content.tsx')
-  const unknown = renderToStaticMarkup(<LibraryNavigation />)
+test('Library section tabs expose existing routes and only supplied counts', async () => {
+  const { LibraryTabs } = await import('./depot-workspace-pages.tsx')
+  const unknown = renderToStaticMarkup(<LibraryTabs active="artifacts" attached />)
   for (const href of ['/library', '/loadouts', '/snippets', '/tools']) assert.ok(unknown.includes(`href="${href}"`))
   assert.equal((unknown.match(/aria-current="page"/g) ?? []).length, 1)
   assert.doesNotMatch(unknown, /tabular-nums/)
-  const known = renderToStaticMarkup(<LibraryNavigation total={42} />)
+  const known = renderToStaticMarkup(<LibraryTabs active="artifacts" attached counts={{ artifacts: 42 }} />)
   assert.match(known, />42<\/span>/)
+  assert.equal((known.match(/tabular-nums/g) ?? []).length, 1)
 })
 const envelope = (result: unknown) => Response.json(result)
 function deferred() {
@@ -158,10 +159,12 @@ test('initial catalog load preserves an artifact deep link', async () => {
   const originalFetch = globalThis.fetch
   const originalUrl = window.location.href
   dom.happyDOM.setURL('http://localhost/library/?artifact=alpha')
+  const requested: Array<{ url: string; action: string; params: unknown }> = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
+    requested.push({ url: String(url), action: body.action, params: body.params })
     return envelope(body.action === 'artifacts.get_remote' ? { artifact: { id: 'alpha', title: 'Linked artifact' } } : { artifacts: [] })
   }
   const view = await renderClient(page('alpha'))
@@ -169,6 +172,10 @@ test('initial catalog load preserves an artifact deep link', async () => {
     await flush()
     assert.equal(new URLSearchParams(window.location.search).get('artifact'), 'alpha')
     assert.match(document.querySelector('[role="dialog"]')?.textContent ?? '', /Linked artifact/)
+    const deepLink = requested.find(request => request.action === 'artifacts.get_remote')
+    assert.ok(deepLink, 'the deep link must resolve through the artifacts control plane')
+    assert.equal(deepLink.url, '/v1/artifacts')
+    assert.deepEqual(deepLink.params, { id: 'alpha' })
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
@@ -250,7 +257,7 @@ test('late page failures and successes cannot overwrite a new query', async () =
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 
-// Server-projection coverage carried over from main.
+// Page-level tests against a fake fetch follow.
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime'
 import { PathnameContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime'
 

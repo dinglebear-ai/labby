@@ -4,7 +4,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AnthropicMark, LocalBrandMark, LOCAL_BRAND_SLUGS } from './brand-marks'
 
-test('Anthropic mark uses the mock SVG locally instead of a text placeholder', () => {
+test('Anthropic mark uses the vendored SVG locally instead of a text placeholder', () => {
   const html = renderToStaticMarkup(<AnthropicMark />)
   assert.match(html, /aria-label="Anthropic"/)
   assert.match(html, /viewBox="0 0 24 24"/)
@@ -15,7 +15,7 @@ test('Anthropic mark uses the mock SVG locally instead of a text placeholder', (
   assert.doesNotMatch(picker, />AI</)
 })
 
-test('mock distro, toolchain, and agent brands render local SVG paths', () => {
+test('vendored distro, toolchain, and agent brands render local SVG paths', () => {
   assert.equal(LOCAL_BRAND_SLUGS.Tailscale, 'tailscale')
   for (const [name, slug] of Object.entries(LOCAL_BRAND_SLUGS)) {
     const html = renderToStaticMarkup(<LocalBrandMark name={name} />)

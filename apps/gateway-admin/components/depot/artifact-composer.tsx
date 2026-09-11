@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import {
-  CircleAlert, CircleCheck, Clipboard, ShieldCheck,
+  Clipboard, ShieldCheck,
   MoreHorizontal, RotateCcw, Settings2, CircleHelp, PencilLine, X,
 } from 'lucide-react'
 
@@ -209,10 +209,6 @@ export function ArtifactComposer() {
         ]}
       ><ArtifactWorkspaceSwitch value={workspaceMode} onChange={setWorkspaceMode} tabs /></ConsoleHero>
       <div className="w-full min-w-0">
-        <div aria-label="Creation toolbar" hidden className="hidden">
-          <DropdownMenu><DropdownMenuTrigger data-visible-label="1" className={cn('inline-flex h-[30px] shrink-0 items-center gap-[7px] rounded-full border px-3 text-[11.5px] font-[650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary', issues.length ? 'border-aurora-warn text-aurora-warn' : 'border-aurora-success text-aurora-success')}>{issues.length ? <CircleAlert className="size-[13px]" /> : <CircleCheck className="size-[13px]" />}{issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'}` : 'All checks pass'}</DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80 max-w-[calc(100vw-32px)]"><DropdownMenuLabel>Draft validation</DropdownMenuLabel>{issues.length ? issues.map((issue, index) => <DropdownMenuItem key={`${issue.field}-${index}`} className="items-start whitespace-normal" onSelect={() => { setWorkspaceMode('artifact'); setTipsOpen(true) }}><CircleAlert className="size-[13px] shrink-0" /><span>{issue.message}</span></DropdownMenuItem>) : <div className="px-2 py-2 text-[11.5px] text-aurora-text-muted">All checks pass.</div>}</DropdownMenuContent></DropdownMenu>
-          {workspaceMode === 'artifact' ? <button type="button" aria-expanded={tipsOpen} aria-controls="artifact-writing-tips" title="Writing tips — best practices for this kind" data-visible-label="1" onClick={() => setTipsOpen(open => !open)} className={cn('inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11.5px] font-[650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary', tipsOpen ? 'border-aurora-accent-primary/35 bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-control-surface text-aurora-text-muted')}><CircleHelp className="size-[13px]" />Tips</button> : null}
-        </div>
         {workspaceMode==='artifact'?<div className={cn('grid items-start gap-3', tipsOpen && 'lg:grid-cols-[minmax(0,1fr)_272px]')}>
           <section className="min-w-0 overflow-hidden rounded-aurora-3 border border-aurora-border-strong bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-strong">
             <div aria-label="Document controls" className="flex flex-wrap items-center gap-2 border-b border-aurora-border-default bg-aurora-control-surface py-[9px] pl-3.5 pr-3">

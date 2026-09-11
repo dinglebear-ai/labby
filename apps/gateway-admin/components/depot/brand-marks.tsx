@@ -1,12 +1,12 @@
 import type React from 'react'
-import { MOCK_BRAND_PATHS } from './mock-brand-paths'
+import { BRAND_PATHS } from './brand-paths'
 
 type MarkProps = { className?: string }
 
 const markClass = 'size-5 fill-current'
 
-// Same Simple Icons Anthropic mark referenced by the supplied console mock.
-// Embedded locally so the UI does not depend on the icon CDN at runtime.
+// Simple Icons Anthropic mark, embedded locally so the UI does not depend on
+// the icon CDN at runtime.
 export function AnthropicMark({ className = markClass }: MarkProps) {
   return <svg viewBox="0 0 24 24" role="img" aria-label="Anthropic" className={className}><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>
 }
@@ -52,7 +52,7 @@ export function LocalBrandMark({ name }: { name: string }) {
   else if (name === 'Alpine 3.21') mark = <AlpineMark className={iconClass} />
   else if (name === 'Codex') mark = <CodexMark className={iconClass} />
   else if (name === 'Claude Code') mark = <AnthropicMark className={iconClass} />
-  else if (LOCAL_BRAND_SLUGS[name] && MOCK_BRAND_PATHS[LOCAL_BRAND_SLUGS[name]]) mark = <svg viewBox="0 0 24 24" className={iconClass} data-brand-slug={LOCAL_BRAND_SLUGS[name]}>{MOCK_BRAND_PATHS[LOCAL_BRAND_SLUGS[name]].map((path, index) => <path key={index} d={path} />)}</svg>
+  else if (LOCAL_BRAND_SLUGS[name] && BRAND_PATHS[LOCAL_BRAND_SLUGS[name]]) mark = <svg viewBox="0 0 24 24" className={iconClass} data-brand-slug={LOCAL_BRAND_SLUGS[name]}>{BRAND_PATHS[LOCAL_BRAND_SLUGS[name]].map((path, index) => <path key={index} d={path} />)}</svg>
   else mark = localLabels[name] ?? name.slice(0, 2).toUpperCase()
 
   return (

@@ -1,6 +1,5 @@
 import { getErrorMessage } from '@/lib/utils'
-
-type Result = { ok: true } | { ok: false; error: string }
+import type { GatewayBatchResult as Result } from './gateway-selection-model'
 export function gatewayBatchActions(deps: {
   enable: (id: string) => Promise<unknown>
   disable: (id: string) => Promise<unknown>

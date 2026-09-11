@@ -3,7 +3,7 @@ export const GATEWAY_COLUMNS = ['clients', 'endpoint', 'exposed', 'uptime'] as c
 export type GatewayColumn = typeof GATEWAY_COLUMNS[number]
 export const GATEWAY_COLUMN_WIDTH: Record<GatewayColumn, string> = { clients: '80px', endpoint: 'minmax(140px,300px)', exposed: '170px', uptime: '130px' }
 export function normalizeGatewayColumns(value: unknown): GatewayColumn[] {
-  const known = Array.isArray(value) ? value.filter((item): item is GatewayColumn => GATEWAY_COLUMNS.includes(item)) : []
+  const known = Array.isArray(value) ? value.filter((item): item is GatewayColumn => typeof item === 'string' && (GATEWAY_COLUMNS as readonly string[]).includes(item)) : []
   return [...new Set([...known, ...GATEWAY_COLUMNS])]
 }
 export function visibleGatewayColumns(order: GatewayColumn[], width: number): GatewayColumn[] {

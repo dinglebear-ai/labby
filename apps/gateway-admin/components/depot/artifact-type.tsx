@@ -18,7 +18,7 @@ export function artifactTypeDefinition(kind: string) {
   const key = kind.toLowerCase()
   const [label, singularLabel] = Object.hasOwn(LABELS, key) ? LABELS[key] : [kind || 'Artifact', kind || 'Artifact']
   const presentation = discoverKindPresentation(key)
-  // Marketplace is an existing catalog kind outside the mock's taxonomy.
+  // Marketplace is an existing catalog kind outside the Discover kind taxonomy.
   // Preserve it without reusing a different kind's icon or suggesting support.
   if (key === 'marketplace') {
     const color = 'var(--artifact-marketplace)'

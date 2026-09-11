@@ -89,7 +89,7 @@ export function UsageCallDetailContent({
         <div className="rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium px-4">
           <DetailRow label="Target" mono>{call.tool}</DetailRow>
           <DetailRow label="Operation" mono>{call.action ?? '—'}</DetailRow>
-          <DetailRow label="Capability" mono>{call.capability ?? 'tools'}</DetailRow>
+          <DetailRow label="Capability" mono>{call.capability ?? '—'}</DetailRow>
           <DetailRow label="Agent">
             {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
           </DetailRow>

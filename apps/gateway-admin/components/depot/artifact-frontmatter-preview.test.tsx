@@ -12,7 +12,7 @@ test('frontmatter preview uses composed fields as literal text, not executable H
   assert.match(html, /license: &quot;MIT&quot;/)
   assert.match(html, /allowed-tools: &quot;Read Search&quot;/)
   assert.match(html, /&lt;script&gt;literal&lt;\/script&gt;/)
-  assert.doesNotMatch(html, /<script>/)
+  assert.doesNotMatch(html, /<script>/i)
   assert.match(html, /aria-label="Copy frontmatter"/)
 })
 test('non-Markdown artifacts do not acquire invented YAML frontmatter', () => {

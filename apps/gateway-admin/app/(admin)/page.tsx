@@ -115,8 +115,8 @@ export default function OverviewPage() {
           />
         ) : null}
 
-        {/* Match the reference's two-thirds telemetry canvas and one-third
-            insights rail; each lane retains its own visible reorder sequence. */}
+        {/* Two-thirds telemetry canvas and one-third insights rail; each lane
+            retains its own visible reorder sequence. */}
         <ReorderableOverview cards={[
           { id: 'Call volume', wide: true, content: <DashboardPanel title="Upstream call volume" meta={WINDOW_LABELS[activeWindow]}>
               {metrics ? (

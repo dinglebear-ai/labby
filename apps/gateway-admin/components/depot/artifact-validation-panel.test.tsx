@@ -23,7 +23,7 @@ Invoke when the user asks to triage, group, or summarize open work in a reposito
 2. Cluster by touched subsystem, not by label.
 3. For each cluster write: what it is, who owns it, what unblocks it.`
 
-test('skill validation panel renders the reference six checks from draft state and selects their field', async () => {
+test('skill validation panel renders the six skill checks from draft state and selects their field', async () => {
   const window = installTestDom()
   let selected = ''
   const view = await renderClient(
@@ -41,7 +41,7 @@ test('skill validation panel renders the reference six checks from draft state a
     assert.match(text, /Validation5 of 6/)
     assert.match(text, /Name is a slug/)
     assert.match(text, /At least two tags/)
-    assert.match(text, /No example transcript/)
+    assert.match(text, /Has a worked example/)
     const tagButton = Array.from(view.container.querySelectorAll('button')).find(button => button.textContent?.includes('At least two tags'))!
     await act(async () => tagButton.dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
     assert.equal(selected, 'tags')

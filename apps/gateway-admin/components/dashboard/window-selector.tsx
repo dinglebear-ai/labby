@@ -8,7 +8,7 @@ const WINDOW_SHORT: Record<MetricsWindow, string> = {
   '7d': '7d',
 }
 
-/** Rolling-window pill toggle measured from the Activity mock. */
+/** Rolling-window pill toggle for the Activity panels. */
 export function WindowSelector({
   value,
   onChange,

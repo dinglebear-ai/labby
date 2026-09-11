@@ -2,7 +2,8 @@ import type { Gateway } from '@/lib/types/gateway'
 export type GatewayBatchResult = { ok: true } | { ok: false; error: string }
 export type GatewayBatchAction = 'enable' | 'disable' | 'reload'
 export type GatewayBatchTarget = { id: string; name: string }
-export type GatewayBatchReport = GatewayBatchTarget & { outcome: 'completed' | 'skipped' | 'failed'; detail?: string }
+/** Skipped and failed outcomes always carry the reason; completed ones never do. */
+export type GatewayBatchReport = GatewayBatchTarget & ({ outcome: 'completed'; detail?: undefined } | { outcome: 'skipped' | 'failed'; detail: string })
 export type GatewayBatchCallbacks = {
   onBatchSetEnabled?: (gateway: Gateway, enabled: boolean) => Promise<GatewayBatchResult>
   onBatchReload?: (gateway: Gateway) => Promise<GatewayBatchResult>
@@ -18,7 +19,9 @@ export async function runGatewayBatch(action: GatewayBatchAction, targets: Gatew
     if (action === 'reload' && gateway.transport === 'in_process') { reports.push({ ...target, outcome: 'skipped', detail: 'This server does not support reload.' }); continue }
     try {
       const result = action === 'reload' ? await callbacks.onBatchReload?.(gateway) : await callbacks.onBatchSetEnabled?.(gateway, action === 'enable')
-      reports.push({ ...target, outcome: result?.ok ? 'completed' : 'failed', detail: result && !result.ok ? result.error : result ? undefined : 'Operation is unavailable.' })
+      if (!result) reports.push({ ...target, outcome: 'failed', detail: 'Operation is unavailable.' })
+      else if (result.ok) reports.push({ ...target, outcome: 'completed' })
+      else reports.push({ ...target, outcome: 'failed', detail: result.error })
     } catch (error) { reports.push({ ...target, outcome: 'failed', detail: error instanceof Error ? error.message : 'Operation failed.' }) }
   }
   return reports

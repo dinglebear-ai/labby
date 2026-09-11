@@ -11,6 +11,9 @@ test('attached library tabs preserve routes and show only known counts', () => {
   assert.match(html, /href="\/library"/)
   assert.match(html, /href="\/loadouts"/)
   assert.match(html, /href="\/snippets" aria-current="page"/)
-  assert.equal((html.match(/>—</g) ?? []).length, 2)
+  assert.match(html, /href="\/tools"/)
+  // Sections without a supplied count show no badge at all rather than a placeholder.
+  assert.doesNotMatch(html, />—</)
+  assert.equal((html.match(/tabular-nums/g) ?? []).length, 1)
   assert.match(html, />0<\/span>/)
 })

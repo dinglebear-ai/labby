@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { discoverKindPresentation } from './discover-kind-presentation'
 
-test('filter categories preserve labels while mock families share their intended colors', () => {
+test('filter categories preserve labels while kind families share their intended colors', () => {
   const definitions = ARTIFACT_TYPES.map(artifactTypeDefinition)
 
   assert.equal(ARTIFACT_TYPES.length, 8)
@@ -16,7 +16,7 @@ test('filter categories preserve labels while mock families share their intended
   ])
 })
 
-test('all reference kinds share colors and glyphs across Library and Discover', () => {
+test('all known kinds share colors and glyphs across Library and Discover', () => {
   for (const kind of ['mcp', 'acp', 'agent', 'skill', 'command', 'plugin', 'prompt', 'hook', 'extension', 'loadout', 'snippet']) {
     const library = artifactTypeDefinition(kind)
     const discover = discoverKindPresentation(kind)
@@ -26,7 +26,7 @@ test('all reference kinds share colors and glyphs across Library and Discover', 
   }
 })
 
-test('compact marks use reference table geometry and singular kind labels', () => {
+test('compact marks use compact table geometry and singular kind labels', () => {
   const html = renderToStaticMarkup(<ArtifactTypeMark artifact={{ id: 'one', kind: 'loadout' }} compact />)
   assert.match(html, /size-\[18px\]/)
   assert.match(html, /rounded-\[5px\]/)

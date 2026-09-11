@@ -980,7 +980,11 @@ export function ConsoleSidebar() {
             type="button"
             aria-label="Switch workspace"
             aria-expanded={workspaceOpen}
-            onClick={() => setWorkspaceOpen((value) => !value)}
+            onClick={() => {
+              // The menu only has room on the expanded rail, so open the rail first.
+              if (visuallyCollapsed) { toggleCollapsed(); setWorkspaceOpen(true); return }
+              setWorkspaceOpen((value) => !value)
+            }}
             style={{
               width: '100%', minHeight: visuallyCollapsed ? 40 : 38, borderRadius: 10,
               border: workspaceOpen ? '1px solid var(--aurora-warn)' : '1px solid color-mix(in srgb, var(--aurora-border-strong) 75%, transparent)',

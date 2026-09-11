@@ -178,11 +178,13 @@ function UsageExplorer() {
   const ipOptions = data?.facets.ips ?? []
   const collected = data?.collected
   const showIps = collected?.ips ?? false
+  const showSurfaces = collected?.surfaces ?? false
   const showTokens = collected?.tokens ?? false
-  const tableColumns = 7 + Number(showTokens)
-  const activityGridColumns = showTokens
-    ? '96px minmax(0, 1.6fr) minmax(0, 1fr) 70px 110px 80px 80px 80px'
-    : '96px minmax(0, 1.6fr) minmax(0, 1fr) 70px 110px 80px 80px'
+  const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
+  const activityGridColumns = [
+    '96px', 'minmax(0, 1.6fr)', 'minmax(0, 1fr)',
+    showSurfaces ? '70px' : null, '110px', showTokens ? '80px' : null, '80px', '80px',
+  ].filter(Boolean).join(' ')
 
   const filtered = data?.filtered ?? 0
   const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
@@ -402,7 +404,7 @@ function UsageExplorer() {
                   <TableHead className="w-[96px]">Time</TableHead>
                   <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead className="w-[70px]">Surface</TableHead>
+                  {showSurfaces ? <TableHead className="w-[70px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
                   <TableHead className="w-[80px] text-right">Response</TableHead>
@@ -450,19 +452,20 @@ function UsageExplorer() {
                         height: 59,
                         padding: '7px 15px',
                       }}
-                      tabIndex={0}
-                      aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')}`}
                       onClick={(event) => {
-                        if (!(event.target as HTMLElement).closest('a')) setSelectedCall(call)
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          setSelectedCall(call)
-                        }
+                        if (!(event.target as HTMLElement).closest('a, button')) setSelectedCall(call)
                       }}
                     >
-                      <TableCell className="text-[11px] tabular-nums text-aurora-text-muted">{formatRelativeTime(call.ts)}</TableCell>
+                      <TableCell className="text-[11px] tabular-nums text-aurora-text-muted">
+                        <button
+                          type="button"
+                          aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')}`}
+                          onClick={() => setSelectedCall(call)}
+                          className="rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"
+                        >
+                          {formatRelativeTime(call.ts)}
+                        </button>
+                      </TableCell>
                       <TableCell className="truncate" title={[call.tool, call.action].filter(Boolean).join('.')}>
                         <Link href={usageTraceHref(call.tool)} aria-label={`View traces for ${call.tool}`} className="rounded font-mono text-[12.5px] text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{call.tool}</Link>
                         {call.action ? (
@@ -480,7 +483,7 @@ function UsageExplorer() {
                           <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
                         ) : null}
                       </TableCell>
-                      <TableCell><SurfaceTag surface={call.surface} /></TableCell>
+                      {showSurfaces ? <TableCell><SurfaceTag surface={call.surface} /></TableCell> : null}
                       <TableCell>
                         <span className="inline-flex items-center gap-2">
                           <OutcomeDot outcome={call.outcome} />

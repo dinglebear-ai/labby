@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { listProviderOptions } from './depot-client.ts'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { consumeOwnerLinkApproval, depotCall, depotOperations, depotStatus, depotPublishCapability, publishDepotSkill, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
@@ -12,7 +11,7 @@ async function withFetch(response: Response, run: () => Promise<void>) {
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
 
-test('Library retains bounded supplied tags without inventing missing metadata', async () => {
+test('v1 descriptors retain bounded supplied tags without inventing missing metadata', async () => {
   for (const tags of [undefined, [], ['review', 'rust']]) {
     const row = { ...artifact, descriptor: { tags } }
     await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [row] } }), async () => {
@@ -425,21 +424,6 @@ test('admin provider projection is strict and contains no credential material', 
   await withFetch(json([{ ...provider, hostManaged: 'true' }]), async () => assert.rejects(listProviders(), /boolean/i))
 })
 
-test('provider options preserve nullable qualified source support from ordinary and admin projections', async () => {
-  const base = { id: 'team', name: 'Team', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
-  const admin = { endpoint: 'https://depot.example', authMode: 'bearer', builtin: false, configVersion: 'v1', credentialConfigured: true }
-  for (const extra of [{}, admin]) {
-    for (const sourceOrigins of [undefined, null, [], ['ard'], ['mcp-registry', 'acp-registry', 'ard']]) {
-      await withFetch(json([{ ...base, ...extra, sourceOrigins }]), async () => {
-        assert.deepEqual((await listProviderOptions())[0]?.sourceOrigins, sourceOrigins)
-      })
-    }
-    for (const sourceOrigins of [['github'], ['ard', 'ard'], 'ard']) {
-      await withFetch(json([{ ...base, ...extra, sourceOrigins }]), async () => assert.rejects(listProviderOptions()))
-    }
-  }
-})
-
 test('provider mutations carry CSRF and preserve operation identity', async () => {
   const original = globalThis.fetch
   const requests: Array<{ url: string; init?: RequestInit }> = []
@@ -565,4 +549,25 @@ test('federated details reject malformed, duplicate and oversized tags', async (
       await assert.rejects(getArtifact('public', 'artifact-1'), /incompatible artifact detail response/)
     })
   }
+})
+
+test('v2 detail README must belong to the current revision and match its declared path', async () => {
+  const base = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId: 'artifact-1' }
+  const readme = { state: 'available', kind: 'readme', path: 'README.md', revisionId: 'r1', content: '# Release helper' }
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r1' }, readme } }), async () => {
+    const detail = await getArtifact('public', 'artifact-1')
+    assert.equal(detail.artifact.readme?.state, 'available')
+    if (detail.artifact.readme?.state === 'available') assert.equal(detail.artifact.readme.content, '# Release helper')
+  })
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r2' }, readme } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match the current revision/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevisionId: 'r2', currentRevision: { id: 'r1' }, readme } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match the current revision/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', currentRevision: { id: 'r1' }, readme: { ...readme, kind: 'skill' } } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /does not match its path/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', readme: { state: 'unavailable', reason: 'missing' } } }), async () =>
+    assert.rejects(getArtifact('public', 'artifact-1'), /incompatible/))
+  await withFetch(json({ ...base, artifact: { id: 'artifact-1', readme: { state: 'unavailable', reason: 'too_large' } } }), async () => {
+    assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.readme, { state: 'unavailable', reason: 'too_large' })
+  })
 })

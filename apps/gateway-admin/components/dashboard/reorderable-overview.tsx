@@ -79,7 +79,7 @@ export function ReorderableOverview({ cards }: { cards: Array<{ id: string; cont
   }
 
   return <section aria-label="Customizable overview cards">
-    <p className="mb-2 flex items-center gap-1.5 text-[10px] text-aurora-text-muted"><GripVertical className="size-3"/>{storageWarning ? 'Layout changes work for this session but could not be saved on this device.' : 'Drag cards to arrange your overview. The order is saved on this device.'}</p>
+    <p className="mb-2 flex items-center gap-1.5 text-[10px] text-aurora-text-muted"><GripVertical className="size-3"/>{storageWarning ? 'Layout changes work for this session, but this device could not read or save them.' : 'Drag cards to arrange your overview. The order is saved on this device.'}</p>
     <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
       {[false, true].map(rail => <div key={String(rail)} data-overview-lane={rail ? 'insights' : 'telemetry'} className={cn('grid min-w-0 items-start gap-3', !rail && 'min-[700px]:grid-cols-2')}>
       {order.filter(id => Boolean(cards.find(card => card.id === id)?.rail) === rail).map((id) => {

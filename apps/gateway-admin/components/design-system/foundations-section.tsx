@@ -32,7 +32,7 @@ export function FoundationsSection() {
       <div className="space-y-6 px-5 py-5">
         <section aria-label="Artifact identity palette" className="space-y-3">
           <p className={AURORA_MUTED_LABEL}>Artifact identity palette</p>
-          <p className="text-sm text-aurora-text-muted">Protocol orange identifies MCP and ACP. Warning gold remains reserved for guards and operational warnings.</p>
+          <p className="text-sm text-aurora-text-muted">Protocol orange identifies MCP-family kinds. Warning gold remains reserved for guards and operational warnings.</p>
           <div className="flex flex-wrap gap-3">
             {['MCP', 'ACP', 'Skill', 'Agent', 'Prompt', 'Command', 'Hook', 'Plugin', 'Extension', 'Loadout', 'Snippet'].map(kind => {
               const { icon: Icon, iconStyle, color } = discoverKindPresentation(kind)

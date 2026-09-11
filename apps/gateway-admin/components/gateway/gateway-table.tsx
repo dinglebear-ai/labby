@@ -1117,7 +1117,7 @@ export function GatewayTable({
             {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
             {exposureTotals.exposed}/{exposureTotals.discovered} tools
             {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
-            {layoutWarning ? ' · Column layout could not be saved on this device.' : ''}
+            {layoutWarning ? ' · Column layout could not be read or saved on this device.' : ''}
           </span>
         </div>
       </section>

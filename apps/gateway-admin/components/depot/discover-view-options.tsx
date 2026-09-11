@@ -8,8 +8,7 @@ import type { DiscoverySort } from './discover-model'
 export type DiscoveryDensity = 'compact' | 'default' | 'comfortable'
 export type DiscoveryLayout = 'cards' | 'list'
 
-export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density, setDensity, ranked = false }: {
-  ranked?: boolean
+export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density, setDensity }: {
   sort: DiscoverySort
   setSort: (value: DiscoverySort) => void
   layout: DiscoveryLayout
@@ -20,13 +19,13 @@ export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density,
   return <Popover>
     <PopoverTrigger asChild><Button variant="outline" size="icon-sm" className="size-[26px] rounded-[8px]" aria-label="Sort, density and layout"><SlidersHorizontal aria-hidden="true" className="size-3" /></Button></PopoverTrigger>
     <PopoverContent align="end" aria-label="Sort, density and layout" className="w-[220px] max-w-[calc(100vw-2rem)] space-y-3 rounded-[12px] border-aurora-border-strong bg-aurora-panel-strong p-2 text-aurora-text-primary">
-      {ranked ? <p className="px-2 text-xs text-aurora-text-muted">Newest first-seen, ranked across sources.</p> : <div role="group" aria-label="Sort retained results" className="space-y-0.5">
+      <div role="group" aria-label="Sort retained results" className="space-y-0.5">
         {([['catalog', 'Catalog order'], ['newest', 'Recently updated'], ['name', 'Name']] as const).map(([value, label]) => <Button
           key={value} variant={sort === value ? 'secondary' : 'ghost'} data-visible-label
           className="h-7 w-full justify-between rounded-[8px] px-[9px] text-xs font-semibold"
           aria-pressed={sort === value} onClick={() => setSort(value)}
         ><span>{label}</span>{sort === value ? <Check aria-hidden="true" className="size-3 text-aurora-accent-strong" /> : null}</Button>)}
-      </div>}
+      </div>
       <div className="mx-1.5 border-t border-aurora-border-default" />
       <div role="group" aria-label="Density" className="flex items-center gap-2 px-2">
         <span className="flex-1 text-[9px] font-bold uppercase tracking-[0.13em] text-aurora-text-muted">Density</span>
@@ -48,7 +47,7 @@ export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density,
           ><Icon aria-hidden="true" className="size-3.5" /></Button>)}
         </div>
       </div>
-      {!ranked ? <p className="px-2 text-[10px] leading-snug text-aurora-text-muted">Sorting applies to loaded results, not the entire source catalog.</p> : null}
+      <p className="px-2 text-[10px] leading-snug text-aurora-text-muted">Sorting applies to loaded results, not the entire source catalog.</p>
     </PopoverContent>
   </Popover>
 }

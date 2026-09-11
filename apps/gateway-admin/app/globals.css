@@ -73,14 +73,7 @@
      Matches accent family; reads calm, not neon. Added for eixf.3 primitive variants. */
   --aurora-success: #7dd3c7;
   /* Catalog identities: stable type colors shared by Discovery and Library. */
-  --artifact-mcp: #4cc9f0;
-  --artifact-acp: #a78bfa;
-  --artifact-agent: #5eead4;
-  --artifact-skill: #e9b96e;
-  --artifact-command: #fb923c;
-  --artifact-plugin: #f9a8c4;
   --artifact-marketplace: #86d68f;
-  --artifact-prompt: #7aa7ff;
   --aurora-focus-ring: rgba(41, 182, 246, 0.34);
   --aurora-active-glow: 0 0 0 1px rgba(41, 182, 246, 0.18), 0 0 16px rgba(41, 182, 246, 0.08);
   --aurora-shadow-medium: 0 12px 24px rgba(0, 0, 0, 0.18);
@@ -320,14 +313,7 @@
   --aurora-warn: #8a6914;
   --aurora-error: #9c3545;
   --aurora-success: #2d7d6e;
-  --artifact-mcp: #0277bd;
-  --artifact-acp: #6d4cc7;
-  --artifact-agent: #147d73;
-  --artifact-skill: #8a6418;
-  --artifact-command: #b74d0f;
-  --artifact-plugin: #a13a64;
   --artifact-marketplace: #337a3d;
-  --artifact-prompt: #315fb5;
   --aurora-focus-ring: rgba(2, 136, 209, 0.34);
   --aurora-active-glow: 0 0 0 1px rgba(2, 136, 209, 0.18), 0 0 16px rgba(2, 136, 209, 0.08);
   --aurora-shadow-medium: 0 12px 24px rgba(0, 0, 0, 0.08);
@@ -1134,14 +1120,6 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   }
   [data-panel-body] {
     padding: 12px !important;
-  }
-}
-
-@media (max-width: 640px) {
-  [data-library-toolbar] > div:has(> input[aria-label="Search library"]) {
-    flex-basis: 100%;
-    max-width: none;
-    min-width: 0;
   }
 }
 

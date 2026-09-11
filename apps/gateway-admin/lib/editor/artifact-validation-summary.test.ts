@@ -27,9 +27,10 @@ Invoke when the user asks to triage, group, or summarize open work in a reposito
 
 test('generic summary counts fields once even when a field has multiple issues', () => {
   const issue: ArtifactIssue = { field: 'name', severity: 'error', message: 'Invalid name', from: 0, to: 1 }
-  assert.deepEqual(artifactValidationSummary([]), { passing: 6, total: 6 })
-  assert.deepEqual(artifactValidationSummary([issue, issue]), { passing: 5, total: 6 })
-  assert.deepEqual(artifactValidationSummary([issue, { ...issue, field: 'content', severity: 'warning' }]), { passing: 4, total: 6 })
+  assert.deepEqual(artifactValidationSummary([]), { passing: 7, total: 7 })
+  assert.deepEqual(artifactValidationSummary([issue, issue]), { passing: 6, total: 7 })
+  assert.deepEqual(artifactValidationSummary([issue, { ...issue, field: 'content', severity: 'warning' }]), { passing: 5, total: 7 })
+  assert.deepEqual(artifactValidationSummary([{ ...issue, field: 'tags' }]), { passing: 6, total: 7 })
 })
 
 test('skill authoring checks match the reference six-check model from real draft data', () => {
@@ -40,7 +41,7 @@ test('skill authoring checks match the reference six-check model from real draft
     'At least two tags',
     'Body has sections',
     'Body has substance',
-    'No example transcript',
+    'Has a worked example',
   ])
   assert.deepEqual(skillAuthoringSummary(metadata, body), { checks, passing: 5, total: 6 })
   assert.equal(checks.find(check => check.id === 'example')?.optional, true)
