@@ -107,8 +107,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         workflow = self.text(".github/workflows/release.yml")
         self.assertIn("name: N-1 stateful upgrade and rollback qualification", workflow)
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
-        for deployment in ("unix", "windows", "macos", "incus", "host-service"):
-            self.assertIn(f"deployment: {deployment}", workflow)
+        release = yaml.load(workflow, Loader=yaml.BaseLoader)
+        matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
+        # macOS arm64 has never had a published release, so it has no N-1 to
+        # install yet. Add "macos" back here when the leg is restored.
+        self.assertEqual(["unix", "windows", "incus", "host-service"], [row["deployment"] for row in matrix])
         self.assertNotIn("deployment: compose", workflow)
 
     def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
