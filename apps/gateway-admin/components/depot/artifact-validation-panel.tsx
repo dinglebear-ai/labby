@@ -15,7 +15,7 @@ export function ArtifactValidationPanel({ kind, metadata, content, issues, onFie
   issues: ArtifactIssue[]
   onField: (field: ArtifactIssue['field']) => void
 }) {
-  const skillSummary = kind === 'Skill' ? skillAuthoringSummary(metadata, content) : null
+  const skillSummary = kind === 'Skill' ? skillAuthoringSummary(metadata, content, issues) : null
   const genericSummary = artifactValidationSummary(issues)
   const rows = skillSummary ? skillSummary.checks : CHECKS.map(([field, label]) => {
     const fieldIssues = issues.filter(issue => issue.field === field)

@@ -48,10 +48,12 @@ export function UsageCallDetailContent({
   call,
   tokensCollected,
   ipsCollected,
+  surfacesCollected,
 }: {
   call: ToolCallRecord
   tokensCollected: boolean
   ipsCollected: boolean
+  surfacesCollected: boolean
 }) {
   const outcomeLabel = call.outcome === 'failed' ? (call.error_kind ?? 'failed') : 'ok'
   const totalTokens = call.input_tokens + call.output_tokens
@@ -72,7 +74,7 @@ export function UsageCallDetailContent({
           },
           { label: 'Latency', value: formatDuration(call.elapsed_ms) },
           { label: 'Response', value: formatBytes(call.response_bytes) },
-          { label: 'Surface', value: <SurfaceTag surface={call.surface} /> },
+          ...(surfacesCollected ? [{ label: 'Surface', value: <SurfaceTag surface={call.surface} /> }] : []),
         ]}
       />
 
@@ -130,11 +132,13 @@ export function UsageCallDetail({
   onClose,
   tokensCollected,
   ipsCollected,
+  surfacesCollected,
 }: {
   call: ToolCallRecord | null
   onClose: () => void
   tokensCollected: boolean
   ipsCollected: boolean
+  surfacesCollected: boolean
 }) {
   if (!call) {
     return (
@@ -164,6 +168,7 @@ export function UsageCallDetail({
         call={call}
         tokensCollected={tokensCollected}
         ipsCollected={ipsCollected}
+        surfacesCollected={surfacesCollected}
       />
     </DetailDrawer>
   )

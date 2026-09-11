@@ -28,7 +28,7 @@ const call: ToolCallRecord = {
 
 test('usage call detail presents retained call facts and keeps traces as an explicit action', () => {
   const html = renderToStaticMarkup(
-    <UsageCallDetailContent call={call} tokensCollected ipsCollected />,
+    <UsageCallDetailContent call={call} tokensCollected ipsCollected surfacesCollected />,
   )
   assert.match(html, /dozzle::get_logs/)
   assert.match(html, /tool\.call/)
@@ -45,7 +45,7 @@ test('usage call detail presents retained call facts and keeps traces as an expl
 
 test('usage call detail omits telemetry dimensions that were not collected', () => {
   const html = renderToStaticMarkup(
-    <UsageCallDetailContent call={call} tokensCollected={false} ipsCollected={false} />,
+    <UsageCallDetailContent call={call} tokensCollected={false} ipsCollected={false} surfacesCollected={false} />,
   )
   assert.doesNotMatch(html, /Source IP/)
   assert.doesNotMatch(html, />Tokens</)

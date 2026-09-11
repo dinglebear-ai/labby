@@ -279,7 +279,7 @@ function UsageExplorer() {
       <AppHeader icon={<Activity className="size-3.5" />} breadcrumbs={[{ label: 'Activity' }]} />
 
       <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)} style={{ gap: 14 }}>
-        {/* Hero — the mock's eyebrow + title + action cluster with the stat
+        {/* Hero — eyebrow + title + action cluster with the stat
             strip welded to the card's bottom edge, not floating cards. */}
         <ConsoleHero
           eyebrow="Observe"
@@ -459,7 +459,7 @@ function UsageExplorer() {
                       <TableCell className="text-[11px] tabular-nums text-aurora-text-muted">
                         <button
                           type="button"
-                          aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')}`}
+                          aria-label={`Inspect call ${[call.tool, call.action].filter(Boolean).join('.')} from ${formatRelativeTime(call.ts)}`}
                           onClick={() => setSelectedCall(call)}
                           className="rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"
                         >
@@ -569,6 +569,7 @@ function UsageExplorer() {
         onClose={() => setSelectedCall(null)}
         tokensCollected={showTokens}
         ipsCollected={showIps}
+        surfacesCollected={showSurfaces}
       />
     </>
   )

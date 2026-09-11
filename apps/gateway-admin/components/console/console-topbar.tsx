@@ -50,7 +50,7 @@ export function ConsoleTopbar() {
         borderBottom:
           '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
         boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.035)',
-        background: 'color-mix(in srgb, #0f2334 48%, transparent)',
+        background: 'color-mix(in srgb, var(--aurora-control-surface) 48%, transparent)',
         position: 'relative',
         zIndex: 40,
       }}

@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 
+import { isAbortError } from '@/lib/api/service-action-client'
 import { setupApi } from '@/lib/api/setup-client'
 import {
   SettingsCard,
@@ -48,10 +49,13 @@ export function resolveGatewayEndpoint(values: Record<string, unknown>): string 
   }
 }
 
+/** Formats a section failure with its HTTP status when known; aborted requests are not failures. */
 function describeFailure(section: string, result: PromiseSettledResult<unknown>): string | undefined {
   if (result.status === 'fulfilled') return undefined
   const reason: unknown = result.reason
-  return `${section}: ${reason instanceof Error ? reason.message : String(reason)}`
+  if (isAbortError(reason)) return undefined
+  const status = typeof reason === 'object' && reason !== null && 'status' in reason && typeof reason.status === 'number' ? ` (HTTP ${reason.status})` : ''
+  return `${section}: ${reason instanceof Error ? reason.message : String(reason)}${status}`
 }
 
 export function SettingsOverviewCards({

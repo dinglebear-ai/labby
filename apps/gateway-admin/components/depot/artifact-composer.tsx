@@ -91,7 +91,7 @@ export function ArtifactComposer() {
   const source = React.useMemo(() => composeArtifactSource(kind, metadata, content), [content, kind, metadata])
   const issues = React.useMemo(() => validateArtifactDraft(kind, metadata, content), [content, kind, metadata])
   const authoringValidation = React.useMemo(
-    () => kind === 'Skill' ? skillAuthoringSummary(metadata, content) : artifactValidationSummary(issues),
+    () => kind === 'Skill' ? skillAuthoringSummary(metadata, content, issues) : artifactValidationSummary(issues),
     [content, issues, kind, metadata],
   )
   const errors = issues.filter((entry) => entry.severity === 'error')
@@ -226,7 +226,7 @@ export function ArtifactComposer() {
             <ArtifactDescriptionField value={metadata.description} onChange={updateMetadata('description')} />
             </div>
             <div className="mt-3 grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3">
-              <span aria-hidden="true" />
+              <ArtifactFieldIndicator field="tags" issues={issues} className="mt-2" />
               <div className="flex h-6 min-w-0 items-center gap-1.5">
                 {metadata.tags.map(tag => <span key={tag} className="inline-flex h-6 shrink-0 items-center gap-[5px] rounded-full border border-aurora-accent-primary/25 bg-aurora-accent-primary/8 pl-[10px] pr-1.5 text-[11.5px] text-aurora-accent-strong"><span>#{tag}</span><button type="button" aria-label={`Remove tag ${tag}`} onClick={() => removeTag(tag)} className="grid size-[14px] place-items-center rounded-full text-aurora-text-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><X className="size-2.5" /></button></span>)}
                 <input aria-label="Add a tag" value={tagInput} onChange={event => setTagInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTag() } }} onBlur={addTag} placeholder="add tag…" className="h-[18px] min-w-[80px] flex-1 bg-transparent px-0 py-0.5 text-[11.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted" />

@@ -3,7 +3,7 @@
 import * as React from 'react'
 
 /**
- * The console's page hero, measured off the rendered Gateway Console mock.
+ * The console's page hero.
  *
  * Every top-level screen in the mock opens the same way: an uppercase eyebrow
  * with an optional live pulse chip, a 30px display title, an action cluster on

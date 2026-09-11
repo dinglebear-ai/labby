@@ -29,7 +29,8 @@ test('Activity dense desktop table retains mobile cards, Surface, and a call ins
   assert.match(source, /<UsageCallCards calls=\{data\?\.calls\}/)
   assert.match(source, /\{showSurfaces \? <TableHead className="w-\[70px\]">Surface<\/TableHead> : null\}/)
   assert.match(source, /\{showSurfaces \? <TableCell><SurfaceTag surface=\{call\.surface\} \/><\/TableCell> : null\}/)
-  assert.match(source, /aria-label=\{`Inspect call \$\{\[call\.tool, call\.action\]\.filter\(Boolean\)\.join\('\.'\)\}`\}/)
+  // The visible label is the relative time, so the accessible name must contain it (WCAG 2.5.3).
+  assert.match(source, /aria-label=\{`Inspect call \$\{\[call\.tool, call\.action\]\.filter\(Boolean\)\.join\('\.'\)\} from \$\{formatRelativeTime\(call\.ts\)\}`\}/)
   assert.match(source, /<UsageCallDetail/)
   assert.match(source, /setSelectedCall\(call\)/)
   assert.match(source, /showTokens \? <TableHead/)

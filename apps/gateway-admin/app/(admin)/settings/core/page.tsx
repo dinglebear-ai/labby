@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react'
 import { ConsolePreferences } from '@/components/settings/ConsolePreferences'
 import { SettingsOverview } from '@/components/settings/SettingsOverview'
 import { SettingsScalarSection } from '@/components/settings/SettingsScalarSection'
+import { isAbortError } from '@/lib/api/service-action-client'
 import { setupApi, type SettingsSchemaResponse, type SettingsState } from '@/lib/api/setup-client'
 import { fieldsForSection } from '@/lib/settings/schema'
 
@@ -26,8 +27,9 @@ export default function CorePage(): React.ReactElement {
         setSchema(schemaResponse)
         setSettings(stateResponse)
       })
-      .catch((err) => {
-        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'load failed')
+      .catch((err: unknown) => {
+        if (controller.signal.aborted || isAbortError(err)) return
+        setError(`Core settings: ${err instanceof Error ? err.message : 'load failed'}`)
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
@@ -46,7 +48,7 @@ export default function CorePage(): React.ReactElement {
           <Loader2 className="h-4 w-4 animate-spin" /> loading core settings
         </div>
       ) : null}
-      {error ? <p className="text-[11.5px] text-destructive">{error}</p> : null}
+      {error ? <p role="alert" className="text-[11.5px] text-destructive">{error}</p> : null}
       {settings ? (
         <SettingsScalarSection
           title="Core"

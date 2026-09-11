@@ -5,7 +5,7 @@ import * as React from 'react'
 /**
  * Shell coordination for the Gateway Console chrome.
  *
- * The mock renders exactly one topbar for the whole console, with each screen
+ * The console renders exactly one topbar for the whole console, with each screen
  * contributing only its breadcrumb leaf and its action cluster. Pages keep
  * using `<AppHeader />`, which portals those two fragments into the slots the
  * shell exposes here — no per-page header markup, no state round-trips.

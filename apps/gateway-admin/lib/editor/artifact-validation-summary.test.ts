@@ -48,3 +48,19 @@ test('skill authoring checks match the reference six-check model from real draft
   assert.equal(skillAuthoringSummary({ ...metadata, tags: ['review'] }, body).passing, 4)
   assert.equal(skillAuthoringSummary(metadata, `${body}\n\n## Example\n\nReview two open PRs.`).passing, 6)
 })
+
+test('validator errors override a passing skill authoring check so blocking problems stay visible', () => {
+  const metadata = { name: 'repo-triage', description: 'Triage open pull requests.', tags: ['review', 'github'], license: '', compatibility: '', allowedTools: '' }
+  const content = '## When to use\n\nUse it.\n\n## Steps\n\n1. Read.\n\n' + 'x'.repeat(200)
+  const passing = skillAuthoringChecks(metadata, content).find(check => check.id === 'tags')!
+  assert.equal(passing.passing, true)
+  const overridden = skillAuthoringChecks(metadata, content, [
+    { field: 'tags', severity: 'error', message: 'Tags cannot exceed 64 bytes each.', from: 0, to: 0 },
+  ]).find(check => check.id === 'tags')!
+  assert.equal(overridden.passing, false)
+  assert.equal(overridden.description, 'Tags cannot exceed 64 bytes each.')
+  // Warnings and already-failing checks keep their authoring description.
+  const warned = skillAuthoringChecks(metadata, content, [{ field: 'tags', severity: 'warning', message: 'nit', from: 0, to: 0 }]).find(check => check.id === 'tags')!
+  assert.equal(warned.passing, true)
+  assert.equal(skillAuthoringSummary(metadata, content, [{ field: 'tags', severity: 'error', message: 'too many', from: 0, to: 0 }]).passing, skillAuthoringSummary(metadata, content).passing - 1)
+})

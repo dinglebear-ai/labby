@@ -21,7 +21,12 @@ export interface ArtifactAuthoringCheck {
   optional?: boolean
 }
 
-export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string): ArtifactAuthoringCheck[] {
+/**
+ * Skill authoring checks. Validator errors for a field (`issues`) override a
+ * heuristic pass so a blocking problem such as a tag over Depot's limit is
+ * visible in the same list instead of only disabling Publish.
+ */
+export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string, issues: readonly ArtifactIssue[] = []): ArtifactAuthoringCheck[] {
   const name = metadata.name.trim()
   const description = metadata.description.trim()
   const tags = normalizeArtifactTags(metadata.tags)
@@ -30,7 +35,7 @@ export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string
   const hasSteps = /^##\s+(Steps|Workflow|Instructions)\b/im.test(content)
   const hasExample = /^##\s+Examples?\b/im.test(content) || /\bworked example\b/i.test(content)
 
-  return [
+  const checks: ArtifactAuthoringCheck[] = [
     {
       id: 'name', field: 'name', label: 'Name is a slug',
       description: 'Lowercase, hyphenated, no spaces — harnesses key on it.',
@@ -63,9 +68,14 @@ export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string
       optional: true,
     },
   ]
+  return checks.map(check => {
+    if (!check.passing) return check
+    const blocking = issues.filter(issue => issue.field === check.field && issue.severity === 'error')
+    return blocking.length ? { ...check, passing: false, description: blocking.map(issue => issue.message).join(' ') } : check
+  })
 }
 
-export function skillAuthoringSummary(metadata: ArtifactMetadata, content: string) {
-  const checks = skillAuthoringChecks(metadata, content)
+export function skillAuthoringSummary(metadata: ArtifactMetadata, content: string, issues: readonly ArtifactIssue[] = []) {
+  const checks = skillAuthoringChecks(metadata, content, issues)
   return { checks, passing: checks.filter(check => check.passing).length, total: checks.length }
 }

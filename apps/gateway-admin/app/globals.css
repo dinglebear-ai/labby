@@ -1123,6 +1123,15 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   }
 }
 
+@media (max-width: 640px) {
+  /* The Library search takes its own row on narrow phones instead of sharing one with the sort and filter controls. */
+  [data-library-toolbar] > [data-library-search] {
+    flex-basis: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   section[data-screen-label],
   [data-anim] {
