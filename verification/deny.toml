@@ -1,0 +1,50 @@
+# Dependency policy for the verification toolkit workspace.
+#
+# This is a SEPARATE file from the repository-root deny.toml rather than a
+# reference to it, because cargo-deny has no config inheritance and the root
+# policy is not applicable here:
+#
+#   - the root `[[bans.deny]]` entries whitelist *product* crates as wrappers
+#     ("clap" is allowed only under `labby`, and so on). Running that policy
+#     against this workspace would fail on `verify-runner`'s own use of clap,
+#     which is legitimate: the "CLI parsing lives in the binary crate" rule is a
+#     product-workspace boundary, not a universal one.
+#   - the root `[advisories].ignore` entry concerns an RSA path reachable only
+#     through the product's OIDC dependencies. None of that is in this graph, so
+#     inheriting the exception would be silently carrying an unreviewed waiver.
+#
+# The license allowlist below is intentionally the same set as the root file.
+# Keep the two in sync when either changes; a dependency this workspace cannot
+# license-clear does not land here either.
+
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "AGPL-3.0-only",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "MIT-0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

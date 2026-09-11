@@ -1,0 +1,20 @@
+[package]
+name = "verify-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["verification", "invariants", "model-checking", "testing"]
+categories = ["development-tools"]
+publish = false
+description = "Invariant catalog, verdict, and target vocabulary for the verification toolkit."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
