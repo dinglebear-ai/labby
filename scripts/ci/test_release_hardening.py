@@ -37,18 +37,19 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         promote_index, promote = by_name["Publish qualified draft release"]
         self.assertEqual("${{ github.ref_name }}", promote.get("env", {}).get("RELEASE_TAG"))
         self.assertIn("scripts/ci/promote-release.sh", promote["run"])
-        for name in ("Publish exact tested image", "Publish validated npm launcher"):
+        for name in ("Publish validated npm launcher",):
             self.assertLess(by_name[name][0], promote_index)
         rollback_index = by_name["Roll back partial publication"][0]
         self.assertGreater(rollback_index, promote_index)
         self.assertEqual("${{ failure() }}", release_steps[rollback_index]["if"])
-        self.assertEqual("${{ steps.publication.outputs.started }}", release_steps[rollback_index]["env"]["IMAGE_PUBLICATION_STARTED"])
+        self.assertNotIn("IMAGE_PUBLICATION_STARTED", release_steps[rollback_index].get("env", {}))
 
     def test_release_workflow_generates_one_sbom_per_subject(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
         self.assertIn("scripts/ci/generate-release-sboms.sh", workflow)
         self.assertIn("lab-*.spdx.json", workflow)
-        self.assertIn("lab-container-image.spdx.json", workflow)
+        self.assertNotIn("lab-container-image", workflow)
+        self.assertNotIn("ghcr.io", workflow)
         self.assertNotIn("output-file: labby.spdx.json", workflow)
 
     def test_failed_promotion_redrafts_release_and_records_one_compound_result(self) -> None:
@@ -56,7 +57,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         rollback = workflow[workflow.index("      - name: Roll back partial publication"):]
         self.assertIn('gh release edit "$RELEASE_TAG" --draft=true', rollback)
         compound = self.text("scripts/ci/compound-release-rollback.py")
-        for field in ("github_release", "incus_pointer", "image_registry"):
+        for field in ("github_release", "incus_pointer"):
             self.assertIn(field, compound)
         self.assertIn("compound-release-rollback.py", rollback)
 
@@ -77,8 +78,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         workflow = self.text(".github/workflows/release.yml")
         self.assertIn("name: N-1 stateful upgrade and rollback qualification", workflow)
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
-        for deployment in ("unix", "windows", "macos", "compose", "incus", "host-service"):
-            self.assertIn(deployment, workflow)
+        for deployment in ("unix", "windows", "macos", "incus", "host-service"):
+            self.assertIn(f"deployment: {deployment}", workflow)
+        self.assertNotIn("deployment: compose", workflow)
 
     def test_release_has_machine_readable_manifest_and_reconciler(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
@@ -88,8 +90,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/reconcile-release.py", reminder)
         self.assertIn("manage-release-incident.sh", reminder)
         self.assertIn("Release publication is incomplete", self.text("scripts/ci/manage-release-incident.sh"))
-        for surface in ("github", "npm", "ghcr", "incus", "mcp"):
+        for surface in ("github", "npm", "incus", "mcp"):
             self.assertIn(f'"{surface}"', self.text("scripts/ci/reconcile-release.py"))
+        self.assertNotIn('"ghcr"', self.text("scripts/ci/reconcile-release.py"))
 
     def test_candidate_publishers_are_called_before_stable_promotion(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -149,12 +152,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("untracked lifecycle PowerShell entrypoint", checker)
         self.assertIn("-name '*.ps1'", checker)
         self.assertIn("rglob", checker)
-
-    def test_compose_activation_verifies_image_attestation_identity(self) -> None:
-        launcher = self.text("scripts/run-compose-prod.sh")
-        for value in ("gh attestation verify", "--signer-workflow", "--source-ref", "--deny-self-hosted-runners"):
-            self.assertIn(value, launcher)
-        self.assertLess(launcher.index("gh attestation verify"), launcher.index("exec docker compose"))
 
     def test_release_set_keeps_older_incomplete_version_failed(self) -> None:
         helper = ROOT / "scripts/ci/reconcile-release-set.py"
@@ -216,94 +213,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("PSScriptAnalyzer", workflow)
         self.assertIn("Invoke-ScriptAnalyzer", workflow)
 
-    def test_docker_cache_skeleton_covers_every_explicit_binary(self) -> None:
-        dockerfile = self.text("config/Dockerfile")
-        manifest = self.text("crates/labby/Cargo.toml")
-        paths = []
-        in_bin = False
-        for line in manifest.splitlines():
-            if line == "[[bin]]":
-                in_bin = True
-            elif line.startswith("["):
-                in_bin = False
-            elif in_bin and line.startswith("path = "):
-                paths.append(line.split('"')[1])
-        self.assertGreaterEqual(len(paths), 3)
-        for path in paths:
-            self.assertIn(f"crates/labby/{path}", dockerfile)
-
-
-class RollbackTransactionTests(unittest.TestCase):
-    def test_rollback_attempts_every_step_for_single_and_joint_failures(self) -> None:
-        script = ROOT / "scripts/ci/release-image-rollback.sh"
-        for fail_match in ("DELETE", "create", "inspect", "DELETE,create,inspect"):
-            with self.subTest(fail_match=fail_match), tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp)
-                log = work / "calls"
-                fake = work / "fake"
-                fake.write_text(
-                    "#!/bin/sh\n"
-                    "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                    "old_ifs=$IFS; IFS=,\n"
-                    "for needle in $FAIL_MATCH; do case \" $* \" in *\"$needle\"*) exit 7;; esac; done\n"
-                    "IFS=$old_ifs\n"
-                    "case \" $* \" in *inspect*) printf '\"%s\"\\n' \"$EXPECTED_DIGEST\";; esac\n"
-                )
-                fake.chmod(0o755)
-                expected = "sha256:" + "a" * 64
-                env = os.environ | {
-                    "CALL_LOG": str(log),
-                    "FAIL_MATCH": fail_match,
-                    "EXPECTED_DIGEST": expected,
-                    "GH_BIN": str(fake),
-                    "DOCKER_BIN": str(fake),
-                    "ROLLBACK_VERIFY_ATTEMPTS": "1",
-                    "ROLLBACK_VERIFY_DELAY_SECONDS": "0",
-                }
-                result = subprocess.run(
-                    [
-                        "bash", str(script), "--image", "ghcr.io/acme/labby",
-                        "--tag", "v1.2.3", "--previous-latest", expected,
-                        "--delete-version-id", "42",
-                    ],
-                    text=True, capture_output=True, env=env, check=False,
-                )
-                self.assertNotEqual(0, result.returncode)
-                calls = log.read_text()
-                self.assertIn("DELETE", calls)
-                self.assertIn("imagetools create", calls)
-                self.assertIn("imagetools inspect", calls)
-                status = json.loads(result.stdout.splitlines()[-1])
-                self.assertEqual("failed", status["status"])
-                self.assertEqual({"delete_version", "release_tag_absent", "restore_release", "verify_release", "restore_latest", "verify_latest"}, set(status["steps"]))
-
-    def test_rollback_restores_preexisting_release_tag_instead_of_requiring_absence(self) -> None:
-        script = (ROOT / "scripts/ci/release-image-rollback.sh").read_text()
-        self.assertIn("--previous-release", script)
-        self.assertIn("restore_release", script)
-        self.assertIn("verify_release", script)
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("labby-previous-release-digest", workflow)
-        self.assertIn('--previous-release "$previous_release"', workflow)
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp); log = work / "calls"; fake = work / "fake"
-            fake.write_text(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
-                "case \" $* \" in\n"
-                "*'inspect ghcr.io/acme/labby:v1.2.3 '*) printf '\"%s\"\\n' \"$PREVIOUS_RELEASE\";;\n"
-                "*'inspect ghcr.io/acme/labby:latest '*) printf '\"%s\"\\n' \"$PREVIOUS_LATEST\";;\n"
-                "esac\n"
-            )
-            fake.chmod(0o755)
-            release = "sha256:" + "a" * 64; latest = "sha256:" + "b" * 64
-            env = os.environ | {"CALL_LOG": str(log), "GH_BIN": str(fake), "DOCKER_BIN": str(fake), "PREVIOUS_RELEASE": release, "PREVIOUS_LATEST": latest}
-            result = subprocess.run(["bash", str(ROOT / "scripts/ci/release-image-rollback.sh"), "--image", "ghcr.io/acme/labby", "--tag", "v1.2.3", "--previous-release", release, "--previous-latest", latest], env=env, check=False)
-            self.assertEqual(0, result.returncode)
-            calls = log.read_text()
-            self.assertIn(f"imagetools create --tag ghcr.io/acme/labby:v1.2.3 ghcr.io/acme/labby@{release}", calls)
-            self.assertIn(f"imagetools create --tag ghcr.io/acme/labby:latest ghcr.io/acme/labby@{latest}", calls)
-
-
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
@@ -323,23 +232,25 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_compound_rollback_fails_when_any_surface_fails(self) -> None:
         helper = ROOT / "scripts/ci/compound-release-rollback.py"
         with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp); image = work / "image.json"; output = work / "out.json"
-            image.write_text('{"status":"ok"}')
-            command = ["python3", str(helper), "--image-record", str(image), "--image-rc", "0", "--pointer-rc", "7", "--github-rc", "0", "--npm-candidate-published", "false", "--mcp-version-published", "false", "--output", str(output)]
+            work = Path(tmp); output = work / "out.json"
+            command = ["python3", str(helper), "--pointer-rc", "7", "--github-rc", "0", "--npm-candidate-published", "false", "--mcp-version-published", "false", "--output", str(output)]
             self.assertNotEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
             result = json.loads(output.read_text())
             self.assertEqual("failed", result["status"])
             self.assertEqual("failed", result["incus_pointer"]["status"])
-            image.unlink()
             command[command.index("--pointer-rc") + 1] = "0"
+            command[command.index("--github-rc") + 1] = "1"
             self.assertNotEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
+            self.assertEqual("failed", json.loads(output.read_text())["github_release"]["status"])
+            command[command.index("--github-rc") + 1] = "0"
+            self.assertEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
+            self.assertNotIn("image_registry", json.loads(output.read_text()))
 
     def test_compound_rollback_never_hides_irreversible_registry_identity(self) -> None:
         helper = ROOT / "scripts/ci/compound-release-rollback.py"
         with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp); image = work / "image.json"; output = work / "out.json"
-            image.write_text('{"status":"ok"}')
-            command = ["python3", str(helper), "--image-record", str(image), "--image-rc", "0", "--pointer-rc", "0", "--github-rc", "0", "--npm-candidate-published", "true", "--mcp-version-published", "true", "--output", str(output)]
+            work = Path(tmp); output = work / "out.json"
+            command = ["python3", str(helper), "--pointer-rc", "0", "--github-rc", "0", "--npm-candidate-published", "true", "--mcp-version-published", "true", "--output", str(output)]
             self.assertNotEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
             result = json.loads(output.read_text())
             self.assertEqual("manual_reconciliation_required", result["npm_candidate"]["status"])
@@ -474,28 +385,32 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertNotEqual(0, failed.returncode)
             self.assertIn('"mismatched": ["lab-linux.tar.gz"]', failed.stdout)
 
-    def test_manifest_binds_archive_and_image_sboms(self) -> None:
+    def test_manifest_binds_archive_sboms_without_an_image_distribution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             archive = work / "lab-linux.tar.gz"
             archive_sbom = work / "lab-linux.spdx.json"
-            image_sbom = work / "lab-container-image.spdx.json"
-            for path, data in ((archive, b"archive"), (archive_sbom, b"archive-sbom"), (image_sbom, b"image-sbom")):
+            for path, data in ((archive, b"archive"), (archive_sbom, b"archive-sbom")):
                 path.write_bytes(data)
             manifest = work / "manifest.json"
             result = subprocess.run([
                 "python3", str(ROOT / "scripts/ci/create-release-manifest.py"),
                 "--tag", "v1.2.3", "--repository", "acme/labby", "--output", str(manifest),
                 "--incus-sha256", "1" * 64, "--mcp-manifest-sha256", "2" * 64,
-                "--image", "ghcr.io/acme/labby", "--image-digest", "sha256:" + "1" * 64,
-                "--image-sbom", str(image_sbom), str(archive), str(archive_sbom),
+                str(archive), str(archive_sbom),
             ], text=True, capture_output=True, check=False)
             self.assertEqual(0, result.returncode, result.stderr)
             data = json.loads(manifest.read_text())
             subject = next(row for row in data["subjects"] if row["name"] == archive.name)
             self.assertEqual(archive_sbom.name, subject["sbom"]["name"])
-            self.assertEqual("sha256:" + "1" * 64, data["distributions"]["ghcr"]["digest"])
-            self.assertEqual(image_sbom.name, data["distributions"]["ghcr"]["sbom"]["name"])
+            self.assertEqual({"github", "npm", "incus", "mcp"}, set(data["distributions"]))
+            rejected = subprocess.run([
+                "python3", str(ROOT / "scripts/ci/create-release-manifest.py"),
+                "--tag", "v1.2.3", "--repository", "acme/labby", "--output", str(manifest),
+                "--incus-sha256", "1" * 64, "--mcp-manifest-sha256", "2" * 64,
+                "--image", "ghcr.io/acme/labby", str(archive), str(archive_sbom),
+            ], text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, rejected.returncode, "the manifest no longer accepts a container image")
 
     def test_manifest_rejects_invalid_incus_and_mcp_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,12 +426,12 @@ class ReleaseHelperTests(unittest.TestCase):
         expected = {
             "schema": "ai.dinglebear.labby/release-manifest/v1", "tag": "v1.2.3",
             "subjects": [{"name": "a", "sha256": "1" * 64, "sbom": {"name": "a.spdx.json", "sha256": "2" * 64}}],
-            "distributions": {name: {"identity": name} for name in ("github", "npm", "ghcr", "incus", "mcp")},
+            "distributions": {name: {"identity": name} for name in ("github", "npm", "incus", "mcp")},
         }
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp); manifest = work / "manifest"; observed = work / "observed"
             manifest.write_text(json.dumps(expected))
-            for missing in (None, "npm", "ghcr", "incus", "mcp"):
+            for missing in (None, "npm", "incus", "mcp"):
                 current = json.loads(json.dumps(expected))
                 current["distributions"].pop(missing, None)
                 current["subjects"].append(expected["subjects"][0]["sbom"])
@@ -526,7 +441,7 @@ class ReleaseHelperTests(unittest.TestCase):
 
     def test_observer_has_authoritative_remote_probe_for_every_surface(self) -> None:
         observer = (ROOT / "scripts/ci/observe-release.py").read_text()
-        for contract in ("gh release", "npm", "imagetools", "incus", "registry.modelcontextprotocol.io/v0.1"):
+        for contract in ("gh release", "npm", "incus", "registry.modelcontextprotocol.io/v0.1"):
             self.assertIn(contract, observer)
 
     def test_upgrade_qualification_consumes_exact_built_candidate(self) -> None:
@@ -539,7 +454,7 @@ class ReleaseHelperTests(unittest.TestCase):
 
     def test_n_minus_one_verifies_attested_archive_before_extraction(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        build = workflow[workflow.index("  build:"):workflow.index("  container:")]
+        build = workflow[workflow.index("  build:"):workflow.index("  upgrade-qualification:")]
         self.assertIn("actions/attest-build-provenance@", build)
         self.assertIn("subject-path: ${{ matrix.archive }}", build)
         qualification = workflow[workflow.index("  upgrade-qualification:"):workflow.index("  incus-candidate:")]
@@ -550,8 +465,8 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256", qualification)
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_BINDING", qualification)
 
-    def test_all_six_n_minus_one_adapters_exist_and_are_executable(self) -> None:
-        for name in ("unix", "windows", "macos", "compose", "incus", "host-service"):
+    def test_all_five_n_minus_one_adapters_exist_and_are_executable(self) -> None:
+        for name in ("unix", "windows", "macos", "incus", "host-service"):
             path = ROOT / "scripts/ci/n-minus-one" / name
             self.assertTrue(path.is_file(), name)
             self.assertTrue(os.access(path, os.X_OK), name)
@@ -559,11 +474,11 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE", adapter, name)
             self.assertIn("verify-provenance", adapter, name)
 
-    def test_all_six_n_minus_one_adapters_verify_every_durable_class(self) -> None:
+    def test_all_five_n_minus_one_adapters_verify_every_durable_class(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")
         for state_class in ("auth.db", "access.db", "usage.db", "skills/", "artifacts/", "snippets/"):
             self.assertIn(state_class, helper)
-        for name in ("unix", "windows", "macos", "compose", "incus", "host-service"):
+        for name in ("unix", "windows", "macos", "incus", "host-service"):
             self.assertIn("n-minus-one-durable-state.py", self.text(f"scripts/ci/n-minus-one/{name}"), name)
 
     def test_durable_state_probe_detects_each_missing_class(self) -> None:
@@ -597,9 +512,7 @@ class ReleaseHelperTests(unittest.TestCase):
                 target.write_bytes(saved)
 
     def test_n_minus_one_adapters_preserve_final_authenticated_proof(self) -> None:
-        compose = self.text("scripts/ci/n-minus-one/compose")
-        self.assertNotIn("$stage == verify-rollback", compose)
-        self.assertIn("$stage == authenticated-action", compose)
+        self.assertFalse((ROOT / "scripts/ci/n-minus-one/compose").exists())
         macos = self.text("scripts/ci/n-minus-one/macos")
         seed = macos[macos.index("seed-state)"):macos.index("verify-previous)")]
         self.assertIn("service restart", seed)
@@ -639,19 +552,6 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_reconciler_runs_immediately_after_release(self) -> None:
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn('workflows: ["Release", "release-please"]', reminder)
-
-    def test_rollback_rejects_false_success_until_version_absent_and_latest_restored(self) -> None:
-        script = (ROOT / "scripts/ci/release-image-rollback.sh").read_text()
-        self.assertIn("verify_release_absent", script)
-        self.assertIn("ROLLBACK_VERIFY_ATTEMPTS", script)
-        self.assertIn("release_tag_absent", script)
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fake"
-            fake.write_text("#!/bin/sh\ncase \" $* \" in *':latest '*) printf '\"sha256:%064d\"\\n' 0; exit 0;; *inspect*) exit 7;; *) exit 0;; esac\n")
-            fake.chmod(0o755)
-            env = os.environ | {"GH_BIN": str(fake), "DOCKER_BIN": str(fake), "ROLLBACK_VERIFY_ATTEMPTS": "1", "ROLLBACK_VERIFY_DELAY_SECONDS": "0"}
-            result = subprocess.run(["bash", str(ROOT / "scripts/ci/release-image-rollback.sh"), "--image", "ghcr.io/a/b", "--tag", "v1", "--previous-latest", "none", "--delete-version-id", ""], env=env, check=False)
-            self.assertNotEqual(0, result.returncode, "empty lookup plus opaque inspect failure must not prove absence")
 
 
 if __name__ == "__main__":

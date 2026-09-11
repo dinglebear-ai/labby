@@ -4,7 +4,7 @@ set -euo pipefail
 deployment=${1:?deployment path required}
 previous=${2:?previous release required}
 candidate=${3:?candidate release required}
-case "$deployment" in unix|windows|macos|compose|incus|host-service) ;; *) exit 64 ;; esac
+case "$deployment" in unix|windows|macos|incus|host-service) ;; *) exit 64 ;; esac
 
 # Platform-specific commands are supplied by the workflow/fixture. The common
 # contract guarantees the same stateful sequence and refuses missing stages.

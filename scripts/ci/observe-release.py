@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Observe every published Labby distribution and emit reconciliation input.
 
-Remote probes intentionally cover gh release, npm, Docker buildx imagetools,
-the Incus release asset, and registry.modelcontextprotocol.io/v0.1.
+Remote probes intentionally cover gh release, npm, the Incus release asset,
+and registry.modelcontextprotocol.io/v0.1.
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, urllib.parse
@@ -22,9 +22,6 @@ subjects = []
 names = [row["name"] for row in expected["subjects"]]
 names += [row["sbom"]["name"] for row in expected["subjects"]]
 names += [row["name"] for row in expected.get("auxiliary", [])]
-image_sbom = dist["ghcr"].get("sbom")
-if image_sbom:
-    names.append(image_sbom["name"])
 for name in names:
     path = args.assets / name
     if path.is_file():
@@ -55,7 +52,6 @@ for row in expected.get("attestations", []):
 observed: dict[str, object] = {}
 gh = os.environ.get("GH_BIN", "gh")
 npm = os.environ.get("NPM_BIN", "npm")
-docker = os.environ.get("DOCKER_BIN", "docker")
 curl = os.environ.get("CURL_BIN", "curl")
 try:
     is_draft = run(gh, "release", "view", expected["tag"], "--repo", expected["repository"], "--json", "isDraft", "--jq", ".isDraft")
@@ -66,10 +62,6 @@ try:
     version = run(npm, "view", f'{dist["npm"]["package"]}@{npm_tag}', "version", "--json").strip('"')
     observed["npm"] = dist["npm"] if version == dist["npm"]["version"] else {"version": version, "tag": npm_tag}
 except Exception as error: observed["npm"] = {"error": str(error)}
-try:
-    found = run(docker, "buildx", "imagetools", "inspect", f'{dist["ghcr"]["image"]}:{dist["ghcr"]["tag"]}', "--format", "{{json .Manifest.Digest}}").strip('"')
-    observed["ghcr"] = dist["ghcr"] if found == dist["ghcr"]["digest"] else {"digest": found}
-except Exception as error: observed["ghcr"] = {"error": str(error)}
 incus_path = args.assets / dist["incus"]["asset"]
 if incus_path.is_file():
     found = hashlib.sha256(incus_path.read_bytes()).hexdigest()

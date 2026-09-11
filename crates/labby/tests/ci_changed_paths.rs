@@ -858,12 +858,12 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(
-        release.matches("skills --help").count() >= 3
+        release.matches("skills --help").count() >= 2
             && release
                 .matches("Read Agent Skills visible to the local CLI")
                 .count()
-                >= 3,
-        "Unix, Windows, and container release artifacts must prove the compiled Skills surface"
+                >= 2,
+        "Unix and Windows release artifacts must prove the compiled Skills surface"
     );
     let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
         .expect("read Incus smoke script");
@@ -1602,7 +1602,8 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
         .expect("read release promotion helper");
     assert!(promotion.contains("tag=${RELEASE_TAG:?RELEASE_TAG is required}"));
     assert!(promotion.contains("gh release edit \"$tag\" --draft=false"));
-    assert!(release.contains("release-image-rollback.sh"));
+    assert!(!release.contains("release-image-rollback.sh"));
+    assert!(!release.contains("ghcr.io"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
     assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
     let npm_identity = release
@@ -1691,40 +1692,6 @@ fn incus_publish_job_checks_out_before_downloading_artifacts() {
 
 /// Regression guard for lab-k222n.
 ///
-/// The release container compiles the real `labby` crate inside Docker. Several
-/// runtime resources are embedded with `include_str!`, so excluding their source
-/// trees from the Docker context makes the release-only build fail even though
-/// native CI is green.
-#[test]
-fn release_container_includes_compile_time_contract_and_skill_assets() {
-    let dockerignore =
-        fs::read_to_string(repo_root().join(".dockerignore")).expect("read Docker ignore rules");
-    let dockerfile =
-        fs::read_to_string(repo_root().join("config/Dockerfile")).expect("read release Dockerfile");
-
-    for required in [
-        "!docs/contracts/**",
-        "!plugins/labby/skills/using-labby/**",
-        "!plugins/labby/skills/creating-snippets/**",
-    ] {
-        assert!(
-            dockerignore.contains(required),
-            "Docker context must retain embedded asset rule {required}"
-        );
-    }
-
-    for required in [
-        "COPY docs/contracts/ docs/contracts/",
-        "COPY plugins/labby/skills/using-labby/ plugins/labby/skills/using-labby/",
-        "COPY plugins/labby/skills/creating-snippets/ plugins/labby/skills/creating-snippets/",
-    ] {
-        assert!(
-            dockerfile.contains(required),
-            "release Dockerfile must copy embedded assets with {required}"
-        );
-    }
-}
-
 /// Regression guard for lab-bm6pc.
 ///
 /// Incus marks a system container RUNNING before systemd's system bus is ready.

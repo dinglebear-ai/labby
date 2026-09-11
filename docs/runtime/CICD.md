@@ -157,7 +157,7 @@ jobs when their changed-path category is enabled:
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
+| Incus source contract | `docker` | validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
@@ -292,13 +292,10 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    activation, upgrade, perform authenticated work, restart and verify recovery,
    roll back, restart the rolled-back service, verify the same state remains
    readable, and repeat the authenticated action. A missing command or adapter
-   is a hard failure. Compose qualification uses the production descriptor,
-   digest-identifies both images, exercises every durable-state class and an
-   authenticated catalog action, captures a state backup, and always tears down
-   its isolated project after success or failure. The archive is the attestation subject; the extracted
+   is a hard failure. The archive is the attestation subject; the extracted
    binary digest is the activation-integrity binding, not a claimed attestation.
 5. The final gated job verifies archive checksums and creates one SPDX JSON SBOM
-   for each archive, installer, and the exact tested container image. It records every
+   for each archive and installer. It records every
    subject digest in `release-manifest.json`, records every published checksum
    as an auxiliary subject, and attests the archives, checksums, SBOMs, and
    manifest.
@@ -306,9 +303,8 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. The tested image is published by digest and signed keylessly. If publication
-   fails, the rollback transaction attempts deletion, `latest` restoration,
-   Incus-pointer restoration, and restoration of the GitHub release to draft.
+7. If publication fails, the rollback transaction attempts Incus-pointer
+   restoration and restoration of the GitHub release to draft.
    It verifies each final state independently, emits one compound JSON record,
    and fails if any recovery step or final-state proof fails. Because npm and
    MCP versions are immutable, a failed transaction also records either
@@ -337,7 +333,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    published releases from before the manifest contract remain excluded. It keeps each
    version's result independent so a newer complete release cannot hide an older
    incomplete one. It downloads each manifest and observes
-   GitHub assets, npm version, GHCR digest, Incus asset digest, and the MCP v0.1
+   GitHub assets, npm version, Incus asset digest, and the MCP v0.1
    version endpoint. The MCP publisher and observer hash the same canonical JSON
    object, so reconciliation fails closed unless the complete registry object,
    not merely its name and version, matches the published manifest digest. It
@@ -362,14 +358,11 @@ replacement tag or bump the version merely to hide partial publication.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
 - **Artifacts per release:** one binary archive per supported target (Linux x86_64, macOS arm64, and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
-- **SBOMs:** one identity-bound SPDX JSON document per archive and one for the
-  exact tested container image
+- **SBOMs:** one identity-bound SPDX JSON document per archive and installer
 - **Manifest:** `release-manifest.json` binds every promoted subject name, size,
-  and SHA-256 digest to its SBOM, and binds the exact GHCR digest to the
-  container SBOM, for reconciliation
+  and SHA-256 digest to its SBOM for reconciliation
 - **Package registries:** the `@dinglebear/labby` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 
 Before activating a downloaded archive, consumers run the repository helper so
