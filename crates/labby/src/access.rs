@@ -18,6 +18,8 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+pub(crate) mod offline_migration;
+pub(crate) use migrations::MigrationEvidenceSource;
 mod outbox;
 #[allow(unused_imports)]
 pub(crate) use outbox::{AuthorityAcknowledgement, OrganizationDelivery, PendingProjection};
