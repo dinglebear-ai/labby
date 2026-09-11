@@ -86,7 +86,10 @@ export async function probeWebMcp() {
       return cloned;
     };
     const tools = await context.getTools();
-    const summary = Array.from(tools ?? []).slice(0, 64).flatMap((tool) => {
+    if (!Array.isArray(tools)) return {supported: false, tools: []};
+    // Apply the catalog cap before copying/traversing page-controlled entries.
+    // Array.from(tools).slice(...) still walks the entire source first.
+    const summary = tools.slice(0, 64).flatMap((tool) => {
       if (!tool || typeof tool.name !== "string") return [];
       if (tool.name.length < 1 || tool.name.length > 128) return [];
       // `RegisteredTool.inputSchema` became an `object` on 2026-08-14
@@ -247,9 +250,12 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
     // The default catalog contains same-origin tools. Cross-origin discovery
     // additionally requires explicit fromOrigins selection, which this bridge
     // does not authorize or infer from a page's exposedTo declarations.
-    const tools = Array.from(await context.getTools() ?? []);
+    const tools = await context.getTools();
+    if (!Array.isArray(tools)) throw new Error("webmcp_unavailable");
     if (state.cancelled) throw new Error("AbortError");
 
+    // Do not materialize the whole page-controlled catalog just to enforce
+    // the first-64 contract; bound traversal before normalization.
     const normalized = tools.slice(0, 64).flatMap((tool) => {
       if (!tool || typeof tool.name !== "string") return [];
       if (tool.name.length < 1 || tool.name.length > 128) return [];

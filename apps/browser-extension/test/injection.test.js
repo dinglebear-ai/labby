@@ -38,6 +38,30 @@ test("the injected probe reads a catalog without its module scope", async () => 
   });
 });
 
+test("the catalog cap is applied before traversing page-controlled entries", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const raw = Array(65);
+  for (let i = 0; i < 64; i += 1) raw[i] = tool({name: `tool-${String(i).padStart(3, "0")}`});
+  Object.defineProperty(raw, 64, {
+    get() { throw new Error("catalog traversal exceeded the cap"); },
+    enumerable: true
+  });
+  const modelContext = {
+    getTools: async () => raw,
+    executeTool: async () => "\"ok\""
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    assert.equal(observed.supported, true);
+    assert.equal(observed.tools.length, 64);
+    const normalized = normalizeTools(observed.tools);
+    const expectedCatalog = stableStringify(normalized);
+    assert.equal(await invoke(normalized[0].name, {}, "bounded-catalog", expectedCatalog), "ok");
+  });
+});
+
 test("the injected cancel resolves against the page's own global", async () => {
   const injected = inject(cancelWebMcp);
   const controller = new AbortController();
