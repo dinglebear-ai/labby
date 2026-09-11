@@ -3627,7 +3627,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         let upstream_read = complete_resource(
             running
                 .service()
-                .read_resource_impl(
+                .read_resource(
                     ReadResourceRequestParams::new(UPSTREAM_UI_URI),
                     resource_context,
                 )

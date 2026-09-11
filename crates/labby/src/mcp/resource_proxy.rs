@@ -20,7 +20,6 @@ use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
-    ResultType,
 };
 use rmcp::service::RequestContext;
 
@@ -468,12 +467,7 @@ impl LabMcpServer {
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
-            Some(Ok(mut result)) => {
-                // Older upstream revisions legitimately omit the SEP-2322
-                // discriminator. Labby negotiated the current revision with
-                // its downstream peer, so its response must restore the
-                // required complete marker at this protocol boundary.
-                result.result_type.get_or_insert(ResultType::COMPLETE);
+            Some(Ok(result)) => {
                 tracing::info!(
                     surface = "mcp",
                     service = "labby",
