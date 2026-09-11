@@ -18,7 +18,9 @@
       "additionalProperties": { "type": ["integer", "string", "boolean"] }
     },
     "initial": {
-      "description": "Opaque initial state, interpreted by ScenarioTarget::init."
+      "type": "object",
+      "default": {},
+      "description": "Opaque initial state, interpreted by ScenarioTarget::init. Optional; an absent value is normalized to {} before init is called, so init always receives an object. A literal null is rejected rather than coerced."
     },
     "steps": {
       "type": "array",
@@ -26,17 +28,17 @@
       "items": {}
     },
     "expect": {
-      "enum": ["invariant_violated", "invariant_holds", "unreproduced"],
-      "description": "invariant_violated = regression scenario. invariant_holds = pinned golden trace. unreproduced = incident-derived trace that replay could not reproduce, retained as evidence of a model gap."
+      "enum": ["invariant_violated", "invariant_holds"],
+      "description": "What replay should observe. invariant_violated = regression scenario reproducing a bug. invariant_holds = pinned golden trace. Reproduction status is the separate `status` axis; do not encode it here."
     },
     "fingerprint": {
       "type": "string",
       "description": "Content hash over the normalized scenario, used for corpus dedup."
     },
     "status": {
-      "enum": ["active", "quarantined"],
+      "enum": ["active", "quarantined", "unreproduced"],
       "default": "active",
-      "description": "quarantined = failed the determinism check and is not a CI gate."
+      "description": "active = replay matches `expect` and the scenario gates T0. quarantined = failed the determinism check. unreproduced = committed as evidence (typically incident-derived) where replay does not match `expect`. Only active scenarios gate CI; the other two are reported and never fail T0."
     }
   },
   "$defs": {

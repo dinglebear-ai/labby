@@ -12,7 +12,7 @@
     "namespace": {
       "type": "string",
       "pattern": "^[A-Z][A-Z0-9]*$",
-      "description": "Identifier prefix, e.g. LABBY, DRIVE, CORE. Not interpreted by the tooling."
+      "description": "Identifier prefix, e.g. LABBY, DRIVE, CORE. The tooling does not interpret its meaning, but verify-core enforces that every invariant id begins with this namespace followed by '-'. JSON Schema cannot express that cross-field dependency, so it is a catalog-validation rule, not a convention."
     },
     "invariant": {
       "type": "array",
@@ -29,7 +29,7 @@
         "id": {
           "type": "string",
           "pattern": "^[A-Z][A-Z0-9]*-[A-Z]+-[0-9]{3,}$",
-          "description": "Globally unique and permanently stable. Retirement never frees an id."
+          "description": "Globally unique and permanently stable. Retirement never frees an id. The prefix before the first '-' must equal the catalog's `namespace`; enforced by verify-core, not by this schema."
         },
         "title": { "type": "string", "minLength": 1 },
         "kind": { "enum": ["safety", "liveness", "security", "refinement"] },
@@ -46,16 +46,9 @@
     },
     "checks": {
       "type": "object",
-      "description": "Backend handles, not file paths. An unresolved handle is a hard error, never silent uncovered status. An absent backend key means this invariant is not claimed by that backend.",
-      "additionalProperties": false,
-      "properties": {
-        "stateright": { "$ref": "#/$defs/handles" },
-        "kani": { "$ref": "#/$defs/handles" },
-        "loom": { "$ref": "#/$defs/handles" },
-        "shuttle": { "$ref": "#/$defs/handles" },
-        "alloy": { "$ref": "#/$defs/handles" },
-        "tla": { "$ref": "#/$defs/handles" }
-      }
+      "description": "Backend handles, not file paths. Keys are backend ids; the set is intentionally open so that adding a backend does not require an L1 schema bump (which would break extraction gate 3 in SPEC \u00a714). An unknown backend id is rejected by verify-core against the registered backend set, where the error can name the available ids. An unresolved handle is a hard error, never silent uncovered status. An absent backend key means this invariant is not claimed by that backend.",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/$defs/handles" }
     },
     "handles": {
       "type": "array",

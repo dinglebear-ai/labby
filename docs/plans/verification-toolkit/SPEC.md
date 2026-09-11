@@ -35,14 +35,24 @@ Rules:
 | --- | --- | --- |
 | `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, `StateMachine`, backend-capability vocabulary | serde, thiserror only |
 | `verify-scenario` | scenario envelope, step encoding, normalization, shrink-stability, on-disk corpus layout | `verify-core` |
-| `verify-runner` | discovery, replay engine, target registry, orchestration, `verify` CLI | `verify-core`, `verify-scenario` |
-| `verify-report` | coverage matrix, text/JSON/HTML/Markdown renderers, CI summary | `verify-core` |
+| `verify-runner` | discovery, replay engine, target registry, backend registry, orchestration, `verify` CLI | `verify-core`, `verify-scenario`, `verify-report` |
+| `verify-report` | coverage matrix, text/JSON/HTML/Markdown renderers, CI summary | `verify-core`, `verify-scenario` |
 | `verify-stateright` | Stateright backend adapter + counterexample extraction | `verify-core`, `verify-scenario`, `stateright` |
 | `verify-kani` | Kani harness conventions, catalog binding, result ingestion | `verify-core`, `verify-scenario` |
 | `verify-loom` | Loom/Shuttle concurrency harness conventions, interleaving capture | `verify-core`, `verify-scenario` |
 | `verify-alloy` | Alloy invocation, instance → scenario projection | `verify-core`, `verify-scenario` |
 | `verify-tla` | TLC/Apalache invocation, error-trace → scenario projection | `verify-core`, `verify-scenario` |
 | `verify-macros` | `invariant!`, `scenario_test!` and friends | extracted last, never first |
+
+`verify-report` needs `verify-scenario` because the coverage report counts
+scenarios by `expect` and `status`, which are scenario-envelope vocabulary.
+
+`verify-runner` depends on **no backend crate**. The `Backend` trait (§7) lives
+in `verify-core`, and the adopting project's own binary registers the backend
+implementations it wants into the runner's registry. The dependency is inverted
+on purpose: it is what lets a project take Stateright without taking a Java
+toolchain, and it is the same reason the target registry is project-populated
+rather than path-convention-resolved (§6).
 
 `verify-core` is the dependency leaf and stays transport-free, filesystem-free,
 and env-free — the same discipline `labby-primitives` and `labby-apis` already
@@ -106,13 +116,22 @@ Contracts:
 
 1. `id` is globally unique within a catalog and stable forever. Retiring an
    invariant sets `status = "retired"`; it never frees the id.
+   Every `id` must begin with the catalog's declared `namespace` followed by
+   `-`. JSON Schema cannot express that dependency, so it is a hard
+   catalog-validation rule in `verify-core`, not merely a convention: without
+   it, `DRIVE-PERM-003` validates cleanly inside Labby's catalog and two
+   projects can collide on one id while both pass CI.
 2. `kind` constrains which backends may legitimately claim it. A liveness
    property cannot be discharged by Kani (bounded, no fairness); the runner
    rejects such a binding at catalog-validation time rather than silently
    reporting green.
 3. `checks` names *handles*, not file paths. Each backend adapter resolves its
    own handles and fails loudly on an unresolved one — a typo must never
-   degrade to "uncovered but nobody noticed".
+   degrade to "uncovered but nobody noticed". The key set is open: the schema
+   does not enumerate backend ids, because enumerating them means every new
+   backend is an L1 schema bump and extraction gate 3 (§14) can never be met.
+   An unknown key is rejected by `verify-core` against the *registered* backend
+   set, where the error can name what is actually available.
 4. Coverage is a first-class output. An invariant with zero resolvable checks is
    reported `uncovered`, which is a legitimate state to ship with, as long as it
    is visible.
@@ -161,12 +180,22 @@ Contracts:
 
 1. `initial` and `steps[]` contents are **opaque to the toolkit**. Only the
    project's `ScenarioTarget` interprets them.
+   `initial` is optional and an absent `initial` is normalized to `{}` before
+   `ScenarioTarget::init` is called, so `init` always receives a JSON object and
+   never has to distinguish absent from `null`. A literal `null` is rejected at
+   scenario-validation time rather than silently coerced.
 2. `origin.kind` is one of `stateright | kani | loom | shuttle | alloy | tla |
    fuzz | incident | manual`. Provenance is retained; it never changes replay
    semantics.
-3. `expect` is `invariant_violated` (a regression scenario reproducing a bug) or
-   `invariant_holds` (a golden trace pinned against regression). Both replay
-   through the same engine.
+3. `expect` is exactly two values: `invariant_violated` (a regression scenario
+   reproducing a bug) or `invariant_holds` (a golden trace pinned against
+   regression). Both replay through the same engine.
+   Reproduction status is a **separate** axis, carried by `status`:
+   `active` (replay matches `expect`; gated in T0), `quarantined` (failed the
+   determinism check), or `unreproduced` (committed as evidence, replay does not
+   match `expect`). Only `active` scenarios gate CI; the other two are reported
+   and never fail T0. Conflating the two axes is what would otherwise make every
+   incident scenario (§12) an instant T0 failure.
 4. `fingerprint` is a content hash over the *normalized* scenario, used for
    dedup. Two counterexamples that differ only in irrelevant interleaving order
    must normalize to one fingerprint, or the corpus rots into thousands of
@@ -188,8 +217,14 @@ before fingerprinting and before corpus insertion:
 3. **Prefix minimization** — replay-driven delta debugging removes steps that do
    not affect the verdict. This is the toolkit's own shrinker and runs even for
    backends (Alloy, TLC) that have none.
+   It applies **only to `expect: invariant_violated`**. Verdict-preserving
+   minimization of a golden trace shrinks it to the empty trace — which
+   trivially satisfies the equality guard below while destroying the entire
+   value of the scenario. Golden traces are normalized (steps 1, 2, 4) and never
+   minimized.
 4. **Determinism check** — a normalized scenario must replay to the same verdict
-   N times (default 3), or it is quarantined as `unstable` instead of committed.
+   N times (default 3), or it is committed with `status = "quarantined"` instead
+   of `active`.
 
 Normalization is best-effort and must never change a scenario's verdict. The
 runner asserts that: pre-normalization verdict == post-normalization verdict, or
@@ -290,6 +325,18 @@ scenario file
   → emit ReplayReport
 ```
 
+Verdict handling is driven by `status`, not by `expect` alone:
+
+| `status` | replay matches `expect` | replay does not match |
+| --- | --- | --- |
+| `active` | pass | **T0 failure** |
+| `quarantined` | pass, reported | reported, never fails T0 |
+| `unreproduced` | promote to `active` and say so | pass, reported |
+
+An `unreproduced` scenario that starts matching `expect` is the interesting
+case: the model has grown the step it was missing, and the runner surfaces the
+promotion rather than silently flipping the file.
+
 Replay is the common denominator of the whole design: it is the only component
 every origin kind flows through, and it is pure, deterministic, and requires no
 external toolchain. A project with zero formal specs still gets value from
@@ -312,7 +359,9 @@ Verified by
   alloy .............. 31      (bounded: 31)
   tla ................ 11
 
-Scenarios ............ 214     (regression: 198, golden: 16, quarantined: 2)
+Scenarios ............ 214
+  by expect            regression 198   golden 16
+  by status            active 209   quarantined 2   unreproduced 3
 Uncovered ............   4     LABBY-CAT-009 LABBY-SEC-004 …
 ```
 
@@ -377,9 +426,9 @@ Contracts:
    [docs/dev/OBSERVABILITY.md](../../dev/OBSERVABILITY.md) apply — no secrets,
    authorization values, OAuth material, or raw sensitive parameters may reach a
    committed scenario file.
-3. An incident scenario that does not reproduce is still committed, marked
-   `unreproduced`. It is evidence that the model is missing a step, which is
-   itself a finding.
+3. An incident scenario that does not reproduce is still committed with
+   `status = "unreproduced"` (§5 contract 3). It does not fail T0. It is
+   evidence that the model is missing a step, which is itself a finding.
 
 ## 13. Labby As First Adopter
 
@@ -391,12 +440,16 @@ formal/
   scenarios/gateway/
   alloy/
   tla/
-crates/labby-model/          # new workspace member, dev-facing
+crates/labby-model/          # 12th workspace member, dev-facing
 ```
 
+Plus one edit outside those paths: the workspace-member table in the root
+`CLAUDE.md` goes from 11 rows to 12 (§14).
+
 `labby-model` sits at the same dependency depth as `labby-primitives`: it may
-depend on `labby-primitives` for shared vocabulary, and nothing in `labby-model`
-may be depended on by product code. It is a model of the product, not part of it.
+depend on `labby-primitives` for shared vocabulary and on `verify-core` /
+`verify-scenario`, and nothing in `labby-model` may be depended on by product
+code. It is a model of the product, not part of it.
 
 Candidate first models, smallest step-vocabulary first:
 
@@ -414,10 +467,25 @@ toolkit.
 
 ## 14. Extraction Path
 
-The toolkit incubates in this repo under `verification/` — *not* as workspace
-members of the product workspace, to keep the product's `cargo check --workspace
---all-features` unaffected by a Java/CBMC-adjacent dependency tree. It is its
-own workspace, built by its own `just` recipes.
+The toolkit incubates in this repo under `verification/` as its **own** Cargo
+workspace, built by its own `just` recipes.
+
+The precise claim, because the loose version is wrong: the *toolkit* crates are
+not product-workspace members, which keeps the Java/CBMC-adjacent backend
+dependency trees out of `cargo check --workspace --all-features`. But
+`crates/labby-model` (§13) **is** a product-workspace member and does depend on
+`verify-core` and `verify-scenario` — the two pure, leaf-shaped crates, and only
+those. So the product workspace does change:
+
+- workspace members go from 11 to 12, and the table in the root `CLAUDE.md`
+  must be updated in the same change (M3), not left stale;
+- `labby-model` depends on the toolkit by path during incubation and by version
+  after extraction;
+- backend crates are `dev-dependencies` of the model's own test targets, never
+  of the product workspace, so the default `cargo check` path is unaffected.
+
+If that dependency direction ever needs to reverse — product code depending on
+`labby-model` — the model has stopped being a model.
 
 Extraction to a standalone repo is gated on evidence, not on schedule:
 

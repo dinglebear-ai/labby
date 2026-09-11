@@ -14,8 +14,10 @@ Each milestone is independently useful and independently abandonable.
 
 4. `verify-core`: `InvariantId`, `Kind`, `Severity`, `Verdict`, `Capabilities`,
    `ScenarioTarget`, `StepOutcome`, `InvariantResult`.
-5. Catalog parse + validate, including the capability/kind rejection rule and
-   unresolved-handle failure.
+5. Catalog parse + validate, including the capability/kind rejection rule, the
+   `id`-begins-with-`namespace` rule, unknown-backend-key rejection against the
+   registered backend set, and unresolved-handle failure. The `Backend` trait
+   lands here too, so `verify-runner` never depends on a backend crate.
 6. Generate `schemas/invariants.schema.json` from the Rust types via `schemars`;
    assert in CI that the committed schema matches the generated one.
 
@@ -23,9 +25,12 @@ Each milestone is independently useful and independently abandonable.
 
 7. `verify-scenario`: envelope, opaque step encoding, corpus layout, fingerprint.
 8. `verify-runner`: target registry, replay engine, `verify replay` CLI.
-9. Normalization: canonical renaming, delta-debug minimization, determinism
-   check, quarantine path. Commutativity reordering lands only after a target
-   actually implements `commutes`.
+9. Normalization: canonical renaming, delta-debug minimization (gated to
+   `expect: invariant_violated` only), determinism check, quarantine path.
+   Commutativity reordering lands only after a target actually implements
+   `commutes`.
+   The replay engine implements the `expect` x `status` table in SPEC §8 from
+   the start — the two axes are separate, and only `active` gates T0.
 10. Generate `schemas/scenario.schema.json` the same way as M1.
 
 At this point a project gets scenario replay with zero external toolchain, which
