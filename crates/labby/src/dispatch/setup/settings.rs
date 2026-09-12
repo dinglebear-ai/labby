@@ -631,6 +631,17 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("false"),
         ),
         editable(
+            "features",
+            "gateway.auto_reconnect",
+            "Automatically recover disconnected MCPs",
+            "Periodically probe disconnected upstream MCP servers and cycle stale connections when they recover.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Immediate,
+            None,
+            Some("false"),
+        ),
+        editable(
             "services",
             "services.tailscale.tailnet",
             "Tailscale tailnet",
@@ -1710,6 +1721,18 @@ mod tests {
         assert_eq!(field.min, Some(1024));
         assert_eq!(field.max, Some(1_048_576));
         assert_eq!(field.example, Some("131072"));
+    }
+
+    #[test]
+    fn auto_reconnect_setting_is_editable_immediate_bool() {
+        let field = settings_fields()
+            .into_iter()
+            .find(|field| field.key == "gateway.auto_reconnect")
+            .expect("auto reconnect setting");
+        assert_eq!(field.control, SettingsControl::Bool);
+        assert_eq!(field.write_policy, SettingsWritePolicy::Editable);
+        assert_eq!(field.apply_mode, SettingsApplyMode::Immediate);
+        assert_eq!(field.example, Some("false"));
     }
 
     #[test]

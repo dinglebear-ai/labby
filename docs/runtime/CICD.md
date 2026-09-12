@@ -282,8 +282,20 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Compose,
-   Incus, and host-service deployment. Each adapter must install N-1 and seed
+   binding. It then invokes a platform-owned adapter for Unix, Windows, Incus, and
+   host-service deployment. The macOS adapter exists, but its leg is off until
+   a release carrying the macOS arm64 archive is published, because until then
+   there is no macOS N-1 to install. The host-service leg is advisory: it runs
+   and reports, but cannot block a release, until the service can write its
+   logs under the v1.16 systemd sandbox. N-1 is the newest published
+   (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
+   candidate, merged into it, and carries the leg's archive and `.sha256`
+   sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
+   releases stayed drafts or never received assets are skipped; if no release
+   qualifies, the leg fails closed. The authenticated check is a bearer
+   `help` call on the gateway: from v1.16, a bearer-mode install with no access
+   store answers gateway admin actions with setup-required until an owner
+   bootstraps through OAuth. Each adapter must install N-1 and seed
    real application-schema rows in registered OAuth clients, access security
    events, and upstream usage calls, plus representative files in gateway
    configuration and credentials, snippets, imported skills, and artifact
@@ -320,8 +332,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    recovery receipt retains the exact prior ref target, so rollback is another
    pointer-only leased CAS and never rewrites generation contents.
    They return validated 64-hex subject digests before the stable GitHub release
-   becomes visible. npm publishes the immutable version under a version-specific
-   candidate dist-tag; the `latest` consumer pointer is not advanced yet. No
+   becomes visible. The MCP Registry only accepts a manifest whose npm version
+   is already published with a matching `mcpName`, so the `npm-candidate` job
+   runs after the upgrade and Incus gates and before the registry call. It
+   publishes the immutable npm version under a version-specific candidate
+   dist-tag; the `latest` consumer pointer is not advanced yet. No
    distribution workflow is triggered by `release.published`.
 9. Only after every candidate qualification and publisher succeeds does
    `release.yml` promote the draft through the verified promotion helper. It

@@ -42,6 +42,40 @@ async fn reload_seeds_lazy_upstreams_without_connecting() {
 }
 
 #[tokio::test]
+async fn reload_arms_recovery_for_lazy_upstreams_when_enabled() {
+    let upstream = "reload-auto-reconnect";
+    UpstreamPool::reset_probe_task_schedule_count_for_tests(upstream);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    write_gateway_config(
+        &path,
+        &GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
+            upstream: vec![fixture_http_upstream(upstream)],
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("write config");
+
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager
+        .reload_with_origin(None, None)
+        .await
+        .expect("reload");
+
+    let pool = manager.current_pool().await.expect("pool installed");
+    assert_eq!(
+        UpstreamPool::probe_task_schedule_count_for_tests(upstream),
+        1
+    );
+
+    pool.drain_for_swap("test.reload_auto_reconnect").await;
+}
+
+#[tokio::test]
 async fn reload_applies_configured_upstream_request_timeout() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
@@ -461,6 +495,7 @@ async fn gateway_add_reconciles_only_changed_upstream_in_live_pool() {
     let pool_before = Arc::new(manager.new_base_pool(
         initial.upstream_request_timeout(),
         initial.upstream_relay_timeout(),
+        initial.gateway.auto_reconnect,
     ));
     pool_before.seed_lazy_upstreams(&initial.upstream).await;
     manager.runtime.swap(Some(Arc::clone(&pool_before))).await;
@@ -521,6 +556,7 @@ async fn transactional_selective_probe_does_not_hold_publication_barrier() -> Re
     let pool = Arc::new(manager.new_base_pool(
         initial.upstream_request_timeout(),
         initial.upstream_relay_timeout(),
+        initial.gateway.auto_reconnect,
     ));
     pool.seed_lazy_upstreams(&initial.upstream).await;
     manager.runtime.swap(Some(Arc::clone(&pool))).await;
@@ -597,6 +633,7 @@ async fn transactional_selective_runtime_state_failure_restores_live_pool_and_co
     let pool = Arc::new(manager.new_base_pool(
         initial.upstream_request_timeout(),
         initial.upstream_relay_timeout(),
+        initial.gateway.auto_reconnect,
     ));
     pool.seed_lazy_upstreams(&initial.upstream).await;
     manager.runtime.swap(Some(Arc::clone(&pool))).await;

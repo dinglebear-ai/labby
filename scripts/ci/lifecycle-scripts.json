@@ -34,6 +34,8 @@
     "scripts/ci/generate-release-sboms.sh",
     "scripts/ci/manage-release-incident.sh",
     "scripts/ci/qualify-n-minus-one.sh",
+    "scripts/ci/n-minus-one-diagnostics.sh",
+    "scripts/ci/n-minus-one-token.sh",
     "scripts/ci/verify-release-provenance.sh",
     "scripts/ci/upload-immutable-release-assets.sh",
     "scripts/ci/validate-container-inputs.sh",
