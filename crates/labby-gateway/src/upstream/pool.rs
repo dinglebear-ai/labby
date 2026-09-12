@@ -754,7 +754,7 @@ impl UpstreamPool {
     /// Enable periodic recovery for disconnected upstream MCP servers.
     #[must_use]
     pub fn with_auto_reconnect(self, enabled: bool) -> Self {
-        self.auto_reconnect.store(enabled, Ordering::Relaxed);
+        self.set_auto_reconnect(enabled);
         self
     }
 

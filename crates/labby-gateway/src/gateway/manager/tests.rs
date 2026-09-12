@@ -36,6 +36,7 @@ mod inspection;
 mod lifecycle;
 mod oauth;
 mod publication;
+mod recovery;
 mod views;
 mod virtual_servers;
 

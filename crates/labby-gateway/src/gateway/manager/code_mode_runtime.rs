@@ -226,7 +226,7 @@ impl GatewayManager {
             return Ok(());
         }
 
-        let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+        let pool = self.ensure_lazy_upstream_pool(owner).await;
         if wait_for_refresh {
             let mut failures = Vec::new();
             for upstream in cfg
@@ -289,7 +289,7 @@ impl GatewayManager {
             });
         };
 
-        let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+        let pool = self.ensure_lazy_upstream_pool(owner).await;
 
         let subject = upstream.oauth.as_ref().and(oauth_subject);
         pool.ensure_tools_for_upstream(upstream, subject, owner)
@@ -303,36 +303,29 @@ impl GatewayManager {
 
     async fn ensure_lazy_upstream_pool(
         &self,
-        cfg: &GatewayConfig,
         owner: Option<&UpstreamRuntimeOwner>,
     ) -> Arc<UpstreamPool> {
+        // Published pools are owned by configuration reconciliation. A request
+        // snapshot must never reseed them or overwrite their recovery policy.
         if let Some(pool) = self.runtime.current_pool().await {
-            pool.set_auto_reconnect(cfg.gateway.auto_reconnect);
-            pool.seed_lazy_upstreams(&cfg.upstream).await;
-            pool.ensure_recovery_tasks(&cfg.upstream).await;
             return pool;
         }
 
         let _init_guard = self.lazy_pool_init.lock().await;
-        let pool = if let Some(pool) = self.runtime.current_pool().await {
-            pool
-        } else {
-            // Lazy startup is also a pool publication. Serialize it with reload
-            // so readers never pair the newly installed pool with a config or
-            // Code Mode revision that is midway through publication.
-            let _publication = self.publication_barrier.write().await;
-            if let Some(pool) = self.runtime.current_pool_sync() {
-                pool.set_auto_reconnect(cfg.gateway.auto_reconnect);
-                pool.seed_lazy_upstreams(&cfg.upstream).await;
-                pool.ensure_recovery_tasks(&cfg.upstream).await;
-                return pool;
-            }
-            let mut base_pool = self.new_base_pool(
+        let _publication = self.publication_barrier.write().await;
+        if let Some(pool) = self.runtime.current_pool_sync() {
+            return pool;
+        }
+        // Read current configuration inside the publication boundary, after
+        // waiting for any reload, rather than using the caller's older snapshot.
+        let cfg = self.config.read().await.clone();
+        let base_pool = self
+            .new_base_pool(
                 cfg.upstream_request_timeout(),
                 cfg.upstream_relay_timeout(),
                 cfg.gateway.auto_reconnect,
-            );
-            base_pool = base_pool.with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
+            )
+            .with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
                 UpstreamRuntimeOwner {
                     surface: "dispatch".to_string(),
                     subject: Some(SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
@@ -342,11 +335,9 @@ impl GatewayManager {
                     raw: None,
                 }
             })));
-            let pool = Arc::new(base_pool);
-            self.runtime.swap(Some(Arc::clone(&pool))).await;
-            pool
-        };
+        let pool = Arc::new(base_pool);
         pool.seed_lazy_upstreams(&cfg.upstream).await;
+        self.runtime.swap(Some(Arc::clone(&pool))).await;
         pool.ensure_recovery_tasks(&cfg.upstream).await;
         pool
     }
@@ -383,7 +374,7 @@ impl GatewayManager {
         if allowed_upstreams.is_none() {
             let cfg = self.config.read().await.clone();
             if cfg.code_mode.enabled {
-                let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+                let pool = self.ensure_lazy_upstream_pool(owner).await;
                 let registry = self.builtin_service_registry();
                 pool.ensure_in_process_service_peers(registry.as_ref())
                     .await;
@@ -513,7 +504,7 @@ impl GatewayManager {
             return Ok(tools);
         }
 
-        let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+        let pool = self.ensure_lazy_upstream_pool(owner).await;
         let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
         );
@@ -764,7 +755,7 @@ impl GatewayManager {
             }
         };
 
-        let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+        let pool = self.ensure_lazy_upstream_pool(owner).await;
         let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
             cfg.gateway.upstream_discovery_concurrency,
         );

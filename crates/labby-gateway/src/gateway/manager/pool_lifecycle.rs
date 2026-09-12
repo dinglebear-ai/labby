@@ -473,6 +473,9 @@ impl GatewayManager {
                         "gateway.reload.transactional_selective.rollback",
                     )
                     .await;
+                    // Restore recovery as well as lazy entries: the candidate
+                    // eviction cancelled the previous upstream's task.
+                    pool.ensure_recovery_tasks(&previous_cfg.upstream).await;
                 }
                 // Leave restored upstreams lazy. Rollback must not depend on
                 // network availability; the next real request can reconnect the
@@ -501,6 +504,9 @@ impl GatewayManager {
                 return Err(error);
             }
 
+            // The selective revision is now durable. Only committed configs
+            // may own recurring reconnect work.
+            pool.ensure_recovery_tasks(&cfg.upstream).await;
             let observed = ReconcileCatalogObservation::observe(
                 &before,
                 &after,
@@ -629,7 +635,7 @@ impl GatewayManager {
             .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
             .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
-        self.runtime.swap(fresh_pool).await;
+        self.runtime.swap(fresh_pool.clone()).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can
         // therefore never leave `runtime` as None. Drain in an owned task so
@@ -659,6 +665,11 @@ impl GatewayManager {
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
         self.advance_runtime_config_generation();
+        // A private candidate must not retain itself through background tasks
+        // if validation/persistence fails or reload is cancelled before swap.
+        if let Some(pool) = fresh_pool {
+            pool.ensure_recovery_tasks(&cfg.upstream).await;
+        }
         let observed = ReconcileCatalogObservation::observe(
             &before,
             &after,
@@ -777,11 +788,6 @@ async fn probe_reload_upstreams(
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()
         .await;
-
-    // Full and selective manager reconciles use lazy seeding plus targeted
-    // connects, so `discover_all` cannot be relied on to arm recovery tasks.
-    // Schedule them after probing so failed startup connections are covered too.
-    pool.ensure_recovery_tasks(&cfg.upstream).await;
 
     // Resource ownership must be populated after tool discovery because only
     // connected peers can answer resources/list. A transactional selective
