@@ -119,11 +119,19 @@ impl ImportCoordinator {
         config: &crate::config::LabConfig,
         staging_root: &Path,
     ) -> Result<Self, ArtifactError> {
+        Self::from_host_config_with_env(config, staging_root, &|name| std::env::var_os(name))
+    }
+
+    fn from_host_config_with_env(
+        config: &crate::config::LabConfig,
+        staging_root: &Path,
+        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, ArtifactError> {
         config
             .depot
             .validate_public_acquisition(&config.artifacts)
             .map_err(ArtifactError::Conflict)?;
-        let mut imports = Self::from_config(&config.artifacts, staging_root)?;
+        let mut imports = Self::from_config_with_env(&config.artifacts, staging_root, env)?;
         if let Some(binding) = &config.depot.public_read_binding {
             imports.catalog_project = Some(
                 config
@@ -140,8 +148,12 @@ impl ImportCoordinator {
                 .ok_or(ArtifactError::Conflict(
                     "public_acquisition_connection_required",
                 ))?;
-            let token = std::env::var(&binding.bearer_token_env)
-                .map_err(|_| ArtifactError::Conflict("public_acquisition_credential_required"))?;
+            let token = env(&binding.bearer_token_env)
+                .ok_or(ArtifactError::Conflict(
+                    "public_acquisition_credential_required",
+                ))?
+                .into_string()
+                .map_err(|_| ArtifactError::Conflict("public_acquisition_credential_not_utf8"))?;
             imports
                 .depot
                 .get_mut("public")
@@ -153,9 +165,18 @@ impl ImportCoordinator {
         Ok(imports)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_config(
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
+    ) -> Result<Self, ArtifactError> {
+        Self::from_config_with_env(config, staging_root, &|name| std::env::var_os(name))
+    }
+
+    fn from_config_with_env(
+        config: &crate::config::ArtifactPreferences,
+        staging_root: &Path,
+        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, ArtifactError> {
         let mut depot = BTreeMap::new();
         let mut repository: BTreeMap<String, Arc<dyn RepositoryConnection>> = BTreeMap::new();
@@ -171,15 +192,32 @@ impl ImportCoordinator {
                     reason: "invalid_url",
                 })?;
             let credential = match source.bearer_token_env.as_ref() {
-                Some(name) => match std::env::var(name) {
-                    Ok(secret) => Some(
-                        labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
-                            &secret,
-                        )?,
-                    ),
+                Some(name) => match env(name) {
+                    Some(secret) => {
+                        let secret =
+                            secret
+                                .into_string()
+                                .map_err(|_| ArtifactError::InvalidField {
+                                    field: "source.bearer_token_env",
+                                    reason: "credential_not_utf8",
+                                })?;
+                        Some(
+                            labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
+                                &secret,
+                            )?,
+                        )
+                    }
                     // A remote source may be configured before its secret is provisioned. Keep
-                    // the local library available and leave only this connection unavailable.
-                    Err(_) => continue,
+                    // the local library available and leave only this connection unavailable,
+                    // but make the operator-visible reason explicit.
+                    None => {
+                        tracing::warn!(
+                            connection_id = %source.id,
+                            env = %name,
+                            "import source credential is not set; source disabled"
+                        );
+                        continue;
+                    }
                 },
                 None => None,
             };
@@ -823,7 +861,7 @@ mod tests {
                 );
                 let projection: Arc<
                     dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-                > = Arc::new(ArtifactFirstPartyProjection);
+                > = Arc::new(ArtifactFirstPartyProjection::default());
                 let initial = projection
                     .prepare(&store, &store.library_snapshot().unwrap(), None)
                     .unwrap();
@@ -945,7 +983,7 @@ mod tests {
         );
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();

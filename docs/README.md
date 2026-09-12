@@ -16,7 +16,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
 - [Local access bootstrap](./guides/LOCAL_ACCESS_BOOTSTRAP.md) — offline proof preparation, direct-local consume, recovery, revocation, and cleanup.
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
-- [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — active specification, contract, implementation plan, and progress tracker for universal Skills access.
+- [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — historical implementation plan and progress record; the current contract is [Skills extension](./contracts/skills-extension.md) and current product behavior is [Artifacts And Agent Skills](./services/SKILLS.md).
 - [Verification toolkit](./plans/verification-toolkit/README.md) — proposed design for a reusable Rust correctness-engineering toolkit (invariant catalog, scenario replay, backend adapters). Not implemented.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.

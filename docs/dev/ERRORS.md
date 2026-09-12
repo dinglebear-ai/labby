@@ -96,20 +96,24 @@ Supported code may emit additional stable kinds, including:
 - payload limits: `response_too_large` — gateway cap on upstream MCP response
   bytes (distinct from `content_too_large`'s request/content limits);
 - skills extension (SEP-2640): `skill_digest_mismatch` — fetched bytes disagree
-  with the digest the skill's entry published, or the read named a file the
-  entry's `resources` manifest does not list (the spec treats both as the same
-  class of verification failure); `skill_manifest_stale` — the skill URI no
-  longer resolves against the cached catalog and `skills/get` does not answer
-  for it either. Both recover with `rediscover`, since the spec's prescribed
-  response is to refresh the entry and proceed from the current `resources`
-  set. See `docs/contracts/skills-extension.md`;
+  with the digest the skill's entry published; `skill_manifest_stale` — the
+  current manifest no longer uniquely binds the requested resource, including
+  an unlisted file, or the skill URI no longer resolves against the cached
+  catalog and `skills/get` cannot confirm it. Both recover with `rediscover`,
+  since the spec's prescribed response is to refresh the entry and proceed from
+  the current `resources` set. `invalid_encoding` is used when a resource
+  advertised as text verifies by digest but is not UTF-8. `missing_manifest` is
+  an operator-visible ingest rejection reason, not a downstream wire error kind.
+  See `docs/contracts/skills-extension.md`;
 - Code Mode: `timeout` (wall-clock expiry — the historical
   `code_mode_timeout`/`code_mode_fuel_exhausted` kinds are retired and must not
   be reintroduced), `invalid_code_mode_id`, `call_budget_exceeded`,
   `snippet_budget_exceeded`, `snippet_resolve_limit`, `snippet_not_found`,
   `artifact_too_large`, `result_too_large`;
-- providers: `provider_unavailable`, `provider_timeout`,
-  `invalid_provider_output`;
+- providers/runtime: `provider_error` (a Skill provider completed with a
+  provider/protocol failure), `provider_unavailable`, `provider_timeout`,
+  `runtime_unavailable` (the gateway/provider runtime required for the request is
+  not available), `invalid_provider_output`;
 - concurrency/state: `rate_limited`, `queue_saturated`, `budget_exceeded`,
   `quota_exceeded`, `restart_required`, `stale_suggestion`,
   `merge_write_conflict`, `workspace_not_configured`;

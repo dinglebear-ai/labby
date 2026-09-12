@@ -49,7 +49,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "multipart",
 ] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-base64 = "0.22"
+base64 = "0.23"
 url = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -82,7 +82,7 @@ dialoguer = { version = "0.12", default-features = false }
 # config
 dotenvy = "0.15"
 toml = "1.1"
-serde_yaml_ng = "0.10.0"
+serde-saphyr = { version = "1.2.0", default-features = false, features = ["deserialize"] }
 
 # mcp
 rmcp = { version = "=3.1.4", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "f94e8fabe0b4264db3e7f8771dd49d9ba31f4610", features = [

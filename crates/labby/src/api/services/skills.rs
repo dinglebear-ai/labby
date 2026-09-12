@@ -16,13 +16,6 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
-#[cfg(feature = "skills")]
-fn map_import_adapter_error(
-    error: crate::dispatch::skill_library::import::ImportAdapterError,
-) -> ToolError {
-    crate::dispatch::skill_library::map_import_error(error)
-}
-
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
     RouteGroup::empty().route(descriptors().remove(0), post(handle))
@@ -180,7 +173,6 @@ pub(crate) async fn handle(
         .get("x-labby-project-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let correlation = request_id.map(str::to_owned);
     let auth_for_library = auth.clone().map(|Extension(value)| value);
     let library_headers = headers.clone();
 
@@ -198,48 +190,17 @@ pub(crate) async fn handle(
             if action.starts_with("artifacts.") {
                 if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
                     .iter()
-                    .any(|candidate| candidate.name == action)
+                    .find(|candidate| candidate.name == action)
+                    .is_some_and(|spec| spec.requires_admin)
                 {
-                    let spec = crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
-                        .iter()
-                        .find(|candidate| candidate.name == action);
-                    let operation =
-                        crate::dispatch::remote_control::operation("artifacts", &action)
-                            .ok_or_else(|| ToolError::UnknownAction {
-                                message: format!("Unknown action: {action}"),
-                                valid: Vec::new(),
-                                hint: None,
-                            })?;
-                    let permission =
-                        crate::dispatch::artifact_control::operation_permission(operation);
-                    if spec.is_some_and(|spec| spec.requires_admin) {
-                        crate::api::services::remote_control::require_session_csrf(
-                            &action,
-                            &library_headers,
-                            auth_for_library.as_ref(),
-                        )?;
-                    }
-                    let context =
-                        crate::api::services::remote_control::authorize_authority_context(
-                            &access_runtime,
-                            verified_identity,
-                            project_id.as_deref(),
-                            library_headers
-                                .get("x-labby-team-id")
-                                .and_then(|value| value.to_str().ok()),
-                            permission,
-                        )
-                        .await?;
-                    return crate::dispatch::remote_control::dispatch_with_context(
-                        "artifacts",
+                    crate::api::services::remote_control::require_session_csrf(
                         &action,
-                        params,
-                        Some(&context),
-                    )
-                    .await;
+                        &library_headers,
+                        auth_for_library.as_ref(),
+                    )?;
                 }
                 let service = skill_library.ok_or_else(|| ToolError::Sdk {
-                    sdk_kind: "skill_library_unavailable".to_owned(),
+                    sdk_kind: "service_unavailable".to_owned(),
                     message: "Skill Library is unavailable".to_owned(),
                 })?;
                 let identity = verified_identity.ok_or_else(|| ToolError::Forbidden {
@@ -254,14 +215,6 @@ pub(crate) async fn handle(
                     message: "Skill Library project context is required".to_owned(),
                     required_scopes: vec![],
                 })?;
-                static REQUESTS: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(1);
-                let correlation = correlation.unwrap_or_else(|| {
-                    format!(
-                        "api-{}",
-                        REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    )
-                });
                 let csrf_verified = auth.via_session
                     && auth.csrf_token.as_deref().is_some_and(|token| {
                         library_headers
@@ -299,86 +252,20 @@ pub(crate) async fn handle(
                 )
                 .with_selected_team_id(selected_team_id);
                 let correlation =
-                    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(
-                        correlation,
-                    )
-                    .map_err(|()| ToolError::InvalidParam {
-                        message: "invalid request correlation".to_owned(),
-                        param: "x-request-id".to_owned(),
-                    })?;
-                if action == "artifacts.import_batch" {
-                    let import_params: crate::dispatch::skill_library::params::ImportBatchParams =
-                        serde_json::from_value(params).map_err(|_| ToolError::InvalidParam {
-                            message: "Artifact batch import parameters are invalid".to_owned(),
-                            param: "params".to_owned(),
-                        })?;
-                    crate::dispatch::skill_library::params::validate_idempotency_key(
-                        &import_params.idempotency_key,
-                    )
-                    .map_err(|_| ToolError::InvalidParam {
-                        message: "Artifact batch idempotency key is invalid".to_owned(),
-                        param: "idempotency_key".to_owned(),
-                    })?;
-                    let imports = skill_library_imports.ok_or_else(|| ToolError::Sdk {
-                        sdk_kind: "source_unavailable".to_owned(),
-                        message: "Artifact import sources are not configured".to_owned(),
-                    })?;
-                    return imports
-                        .import_batch_selected(
-                            &service,
-                            &access_runtime,
-                            caller,
-                            &project_id,
-                            import_params.sources,
-                            import_params.expected_library_version,
-                            import_params.idempotency_key,
-                            &correlation,
-                        )
-                        .await
-                        .map_err(map_import_adapter_error);
-                }
-                if action == "artifacts.import" {
-                    let import_params: crate::dispatch::skill_library::params::ImportParams =
-                        serde_json::from_value(params).map_err(|_| ToolError::InvalidParam {
-                            message: "Skill Library import parameters are invalid".to_owned(),
-                            param: "params".to_owned(),
-                        })?;
-                    crate::dispatch::skill_library::params::validate_idempotency_key(
-                        &import_params.idempotency_key,
-                    )
-                    .map_err(|_| ToolError::InvalidParam {
-                        message: "Skill Library idempotency key is invalid".to_owned(),
-                        param: "idempotency_key".to_owned(),
-                    })?;
-                    let imports = skill_library_imports.ok_or_else(|| ToolError::Sdk {
-                        sdk_kind: "source_unavailable".to_owned(),
-                        message: "Skill import sources are not configured".to_owned(),
-                    })?;
-                    return imports
-                        .import_selected(
-                            &service,
-                            &access_runtime,
-                            caller,
-                            &project_id,
-                            import_params.source,
-                            import_params.expected_library_version,
-                            import_params.idempotency_key,
-                            &correlation,
-                        )
-                        .await
-                        .map_err(map_import_adapter_error);
-                }
-                return service
-                    .dispatch(
-                        &access_runtime,
-                        caller,
-                        &project_id,
-                        &action,
-                        params,
-                        &correlation,
-                    )
-                    .await
-                    .map_err(crate::dispatch::skill_library::map_dispatch_error);
+                    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::server(
+                        "api-skill-library",
+                    );
+                return crate::dispatch::skill_library::surface::dispatch_authorized_action(
+                    &service,
+                    skill_library_imports,
+                    &access_runtime,
+                    caller,
+                    &project_id,
+                    &action,
+                    params,
+                    &correlation,
+                )
+                .await;
             }
             Err(ToolError::UnknownAction {
                 message: format!("unknown action '{action}' for service 'artifacts'"),

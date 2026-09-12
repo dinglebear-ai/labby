@@ -17,6 +17,7 @@ use futures::future::BoxFuture;
 use rmcp::RoleClient;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use labby_auth::upstream::cache::OauthClientCache;
 #[cfg(test)]
@@ -83,6 +84,7 @@ mod resources_list;
 mod resources_read;
 mod skills;
 mod skills_exposure;
+mod skills_read;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkill;
 #[cfg(all(test, feature = "skills"))]
@@ -320,8 +322,16 @@ pub struct UpstreamPool {
     /// Sharded per authorization context unconditionally — see
     /// `skills_cache.rs` for why a declared `cacheScope` never widens this.
     skills_cache: Arc<RwLock<HashMap<skills_cache::SkillsCacheKey, skills_cache::CachedSkills>>>,
+    /// Monotonic invalidation epoch per skill-cache shard. A refresh captures
+    /// the current epoch before I/O and may publish only if it is unchanged,
+    /// preventing an in-flight refresh from resurrecting invalidated state.
+    skills_cache_epochs: Arc<RwLock<HashMap<String, u64>>>,
     /// Per-key single-flight guards for skill-catalog fetches.
     skills_fetch_locks: Arc<skills_cache::SkillsFetchLocks>,
+    /// Tracks detached stale-while-revalidate tasks so pool drain can cancel and await them.
+    skills_refresh_tasks: TaskTracker,
+    /// Cancels every tracked background Skill refresh when this pool generation drains.
+    skills_refresh_cancel: CancellationToken,
     /// Per-`(upstream, subject)` cached connections for the OAuth / subject-scoped
     /// proxy path.  Reused across calls for the same subject so we pay TLS +
     /// `initialize` + `tools/list` only once per idle-TTL window (P-C1 fix).
@@ -583,7 +593,10 @@ impl UpstreamPool {
             call_concurrency: helpers::upstream_call_concurrency(),
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             skills_cache: Arc::new(RwLock::new(HashMap::new())),
+            skills_cache_epochs: Arc::new(RwLock::new(HashMap::new())),
             skills_fetch_locks: Arc::new(skills_cache::SkillsFetchLocks::default()),
+            skills_refresh_tasks: TaskTracker::new(),
+            skills_refresh_cancel: CancellationToken::new(),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
