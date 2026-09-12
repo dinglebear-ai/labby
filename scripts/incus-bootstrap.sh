@@ -317,6 +317,8 @@ capture_owned_state() {
             ;;
         inactive) ;;
         failed)
+            # The single-quoted command substitution runs in the container's sh.
+            # shellcheck disable=SC2016
             record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote 'systemctl start labby.service >/dev/null 2>&1 || :; test "$(systemctl show labby.service --property=ActiveState --value --no-pager)" = failed')"
             ;;
         *) fail "cannot transactionally capture labby.service ActiveState=$labby_active" ;;

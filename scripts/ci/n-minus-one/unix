@@ -4,7 +4,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 work_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/labby-n-minus-one/unix"
 install_dir="$work_root/bin"
-labby_home="$work_root/home"
+# Older releases (v1.13.3) read .env and auth.db from $HOME/.labby even when
+# LABBY_HOME is set, so point both at the same directory.
+user_home="$work_root/home"
+labby_home="$user_home/.labby"
 state_digest="$work_root/persisted-state.sha256"
 pid_file="$work_root/labby.pid"
 
@@ -30,7 +33,7 @@ EOF
 verify_persisted_state() {
     python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
     (cd "$labby_home" && sha256sum -c "$state_digest")
-    PATH="$install_dir:$PATH" LABBY_HOME="$labby_home" "$install_dir/labby" --json gateway list | grep -Fq '"id": "n-minus-one"'
+    PATH="$install_dir:$PATH" HOME="$user_home" LABBY_HOME="$labby_home" "$install_dir/labby" --json gateway list | grep -Fq '"id": "n-minus-one"'
 }
 
 verify_version() {
@@ -48,7 +51,7 @@ verify_provenance() {
 }
 
 start_service() {
-    PATH="$install_dir:$PATH" LABBY_HOME="$labby_home" nohup "$install_dir/labby" serve \
+    PATH="$install_dir:$PATH" HOME="$user_home" LABBY_HOME="$labby_home" nohup "$install_dir/labby" serve \
         >"$work_root/service.log" 2>&1 &
     echo $! >"$pid_file"
     for _ in {1..50}; do curl -fsS http://127.0.0.1:8765/ready >/dev/null && return; sleep 0.2; done

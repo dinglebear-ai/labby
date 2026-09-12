@@ -325,8 +325,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    recovery receipt retains the exact prior ref target, so rollback is another
    pointer-only leased CAS and never rewrites generation contents.
    They return validated 64-hex subject digests before the stable GitHub release
-   becomes visible. npm publishes the immutable version under a version-specific
-   candidate dist-tag; the `latest` consumer pointer is not advanced yet. No
+   becomes visible. The MCP Registry only accepts a manifest whose npm version
+   is already published with a matching `mcpName`, so the `npm-candidate` job
+   runs after the upgrade and Incus gates and before the registry call. It
+   publishes the immutable npm version under a version-specific candidate
+   dist-tag; the `latest` consumer pointer is not advanced yet. No
    distribution workflow is triggered by `release.published`.
 9. Only after every candidate qualification and publisher succeeds does
    `release.yml` promote the draft through the verified promotion helper. It

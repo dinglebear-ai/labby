@@ -25,7 +25,9 @@ jobs:
       checkout-ref: ${{ inputs.release_tag }}
       artifact-name: labby-incus-image
       artifact-directory: dist
-      enable-kache: true
+      # Off: the hosted builder requires non-empty KACHE credentials when
+      # kache is on, and release workflows must not name those secrets.
+      enable-kache: false
       kache-manifest-key: labby-incus-release
       timeout-minutes: 120
       setup-command: |
@@ -141,7 +143,9 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check --strict SHA256SUMS)
-          asset_sha256=$(awk '$2 == "labby-incus-x86_64-unknown-linux-gnu.tar.xz" { print $1 }' dist/SHA256SUMS)
+          # The hosted builder writes SHA256SUMS with `find .`, so names start
+          # with "./".
+          asset_sha256=$(awk '{ name = $2; sub(/^\.\//, "", name) } name == "labby-incus-x86_64-unknown-linux-gnu.tar.xz" { print $1 }' dist/SHA256SUMS)
           [[ "$asset_sha256" =~ ^[0-9a-f]{64}$ ]]
           echo "asset_sha256=$asset_sha256" >> "$GITHUB_OUTPUT"
           mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)

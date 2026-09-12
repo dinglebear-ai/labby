@@ -358,6 +358,12 @@ jobs:
           LABBY_N_MINUS_ONE_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} rollback
           LABBY_N_MINUS_ONE_VERIFY_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-rollback
         run: scripts/ci/qualify-n-minus-one.sh "${{ matrix.deployment }}" "${{ steps.previous.outputs.tag }}" "$GITHUB_REF_NAME"
+      - name: Show N-1 diagnostics on failure
+        if: failure()
+        shell: bash
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+        run: scripts/ci/n-minus-one-diagnostics.sh "$DEPLOYMENT"
 
   incus-candidate:
     needs: upgrade-qualification
@@ -368,8 +374,52 @@ jobs:
       release_tag: ${{ github.ref_name }}
     secrets: inherit
 
+  npm-candidate:
+    # The MCP Registry only accepts a manifest whose npm version is already
+    # published with a matching mcpName, so the candidate-tagged npm version
+    # must exist before mcp-candidate runs. Waiting for incus-candidate keeps
+    # this irreversible publication behind every non-publishing gate.
+    name: Publish npm candidate
+    needs: [build, upgrade-qualification, incus-candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - name: Validate npm publication identity
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami >/dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: lab-*
+          merge-multiple: true
+      - name: Verify artifact checksums
+        run: sha256sum --check --ignore-missing ./*.sha256
+      - name: Publish candidate-tagged npm launcher
+        env:
+          LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
+          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          if npm view "$package_name@$version" version >/dev/null 2>&1; then
+            echo "$package_name@$version is already published"
+          else
+            npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+          fi
+
   mcp-candidate:
-    needs: upgrade-qualification
+    needs: [upgrade-qualification, npm-candidate]
     uses: ./.github/workflows/mcp-registry.yml
     with:
       release_tag: ${{ github.ref_name }}
@@ -377,7 +427,7 @@ jobs:
 
   release:
     name: Publish validated release
-    needs: [build, upgrade-qualification, incus-candidate, mcp-candidate]
+    needs: [build, upgrade-qualification, incus-candidate, npm-candidate, mcp-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -456,6 +506,8 @@ jobs:
             labby-install.ps1.sha256
             release-manifest.json
       - name: Verify release provenance as a consumer
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do

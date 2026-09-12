@@ -12,9 +12,15 @@ pwsh_install_dir="$install_dir"
 if command -v cygpath >/dev/null 2>&1; then
     pwsh_install_dir=$(cygpath -w "$install_dir")
 fi
-labby_home="$work_root/home"
+# Older releases (v1.13.3) read .env and auth.db from $HOME/.labby even when
+# LABBY_HOME is set, so point both at the same directory. HOME is set inside
+# pwsh because MSYS rewrites HOME when bash starts a native program.
+user_home="$work_root/home"
+labby_home="$user_home/.labby"
+pwsh_user_home="$user_home"
 pwsh_labby_home="$labby_home"
 if command -v cygpath >/dev/null 2>&1; then
+    pwsh_user_home=$(cygpath -w "$user_home")
     pwsh_labby_home=$(cygpath -w "$labby_home")
 fi
 state_digest="$work_root/persisted-state.sha256"
@@ -45,8 +51,8 @@ EOF
 verify_persisted_state() {
     python "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
     (cd "$labby_home" && sha256sum -c "$state_digest")
-    LABBY_HOME="$pwsh_labby_home" pwsh -NoLogo -NoProfile -Command \
-        "\$env:PATH='$pwsh_install_dir;' + \$env:PATH; & '$pwsh_install_dir\\labby.exe' --json gateway list" |
+    pwsh -NoLogo -NoProfile -Command \
+        "\$env:HOME='$pwsh_user_home'; \$env:LABBY_HOME='$pwsh_labby_home'; \$env:PATH='$pwsh_install_dir;' + \$env:PATH; & '$pwsh_install_dir\\labby.exe' --json gateway list" |
         grep -Fq '"id": "n-minus-one"'
 }
 
@@ -68,7 +74,7 @@ verify_provenance() {
 }
 start_service() {
     pwsh -NoLogo -NoProfile -Command \
-        "\$env:LABBY_HOME='$pwsh_labby_home'; \$p=Start-Process -FilePath '$pwsh_install_dir\\labby.exe' -ArgumentList 'serve' -PassThru; Set-Content -NoNewline -Path '$pwsh_pid_file' -Value \$p.Id"
+        "\$env:HOME='$pwsh_user_home'; \$env:LABBY_HOME='$pwsh_labby_home'; \$p=Start-Process -FilePath '$pwsh_install_dir\\labby.exe' -ArgumentList 'serve' -PassThru; Set-Content -NoNewline -Path '$pwsh_pid_file' -Value \$p.Id"
     for _ in {1..50}; do curl -fsS http://127.0.0.1:8765/ready >/dev/null && return; sleep 0.2; done
     echo 'service did not become ready' >&2; return 1
 }

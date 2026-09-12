@@ -6,11 +6,14 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 import yaml
 
 
@@ -200,6 +203,76 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("--local-binary", install_previous)
         self.assertNotIn("--version", install_previous)
         self.assertIn("exec sg incus-admin", incus)
+        # Hosted runners have no ZFS; `incus admin init --minimal` creates a dir pool.
+        self.assertIn("--storage-driver dir --storage-pool default", install_previous)
+        diagnostics = steps["Show N-1 diagnostics on failure"]
+        self.assertEqual("failure()", diagnostics["if"])
+        self.assertIn("scripts/ci/n-minus-one-diagnostics.sh", diagnostics["run"])
+
+    def test_n_minus_one_state_lives_where_older_releases_read_it(self) -> None:
+        # v1.13.3 reads .env and auth.db from $HOME/.labby regardless of LABBY_HOME.
+        unix = self.text("scripts/ci/n-minus-one/unix")
+        self.assertIn('labby_home="$user_home/.labby"', unix)
+        self.assertEqual(2, unix.count('LABBY_HOME="$labby_home"'))
+        self.assertEqual(2, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        windows = self.text("scripts/ci/n-minus-one/windows")
+        self.assertIn('labby_home="$user_home/.labby"', windows)
+        self.assertEqual(2, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+
+    def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for archive in ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-aarch64-apple-darwin.tar.gz"):
+                payload = work / "labby"
+                payload.write_text("binary")
+                with tarfile.open(work / archive, "w:gz") as tar:
+                    tar.add(payload, arcname="labby")
+                payload.unlink()
+            with zipfile.ZipFile(work / "lab-x86_64-pc-windows-msvc.zip", "w") as archive:
+                archive.writestr("labby.exe", "binary")
+            for name in ("labby-install.sh", "labby-install.ps1"):
+                (work / name).write_text("installer")
+            for name in list(work.iterdir()):
+                (work / f"{name.name}.sha256").write_text(f"{'0' * 64}  {name.name}\n")
+            syft = work / "fake-syft"
+            syft.write_text('#!/usr/bin/env bash\nfor arg; do [[ "$arg" == spdx-json=* ]] && printf "{}" > "${arg#spdx-json=}"; done\n')
+            syft.chmod(0o755)
+            env = os.environ | {"SYFT_BIN": str(syft)}
+            subprocess.run(["bash", str(ROOT / "scripts/ci/generate-release-sboms.sh")], cwd=work, env=env, check=True)
+            for sbom in ("lab-x86_64-unknown-linux-gnu.spdx.json", "lab-aarch64-apple-darwin.spdx.json",
+                         "lab-x86_64-pc-windows-msvc.spdx.json", "labby-install.sh.spdx.json", "labby-install.ps1.spdx.json"):
+                self.assertTrue((work / sbom).is_file(), sbom)
+            self.assertEqual([], sorted(path.name for path in work.glob("*.spdx.json.spdx.json")))
+            # Same subject globs as the release workflow's manifest step.
+            patterns = ("lab-*.tar.gz", "lab-*.zip", "lab-*.sha256", "lab-*.spdx.json", "labby-install.*.spdx.json",
+                        "labby-install.sh", "labby-install.ps1", "labby-install.sh.sha256", "labby-install.ps1.sha256")
+            subjects = [str(path) for pattern in patterns for path in sorted(work.glob(pattern))]
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/ci/create-release-manifest.py"), "--tag", "v1.2.3",
+                 "--repository", "acme/labby", "--incus-sha256", "a" * 64, "--mcp-manifest-sha256", "b" * 64,
+                 "--output", str(work / "release-manifest.json"), *subjects],
+                cwd=work, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_incus_candidate_publish_reads_hosted_checksum_inventory(self) -> None:
+        workflow = self.text(".github/workflows/build-incus-image.yml")
+        release = yaml.load(workflow, Loader=yaml.BaseLoader)
+        # The hosted builder refuses kache without credentials, and release
+        # workflows must not name the shared-cache secrets.
+        self.assertEqual("false", release["jobs"]["build-image"]["with"]["enable-kache"])
+        program = re.search(r"asset_sha256=\$\(awk '([^']+)' dist/SHA256SUMS\)", workflow)
+        self.assertIsNotNone(program)
+        with tempfile.TemporaryDirectory() as tmp:
+            sums = Path(tmp) / "SHA256SUMS"
+            sums.write_text(f"{'c' * 64}  ./labby-incus-x86_64-unknown-linux-gnu.tar.xz\n{'d' * 64}  ./image.spdx.json\n")
+            result = subprocess.run(["awk", program.group(1), str(sums)], text=True, capture_output=True, check=True)
+        self.assertEqual("c" * 64, result.stdout.strip())
+
+    def test_release_consumer_provenance_check_has_a_token(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = {step.get("name"): step for step in release["jobs"]["release"]["steps"]}
+        self.assertEqual("${{ github.token }}", steps["Verify release provenance as a consumer"]["env"]["GH_TOKEN"])
 
     def test_release_has_machine_readable_manifest_and_reconciler(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
@@ -220,6 +293,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual("./.github/workflows/mcp-registry.yml", jobs["mcp-candidate"]["uses"])
         self.assertIn("incus-candidate", jobs["release"]["needs"])
         self.assertIn("mcp-candidate", jobs["release"]["needs"])
+        # The MCP Registry verifies the npm version it references, so npm's
+        # candidate publication must finish before mcp-candidate starts.
+        self.assertIn("npm-candidate", jobs["mcp-candidate"]["needs"])
+        self.assertIn("npm-candidate", jobs["release"]["needs"])
+        for gate in ("upgrade-qualification", "incus-candidate"):
+            self.assertIn(gate, jobs["npm-candidate"]["needs"])
+        publish = next(step for step in jobs["npm-candidate"]["steps"] if step.get("name") == "Publish candidate-tagged npm launcher")
+        self.assertIn('--tag "candidate-$version"', publish["run"])
+        self.assertEqual("${{ github.workspace }}", publish["env"]["LABBY_RELEASE_ASSET_DIR"])
         for path in (".github/workflows/build-incus-image.yml", ".github/workflows/mcp-registry.yml"):
             text = self.text(path)
             self.assertIn("workflow_call:", text)
