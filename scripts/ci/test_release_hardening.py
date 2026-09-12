@@ -6,14 +6,46 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
+import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LINUX_ASSETS = ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-x86_64-unknown-linux-gnu.tar.gz.sha256")
+
+
+def release_row(tag: str, *, draft: bool = False, prerelease: bool = False,
+                assets: tuple[str, ...] = LINUX_ASSETS, state: str = "uploaded") -> dict:
+    return {
+        "tag_name": tag,
+        "draft": draft,
+        "prerelease": prerelease,
+        "assets": [{"name": name, "state": state} for name in assets],
+    }
+
+
+def resolve_baseline(releases: list, merged: list[str], candidate: str = "v1.16.1",
+                     assets: tuple[str, ...] = LINUX_ASSETS) -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "releases.json").write_text(json.dumps(releases))
+        (work / "merged.txt").write_text("\n".join(merged) + "\n")
+        command = [
+            sys.executable, str(ROOT / "scripts/ci/resolve-n-minus-one-baseline.py"),
+            "--candidate", candidate,
+            "--releases", str(work / "releases.json"),
+            "--merged-tags", str(work / "merged.txt"),
+        ]
+        for asset in assets:
+            command += ["--asset", asset]
+        return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
@@ -78,9 +110,199 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         workflow = self.text(".github/workflows/release.yml")
         self.assertIn("name: N-1 stateful upgrade and rollback qualification", workflow)
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
-        for deployment in ("unix", "windows", "macos", "incus", "host-service"):
-            self.assertIn(f"deployment: {deployment}", workflow)
+        release = yaml.load(workflow, Loader=yaml.BaseLoader)
+        matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
+        # macOS arm64 has never had a published release, so it has no N-1 to
+        # install yet. Add "macos" back here when the leg is restored.
+        self.assertEqual(["unix", "windows", "incus", "host-service"], [row["deployment"] for row in matrix])
+        # Only host-service is advisory, until its v1.16 log-directory bug is fixed.
+        self.assertEqual("${{ matrix.advisory == 'true' }}", release["jobs"]["upgrade-qualification"]["continue-on-error"])
+        self.assertEqual({"host-service": "true"}, {row["deployment"]: row["advisory"] for row in matrix if "advisory" in row})
         self.assertNotIn("deployment: compose", workflow)
+
+    def test_n_minus_one_baseline_is_resolved_from_published_releases(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = release["jobs"]["upgrade-qualification"]["steps"]
+        previous = next(step for step in steps if step.get("id") == "previous")
+        run = previous["run"]
+        self.assertEqual("${{ matrix.archive }}", previous["env"]["REQUIRED_ARCHIVE"])
+        self.assertIn('gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases', run)
+        self.assertIn("git tag --merged HEAD", run)
+        self.assertIn("scripts/ci/resolve-n-minus-one-baseline.py", run)
+        self.assertIn('--asset "$REQUIRED_ARCHIVE" --asset "$REQUIRED_ARCHIVE.sha256"', run)
+        # The newest tag is not a baseline: a failed release is an asset-less draft.
+        self.assertNotIn("head -1", run)
+        qualify = next(step for step in steps if step.get("name") == "N-1 stateful upgrade and rollback qualification")
+        self.assertIn("${{ steps.previous.outputs.tag }}", qualify["run"])
+
+    def test_n_minus_one_baseline_skips_drafts_and_releases_without_assets(self) -> None:
+        # Shape of dinglebear-ai/labby on 2026-09-11, as `gh api --paginate --slurp` pages.
+        releases = [
+            [
+                release_row("v1.16.0", draft=True, assets=()),
+                release_row("v1.15.1", draft=True, assets=()),
+                release_row("v1.14.1", draft=True, assets=()),
+                release_row("v1.14.1", draft=True, assets=()),
+                release_row("v1.13.3"),
+                release_row("labby-incus-latest"),
+            ],
+            [release_row("v1.13.2", draft=True), release_row("v1.13.1", assets=())],
+        ]
+        merged = ["v1.16.1", "v1.16.0", "v1.15.1", "v1.15.0", "v1.14.1", "v1.14.0", "v1.13.3", "v1.13.2", "v1.13.1"]
+        result = resolve_baseline(releases, merged)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("v1.13.3", result.stdout.strip())
+        self.assertIn("skip v1.16.0: draft", result.stderr)
+        self.assertIn("skip v1.15.0: no published release", result.stderr)
+
+    def test_n_minus_one_baseline_requires_an_older_merged_complete_stable_release(self) -> None:
+        releases = [
+            release_row("v1.17.0"),
+            release_row("v1.15.9"),
+            release_row("v1.15.0", prerelease=True),
+            release_row("v1.14.2", assets=LINUX_ASSETS[:1]),
+            release_row("v1.14.1", state="open"),
+            release_row("v1.10.0"),
+            release_row("v1.9.0"),
+        ]
+        merged = ["v1.17.0", "v1.16.1", "v1.15.0", "v1.14.2", "v1.14.1", "v1.10.0", "v1.9.0"]
+        result = resolve_baseline(releases, merged)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("v1.10.0", result.stdout.strip())
+        self.assertNotIn("v1.17.0", result.stderr)
+        self.assertNotIn("v1.15.9", result.stderr)
+        self.assertIn("skip v1.15.0: prerelease", result.stderr)
+        self.assertIn(f"skip v1.14.2: missing {LINUX_ASSETS[1]}", result.stderr)
+        self.assertIn("skip v1.14.1: missing", result.stderr)
+
+    def test_n_minus_one_baseline_fails_closed_without_a_qualifying_release(self) -> None:
+        darwin = ("lab-aarch64-apple-darwin.tar.gz", "lab-aarch64-apple-darwin.tar.gz.sha256")
+        result = resolve_baseline([release_row("v1.13.3")], ["v1.16.1", "v1.13.3"], assets=darwin)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("::error::No published release older than v1.16.1 carries lab-aarch64-apple-darwin.tar.gz", result.stderr)
+        self.assertNotEqual(0, resolve_baseline([], ["v1.16.1"]).returncode)
+        self.assertNotEqual(0, resolve_baseline([release_row("v1.13.3")], ["v1.13.3"], candidate="latest").returncode)
+
+    def test_n_minus_one_legs_can_verify_provenance_on_every_runner(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = {step.get("name"): step for step in release["jobs"]["upgrade-qualification"]["steps"]}
+        # The installers verify the N-1 archive and the adapters verify the
+        # candidate with `gh attestation verify`, which needs a token.
+        qualify = steps["N-1 stateful upgrade and rollback qualification"]
+        self.assertEqual("${{ github.token }}", qualify["env"]["GH_TOKEN"])
+        # GNU sha256sum escapes digests of backslash paths (every Windows path).
+        verify = steps["Verify exact archive provenance before extraction"]["run"]
+        bind = steps["Bind qualification to candidate binary and digest"]["run"]
+        self.assertIn('sha256sum <"$archive"', verify)
+        self.assertIn('sha256sum <"$candidate"', bind)
+        self.assertNotIn('sha256sum "$archive"', verify)
+        self.assertNotIn('sha256sum "$candidate"', bind)
+        host_service = self.text("scripts/ci/n-minus-one/host-service")
+        host_install = host_service[host_service.index("install-previous)"):host_service.index("seed-state)")]
+        self.assertIn("sudo --preserve-env=GH_TOKEN env", host_install)
+        # The unit runs as User=labby, and no release creates that user.
+        self.assertIn("sudo useradd --system", host_install)
+        # v1.13.3's `setup host-service status` rejects -y.
+        self.assertIn("sudo /usr/local/bin/labby setup host-service status;", host_service)
+        # v1.13.3's unit refuses to start unless every ReadWritePaths entry exists.
+        self.assertIn("/home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}", host_install)
+        incus = self.text("scripts/ci/n-minus-one/incus")
+        install_previous = incus[incus.index("install-previous)"):incus.index("seed-state)")]
+        self.assertIn('scripts/install.sh"', install_previous)
+        self.assertIn("--local-binary", install_previous)
+        self.assertNotIn("--version", install_previous)
+        self.assertIn("exec sg incus-admin", incus)
+        # Docker's FORWARD DROP policy otherwise blocks the container's network.
+        self.assertIn("sudo iptables -I DOCKER-USER -i incusbr0 -j ACCEPT", incus)
+        # Hosted runners have no ZFS; `incus admin init --minimal` creates a dir pool.
+        self.assertIn("--storage-driver dir --storage-pool default", install_previous)
+        diagnostics = steps["Show N-1 diagnostics on failure"]
+        self.assertEqual("failure()", diagnostics["if"])
+        self.assertIn("scripts/ci/n-minus-one-diagnostics.sh", diagnostics["run"])
+
+    def test_n_minus_one_state_lives_where_older_releases_read_it(self) -> None:
+        # v1.13.3 reads .env and auth.db from $HOME/.labby regardless of LABBY_HOME.
+        unix = self.text("scripts/ci/n-minus-one/unix")
+        self.assertIn('labby_home="$user_home/.labby"', unix)
+        self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
+        self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        windows = self.text("scripts/ci/n-minus-one/windows")
+        self.assertIn('labby_home="$user_home/.labby"', windows)
+        self.assertEqual(1, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+        # With the daemon running, `gateway list` answers through v1.16's access gate.
+        for name in ("unix", "windows", "macos"):
+            self.assertNotIn("--json gateway list", self.text(f"scripts/ci/n-minus-one/{name}"), name)
+        # The candidate CLI has `incus sync`; `setup incus-sync` never existed.
+        incus_adapter = self.text("scripts/ci/n-minus-one/incus")
+        self.assertIn('incus sync --container "$name" --binary', incus_adapter)
+        self.assertNotIn("setup incus-sync", incus_adapter)
+        self.assertIn("icacls '$pwsh_user_home' /inheritance:r", windows)
+        # From v1.16 a bearer-mode install without an access store answers
+        # gateway admin actions with setup-required; `help` stays public.
+        for name in ("unix", "windows", "macos", "incus", "host-service"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            self.assertIn('{"action":"help","params":{}}', adapter, name)
+            self.assertNotIn('"action":"gateway.list"', adapter, name)
+        # Keep the service's output so the failure diagnostics can print it.
+        self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
+        self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
+        self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
+
+    def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for archive in ("lab-x86_64-unknown-linux-gnu.tar.gz", "lab-aarch64-apple-darwin.tar.gz"):
+                payload = work / "labby"
+                payload.write_text("binary")
+                with tarfile.open(work / archive, "w:gz") as tar:
+                    tar.add(payload, arcname="labby")
+                payload.unlink()
+            with zipfile.ZipFile(work / "lab-x86_64-pc-windows-msvc.zip", "w") as archive:
+                archive.writestr("labby.exe", "binary")
+            for name in ("labby-install.sh", "labby-install.ps1"):
+                (work / name).write_text("installer")
+            for name in list(work.iterdir()):
+                (work / f"{name.name}.sha256").write_text(f"{'0' * 64}  {name.name}\n")
+            syft = work / "fake-syft"
+            syft.write_text('#!/usr/bin/env bash\nfor arg; do [[ "$arg" == spdx-json=* ]] && printf "{}" > "${arg#spdx-json=}"; done\n')
+            syft.chmod(0o755)
+            env = os.environ | {"SYFT_BIN": str(syft)}
+            subprocess.run(["bash", str(ROOT / "scripts/ci/generate-release-sboms.sh")], cwd=work, env=env, check=True)
+            for sbom in ("lab-x86_64-unknown-linux-gnu.spdx.json", "lab-aarch64-apple-darwin.spdx.json",
+                         "lab-x86_64-pc-windows-msvc.spdx.json", "labby-install.sh.spdx.json", "labby-install.ps1.spdx.json"):
+                self.assertTrue((work / sbom).is_file(), sbom)
+            self.assertEqual([], sorted(path.name for path in work.glob("*.spdx.json.spdx.json")))
+            # Same subject globs as the release workflow's manifest step.
+            patterns = ("lab-*.tar.gz", "lab-*.zip", "lab-*.sha256", "lab-*.spdx.json", "labby-install.*.spdx.json",
+                        "labby-install.sh", "labby-install.ps1", "labby-install.sh.sha256", "labby-install.ps1.sha256")
+            subjects = [str(path) for pattern in patterns for path in sorted(work.glob(pattern))]
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/ci/create-release-manifest.py"), "--tag", "v1.2.3",
+                 "--repository", "acme/labby", "--incus-sha256", "a" * 64, "--mcp-manifest-sha256", "b" * 64,
+                 "--output", str(work / "release-manifest.json"), *subjects],
+                cwd=work, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_incus_candidate_publish_reads_hosted_checksum_inventory(self) -> None:
+        workflow = self.text(".github/workflows/build-incus-image.yml")
+        release = yaml.load(workflow, Loader=yaml.BaseLoader)
+        # The hosted builder refuses kache without credentials, and release
+        # workflows must not name the shared-cache secrets.
+        self.assertEqual("false", release["jobs"]["build-image"]["with"]["enable-kache"])
+        program = re.search(r"asset_sha256=\$\(awk '([^']+)' dist/SHA256SUMS\)", workflow)
+        self.assertIsNotNone(program)
+        with tempfile.TemporaryDirectory() as tmp:
+            sums = Path(tmp) / "SHA256SUMS"
+            sums.write_text(f"{'c' * 64}  ./labby-incus-x86_64-unknown-linux-gnu.tar.xz\n{'d' * 64}  ./image.spdx.json\n")
+            result = subprocess.run(["awk", program.group(1), str(sums)], text=True, capture_output=True, check=True)
+        self.assertEqual("c" * 64, result.stdout.strip())
+
+    def test_release_consumer_provenance_check_has_a_token(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        steps = {step.get("name"): step for step in release["jobs"]["release"]["steps"]}
+        self.assertEqual("${{ github.token }}", steps["Verify release provenance as a consumer"]["env"]["GH_TOKEN"])
 
     def test_release_has_machine_readable_manifest_and_reconciler(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
@@ -101,6 +323,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual("./.github/workflows/mcp-registry.yml", jobs["mcp-candidate"]["uses"])
         self.assertIn("incus-candidate", jobs["release"]["needs"])
         self.assertIn("mcp-candidate", jobs["release"]["needs"])
+        # The MCP Registry verifies the npm version it references, so npm's
+        # candidate publication must finish before mcp-candidate starts.
+        self.assertIn("npm-candidate", jobs["mcp-candidate"]["needs"])
+        self.assertIn("npm-candidate", jobs["release"]["needs"])
+        for gate in ("upgrade-qualification", "incus-candidate"):
+            self.assertIn(gate, jobs["npm-candidate"]["needs"])
+        publish = next(step for step in jobs["npm-candidate"]["steps"] if step.get("name") == "Publish candidate-tagged npm launcher")
+        self.assertIn('--tag "candidate-$version"', publish["run"])
+        self.assertEqual("${{ github.workspace }}", publish["env"]["LABBY_RELEASE_ASSET_DIR"])
         for path in (".github/workflows/build-incus-image.yml", ".github/workflows/mcp-registry.yml"):
             text = self.text(path)
             self.assertIn("workflow_call:", text)
@@ -474,6 +705,79 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE", adapter, name)
             self.assertIn("verify-provenance", adapter, name)
 
+    def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
+        for adapter in ("host-service", "incus"):
+            with self.subTest(adapter=adapter), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                env_file = work / "fixture.env"
+                env_file.write_text("LABBY_MCP_HTTP_TOKEN=original-fixture-token\n")
+                # Load the real adapter definitions without running host setup.
+                text = self.text(f"scripts/ci/n-minus-one/{adapter}")
+                boundary = "require_fixture()" if adapter == "host-service" else "ensure_fixture()"
+                definitions = text.split(boundary, 1)[0]
+                definitions = re.sub(r"^repo_root=.*$", 'repo_root="$1"', definitions, flags=re.M)
+                fixture = r'''
+fixture_env="$2/fixture.env"
+baseline_token_path="$2/evidence/baseline-token"
+sudo() { sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$fixture_env"; }
+incus() {
+    if [[ "$4" == sh ]]; then
+        sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$fixture_env"
+    else
+        curl "${@:5}"
+    fi
+}
+curl() {
+    # The candidate accepts its current credential; continuity must be
+    # enforced before curl, rather than relying on an authentication failure.
+    if [[ "$*" == *"Authorization: Bearer original-fixture-token"* ]]; then
+        printf 'original\n' >>"$fixture_env.calls"
+    else
+        printf 'replacement\n' >>"$fixture_env.calls"
+    fi
+}
+'''
+                checks = r'''
+capture_baseline_token
+printf '# rewritten formatting\r\n\r\nLABBY_MCP_HTTP_TOKEN=original-fixture-token\r\n' >"$fixture_env"
+authenticated_action
+call snippets '{"action":"help"}'
+printf 'LABBY_MCP_HTTP_TOKEN=replacement-fixture-token\n' >"$fixture_env"
+if authenticated_action || call snippets '{"action":"help"}'; then exit 91; fi
+# Repeated seed attempts cannot rewrite retained authority.
+if capture_baseline_token; then exit 92; fi
+rm "$baseline_token_path"
+if authenticated_action; then exit 93; fi
+'''
+                result = subprocess.run(
+                    ["bash", "-c", definitions + fixture + checks, "fixture", str(ROOT), str(work)],
+                    env={**os.environ, "RUNNER_TEMP": str(work)}, text=True, capture_output=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("original\noriginal\n", (work / "fixture.env.calls").read_text())
+                self.assertNotIn("original-fixture-token", result.stdout + result.stderr)
+                self.assertNotIn("replacement-fixture-token", result.stdout + result.stderr)
+
+    def test_baseline_credential_capture_is_private_and_rejects_ambiguous_input(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-token.sh"
+        for token in ("", "first\nsecond", "first\n\n", "fixture-token"):
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "evidence" / "baseline-token"
+                result = subprocess.run(
+                    ["bash", "-c", 'set -euo pipefail; baseline_token_path="$2"; source "$1"; '
+                     'read_current_token() { printf "%s" "$FIXTURE_TOKEN"; }; capture_baseline_token',
+                     "fixture", str(helper), str(path)],
+                    env={**os.environ, "FIXTURE_TOKEN": token}, text=True, capture_output=True,
+                )
+                if token == "fixture-token":
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
+                    self.assertEqual(0o700, path.parent.stat().st_mode & 0o777)
+                    self.assertEqual("fixture-token\n", path.read_text())
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(path.exists())
+
     def test_all_five_n_minus_one_adapters_verify_every_durable_class(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")
         for state_class in ("auth.db", "access.db", "usage.db", "skills/", "artifacts/", "snippets/"):
@@ -510,6 +814,45 @@ class ReleaseHelperTests(unittest.TestCase):
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, relative)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(saved)
+
+    def test_durable_state_seeds_only_what_an_older_baseline_created(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
+        # v1.13.3 in bearer mode: no auth.db, no access.db, and an older usage schema.
+        old_usage = "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL)"
+        with tempfile.TemporaryDirectory() as tmp:
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute(old_usage)
+            seed = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertEqual(0, seed.returncode, seed.stderr)
+            self.assertIn("not in N-1, not verified: auth.db", seed.stderr)
+            self.assertIn("not in N-1, not verified: access.db", seed.stderr)
+            manifest = json.loads((Path(tmp) / "n-minus-one-seeded.json").read_text())
+            self.assertEqual(["usage.db"], manifest["seeded"])
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            # The usage store prunes rows older than its retention window, so
+            # the seeded row must carry a current timestamp.
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("DELETE FROM upstream_calls WHERE ts_unix < CAST(strftime('%s','now') AS INTEGER) - 86400")
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            # The candidate migrates usage.db in place; the seeded row must survive that.
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("ALTER TABLE upstream_calls ADD COLUMN response_bytes INTEGER")
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("DELETE FROM upstream_calls")
+            self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            (Path(tmp) / "n-minus-one-seeded.json").unlink()
+            self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+        with tempfile.TemporaryDirectory() as tmp:
+            none = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, none.returncode)
+            self.assertIn("created none of the durable databases", none.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute(old_usage.replace("elapsed_ms INTEGER NOT NULL)", "elapsed_ms INTEGER NOT NULL,unknown_required TEXT NOT NULL)"))
+            unknown = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, unknown.returncode)
+            self.assertIn("cannot seed usage.db/upstream_calls", unknown.stderr)
 
     def test_n_minus_one_adapters_preserve_final_authenticated_proof(self) -> None:
         self.assertFalse((ROOT / "scripts/ci/n-minus-one/compose").exists())

@@ -594,14 +594,41 @@ fn recover_identity_publication(
     if error.kind() == std::io::ErrorKind::AlreadyExists
         || (cfg!(windows) && error.raw_os_error() == Some(32))
     {
-        existing_installation_id(paths).map_err(|_| error.into())
+        existing_installation_id(paths).map_err(|read_error| {
+            anyhow::Error::new(error).context(format!(
+                "cannot read winning installation identity: {read_error}"
+            ))
+        })
     } else {
         Err(error.into())
     }
 }
 
+// Concurrent Windows no-clobber renames can briefly hold the destination with
+// incompatible sharing, including after a losing rename reported AlreadyExists.
+// Retry only that transient OS error. Every attempt still validates the exact
+// file owner, ACL, type and bounds; permanent errors remain fail-closed.
+#[cfg(any(windows, test))]
+fn read_identity_with_sharing_retry(
+    mut read: impl FnMut() -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<Vec<u8>> {
+    for attempt in 0..50 {
+        match read() {
+            Err(error) if error.raw_os_error() == Some(32) && attempt < 49 => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final attempt always returns")
+}
+
 pub(super) fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
-    let bytes = read_private(&paths.root().join(INSTALLATION_ID_FILE))?;
+    let path = paths.root().join(INSTALLATION_ID_FILE);
+    #[cfg(windows)]
+    let bytes = read_identity_with_sharing_retry(|| read_private(&path))?;
+    #[cfg(not(windows))]
+    let bytes = read_private(&path)?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| std::io::Error::other("installation ID is not UTF-8"))?
         .trim();
@@ -766,6 +793,40 @@ fn unix_seconds() -> anyhow::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_read_retries_only_bounded_windows_sharing_conflicts() {
+        let mut attempts = 0;
+        let bytes = read_identity_with_sharing_retry(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from_raw_os_error(32))
+            } else {
+                Ok(b"complete-winner".to_vec())
+            }
+        })
+        .unwrap();
+        assert_eq!(bytes, b"complete-winner");
+        assert_eq!(attempts, 3);
+
+        attempts = 0;
+        let error = read_identity_with_sharing_retry(|| {
+            attempts += 1;
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(attempts, 1);
+
+        attempts = 0;
+        let error = read_identity_with_sharing_retry(|| {
+            attempts += 1;
+            Err(std::io::Error::from_raw_os_error(32))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(32));
+        assert_eq!(attempts, 50);
+    }
 
     #[test]
     fn installation_identity_concurrent_creators_share_complete_winner() {
