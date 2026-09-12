@@ -705,6 +705,79 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE", adapter, name)
             self.assertIn("verify-provenance", adapter, name)
 
+    def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
+        for adapter in ("host-service", "incus"):
+            with self.subTest(adapter=adapter), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                env_file = work / "fixture.env"
+                env_file.write_text("LABBY_MCP_HTTP_TOKEN=original-fixture-token\n")
+                # Load the real adapter definitions without running host setup.
+                text = self.text(f"scripts/ci/n-minus-one/{adapter}")
+                boundary = "require_fixture()" if adapter == "host-service" else "ensure_fixture()"
+                definitions = text.split(boundary, 1)[0]
+                definitions = re.sub(r"^repo_root=.*$", 'repo_root="$1"', definitions, flags=re.M)
+                fixture = r'''
+fixture_env="$2/fixture.env"
+baseline_token_path="$2/evidence/baseline-token"
+sudo() { sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$fixture_env"; }
+incus() {
+    if [[ "$4" == sh ]]; then
+        sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$fixture_env"
+    else
+        curl "${@:5}"
+    fi
+}
+curl() {
+    # The candidate accepts its current credential; continuity must be
+    # enforced before curl, rather than relying on an authentication failure.
+    if [[ "$*" == *"Authorization: Bearer original-fixture-token"* ]]; then
+        printf 'original\n' >>"$fixture_env.calls"
+    else
+        printf 'replacement\n' >>"$fixture_env.calls"
+    fi
+}
+'''
+                checks = r'''
+capture_baseline_token
+printf '# rewritten formatting\r\n\r\nLABBY_MCP_HTTP_TOKEN=original-fixture-token\r\n' >"$fixture_env"
+authenticated_action
+call snippets '{"action":"help"}'
+printf 'LABBY_MCP_HTTP_TOKEN=replacement-fixture-token\n' >"$fixture_env"
+if authenticated_action || call snippets '{"action":"help"}'; then exit 91; fi
+# Repeated seed attempts cannot rewrite retained authority.
+if capture_baseline_token; then exit 92; fi
+rm "$baseline_token_path"
+if authenticated_action; then exit 93; fi
+'''
+                result = subprocess.run(
+                    ["bash", "-c", definitions + fixture + checks, "fixture", str(ROOT), str(work)],
+                    env={**os.environ, "RUNNER_TEMP": str(work)}, text=True, capture_output=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("original\noriginal\n", (work / "fixture.env.calls").read_text())
+                self.assertNotIn("original-fixture-token", result.stdout + result.stderr)
+                self.assertNotIn("replacement-fixture-token", result.stdout + result.stderr)
+
+    def test_baseline_credential_capture_is_private_and_rejects_ambiguous_input(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-token.sh"
+        for token in ("", "first\nsecond", "first\n\n", "fixture-token"):
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "evidence" / "baseline-token"
+                result = subprocess.run(
+                    ["bash", "-c", 'set -euo pipefail; baseline_token_path="$2"; source "$1"; '
+                     'read_current_token() { printf "%s" "$FIXTURE_TOKEN"; }; capture_baseline_token',
+                     "fixture", str(helper), str(path)],
+                    env={**os.environ, "FIXTURE_TOKEN": token}, text=True, capture_output=True,
+                )
+                if token == "fixture-token":
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
+                    self.assertEqual(0o700, path.parent.stat().st_mode & 0o777)
+                    self.assertEqual("fixture-token\n", path.read_text())
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(path.exists())
+
     def test_all_five_n_minus_one_adapters_verify_every_durable_class(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")
         for state_class in ("auth.db", "access.db", "usage.db", "skills/", "artifacts/", "snippets/"):
