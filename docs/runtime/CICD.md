@@ -283,10 +283,8 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, Windows, Incus, and
-   host-service deployment. The macOS adapter exists, but its leg is off until
-   a release carrying the macOS arm64 archive is published, because until then
-   there is no macOS N-1 to install. The host-service leg is advisory: it runs
+   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Incus,
+   and host-service deployment. The host-service leg is advisory: it runs
    and reports, but cannot block a release, until the service can write its
    logs under the v1.16 systemd sandbox. N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the

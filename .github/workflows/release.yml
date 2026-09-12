@@ -237,12 +237,11 @@ jobs:
             artifact: lab-x86_64-pc-windows-msvc
             archive: lab-x86_64-pc-windows-msvc.zip
             binary: labby.exe
-          # No macOS leg yet. `build` still builds, smoke-tests and attests
-          # lab-aarch64-apple-darwin.tar.gz, but no published release has
-          # carried it, so there is no N-1 to install and the leg could only
-          # fail closed. Restore it (runner: macos-15, artifact:
-          # lab-aarch64-apple-darwin) once a release with that archive is
-          # published.
+          - deployment: macos
+            runner: macos-15
+            artifact: lab-aarch64-apple-darwin
+            archive: lab-aarch64-apple-darwin.tar.gz
+            binary: labby
           - deployment: incus
             runner: ubuntu-24.04
             artifact: lab-x86_64-unknown-linux-gnu
