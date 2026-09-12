@@ -58,7 +58,7 @@ pub fn fingerprint(scenario: &Scenario) -> String {
 /// whitespace. `serde_json::Map` is a `BTreeMap` unless the `preserve_order`
 /// feature is on, so this walks the value explicitly rather than trusting a
 /// feature flag a downstream crate could turn on and silently change hashes.
-fn canonical_bytes(value: &Value) -> Vec<u8> {
+pub(crate) fn canonical_bytes(value: &Value) -> Vec<u8> {
     let mut out = Vec::new();
     write_canonical(value, &mut out);
     out

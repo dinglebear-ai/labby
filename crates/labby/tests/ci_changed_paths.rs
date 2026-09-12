@@ -305,6 +305,19 @@ fn verification_workspace_changes_route_to_their_own_job_only() {
 }
 
 #[test]
+fn verification_runs_when_its_inherited_build_inputs_change() {
+    for path in [
+        "rust-toolchain.toml",
+        "clippy.toml",
+        "Justfile",
+        ".cargo/config.toml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["verification"], "true", "{path}");
+    }
+}
+
+#[test]
 fn product_changes_do_not_enable_the_verification_workspace_job() {
     // The inverse direction: the two workspaces are independent, so a product
     // source edit has no reason to rebuild the toolkit.

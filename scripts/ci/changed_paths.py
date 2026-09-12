@@ -202,7 +202,11 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     # Rust matrix. It therefore needs its own routing key — without one, a
     # change confined to verification/ would route to nothing at all and CI
     # would report green having compiled and tested none of it.
-    verification = any_match(paths, lambda p: starts(p, "verification/"))
+    verification = any_match(
+        paths,
+        lambda p: starts(p, "verification/", ".cargo/")
+        or p in {"rust-toolchain.toml", "clippy.toml", "Justfile"},
+    )
     rust_compile = rust_sources or rust_manifests
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
     # compilation and runtime behavior just as directly as a Rust source edit.

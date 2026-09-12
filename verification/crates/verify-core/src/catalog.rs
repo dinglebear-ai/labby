@@ -116,30 +116,8 @@ impl Catalog {
         &self,
         backends: &BTreeMap<BackendId, Capabilities>,
     ) -> Result<(), Vec<CatalogError>> {
-        let mut errors = Vec::new();
-
-        if self.schema != CATALOG_SCHEMA {
-            errors.push(CatalogError::Schema { found: self.schema });
-        }
-        if !is_valid_namespace(&self.namespace) {
-            errors.push(CatalogError::Namespace {
-                namespace: self.namespace.clone(),
-            });
-        }
-
-        let mut seen: BTreeSet<&InvariantId> = BTreeSet::new();
+        let mut errors = self.validate_structure().err().unwrap_or_default();
         for invariant in &self.invariants {
-            if !seen.insert(&invariant.id) {
-                errors.push(CatalogError::DuplicateId {
-                    id: invariant.id.clone(),
-                });
-            }
-            if invariant.id.namespace() != self.namespace {
-                errors.push(CatalogError::NamespaceMismatch {
-                    id: invariant.id.clone(),
-                    namespace: self.namespace.clone(),
-                });
-            }
             for (backend, handles) in &invariant.checks {
                 let Some(capabilities) = backends.get(backend) else {
                     errors.push(CatalogError::UnknownBackend {
@@ -165,6 +143,41 @@ impl Catalog {
             }
         }
 
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate schema and invariant identity without resolving backend bindings.
+    /// Replay uses this subset because it executes targets, not search backends.
+    pub fn validate_structure(&self) -> Result<(), Vec<CatalogError>> {
+        let mut errors = Vec::new();
+
+        if self.schema != CATALOG_SCHEMA {
+            errors.push(CatalogError::Schema { found: self.schema });
+        }
+        if !is_valid_namespace(&self.namespace) {
+            errors.push(CatalogError::Namespace {
+                namespace: self.namespace.clone(),
+            });
+        }
+
+        let mut seen: BTreeSet<&InvariantId> = BTreeSet::new();
+        for invariant in &self.invariants {
+            if !seen.insert(&invariant.id) {
+                errors.push(CatalogError::DuplicateId {
+                    id: invariant.id.clone(),
+                });
+            }
+            if invariant.id.namespace() != self.namespace {
+                errors.push(CatalogError::NamespaceMismatch {
+                    id: invariant.id.clone(),
+                    namespace: self.namespace.clone(),
+                });
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {

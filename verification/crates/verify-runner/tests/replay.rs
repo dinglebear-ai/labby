@@ -78,10 +78,9 @@ fn a_tampered_scenario_mismatches_and_fails() {
 }
 
 #[test]
-fn a_safety_violation_repaired_before_the_end_still_counts() {
-    // The whole point of judging safety over the trace. The invariant is false
-    // after late_response; nothing repairs it here, but the final-state reading
-    // would depend on the last step rather than on the violation.
+fn a_safety_violation_followed_by_a_rejected_step_still_counts() {
+    // Dispatch is rejected because the request is already dispatched. The
+    // rejected step must not clear the earlier recorded violation.
     let scenario = scenario(
         &json!([
             { "event": "dispatch" },
@@ -256,4 +255,204 @@ fn liveness_is_judged_at_the_end_of_the_trace() {
     // recorded either way.
     assert_eq!(liveness.outcome, Outcome::Matched);
     assert_eq!(safety.expect, Expect::InvariantViolated);
+}
+
+struct VerdictModel(verify_core::verdict::Verdict);
+impl verify_core::target::ScenarioTarget for VerdictModel {
+    type State = ();
+    type Step = serde_json::Value;
+    fn init(&self, _: &serde_json::Value) -> Result<(), verify_core::target::ScenarioError> {
+        Ok(())
+    }
+    fn apply(
+        &self,
+        (): &mut (),
+        _: &Self::Step,
+    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
+        Ok(verify_core::target::StepOutcome::Applied)
+    }
+    fn check(
+        &self,
+        id: &verify_core::InvariantId,
+        (): &(),
+    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
+        Ok(verify_core::InvariantResult::new(
+            id.clone(),
+            self.0.clone(),
+        ))
+    }
+}
+
+#[test]
+fn unavailable_verdicts_never_pass_as_holding_invariants() {
+    use verify_core::verdict::Verdict;
+    for verdict in [
+        Verdict::Error {
+            reason: "failed".into(),
+        },
+        Verdict::Skipped {
+            reason: "missing".into(),
+        },
+        Verdict::Uncovered,
+    ] {
+        let targets = TargetRegistry::new().with(
+            TargetKey::new("fixture", "request"),
+            Box::new(VerdictModel(verdict)),
+        );
+        for steps in [json!([]), json!([{}])] {
+            let report = replay(
+                &scenario(&steps, "invariant_holds"),
+                Kind::Safety,
+                &targets,
+                "unavailable",
+            );
+            assert!(matches!(report.outcome, Outcome::Malformed { .. }));
+            assert!(report.failed());
+        }
+    }
+}
+
+#[test]
+fn empty_final_state_traces_judge_the_initial_state() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(VerdictModel(verify_core::verdict::Verdict::Falsified)),
+    );
+    for kind in [Kind::Liveness, Kind::Refinement] {
+        let report = replay(
+            &scenario(&json!([]), "invariant_violated"),
+            kind,
+            &targets,
+            "initial-only",
+        );
+        assert_eq!(report.outcome, Outcome::Matched);
+        assert_eq!(report.first_violation, Some(0));
+    }
+}
+
+struct AlternatingModel(std::cell::Cell<bool>);
+impl verify_core::target::ScenarioTarget for AlternatingModel {
+    type State = ();
+    type Step = serde_json::Value;
+    fn init(&self, _: &serde_json::Value) -> Result<(), verify_core::target::ScenarioError> {
+        Ok(())
+    }
+    fn apply(
+        &self,
+        (): &mut (),
+        _: &Self::Step,
+    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
+        let previous = self.0.replace(!self.0.get());
+        Ok(if previous {
+            verify_core::target::StepOutcome::Applied
+        } else {
+            verify_core::target::StepOutcome::rejected("unavailable")
+        })
+    }
+    fn check(
+        &self,
+        id: &verify_core::InvariantId,
+        (): &(),
+    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
+        Ok(verify_core::InvariantResult::new(
+            id.clone(),
+            verify_core::verdict::Verdict::Verified,
+        ))
+    }
+}
+#[test]
+fn determinism_checks_step_outcomes_even_when_final_verdicts_match() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(AlternatingModel(std::cell::Cell::new(false))),
+    );
+    let scenario = scenario(&json!([{}]), "invariant_holds");
+    assert!(!check_determinism(&scenario, Kind::Safety, &targets, 3).stable);
+    assert_eq!(
+        verify_runner::normalize(&scenario, Kind::Safety, &targets, 3).status,
+        ScenarioStatus::Quarantined
+    );
+}
+
+struct LiteralModel(bool);
+impl verify_core::target::ScenarioTarget for LiteralModel {
+    fn allows_identifier_renaming(&self) -> bool {
+        self.0
+    }
+    type State = bool;
+    type Step = String;
+    fn init(&self, _: &serde_json::Value) -> Result<bool, verify_core::target::ScenarioError> {
+        Ok(false)
+    }
+    fn apply(
+        &self,
+        state: &mut bool,
+        step: &String,
+    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
+        *state = step == "literal_7";
+        Ok(verify_core::target::StepOutcome::Applied)
+    }
+    fn check(
+        &self,
+        id: &verify_core::InvariantId,
+        state: &bool,
+    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
+        Ok(verify_core::InvariantResult::new(
+            id.clone(),
+            if *state {
+                verify_core::verdict::Verdict::Falsified
+            } else {
+                verify_core::verdict::Verdict::Verified
+            },
+        ))
+    }
+}
+#[test]
+fn normalization_discards_identifier_rewriting_that_changes_the_verdict() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(LiteralModel(true)),
+    );
+    let scenario = scenario(&json!(["literal_7"]), "invariant_violated");
+    let normalized = verify_runner::normalize(&scenario, Kind::Safety, &targets, 3);
+    assert_eq!(
+        normalized.steps,
+        json!(["literal_7"]).as_array().unwrap().clone()
+    );
+    assert_eq!(normalized.status, ScenarioStatus::Active);
+    assert_eq!(
+        replay(&normalized, Kind::Safety, &targets, "guarded").outcome,
+        Outcome::Matched
+    );
+}
+
+#[test]
+fn normalization_preserves_literal_payloads_without_identifier_opt_in() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(LiteralModel(false)),
+    );
+    let scenario = scenario(&json!(["literal_8"]), "invariant_holds");
+    let normalized = verify_runner::normalize(&scenario, Kind::Safety, &targets, 3);
+    assert_eq!(normalized.steps, vec![json!("literal_8")]);
+}
+
+#[test]
+fn repaired_violation_counts_for_safety_but_not_final_state_properties() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(LiteralModel(false)),
+    );
+    let scenario = scenario(&json!(["literal_7", "repaired"]), "invariant_violated");
+    assert_eq!(
+        replay(&scenario, Kind::Safety, &targets, "safety").outcome,
+        Outcome::Matched
+    );
+    assert_eq!(
+        replay(&scenario, Kind::Liveness, &targets, "liveness").outcome,
+        Outcome::Mismatched {
+            expected: Expect::InvariantViolated,
+            observed: Expect::InvariantHolds
+        }
+    );
 }

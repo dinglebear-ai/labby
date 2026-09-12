@@ -124,15 +124,15 @@ fn run_replay(
     catalog: Option<&Path>,
     registry: &TargetRegistry,
 ) -> ExitCode {
-    let kinds = match catalog {
-        Some(path) => match load_kinds(path) {
-            Ok(kinds) => kinds,
+    let loaded_catalog = match catalog {
+        Some(path) => match load_catalog(path) {
+            Ok(catalog) => Some(catalog),
             Err(message) => {
                 eprintln!("{message}");
                 return ExitCode::from(EXIT_MALFORMED);
             }
         },
-        None => BTreeMap::new(),
+        None => None,
     };
 
     let mut summary = Summary::default();
@@ -162,10 +162,17 @@ fn run_replay(
                 continue;
             }
         };
-        let kind = kinds
-            .get(scenario.invariant.as_str())
-            .copied()
-            .unwrap_or(default_kind);
+        let kind = match scenario_kind(&scenario, loaded_catalog.as_ref(), default_kind) {
+            Ok(kind) => kind,
+            Err(reason) => {
+                eprintln!("MALFORMED   {label}\n            {reason}");
+                worst = Some(EXIT_MALFORMED);
+                summary.malformed += 1;
+                summary.total += 1;
+                summary.failing += 1;
+                continue;
+            }
+        };
         let report = replay(&scenario, kind, registry, &label);
         println!("{}", render_text(&report));
         if report.failed() {
@@ -183,16 +190,52 @@ fn run_replay(
     worst.map_or(ExitCode::SUCCESS, ExitCode::from)
 }
 
-fn load_kinds(path: &Path) -> Result<BTreeMap<String, Kind>, String> {
+fn load_catalog(path: &Path) -> Result<Catalog, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read catalog {}: {error}", path.display()))?;
     let catalog = Catalog::parse(&text)
         .map_err(|error| format!("cannot parse catalog {}: {error}", path.display()))?;
-    Ok(catalog
+    catalog.validate_structure().map_err(|errors| {
+        errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    Ok(catalog)
+}
+
+fn scenario_kind(
+    scenario: &Scenario,
+    catalog: Option<&Catalog>,
+    default: Kind,
+) -> Result<Kind, String> {
+    let Some(catalog) = catalog else {
+        return Ok(default);
+    };
+    if catalog.project != scenario.project {
+        return Err(format!(
+            "catalog project {} does not match scenario project {}",
+            catalog.project, scenario.project
+        ));
+    }
+    let invariant = catalog
         .invariants
         .iter()
-        .map(|invariant| (invariant.id.as_str().to_owned(), invariant.kind))
-        .collect())
+        .find(|entry| entry.id == scenario.invariant)
+        .ok_or_else(|| {
+            format!(
+                "invariant {} is absent from the supplied catalog",
+                scenario.invariant
+            )
+        })?;
+    if invariant.model != scenario.model {
+        return Err(format!(
+            "invariant {} belongs to model {}, not {}",
+            invariant.id, invariant.model, scenario.model
+        ));
+    }
+    Ok(invariant.kind)
 }
 
 fn run_catalog_validate(path: &Path) -> ExitCode {
@@ -232,5 +275,55 @@ fn run_catalog_validate(path: &Path) -> ExitCode {
             }
             ExitCode::from(EXIT_MALFORMED)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn catalog() -> Catalog {
+        Catalog::parse(
+            r#"schema = 1
+project = "fixture"
+namespace = "FIXTURE"
+[[invariant]]
+id = "FIXTURE-REQ-001"
+title = "Request"
+kind = "liveness"
+severity = "high"
+model = "request"
+"#,
+        )
+        .expect("catalog")
+    }
+    fn scenario() -> Scenario {
+        Scenario::parse(r#"{"schema":1,"project":"fixture","model":"request","invariant":"FIXTURE-REQ-001","origin":{"kind":"manual"},"steps":[],"expect":"invariant_holds"}"#).expect("scenario")
+    }
+    #[test]
+    fn supplied_catalog_never_falls_back_for_an_unknown_identity() {
+        let catalog = catalog();
+        let original = scenario();
+        assert_eq!(
+            scenario_kind(&original, Some(&catalog), Kind::Safety),
+            Ok(Kind::Liveness)
+        );
+        let mut changed = original.clone();
+        changed.invariant = verify_core::InvariantId::parse("FIXTURE-REQ-002").expect("id");
+        assert!(scenario_kind(&changed, Some(&catalog), Kind::Safety).is_err());
+        changed = original.clone();
+        changed.project = "other".into();
+        assert!(scenario_kind(&changed, Some(&catalog), Kind::Safety).is_err());
+        changed = original;
+        changed.model = "other".into();
+        assert!(scenario_kind(&changed, Some(&catalog), Kind::Safety).is_err());
+    }
+    #[test]
+    fn structural_validation_rejects_future_schemas_and_duplicate_ids() {
+        let mut catalog = catalog();
+        catalog.schema = 2;
+        assert!(catalog.validate_structure().is_err());
+        catalog.schema = 1;
+        catalog.invariants.push(catalog.invariants[0].clone());
+        assert!(catalog.validate_structure().is_err());
     }
 }
