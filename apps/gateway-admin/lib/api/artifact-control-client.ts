@@ -1,6 +1,6 @@
 import { normalizeGatewayApiBase } from './gateway-config'
 import { gatewayHeaders } from './gateway-request'
-import { getBrowserSessionContextIdentity, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
+import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
 import { performServiceAction, refreshBrowserSession, type ServiceActionError } from './service-action-client'
 
 export type ArtifactControlError = ServiceActionError
@@ -23,9 +23,9 @@ export function controlPlaneAction<T>(service: 'artifacts' | 'sources' | 'jobs' 
 export async function uploadArtifactBytes(uploadId: string, file: File, connectionId?: string) {
   const query = connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ''
   const initialCsrfToken = getSessionCsrfToken()
-  const initialContext = getBrowserSessionContextIdentity()
+  const initialContext = getBrowserSessionEpoch()
   const assertCurrentContext = () => {
-    if (initialContext !== getBrowserSessionContextIdentity()) {
+    if (initialContext !== getBrowserSessionEpoch()) {
       throw new DOMException('Authority or project context changed', 'AbortError')
     }
   }

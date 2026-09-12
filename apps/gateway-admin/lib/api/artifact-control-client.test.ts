@@ -66,3 +66,46 @@ test('raw upload refuses a retry or success after its project changes', async ()
     globalThis.fetch = originalFetch
   }
 })
+
+test('raw upload stays cancelled after returning to the same principal and project', async () => {
+  const originalFetch = globalThis.fetch
+  const session = { status: 'authenticated' as const, user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId: 'project-1' }
+  try {
+    for (const interim of [{ ...session, projectId: 'project-2' }, { status: 'unauthenticated' as const }]) {
+      for (const status of [200, 403]) {
+        __setBrowserSessionStateForTests(session)
+        let calls = 0
+        globalThis.fetch = async () => {
+          calls++
+          __setBrowserSessionStateForTests(interim)
+          __setBrowserSessionStateForTests({ ...session, csrfToken: 'new-csrf' })
+          return new Response(JSON.stringify(status === 200 ? { ok: true } : { kind: 'auth_failed' }), { status })
+        }
+        await assert.rejects(uploadArtifactBytes('upload-1', new File(['bytes'], 'test.zip')), { name: 'AbortError' })
+        assert.equal(calls, 1)
+      }
+    }
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('raw upload can retry after a transport-only CSRF refresh', async () => {
+  const originalFetch = globalThis.fetch
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: 1000, csrfToken: 'old-csrf', projectId: 'project-1' })
+  let uploads = 0
+  let refreshes = 0
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === '/auth/session') {
+        refreshes++
+        return new Response(JSON.stringify({ authenticated: true, user: { sub: 'operator' }, expires_at: 2000, csrf_token: 'new-csrf', project_id: 'project-1' }))
+      }
+      uploads++
+      if (uploads === 1) return new Response(JSON.stringify({ kind: 'auth_failed' }), { status: 403 })
+      assert.equal(new Headers(init?.headers).get('x-csrf-token'), 'new-csrf')
+      return new Response(JSON.stringify({ ok: true }))
+    }
+    assert.deepEqual(await uploadArtifactBytes('upload-1', new File(['bytes'], 'test.zip')), { ok: true })
+    assert.equal(uploads, 2)
+    assert.equal(refreshes, 1)
+  } finally { globalThis.fetch = originalFetch }
+})

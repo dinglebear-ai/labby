@@ -21,8 +21,9 @@ See [TRANSPORT.md](./TRANSPORT.md) for transport and authentication boundaries.
 
 The generated [service catalog](../generated/service-catalog.md) is authoritative.
 The enabled service tools depend on the build features, runtime configuration,
-and platform. Use that catalog and live `lab.help` discovery for the current
-inventory. Linux additionally supports the principal-scoped File Stash.
+and platform. Use that catalog, protocol `tools/list`, or the `lab://catalog`
+resource for the current inventory exposed to your session. Linux additionally
+supports the principal-scoped File Stash.
 
 Each service tool accepts:
 

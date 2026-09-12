@@ -53,3 +53,21 @@ test('upload workflow cannot start ingestion in another project', async () => {
   }), /Authority or project context changed/)
   assert.equal(jobs, 0)
 })
+
+test('upload workflow stays cancelled after returning to its original context', async () => {
+  const session = { status: 'authenticated' as const, user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId: 'project-1' }
+  for (const interim of [{ ...session, projectId: 'project-2' }, { status: 'unauthenticated' as const }]) {
+    __setBrowserSessionStateForTests(session)
+    let jobs = 0
+    await assert.rejects(runArtifactUpload({
+      file: new File(['bytes'], 'test.zip'), namespace: 'test',
+      create: async () => ({ id: 'upload-1' }), uploadId: created => created.id,
+      putBytes: async () => {
+        __setBrowserSessionStateForTests(interim)
+        __setBrowserSessionStateForTests(session)
+      },
+      startJob: async () => { jobs++; return {} }, onCreated: () => {},
+    }), /Authority or project context changed/)
+    assert.equal(jobs, 0)
+  }
+})

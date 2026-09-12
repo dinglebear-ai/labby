@@ -1,4 +1,4 @@
-import { getBrowserSessionContextIdentity } from '../auth/session-store.ts'
+import { getBrowserSessionEpoch } from '../auth/session-store.ts'
 
 export type ArtifactUploadStage = 'creating the upload slot' | 'uploading bytes' | 'starting ingestion'
 
@@ -18,9 +18,9 @@ export async function runArtifactUpload<TCreated extends Record<string, unknown>
   startJob: (params: Record<string, unknown>) => Promise<TResult>
   onCreated: (created: TCreated, uploadId: string) => void
 }) {
-  const context = getBrowserSessionContextIdentity()
+  const context = getBrowserSessionEpoch()
   const assertCurrentContext = () => {
-    if (context !== getBrowserSessionContextIdentity()) throw new DOMException('Authority or project context changed', 'AbortError')
+    if (context !== getBrowserSessionEpoch()) throw new DOMException('Authority or project context changed', 'AbortError')
   }
   let stage: ArtifactUploadStage = 'creating the upload slot'
   let uploadId = ''
