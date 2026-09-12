@@ -109,6 +109,15 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
         pending.push("no services registered in tool registry".to_string());
     }
 
+    // File Stash recovers persisted state asynchronously. Do not advertise
+    // readiness while its enabled routes still refuse requests. An omitted
+    // service (including unsupported platforms) must not gate the process.
+    if state.registry.service("stash").is_some()
+        && state.file_stash_runtime.status().await != crate::file_stash::FileStashStatus::Ready
+    {
+        pending.push("File Stash is not ready".to_string());
+    }
+
     if let Some(reason) =
         crate::dispatch::depot::authority_projection::managed_projection_readiness_pending()
     {
@@ -209,11 +218,16 @@ mod tests {
         }
     }
 
-    /// Default `AppState` has no gateway manager wired and a populated registry
-    /// (all features enabled at compile time), so `/ready` must return 200.
+    /// Disabled Stash must not gate readiness even though its runtime is blocked.
     #[tokio::test]
     async fn ready_returns_200_when_no_gateway_manager() {
-        let state = AppState::new();
+        let mut registry = crate::registry::ToolRegistry::new();
+        for service in AppState::new().registry.services() {
+            if service.name != "stash" {
+                registry.register(service.clone());
+            }
+        }
+        let state = AppState::from_registry(registry);
         // Sanity-check our predicate: registry must be non-empty with --all-features.
         assert!(
             !state.registry.services().is_empty(),
@@ -227,6 +241,17 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn ready_refuses_enabled_blocked_stash() {
+        // The static registry lets every host exercise the enabled-service
+        // contract; production omits Stash on unsupported platforms.
+        let state = AppState::from_registry(crate::registry::build_docs_registry());
+        assert!(state.registry.service("stash").is_some());
+        let response = ready(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn integrated_ready_fails_closed_without_the_gateway_manager() {
         let verifier = Arc::new(labby_auth::trusted_host::TrustedHostVerifier::new(1, []));
