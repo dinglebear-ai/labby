@@ -765,18 +765,14 @@ impl UpstreamPool {
 
     /// Arm recovery tasks for configured long-lived upstreams.
     pub(crate) async fn ensure_recovery_tasks(&self, configs: &[UpstreamConfig]) {
-        if !self.auto_reconnect.load(Ordering::Relaxed) {
-            let cancellations = {
-                let mut tasks = self.probe_tasks.write().await;
-                tasks
-                    .drain()
-                    .map(|(_, cancellation)| cancellation)
-                    .collect::<Vec<_>>()
-            };
-            for cancellation in cancellations {
-                cancellation.cancel();
+        {
+            let mut tasks = self.probe_tasks.write().await;
+            if !self.auto_reconnect.load(Ordering::Relaxed) {
+                for (_, cancellation) in tasks.drain() {
+                    cancellation.cancel();
+                }
+                return;
             }
-            return;
         }
         for config in configs.iter().filter(|config| config.enabled) {
             self.ensure_probe_task(config.clone()).await;

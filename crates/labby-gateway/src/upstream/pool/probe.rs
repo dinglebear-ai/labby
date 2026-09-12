@@ -2,9 +2,8 @@
 //!
 //! `ensure_probe_task` spawns a per-upstream background loop that periodically
 //! calls `reprobe_upstream` (heartbeat existing connections, reconnect on
-//! failure) with jittered backoff. Both are `pub(super)` because they are called
-//! across module boundaries — `ensure_probe_task` from `discover.rs` and
-//! `reprobe_upstream` from `ensure.rs` (see plan §2.1).
+//! failure) with jittered backoff. Manager and discovery paths schedule tasks;
+//! on-demand readiness also uses the reprobe engine.
 
 use std::time::Instant;
 
@@ -22,10 +21,11 @@ use super::connect::connect_upstream_with_client;
 use super::connect::stable_jitter_seed;
 use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
-    classify_upstream_error, upstream_transport,
+    classify_upstream_error, upstream_name_is_uri_safe, upstream_transport,
 };
 use super::skills_list::peer_declares_skills;
 use super::tools::MAX_UPSTREAM_TOOLS;
+use super::validate::validate_upstream_config;
 
 #[cfg(any(test, feature = "testkit"))]
 static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
@@ -34,18 +34,23 @@ static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
 
 impl UpstreamPool {
     pub(crate) async fn ensure_probe_task(&self, config: UpstreamConfig) {
-        if !self
-            .auto_reconnect
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if !config.enabled || config.oauth.is_some() {
             return;
         }
-        if config.oauth.is_some() {
+
+        if !upstream_name_is_uri_safe(&config.name) || validate_upstream_config(&config).is_err() {
+            tracing::warn!(upstream = %config.name, "skipping recovery for invalid upstream configuration");
             return;
         }
 
         let mut tasks = self.probe_tasks.write().await;
-        if tasks.contains_key(&config.name) {
+        // Disable drains this map under the same lock. Check the flag only
+        // after acquiring it so a waiter cannot resurrect a cancelled task.
+        if !self
+            .auto_reconnect
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || tasks.contains_key(&config.name)
+        {
             return;
         }
         let cancel = CancellationToken::new();
@@ -114,7 +119,12 @@ impl UpstreamPool {
                     }
                 };
                 let reprobe_started = Instant::now();
-                match pool.reprobe_upstream(&config, None, None).await {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    result = pool.reprobe_upstream(&config, None, None) => result,
+                };
+                match result {
                     Ok(true) => {
                         tracing::info!(
                             surface = "dispatch",
@@ -349,6 +359,73 @@ mod tests {
 
         pool.drain_for_swap("probe.registration.test").await;
         assert!(pool.probe_tasks.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recovery_does_not_schedule_invalid_upstreams() {
+        let pool = UpstreamPool::new().with_auto_reconnect(true);
+        let mut bind_all = named_test_upstream_config("bind-all-recovery");
+        bind_all.url = Some("http://0.0.0.0:8000/mcp".into());
+        let unsafe_name = named_test_upstream_config("unsafe/name");
+        let mut disabled = named_test_upstream_config("disabled-recovery");
+        disabled.enabled = false;
+        for config in [bind_all, unsafe_name, disabled] {
+            pool.ensure_probe_task(config).await;
+        }
+        assert!(pool.probe_tasks.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disabling_recovery_prevents_waiting_registration() {
+        let pool = UpstreamPool::new().with_auto_reconnect(true);
+        let tasks = pool.probe_tasks.write().await;
+        let config = named_test_upstream_config("disabled-during-registration");
+        let registration = pool.ensure_probe_task(config);
+        tokio::pin!(registration);
+        assert!(futures::poll!(&mut registration).is_pending());
+        pool.set_auto_reconnect(false);
+        drop(tasks);
+        registration.await;
+        assert!(pool.probe_tasks.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recovery_rechecks_enabled_state_before_draining_waiting_tasks() {
+        let pool = UpstreamPool::new();
+        let mut tasks = pool.probe_tasks.write().await;
+        let cancel = CancellationToken::new();
+        let reconciliation = pool.ensure_recovery_tasks(&[]);
+        tokio::pin!(reconciliation);
+        assert!(futures::poll!(&mut reconciliation).is_pending());
+        // A newer enable operation supersedes the waiting disable operation.
+        pool.set_auto_reconnect(true);
+        tasks.insert("newer-recovery".into(), cancel.clone());
+        drop(tasks);
+        reconciliation.await;
+        assert!(!cancel.is_cancelled());
+        assert_eq!(pool.probe_tasks.read().await.len(), 1);
+        pool.drain_for_swap("test.recovery_enable_wins").await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabling_recovery_cancels_an_active_probe() {
+        let pool = UpstreamPool::new().with_auto_reconnect(true);
+        let config = named_test_upstream_config("cancel-active-reprobe");
+        // Hold the connection map so the heartbeat stalls after it obtains its
+        // concurrency permit, before it can inspect or replace a transport.
+        let connections = pool.connections.write().await;
+        let permits = pool.reprobe_semaphore.available_permits();
+        pool.ensure_probe_task(config).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_mins(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(pool.reprobe_semaphore.available_permits(), permits - 1);
+        pool.set_auto_reconnect(false);
+        pool.ensure_recovery_tasks(&[]).await;
+        tokio::task::yield_now().await;
+        assert_eq!(pool.reprobe_semaphore.available_permits(), permits);
+        assert!(pool.probe_tasks.read().await.is_empty());
+        drop(connections);
     }
 
     #[tokio::test]
