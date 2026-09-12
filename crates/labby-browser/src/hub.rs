@@ -175,7 +175,7 @@ impl BrowserBridge {
         &self.store
     }
 
-    /// Accept an unauthenticated pairing request from a loopback-gated adapter.
+    /// Accept an unauthenticated pairing request from a validated browser-extension adapter.
     pub async fn request_pairing(
         &self,
         display_name: &str,
@@ -189,6 +189,7 @@ impl BrowserBridge {
 
     /// Issue a one-time challenge.
     pub async fn issue_challenge(&self, browser_id: &str) -> Result<BrowserEnvelope> {
+        let _authority = self.authority.lock().await;
         let challenge = self.store.create_challenge(browser_id).await?;
         Ok(BrowserEnvelope::new(
             None,
@@ -206,7 +207,7 @@ impl BrowserBridge {
         challenge_id: &str,
         signature: &str,
     ) -> Result<BrowserConnection> {
-        let challenge = self.store.take_challenge(challenge_id).await?;
+        let challenge = self.store.challenge(challenge_id).await?;
         let browser = self
             .store
             .browser(&challenge.browser_id)
@@ -230,6 +231,14 @@ impl BrowserBridge {
             .verify(&challenge.nonce, &signature)
             .map_err(|_| BrowserError::AuthenticationFailed)?;
         let _authority = self.authority.lock().await;
+        let consumed = self.store.take_challenge(challenge_id).await?;
+        if consumed.id != challenge.id
+            || consumed.browser_id != challenge.browser_id
+            || consumed.nonce != challenge.nonce
+            || consumed.expires_at != challenge.expires_at
+        {
+            return Err(BrowserError::AuthenticationFailed);
+        }
         self.store.touch_browser(&browser.id).await?;
         let (sender, receiver) = mpsc::channel(128);
         let generation = Uuid::new_v4();
@@ -524,24 +533,31 @@ impl BrowserBridge {
         Ok(browser)
     }
 
-    /// Approve pairing and evict every superseded identity for its extension.
-    pub async fn approve_pairing(&self, pairing_id: &str) -> Result<crate::store::BrowserRecord> {
+    /// Approve pairing and evict the superseded identity for this browser credential.
+    pub async fn approve_pairing(
+        &self,
+        pairing_id: &str,
+        pairing_fingerprint: &str,
+    ) -> Result<crate::store::BrowserRecord> {
         let _authority = self.authority.lock().await;
-        let extension_id = self
+        let public_key = self
             .store
             .pairing(pairing_id)
             .await?
             .ok_or(BrowserError::NotFound)?
-            .extension_id;
+            .public_key;
         let superseded: Vec<_> = self
             .store
             .browsers()
             .await?
             .into_iter()
-            .filter(|browser| browser.extension_id == extension_id && browser.revoked_at.is_none())
+            .filter(|browser| browser.public_key == public_key && browser.revoked_at.is_none())
             .map(|browser| browser.id)
             .collect();
-        let browser = self.store.approve_pairing(pairing_id).await?;
+        let browser = self
+            .store
+            .approve_pairing(pairing_id, pairing_fingerprint)
+            .await?;
         let mut state = self.lock_state()?;
         for browser_id in superseded {
             if let Some(connection) = state.connections.remove(&browser_id) {
@@ -773,7 +789,11 @@ mod tests {
             .request_pairing("Chrome", EXTENSION_ID, &public_key)
             .await
             .unwrap();
-        let browser = bridge.store().approve_pairing(&pairing.id).await.unwrap();
+        let browser = bridge
+            .store()
+            .approve_pairing(&pairing.id, &pairing.pairing_fingerprint())
+            .await
+            .unwrap();
         authenticate_browser(bridge, &browser.id, &signing).await
     }
 
@@ -857,6 +877,64 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn distinct_installations_of_one_extension_remain_connected() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let first_signing = SigningKey::from_bytes(&[9; 32]);
+        let second_signing = SigningKey::from_bytes(&[10; 32]);
+
+        let first_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(first_signing.verifying_key().as_bytes());
+        let first_pairing = bridge
+            .request_pairing("Chrome one", EXTENSION_ID, &first_public_key)
+            .await
+            .unwrap();
+        let first_browser = bridge
+            .approve_pairing(&first_pairing.id, &first_pairing.pairing_fingerprint())
+            .await
+            .unwrap();
+        let _first_connection =
+            authenticate_browser(&bridge, &first_browser.id, &first_signing).await;
+
+        let second_public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(second_signing.verifying_key().as_bytes());
+        let second_pairing = bridge
+            .request_pairing("Chrome two", EXTENSION_ID, &second_public_key)
+            .await
+            .unwrap();
+        let second_browser = bridge
+            .approve_pairing(&second_pairing.id, &second_pairing.pairing_fingerprint())
+            .await
+            .unwrap();
+        let _second_connection =
+            authenticate_browser(&bridge, &second_browser.id, &second_signing).await;
+
+        let mut expected = vec![first_browser.id.clone(), second_browser.id.clone()];
+        expected.sort();
+        assert_eq!(bridge.connected_browser_ids().unwrap(), expected);
+
+        let replacement_pairing = bridge
+            .request_pairing("Chrome one replacement", EXTENSION_ID, &first_public_key)
+            .await
+            .unwrap();
+        let replacement = bridge
+            .approve_pairing(
+                &replacement_pairing.id,
+                &replacement_pairing.pairing_fingerprint(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            bridge.connected_browser_ids().unwrap(),
+            vec![second_browser.id.clone()]
+        );
+        let _replacement_connection =
+            authenticate_browser(&bridge, &replacement.id, &first_signing).await;
+        let mut expected = vec![replacement.id, second_browser.id];
+        expected.sort();
+        assert_eq!(bridge.connected_browser_ids().unwrap(), expected);
     }
 
     #[tokio::test]
@@ -1180,6 +1258,54 @@ mod tests {
                 .unwrap()
                 .contains(&browser_id)
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_signature_does_not_consume_a_live_challenge() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        let challenge = bridge
+            .issue_challenge(&connection.browser_id)
+            .await
+            .unwrap();
+        let BrowserMessage::AuthNonce {
+            challenge_id,
+            nonce,
+            ..
+        } = challenge.message
+        else {
+            unreachable!()
+        };
+        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(nonce)
+            .unwrap();
+        let invalid = SigningKey::from_bytes(&[10; 32]);
+        let invalid_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(invalid.sign(&nonce).to_bytes());
+        assert!(matches!(
+            bridge.authenticate(&challenge_id, &invalid_signature).await,
+            Err(BrowserError::AuthenticationFailed)
+        ));
+
+        let valid = SigningKey::from_bytes(&[9; 32]);
+        let valid_signature =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(valid.sign(&nonce).to_bytes());
+        let authenticated = bridge
+            .authenticate(&challenge_id, &valid_signature)
+            .await
+            .unwrap();
+        assert_eq!(authenticated.browser_id, connection.browser_id);
+    }
+
+    #[tokio::test]
+    async fn revoked_browser_cannot_issue_a_new_challenge() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        bridge.revoke_browser(&connection.browser_id).await.unwrap();
+        assert!(matches!(
+            bridge.issue_challenge(&connection.browser_id).await,
+            Err(BrowserError::AuthenticationFailed)
+        ));
     }
 
     #[tokio::test]

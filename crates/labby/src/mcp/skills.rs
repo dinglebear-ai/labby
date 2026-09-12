@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::wire::{
-    CACHE_SCOPE_PRIVATE, SKILLS_GET_METHOD, SkillsGetParams, SkillsGetResult, SkillsListResult,
+    CACHE_SCOPE_PRIVATE, SKILLS_GET_METHOD, SkillsGetParams, SkillsGetResult, SkillsListParams,
+    SkillsListResult,
 };
 use rmcp::RoleServer;
 use rmcp::model::{CustomRequest, CustomResult, ErrorData};
@@ -19,8 +20,10 @@ use rmcp::service::RequestContext;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::server::LabMcpServer;
 use crate::skills::aggregate::ToolAccess;
+#[cfg(test)]
+use crate::skills::facade::list_visible_skills;
 use crate::skills::facade::{
-    SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills,
+    SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills_page,
 };
 
 fn optional_header_str<'a>(
@@ -47,7 +50,7 @@ pub(crate) async fn dispatch_at_in_process_boundary(
     crate::dispatch::skills::dispatch_with_context(registry, action, params).await
 }
 
-#[cfg(feature = "skills")]
+#[cfg(all(test, feature = "skills"))]
 fn parse_public_import_params(
     params: serde_json::Value,
 ) -> Result<crate::dispatch::skill_library::params::ImportParams, ToolError> {
@@ -57,17 +60,7 @@ fn parse_public_import_params(
     })
 }
 
-#[cfg(feature = "skills")]
-fn parse_public_import_batch_params(
-    params: serde_json::Value,
-) -> Result<crate::dispatch::skill_library::params::ImportBatchParams, ToolError> {
-    serde_json::from_value(params).map_err(|_| ToolError::InvalidParam {
-        message: "Artifact batch import parameters are invalid".to_owned(),
-        param: "params".to_owned(),
-    })
-}
-
-#[cfg(feature = "skills")]
+#[cfg(all(test, feature = "skills"))]
 async fn dispatch_public_import<F, Fut>(
     params: serde_json::Value,
     execute: F,
@@ -146,14 +139,12 @@ impl LabMcpServer {
             transport,
         )
         .with_selected_team_id(selected_team_id.clone());
-        let request_id =
-            optional_header_str(&parts.headers, "x-request-id")?.unwrap_or("mcp-skills-read");
+        // A client request ID is useful context, but it must not become the audit
+        // deduplication key. Mint a fresh server correlation for every native read so
+        // repeated reads by the same actor always produce distinct audit events.
+        let _client_request_id = optional_header_str(&parts.headers, "x-request-id")?;
         let correlation =
-            crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(request_id)
-                .map_err(|_| ToolError::InvalidParam {
-                    message: "Skill Library request correlation is invalid".to_owned(),
-                    param: "x-request-id".to_owned(),
-                })?;
+            crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::server("mcp-skills");
         let decision = crate::dispatch::skill_library::auth::authorize_at_boundary(
             &self.access_runtime,
             caller,
@@ -225,90 +216,17 @@ impl LabMcpServer {
             transport,
         )
         .with_selected_team_id(selected_team_id.clone());
-        if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
-            .iter()
-            .any(|candidate| candidate.name == action)
-        {
-            let operation = crate::dispatch::remote_control::operation("artifacts", action)
-                .ok_or_else(|| ToolError::UnknownAction {
-                    message: format!("Unknown action: {action}"),
-                    valid: Vec::new(),
-                    hint: None,
-                })?;
-            let permission = crate::dispatch::artifact_control::operation_permission(operation);
-            let authority = crate::dispatch::artifact_control::authorize_authority_context(
-                &self.access_runtime,
-                boundary.identity,
-                project_id,
-                selected_team_id.as_deref(),
-                permission,
-            )
-            .await?;
-            return crate::dispatch::remote_control::dispatch_with_context(
-                "artifacts",
-                action,
-                params,
-                Some(&authority),
-            )
-            .await;
-        }
-        if action == "artifacts.import" {
-            let imports = crate::dispatch::skill_library::process_imports().ok_or_else(|| {
-                ToolError::Sdk {
-                    sdk_kind: "source_unavailable".to_owned(),
-                    message: "Skill import sources are not configured".to_owned(),
-                }
-            })?;
-            return dispatch_public_import(params, |import_params| async move {
-                imports
-                    .import_selected(
-                        &service,
-                        &self.access_runtime,
-                        caller,
-                        project_id,
-                        import_params.source,
-                        import_params.expected_library_version,
-                        import_params.idempotency_key,
-                        &correlation,
-                    )
-                    .await
-                    .map_err(crate::dispatch::skill_library::map_import_error)
-            })
-            .await;
-        }
-        if action == "artifacts.import_batch" {
-            let imports = crate::dispatch::skill_library::process_imports().ok_or_else(|| {
-                ToolError::Sdk {
-                    sdk_kind: "source_unavailable".to_owned(),
-                    message: "Artifact import sources are not configured".to_owned(),
-                }
-            })?;
-            let import_params = parse_public_import_batch_params(params)?;
-            return imports
-                .import_batch_selected(
-                    &service,
-                    &self.access_runtime,
-                    caller,
-                    project_id,
-                    import_params.sources,
-                    import_params.expected_library_version,
-                    import_params.idempotency_key,
-                    &correlation,
-                )
-                .await
-                .map_err(crate::dispatch::skill_library::map_import_error);
-        }
-        service
-            .dispatch(
-                &self.access_runtime,
-                caller,
-                project_id,
-                action,
-                params,
-                &correlation,
-            )
-            .await
-            .map_err(crate::dispatch::skill_library::map_dispatch_error)
+        crate::dispatch::skill_library::surface::dispatch_authorized_action(
+            &service,
+            crate::dispatch::skill_library::process_imports(),
+            &self.access_runtime,
+            caller,
+            project_id,
+            action,
+            params,
+            &correlation,
+        )
+        .await
     }
 
     /// Project MCP route/auth state into the transport-neutral Skills context.
@@ -343,7 +261,6 @@ impl LabMcpServer {
 
         #[cfg(not(feature = "gateway"))]
         {
-            let _ = context;
             let registry = SkillRegistryContext::first_party_only();
             Ok(match self.artifact_access_for_request(context).await? {
                 Some(access) => registry.with_artifact_access(access),
@@ -361,13 +278,11 @@ impl LabMcpServer {
     pub(crate) fn dispatch_artifact_tool_boxed<'a>(
         &'a self,
         context: &'a RequestContext<RoleServer>,
-        meta: Option<&'a rmcp::model::RequestMetaObject>,
         action: &'a str,
         params: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
     {
         Box::pin(async move {
-            let _ = meta;
             self.dispatch_skill_library_management(context, action, params)
                 .await
         })
@@ -493,7 +408,14 @@ async fn dispatch_native_with_registry(
             .map_err(|error| ErrorData::internal_error(error.to_string(), None));
     }
 
-    serde_json::to_value(list_visible_skills(registry).await)
+    let params = request
+        .params_as::<SkillsListParams>()
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+        .unwrap_or_default();
+    let result = list_visible_skills_page(registry, params.cursor.as_deref())
+        .await
+        .map_err(skill_read_error)?;
+    serde_json::to_value(result)
         .map(CustomResult::new)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
@@ -501,19 +423,68 @@ async fn dispatch_native_with_registry(
 /// Preserve native resources/read wire semantics while the canonical reader
 /// returns the shared ToolError contract.
 pub(crate) fn skill_read_error(error: ToolError) -> ErrorData {
-    let payload = serde_json::to_string(&error).unwrap_or_else(|_| error.to_string());
-    match error.kind() {
-        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
-        | labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => {
-            ErrorData::internal_error(payload, None)
-        }
-        _ => ErrorData::invalid_params(payload, None),
+    // SEP-2640 reserves JSON-RPC -32602 for malformed parameters and the
+    // definitive "not a skill this server serves" case. Runtime, authorization,
+    // integrity, and upstream failures must not masquerade as absence. Keep the
+    // public message stable and put the redacted structured ToolError in data.
+    let kind = error.kind();
+    let data = serde_json::to_value(&error).ok();
+    if kind == "invalid_param" {
+        return ErrorData::invalid_params("Invalid skill request", data);
     }
+    let message = match kind {
+        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH => {
+            "Skill content failed integrity verification"
+        }
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => "Skill manifest is stale",
+        "forbidden" => "Skill read is not authorized",
+        "upstream_unavailable" | "runtime_unavailable" | "service_unavailable" => {
+            "Skill provider is unavailable"
+        }
+        _ => "Skill read failed",
+    };
+    ErrorData::internal_error(message, data)
 }
 
 #[cfg(test)]
 mod serve_tests {
     use super::*;
+
+    #[test]
+    fn skill_read_error_reserves_invalid_params_for_malformed_requests() {
+        let malformed = skill_read_error(ToolError::InvalidParam {
+            message: "bad uri".into(),
+            param: "uri".into(),
+        });
+        assert_eq!(malformed.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(malformed.message, "Invalid skill request");
+
+        for transient in [
+            ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".into(),
+                message: "connect 10.0.0.7:8443 refused".into(),
+            },
+            ToolError::Sdk {
+                sdk_kind: "timeout".into(),
+                message: "upstream timed out".into(),
+            },
+            ToolError::Sdk {
+                sdk_kind: "service_unavailable".into(),
+                message: "provider unavailable".into(),
+            },
+        ] {
+            let kind = transient.kind().to_owned();
+            let mapped = skill_read_error(transient);
+            assert_ne!(
+                mapped.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{kind}"
+            );
+            assert!(!mapped.message.contains("10.0.0.7"));
+            let data = mapped.data.expect("structured error data");
+            assert_eq!(data["kind"], kind);
+        }
+    }
 
     #[tokio::test]
     async fn mcp_import_rejects_acquisition_bytes_and_routes_exact_selector() {

@@ -8,9 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use base64::Engine as _;
-use labby_runtime::artifacts::{
-    LibraryActorId, LibraryOwnerKind, LibraryTenantId, SkillVisibility,
-};
+use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::{
@@ -32,6 +30,9 @@ use labby_gateway::upstream::pool::{SepSkillProvider, UpstreamPool};
 
 use super::aggregate::{self, ToolAccess};
 use super::registry::{FirstPartyGeneration, first_party_generation_manager};
+
+const NATIVE_SKILLS_LIST_PAGE_SIZE: usize = 128;
+const FIRST_PARTY_SKILLS_LIST_TTL_MS: u64 = 30_000;
 
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
@@ -147,24 +148,17 @@ impl ArtifactAccessSnapshot {
         ownership: &labby_runtime::artifacts::LibraryOwnership,
         visibility: SkillVisibility,
     ) -> bool {
-        ownership.tenant_id == self.tenant_id
-            && match ownership.owner_kind() {
-                LibraryOwnerKind::Personal => {
-                    ownership.owner_id == self.actor_id
-                        || self.is_platform_admin
-                        || visibility == SkillVisibility::Tenant
-                }
-                LibraryOwnerKind::Project => {
-                    (ownership.owner_id == self.project_id || self.is_platform_admin)
-                        && (visibility == SkillVisibility::Tenant || self.is_admin)
-                }
-                LibraryOwnerKind::Team => {
-                    self.is_platform_admin
-                        || (self.team_ids.len() == 1
-                            && self.team_ids.contains(&ownership.owner_id)
-                            && visibility == SkillVisibility::Tenant)
-                }
-            }
+        labby_runtime::artifacts::permits_skill_library_record(
+            &self.tenant_id,
+            &self.actor_id,
+            &self.project_id,
+            &self.team_ids,
+            self.is_admin,
+            self.is_platform_admin,
+            ownership,
+            visibility,
+            true,
+        )
     }
 }
 
@@ -292,28 +286,24 @@ impl VisibleSkillContent {
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
-    let artifact_entries_filtered = context
-        .first_party
-        .providers
-        .discover()
-        .iter()
-        .filter(|entry| !context.permits_first_party_entry(entry))
-        .count();
+    let discovered = context.first_party.providers.discover();
+    let mut artifact_entries_filtered = 0usize;
+    let mut first_party_skills = Vec::with_capacity(discovered.len());
+    for entry in discovered {
+        if context.permits_first_party_entry(entry) {
+            first_party_skills.push(provider_entry_to_wire(entry.clone()));
+        } else {
+            artifact_entries_filtered += 1;
+        }
+    }
     let mut listing = SkillsListResult {
         result_type: Default::default(),
-        skills: context
-            .first_party
-            .providers
-            .discover()
-            .iter()
-            .filter(|entry| context.permits_first_party_entry(entry))
-            .cloned()
-            .map(provider_entry_to_wire)
-            .collect(),
+        skills: first_party_skills,
         next_cursor: None,
-        // SEP-2640 has no list-changed notification. A generation can refresh,
-        // so clients must re-list instead of treating this snapshot as fresh.
-        ttl_ms: Some(0),
+        // SEP-2640 has no list-changed notification, so advertise a bounded
+        // freshness hint rather than forcing clients to re-list on every turn.
+        // Upstream TTLs folded in below may shorten this value further.
+        ttl_ms: Some(FIRST_PARTY_SKILLS_LIST_TTL_MS),
         cache_scope: Some(
             if context.artifact_access.is_some()
                 && context.first_party.providers.has_artifact_skills()
@@ -356,8 +346,54 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
         }
     }
 
-    let _ = context;
     listing
+}
+
+/// Return one bounded native SEP page. The cursor is opaque to callers and
+/// bound to the captured first-party generation so a catalog refresh cannot
+/// silently splice two generations into one traversal.
+pub(crate) async fn list_visible_skills_page(
+    context: &SkillRegistryContext,
+    cursor: Option<&str>,
+) -> Result<SkillsListResult, ToolError> {
+    let mut listing = list_visible_skills(context).await;
+    let offset = match cursor {
+        None => 0,
+        Some(cursor) => decode_list_cursor(context, cursor)?,
+    };
+    if offset > listing.skills.len() {
+        return Err(ToolError::InvalidParam {
+            message: "skills/list cursor is outside the current catalog".to_owned(),
+            param: "cursor".to_owned(),
+        });
+    }
+    let end = offset
+        .saturating_add(NATIVE_SKILLS_LIST_PAGE_SIZE)
+        .min(listing.skills.len());
+    let total = listing.skills.len();
+    listing.skills = listing.skills[offset..end].to_vec();
+    listing.next_cursor = (end < total).then(|| encode_list_cursor(context, end));
+    Ok(listing)
+}
+
+fn encode_list_cursor(context: &SkillRegistryContext, offset: usize) -> String {
+    format!("v1:{}:{offset}", context.generation_id())
+}
+
+fn decode_list_cursor(context: &SkillRegistryContext, cursor: &str) -> Result<usize, ToolError> {
+    let mut parts = cursor.split(':');
+    let valid_version = parts.next() == Some("v1");
+    let generation = parts.next().and_then(|value| value.parse::<u64>().ok());
+    let offset = parts.next().and_then(|value| value.parse::<usize>().ok());
+    match (valid_version, generation, offset, parts.next()) {
+        (true, Some(generation), Some(offset), None) if generation == context.generation_id() => {
+            Ok(offset)
+        }
+        _ => Err(ToolError::InvalidParam {
+            message: "skills/list cursor is invalid or belongs to an older generation".to_owned(),
+            param: "cursor".to_owned(),
+        }),
+    }
 }
 
 pub(crate) async fn get_visible_skill(
@@ -540,43 +576,9 @@ pub(crate) async fn read_visible_skill_file(
 
     #[cfg(feature = "gateway")]
     {
-        let mut owners = list_visible_skills(context)
-            .await
-            .skills
-            .into_iter()
-            .filter(|entry| {
-                entry
-                    .resources
-                    .as_ref()
-                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
-            })
-            .collect::<Vec<_>>();
-        if owners.is_empty()
-            && let Some(owner) = resolve_visible_skill(context, uri).await?
-        {
-            owners.push(owner);
-        }
-        let entry = owners.first().cloned().ok_or_else(|| unknown_file(uri))?;
-        let expected_resource = entry
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
-            .ok_or_else(|| stale_manifest(uri))?;
-        if owners.iter().skip(1).any(|owner| {
-            owner
-                .resources
-                .as_ref()
-                .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
-                != Some(expected_resource)
-        }) {
-            return Err(stale_manifest(uri));
-        }
-        let resource = entry
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
-            .cloned()
-            .ok_or_else(|| stale_manifest(uri))?;
+        // Parse and authorize the encoded origin before discovery. A read of one
+        // proxied file must depend only on its owning upstream, never on the
+        // health or latency of unrelated upstreams in the gateway.
         let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
             message: error.to_string(),
             param: "uri".to_string(),
@@ -601,8 +603,109 @@ pub(crate) async fn read_visible_skill_file(
         let upstream_uri = parsed
             .upstream_uri_for_origin(&origin)
             .ok_or_else(|| unknown_file(uri))?;
-        let provider =
-            SepSkillProvider::new(pool, config, context.scope.subject().map(str::to_string));
+        let provider = SepSkillProvider::new(
+            Arc::clone(&pool),
+            config.clone(),
+            context.scope.subject().map(str::to_string),
+        );
+
+        // Discover only the encoded origin. This is sufficient to establish
+        // manifest ownership for listed supporting files and preserves the
+        // existing collision checks without a gateway-wide fan-out.
+        let discovered = provider
+            .discover(&SkillDiscoverRequest::default())
+            .await
+            .map_err(provider_error_to_tool)?;
+        let validated = discovered
+            .skills
+            .into_iter()
+            .map(SkillProviderEntry::into_validated)
+            .collect::<Vec<_>>();
+        let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
+        let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
+        if minted.excludes_uri(uri) {
+            return Err(unknown_file(uri));
+        }
+        let mut owners = minted
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .resources
+                    .as_ref()
+                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // A directly fetched skill may not be present in the listing. Reuse a
+        // cached direct owner when available, and for a SKILL.md URI fall back
+        // to the SEP-required direct skills/get path. Supporting files cannot
+        // infer an unlisted owner's manifest unless that owner was previously
+        // fetched, so absence remains fail-closed.
+        if owners.is_empty()
+            && let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await
+            && let Some(candidate) =
+                aggregate::mint_proxied_entry(&config.name, cached.validated(), Some(&meta))
+            && !minted.conflicts_with(&candidate)
+            && candidate
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
+        {
+            owners.push(candidate);
+        }
+        if owners.is_empty() {
+            let upstream_skill_uri = labby_runtime::skills::parse_skill_resource_uri(&upstream_uri)
+                .map_err(|error| ToolError::InvalidParam {
+                    message: error.to_string(),
+                    param: "uri".to_string(),
+                })?;
+            if upstream_skill_uri.skill_md_parts().is_some() {
+                let fetched = match provider
+                    .get(&SkillGetRequest {
+                        id: SkillId::new(provider.id().clone(), upstream_uri.clone()),
+                        deadline: SkillProviderDeadline::default(),
+                    })
+                    .await
+                {
+                    Ok(result) => result.skill.into_validated(),
+                    Err(SkillProviderError::SkillNotFound) => return Err(unknown_file(uri)),
+                    Err(error) => return Err(provider_error_to_tool(error)),
+                };
+                if let Some(candidate) =
+                    aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta))
+                    && !minted.conflicts_with(&candidate)
+                    && candidate.resources.as_ref().is_some_and(|resources| {
+                        resources.iter().any(|resource| resource.uri == uri)
+                    })
+                {
+                    owners.push(candidate);
+                }
+            }
+        }
+
+        let entry = owners.first().cloned().ok_or_else(|| unknown_file(uri))?;
+        let expected_resource = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .ok_or_else(|| stale_manifest(uri))?;
+        if owners.iter().skip(1).any(|owner| {
+            owner
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+                != Some(expected_resource)
+        }) {
+            return Err(stale_manifest(uri));
+        }
+        let resource = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .cloned()
+            .ok_or_else(|| stale_manifest(uri))?;
         let skill_source_id = parse_skill_uri(&entry.uri)
             .ok()
             .and_then(|uri| uri.upstream_uri_for_origin(&origin))
@@ -619,7 +722,7 @@ pub(crate) async fn read_visible_skill_file(
         let content = match verified.representation {
             labby_runtime::skills::SkillResourceRepresentation::Text => {
                 let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
-                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    sdk_kind: "invalid_encoding".to_string(),
                     message: "verified MCP text skill resource was not UTF-8".into(),
                 })?;
                 VisibleSkillContent::Text(text)
@@ -645,7 +748,6 @@ pub(crate) async fn read_visible_skill_file(
 
     #[cfg(not(feature = "gateway"))]
     {
-        let _ = context;
         Err(unknown_file(uri))
     }
 }
@@ -806,11 +908,7 @@ async fn origin_meta(
     access: ToolAccess,
 ) -> serde_json::Map<String, serde_json::Value> {
     let reachable = if access == ToolAccess::Direct {
-        pool.healthy_tools_for_upstream(origin)
-            .await
-            .into_iter()
-            .map(|tool| tool.tool.name.to_string())
-            .collect::<Vec<_>>()
+        pool.healthy_tool_names_for_upstream(origin).await
     } else {
         Vec::new()
     };
@@ -989,7 +1087,7 @@ mod tests {
             .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri))
             .expect("SKILL.md digest");
         assert_eq!(file.digest, digest.digest);
-        assert_eq!(listing.ttl_ms, Some(0));
+        assert_eq!(listing.ttl_ms, Some(FIRST_PARTY_SKILLS_LIST_TTL_MS));
     }
 
     #[tokio::test]

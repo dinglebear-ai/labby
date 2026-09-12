@@ -46,12 +46,20 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "Browser",
-        params: &[ParamSpec {
-            name: "pairing_id",
-            ty: "string",
-            required: true,
-            description: "Pending pairing request id",
-        }],
+        params: &[
+            ParamSpec {
+                name: "pairing_id",
+                ty: "string",
+                required: true,
+                description: "Pending pairing request id",
+            },
+            ParamSpec {
+                name: "pairing_fingerprint",
+                ty: "string",
+                required: true,
+                description: "Fingerprint displayed by the requesting browser extension",
+            },
+        ],
     },
     ActionSpec {
         name: "browser.sessions",

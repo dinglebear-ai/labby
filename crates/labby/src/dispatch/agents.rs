@@ -272,6 +272,11 @@ pub(crate) async fn dispatch(
             Ok(json!({"agent_id":definition.id,"state":state_name(state)}))
         }
         "agents.run" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
             let definition = load(&context, &params).await?;
             if definition.state != AgentState::Active {
                 return Err(denied());
@@ -298,87 +303,103 @@ pub(crate) async fn dispatch(
                 .map_err(|_| denied())?;
             let session_id = format!("{}-{now}", definition.id);
             let lease_expires_at = lease.expires_at_millis();
-            context
-                .store
-                .create_agent_session(
-                    session_id.clone(),
-                    definition.clone(),
-                    context.identity.safe_fingerprint(),
-                    epochs.fingerprint().as_str().to_owned(),
-                    i64::try_from(lease.expires_at_millis()).map_err(|_| internal())?,
-                    i64::try_from(now).map_err(|_| internal())?,
+            let authority_fingerprint = epochs.fingerprint().as_str().to_owned();
+            let run_context = context.clone();
+            let run_definition = definition.clone();
+            let run_session_id = session_id.clone();
+            let owned = tokio::spawn(async move {
+                run_context
+                    .store
+                    .create_agent_session(
+                        run_session_id.clone(),
+                        run_definition.clone(),
+                        run_context.identity.safe_fingerprint(),
+                        authority_fingerprint,
+                        i64::try_from(lease_expires_at).map_err(|_| internal())?,
+                        i64::try_from(now).map_err(|_| internal())?,
+                    )
+                    .await
+                    .map_err(map)?;
+                run_context
+                    .store
+                    .set_agent_session_status(
+                        run_definition.id.clone(),
+                        run_session_id.clone(),
+                        "admitted".into(),
+                        "running".into(),
+                    )
+                    .await
+                    .map_err(map)?;
+                let request = AgentExecutionRequest {
+                    definition: run_definition.clone(),
+                    session: AgentSessionBinding {
+                        session_id: run_session_id.clone(),
+                        agent_id: run_definition.id.clone(),
+                        agent_version: run_definition.revision.version,
+                        principal: PrincipalId::new(lease.binding().principal_id())
+                            .map_err(|_| invalid("principal"))?,
+                        owner: run_definition.owner.clone(),
+                        catalog_generation: run_definition.revision.catalog_generation.clone(),
+                        authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
+                        lease_expires_at: i64::try_from(lease_expires_at)
+                            .map_err(|_| internal())?,
+                    },
+                    lease,
+                    bounds: AgentResourceBounds {
+                        max_runtime_millis: 300_000,
+                        max_output_bytes: 16 * 1024 * 1024,
+                        max_external_effects: 1_000,
+                    },
+                };
+                let result = execute_agent(
+                    &LiveExecutionAuthority {
+                        store: run_context.store.clone(),
+                        identity: run_context.identity.clone(),
+                        owner: run_definition.owner.clone(),
+                        definition: run_definition.clone(),
+                    },
+                    &DisabledExecutor,
+                    request,
+                    Cancellation::new(),
+                    now,
                 )
-                .await
-                .map_err(map)?;
-            context
-                .store
-                .set_agent_session_status(
-                    definition.id.clone(),
-                    session_id.clone(),
-                    "admitted".into(),
-                    "running".into(),
-                )
-                .await
-                .map_err(map)?;
-            let request = AgentExecutionRequest {
-                definition: definition.clone(),
-                session: AgentSessionBinding {
-                    session_id: session_id.clone(),
-                    agent_id: definition.id.clone(),
-                    agent_version: definition.revision.version,
-                    // The runtime rejects a session whose principal or epoch fingerprint
-                    // differs from the lease binding; both come from the lease itself.
-                    principal: PrincipalId::new(lease.binding().principal_id())
-                        .map_err(|_| invalid("principal"))?,
-                    owner: definition.owner.clone(),
-                    catalog_generation: definition.revision.catalog_generation.clone(),
-                    authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
-                    lease_expires_at: i64::try_from(lease_expires_at).map_err(|_| internal())?,
-                },
-                lease,
-                bounds: AgentResourceBounds {
-                    max_runtime_millis: 300_000,
-                    max_output_bytes: 16 * 1024 * 1024,
-                    max_external_effects: 1_000,
-                },
-            };
-            let result = execute_agent(
-                &LiveExecutionAuthority {
-                    store: context.store.clone(),
-                    identity: context.identity.clone(),
-                    owner: definition.owner.clone(),
-                    definition: definition.clone(),
-                },
-                &DisabledExecutor,
-                request,
-                Cancellation::new(),
-                now,
-            )
-            .await;
-            let next = match result {
-                Ok(_) => "completed",
-                Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
-                Err(AgentRuntimeError::Cancelled) => "cancelled",
-                Err(_) => "failed",
-            };
-            context
-                .store
-                .set_agent_session_status(
-                    definition.id.clone(),
-                    session_id.clone(),
-                    "running".into(),
-                    next.into(),
-                )
-                .await
-                .map_err(map)?;
-            match result {
-                Ok(output) => Ok(
-                    json!({"agent_id":definition.id,"agent_version":definition.revision.version,"session_id":session_id,"status":next,"output_digest":output.digest,"authority_expires_at":lease_expires_at}),
-                ),
-                Err(error) => Err(map_agent_runtime_error(&error)),
-            }
+                .await;
+                let next = match result {
+                    Ok(_) => "completed",
+                    Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
+                    Err(AgentRuntimeError::Cancelled) => "cancelled",
+                    Err(_) => "failed",
+                };
+                run_context
+                    .store
+                    .set_agent_session_status(
+                        run_definition.id.clone(),
+                        run_session_id.clone(),
+                        "running".into(),
+                        next.into(),
+                    )
+                    .await
+                    .map_err(map)?;
+                match result {
+                    Ok(output) => Ok(json!({
+                        "agent_id":run_definition.id,
+                        "agent_version":run_definition.revision.version,
+                        "session_id":run_session_id,
+                        "status":next,
+                        "output_digest":output.digest,
+                        "authority_expires_at":lease_expires_at
+                    })),
+                    Err(error) => Err(map_agent_runtime_error(&error)),
+                }
+            });
+            owned.await.map_err(|_| internal())?
         }
         "agents.session.status" => {
+            context
+                .store
+                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+                .await
+                .map_err(map)?;
             let definition = load(&context, &params).await?;
             authorize(
                 &context,

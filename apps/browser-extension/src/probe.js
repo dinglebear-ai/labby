@@ -28,19 +28,83 @@ export async function probeWebMcp() {
   const context = document.modelContext;
   if (!context || typeof context.getTools !== "function") return {supported: false, tools: []};
   try {
+    /**
+     * @param {unknown} root
+     * @param {number} maxBytes
+     * @param {string} kind
+     * @returns {unknown}
+     */
+    const boundedJson = (root, maxBytes, kind) => {
+      const encoder = new TextEncoder();
+      const active = new WeakSet();
+      let nodes = 0;
+      /**
+       * @param {unknown} value
+       * @param {number} depth
+       * @returns {unknown}
+       */
+      const visit = (value, depth) => {
+        if (depth > 32 || ++nodes > 8192) throw new Error(kind);
+        if (value === null || typeof value === "boolean") return value;
+        if (typeof value === "string") {
+          if (value.length > maxBytes) throw new Error(kind);
+          return value;
+        }
+        if (typeof value === "number") {
+          if (!Number.isFinite(value)) throw new Error(kind);
+          return value;
+        }
+        if (!value || typeof value !== "object") throw new Error(kind);
+        if (active.has(value)) throw new Error(kind);
+        active.add(value);
+        let cloned;
+        if (Array.isArray(value)) {
+          if (value.length > 8192) throw new Error(kind);
+          cloned = value.map((entry) => visit(entry, depth + 1));
+        } else {
+          cloned = {};
+          let scanned = 0;
+          const record = /** @type {Record<string, unknown>} */ (value);
+          for (const key in record) {
+            if (++scanned > 8192) throw new Error(kind);
+            if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+            if (key.length > maxBytes) throw new Error(kind);
+            Object.defineProperty(cloned, key, {
+              value: visit(record[key], depth + 1),
+              enumerable: true,
+              configurable: true,
+              writable: true
+            });
+          }
+        }
+        active.delete(value);
+        return cloned;
+      };
+      const cloned = visit(root, 0);
+      const encoded = JSON.stringify(cloned);
+      if (encoded === undefined || encoded.length > maxBytes || encoder.encode(encoded).byteLength > maxBytes) throw new Error(kind);
+      return cloned;
+    };
     const tools = await context.getTools();
-    const summary = Array.from(tools ?? []).slice(0, 64).flatMap((tool) => {
+    if (!Array.isArray(tools)) return {supported: false, tools: []};
+    // Apply the catalog cap before copying/traversing page-controlled entries.
+    // Array.from(tools).slice(...) still walks the entire source first.
+    const summary = tools.slice(0, 64).flatMap((tool) => {
       if (!tool || typeof tool.name !== "string") return [];
+      if (tool.name.length < 1 || tool.name.length > 128) return [];
       // `RegisteredTool.inputSchema` became an `object` on 2026-08-14
       // (webmachinelearning/webmcp#241); it was a stringified JSON Schema
       // before, and origin-trial browsers still ship that form. Both are
       // handled below. The snake_case read separately tolerates a browser
       // spelling the field differently. Rename `inputSchema` upstream and the
       // type check fails.
+      /** @type {unknown} */
       let inputSchema = tool.inputSchema ?? /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (tool)).input_schema ?? {};
       if (typeof inputSchema === "string") {
+        if (inputSchema.length > 65_536) return [];
         try { inputSchema = JSON.parse(inputSchema); } catch { return []; }
       }
+      try { inputSchema = boundedJson(inputSchema, 65_536, "catalog_too_large"); } catch { return []; }
       // Annotations are carried, not interpreted. `untrustedContentHint` in
       // particular is the page telling us its tool returns content from
       // sources it does not vouch for -- an MCP client cannot weigh that if
@@ -54,10 +118,10 @@ export async function probeWebMcp() {
       // The current probe requests only the API's same-origin default catalog.
       return [{
         name: tool.name,
-        title: typeof tool.title === "string" ? tool.title : "",
-        description: typeof tool.description === "string" ? tool.description : "",
+        title: typeof tool.title === "string" ? tool.title.slice(0, 200) : "",
+        description: typeof tool.description === "string" ? tool.description.slice(0, 1000) : "",
         input_schema: inputSchema,
-        origin: typeof tool.origin === "string" ? tool.origin : "",
+        origin: typeof tool.origin === "string" ? tool.origin.slice(0, 256) : "",
         annotations: {
           read_only_hint: (annotations.readOnlyHint ?? /** @type {Record<string, unknown>} */ (annotations).read_only_hint) === true,
           untrusted_content_hint: (annotations.untrustedContentHint ?? /** @type {Record<string, unknown>} */ (annotations).untrusted_content_hint) === true,
@@ -65,6 +129,10 @@ export async function probeWebMcp() {
         }
       }];
     });
+    const encodedSummary = JSON.stringify(summary);
+    if (encodedSummary.length > 262_144 || new TextEncoder().encode(encodedSummary).byteLength > 262_144) {
+      return {supported: false, tools: []};
+    }
     return {supported: true, tools: summary};
   } catch {
     return {supported: false, tools: []};
@@ -93,6 +161,63 @@ export async function probeWebMcp() {
  */
 export async function invokeWebMcp(toolName, input, callId, expectedCatalog, transportEnvelope = false) {
   try {
+  /**
+   * @param {unknown} root
+   * @param {number} maxBytes
+   * @param {string} kind
+   * @returns {unknown}
+   */
+  const boundedJson = (root, maxBytes, kind) => {
+    const encoder = new TextEncoder();
+    const active = new WeakSet();
+    let nodes = 0;
+    /**
+     * @param {unknown} value
+     * @param {number} depth
+     * @returns {unknown}
+     */
+    const visit = (value, depth) => {
+      if (depth > 32 || ++nodes > 8192) throw new Error(kind);
+      if (value === null || typeof value === "boolean") return value;
+      if (typeof value === "string") {
+        if (value.length > maxBytes) throw new Error(kind);
+        return value;
+      }
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(kind);
+        return value;
+      }
+      if (!value || typeof value !== "object") throw new Error(kind);
+      if (active.has(value)) throw new Error(kind);
+      active.add(value);
+      let cloned;
+      if (Array.isArray(value)) {
+        if (value.length > 8192) throw new Error(kind);
+        cloned = value.map((entry) => visit(entry, depth + 1));
+      } else {
+        cloned = {};
+        let scanned = 0;
+        const record = /** @type {Record<string, unknown>} */ (value);
+        for (const key in record) {
+          if (++scanned > 8192) throw new Error(kind);
+          if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+          if (key.length > maxBytes) throw new Error(kind);
+          Object.defineProperty(cloned, key, {
+            value: visit(record[key], depth + 1),
+            enumerable: true,
+            configurable: true,
+            writable: true
+          });
+        }
+      }
+      active.delete(value);
+      return cloned;
+    };
+    const cloned = visit(root, 0);
+    const encoded = JSON.stringify(cloned);
+    if (encoded === undefined || encoded.length > maxBytes || encoder.encode(encoded).byteLength > maxBytes) throw new Error(kind);
+    return cloned;
+  };
   const calls = globalThis.__webbyToolCalls ??= new Map();
   if (globalThis.__webbyToolCallsSaturated) throw new Error("browser_call_capacity_exhausted: reload this page before invoking another tool");
   const prior = calls.get(callId);
@@ -125,16 +250,22 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
     // The default catalog contains same-origin tools. Cross-origin discovery
     // additionally requires explicit fromOrigins selection, which this bridge
     // does not authorize or infer from a page's exposedTo declarations.
-    const tools = Array.from(await context.getTools() ?? []);
+    const tools = await context.getTools();
+    if (!Array.isArray(tools)) throw new Error("webmcp_unavailable");
     if (state.cancelled) throw new Error("AbortError");
 
+    // Do not materialize the whole page-controlled catalog just to enforce
+    // the first-64 contract; bound traversal before normalization.
     const normalized = tools.slice(0, 64).flatMap((tool) => {
       if (!tool || typeof tool.name !== "string") return [];
       if (tool.name.length < 1 || tool.name.length > 128) return [];
+      /** @type {unknown} */
       let schema = tool.inputSchema ?? /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (tool)).input_schema ?? {};
       if (typeof schema === "string") {
+        if (schema.length > 65_536) return [];
         try { schema = JSON.parse(schema); } catch { return []; }
       }
+      try { schema = boundedJson(schema, 65_536, "catalog_too_large"); } catch { return []; }
       const annotations = tool.annotations ?? {};
       return [{
         name: tool.name,
@@ -149,6 +280,10 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
         }
       }];
     }).sort((left, right) => left.name.localeCompare(right.name));
+    const encodedCatalog = JSON.stringify(normalized);
+    if (encodedCatalog.length > 262_144 || new TextEncoder().encode(encodedCatalog).byteLength > 262_144) {
+      throw new Error("catalog_too_large");
+    }
 
     // Key order is not observable through the WebMCP surface, so canonicalize
     // before comparing as a string.
@@ -175,8 +310,10 @@ export async function invokeWebMcp(toolName, input, callId, expectedCatalog, tra
     );
     let value = result;
     if (typeof result === "string") {
+      if (result.length > 131_072) throw new Error("result_too_large");
       try { value = JSON.parse(result); } catch { value = result; }
     }
+    value = boundedJson(value, 131_072, "result_too_large");
     return transportEnvelope ? {__webby_execution_v1__: true, ok: true, value} : value;
   } finally {
     if (calls.get(callId) === state) calls.delete(callId);

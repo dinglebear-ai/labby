@@ -1,7 +1,5 @@
 //! Bounded blocking-work and deterministic fault seams for Skill Library dispatch.
 
-#![allow(dead_code, reason = "consumed by the Wave 3 Skill Library dispatcher")]
-
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -31,6 +29,19 @@ impl BoundedBlockingExecutor {
             queue_deadline,
             execution_deadline,
         })
+    }
+
+    /// Create an independent single-lane executor with the same deadlines.
+    ///
+    /// Skill Library mutations already serialize at the activation/file-lock boundary; giving
+    /// them a dedicated lane prevents queued writers from occupying read-side blocking permits.
+    #[must_use]
+    pub(crate) fn single_lane(&self) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(1)),
+            queue_deadline: self.queue_deadline,
+            execution_deadline: self.execution_deadline,
+        }
     }
 
     /// Run one synchronous operation without holding an async registry/auth lock or lease.
@@ -82,7 +93,16 @@ impl BoundedBlockingExecutor {
             Arc::clone(&self.permits).acquire_owned(),
         )
         .await
-        .map_err(|_| BlockingError::Busy { operation })?
+        .map_err(|_| {
+            tracing::warn!(
+                service = "skill_library",
+                action = "blocking.queue.busy",
+                operation,
+                available_permits = self.permits.available_permits(),
+                "Skill Library blocking queue deadline expired"
+            );
+            BlockingError::Busy { operation }
+        })?
         .map_err(|_| BlockingError::WorkerFailed { operation })
     }
 
@@ -124,7 +144,7 @@ pub(crate) enum BlockingError<E> {
     #[error("Skill Library blocking worker failed for {operation}")]
     WorkerFailed { operation: &'static str },
     #[error("Skill Library blocking operation failed")]
-    Operation(E),
+    Operation(#[source] E),
 }
 
 /// Stable fault boundaries spanning durable commit and generation publication.
@@ -160,7 +180,12 @@ pub(crate) struct InjectedFault {
 }
 
 /// Durable filesystem boundary used for stable failure classification.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    dead_code,
+    reason = "fault-injection boundary variants retained for coverage"
+)]
 pub(crate) enum DiskBoundary {
     Write,
     FileSync,
@@ -168,6 +193,7 @@ pub(crate) enum DiskBoundary {
     ParentSync,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiskFailureKind {
     NoSpace,
@@ -175,6 +201,7 @@ pub(crate) enum DiskFailureKind {
 }
 
 /// Redacted disk failure: it carries no host path or OS-controlled message.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("Skill Library disk {kind:?} failure at {boundary:?}")]
 pub(crate) struct DiskBoundaryError {
@@ -182,6 +209,7 @@ pub(crate) struct DiskBoundaryError {
     pub(crate) kind: DiskFailureKind,
 }
 
+#[cfg(test)]
 pub(crate) fn classify_disk_error(
     boundary: DiskBoundary,
     error: &std::io::Error,

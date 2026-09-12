@@ -132,3 +132,70 @@ test('the command palette closes and forgets its query when a session refresh ob
     await unmount?.()
   }
 })
+
+test('the command palette resets when a project-only session refresh switches projects', async () => {
+  document.body.replaceChildren()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-a',
+  })
+  let projectId = 'project-a'
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === '/auth/session') {
+      return new Response(JSON.stringify({
+        authenticated: true,
+        user: { sub: 'operator' },
+        expires_at: 999,
+        csrf_token: 'csrf-rotated',
+        project_id: projectId,
+        authority_generation: null,
+        organization_id: null,
+        owner: null,
+        active_owner: null,
+        teams: [],
+        projects: [],
+        capabilities: [],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof globalThis.fetch
+
+  const [{ AppCommandPalette }, { renderClient }] = await Promise.all([
+    import('./app-command-palette'),
+    import('../lib/testing/dom-test-utils.tsx'),
+  ])
+  let unmount: (() => Promise<void>) | undefined
+  try {
+    ;({ unmount } = await renderClient(
+      <AppRouterContext.Provider value={router as never}>
+        <PathnameContext.Provider value="/skills">
+          <AppCommandPalette />
+        </PathnameContext.Provider>
+      </AppRouterContext.Provider>,
+    ))
+    const dialog = () => document.querySelector<HTMLElement>('[data-palette="1"]')
+    await act(async () => { window.dispatchEvent(new window.Event(OPEN_COMMAND_PALETTE_EVENT)) })
+    await waitFor(() => assert.ok(dialog(), 'the open event shows the palette'))
+    const input = document.querySelector<HTMLInputElement>('[data-palette="1"] input')
+    assert.ok(input)
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+      setValue?.call(input, 'project A query')
+      input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+    await waitFor(() => assert.equal(document.querySelector<HTMLInputElement>('[data-palette="1"] input')?.value, 'project A query'))
+
+    projectId = 'project-b'
+    await act(async () => { await loadBrowserSession() })
+    await waitFor(() => assert.equal(dialog() === null, true, 'a project-only context change closes the palette'))
+
+    await act(async () => { window.dispatchEvent(new window.Event(OPEN_COMMAND_PALETTE_EVENT)) })
+    await waitFor(() => assert.ok(dialog()))
+    assert.equal(document.querySelector<HTMLInputElement>('[data-palette="1"] input')?.value, '', 'the old project query is discarded')
+  } finally {
+    await unmount?.()
+  }
+})

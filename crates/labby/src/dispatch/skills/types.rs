@@ -1,4 +1,3 @@
-use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::{SkillEntry, SkillResource};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -19,20 +18,14 @@ pub(crate) struct SkillSummary {
 impl From<SkillEntry> for SkillSummary {
     fn from(entry: SkillEntry) -> Self {
         let name = entry
-            .frontmatter
-            .get("name")
-            .and_then(Value::as_str)
+            .frontmatter_str("name")
             .unwrap_or_default()
             .to_string();
         let description = entry
-            .frontmatter
-            .get("description")
-            .and_then(Value::as_str)
+            .frontmatter_str("description")
             .unwrap_or_default()
             .to_string();
-        let origin = parse_skill_uri(&entry.uri)
-            .map(|uri| uri.origin().to_string())
-            .unwrap_or_default();
+        let origin = entry.origin().unwrap_or_default();
         Self {
             uri: entry.uri,
             name,
@@ -80,13 +73,9 @@ pub(crate) fn sort_entries(entries: &mut [SkillEntry]) {
 }
 
 fn entry_sort_key(entry: &SkillEntry) -> (String, String, String) {
-    let origin = parse_skill_uri(&entry.uri)
-        .map(|uri| uri.origin().to_string())
-        .unwrap_or_default();
+    let origin = entry.origin().unwrap_or_default();
     let name = entry
-        .frontmatter
-        .get("name")
-        .and_then(Value::as_str)
+        .frontmatter_str("name")
         .unwrap_or_default()
         .to_lowercase();
     (origin, name, entry.uri.clone())

@@ -3,7 +3,7 @@ const DATABASE_NAME = "labby-browser-identity";
 const STORE_NAME = "credentials";
 const RECORD_KEY = "active";
 const LEGACY_KEYS = ["privateKey", "publicKey"];
-const ASSOCIATION_KEYS = ["browserId", "pairingId"];
+const ASSOCIATION_KEYS = ["browserId", "pairingId", "pairingFingerprint"];
 
 /** @param {IDBRequest<any>} request @returns {Promise<any>} */
 function requestResult(request) {
@@ -146,8 +146,11 @@ export function createIdentityManager({keyStore, storage, subtle}) {
 
   function revoke() {
     return serialized(async () => {
-      await keyStore.clear();
+      // Clear the server association first. Any storage-driven reinitialization
+      // queues behind this serialized lifecycle operation until the old key is
+      // erased, so a stale browser id cannot race a reconnect.
       await clearAssociation();
+      await keyStore.clear();
     });
   }
 

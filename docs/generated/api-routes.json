@@ -630,7 +630,7 @@
     "master_only": false,
     "cache_posture": "route-defined",
     "failure_disclosure": "standard",
-    "side_effects": "loopback browser-extension WebSocket upgrade",
+    "side_effects": "browser-extension WebSocket upgrade",
     "notes": "browser socket"
   },
   {

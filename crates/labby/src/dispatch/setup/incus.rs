@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_yaml_ng::Value;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::dispatch::error::ToolError;
@@ -1932,13 +1932,11 @@ fn scalar_to_string(value: Value) -> Result<String, ToolError> {
         Value::String(value) => Ok(value),
         Value::Bool(value) => Ok(value.to_string()),
         Value::Number(value) => Ok(value.to_string()),
-        Value::Null | Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
-            Err(ToolError::Sdk {
-                message: "Incus backup config values must be scalar strings, booleans, or numbers"
-                    .into(),
-                sdk_kind: "incus_backup_config_non_scalar".into(),
-            })
-        }
+        Value::Null | Value::Array(_) | Value::Object(_) => Err(ToolError::Sdk {
+            message: "Incus backup config values must be scalar strings, booleans, or numbers"
+                .into(),
+            sdk_kind: "incus_backup_config_non_scalar".into(),
+        }),
     }
 }
 
