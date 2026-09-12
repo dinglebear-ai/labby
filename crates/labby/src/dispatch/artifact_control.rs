@@ -90,7 +90,13 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
     },
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+struct AuthorityRevalidation {
+    store: crate::access::AccessStore,
+    identity: VerifiedIdentity,
+}
+
+#[derive(Clone)]
 pub(crate) struct AuthorityContext {
     pub actor_id: String,
     pub organization_id: String,
@@ -101,6 +107,23 @@ pub(crate) struct AuthorityContext {
     /// mint a capability outside this local authorization ceiling.
     pub permission: crate::access::Permission,
     pub epochs: DelegatedAuthorityEpochs,
+    revalidation: Option<AuthorityRevalidation>,
+}
+
+impl AuthorityContext {
+    async fn revalidate(&self) -> Result<Self, ToolError> {
+        let Some(revalidation) = self.revalidation.as_ref() else {
+            return Ok(self.clone());
+        };
+        authorize_authority_context_with_store(
+            revalidation.store.clone(),
+            revalidation.identity.clone(),
+            &self.project_id,
+            self.team_id.as_deref(),
+            self.permission,
+        )
+        .await
+    }
 }
 
 pub(crate) async fn authorize_authority_context(
@@ -110,39 +133,42 @@ pub(crate) async fn authorize_authority_context(
     selected_team_id: Option<&str>,
     permission: crate::access::Permission,
 ) -> Result<AuthorityContext, ToolError> {
-    // The permission check and the delegation snapshot are two reads of the
-    // same store. That is sound because the snapshot carries the epoch vector
-    // Depot re-validates: any authority change between the two reads bumps an
-    // epoch, so a stale assertion is refused by the verifier rather than
-    // silently honoured. A single-transaction variant is therefore not
-    // required for correctness.
     let store = runtime
         .store()
         .await
         .map_err(|error| crate::dispatch::access_errors::map_runtime_error("artifacts", error))?;
-    store
-        .authorize_skill_library(identity.clone(), project_id.to_owned(), permission)
-        .await
-        .map_err(|error| {
-            crate::dispatch::access_errors::map_store_error("artifacts", error, || {
-                ToolError::Forbidden {
-                    message: "Remote Artifact operation is not authorized for this project"
-                        .to_owned(),
-                    required_scopes: vec!["lab:read".to_owned()],
-                }
-            })
-        })?;
+    authorize_authority_context_with_store(
+        store,
+        identity,
+        project_id,
+        selected_team_id,
+        permission,
+    )
+    .await
+}
+
+async fn authorize_authority_context_with_store(
+    store: crate::access::AccessStore,
+    identity: VerifiedIdentity,
+    project_id: &str,
+    selected_team_id: Option<&str>,
+    permission: crate::access::Permission,
+) -> Result<AuthorityContext, ToolError> {
+    // Permission and the delegation epoch vector must come from the same
+    // transaction. Otherwise a role downgrade between separate reads could be
+    // captured as a fresh epoch vector while retaining an earlier permission.
     let snapshot = store
         .depot_delegation_authority(
-            identity,
+            identity.clone(),
             project_id.to_owned(),
             selected_team_id.map(str::to_owned),
+            permission,
         )
         .await
         .map_err(|error| {
             crate::dispatch::access_errors::map_store_error("artifacts", error, || {
                 ToolError::Forbidden {
-                    message: "Remote Artifact operation requires one explicit authorized team"
+                    message: "Remote Artifact operation is not authorized for this project or selected team"
                         .to_owned(),
                     required_scopes: vec!["lab:read".to_owned()],
                 }
@@ -164,6 +190,7 @@ pub(crate) async fn authorize_authority_context(
             project_policy: Some(snapshot.project_policy),
             global_revision: snapshot.global_revision,
         },
+        revalidation: Some(AuthorityRevalidation { store, identity }),
     })
 }
 
@@ -357,6 +384,11 @@ impl ArtifactControlPlane {
                 message: "Artifact authority connection is unavailable".to_owned(),
             })?;
         self.require_managed_mutations_ready(operation)?;
+        let refreshed_context = match context {
+            Some(context) => Some(context.revalidate().await?),
+            None => None,
+        };
+        let context = refreshed_context.as_ref();
         // The assertion binds the exact body bytes. Canonicalize once (sorted
         // keys, compact, integers only) and send that same `Value`. The
         // labby-apis client has no raw-byte execution path; it serializes the
@@ -402,9 +434,13 @@ impl ArtifactControlPlane {
                 message: "Artifact authority connection is unavailable".to_owned(),
             })?;
         self.require_managed_mutations_ready(Operation::UploadsCreate)?;
-        let client = connection.client(Some(context))?;
+        // The per-connection admission wait above is the final async boundary
+        // before assertion minting and the outbound mutation. Reauthorize here
+        // so a role or membership revocation cannot age across that wait.
+        let context = context.revalidate().await?;
+        let client = connection.client(Some(&context))?;
         let headers =
-            self.upload_delegation_headers(upload_id, content_digest, content_length, context)?;
+            self.upload_delegation_headers(upload_id, content_digest, content_length, &context)?;
         let result = client
             .upload_with_headers(upload_id, body, content_length, content_type, headers)
             .await
@@ -1033,6 +1069,7 @@ mod tests {
                 project_policy: Some(12),
                 global_revision: 13,
             },
+            revalidation: None,
         }
     }
 
@@ -1529,6 +1566,7 @@ mod tests {
                 project_policy: Some(1),
                 global_revision: 1,
             },
+            revalidation: None,
         };
         assert!(operation_capabilities(Operation::ArtifactsList, &context).is_ok());
         assert!(operation_capabilities(Operation::JobsStart, &context).is_err());

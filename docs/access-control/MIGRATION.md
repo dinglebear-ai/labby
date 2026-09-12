@@ -64,6 +64,42 @@ Every phase has a durable operation ID and completion marker. Repeating a
 completed phase verifies its recorded input/output digests and returns the
 prior result. A changed replay fails closed.
 
+## Offline operator activation
+
+`labby state migrate-access` is the installation-owner entry point. Stop the
+Labby daemon before running it. The command acquires the same installation
+lifecycle lock as the daemon and refuses to run while that lock is held.
+It requires an existing, initialized AccessStore; it does not bootstrap an
+owner or issue credentials.
+
+First rehearse against an independent, SQLite-consistent copy of the source
+store in an owner-only installation directory. Select that directory with
+`LABBY_HOME`. Create the approval document described in
+[ENV.md](../runtime/ENV.md), bound to a separate checkpoint of that rehearsal
+store. Do not point rehearsal approval at the live installation. Run:
+
+```sh
+LABBY_HOME=/absolute/rehearsal-installation \
+LABBY_ACCESS_MIGRATION_EVIDENCE=/absolute/rehearsal-approval.json \
+labby --json state migrate-access
+```
+
+The command applies the existing approval and logical checkpoint checks,
+migrates through the existing transaction, then closes and opens the store
+twice. Its result reports `schema_version` and `verified_reopens`. Repeating
+the command on a valid current-schema store verifies the reopens without a
+new schema migration. An error after the migration transaction commits does
+not imply rollback; preserve the checkpoint and inspect the store before
+retrying.
+
+After reviewing the rehearsal evidence, prepare a separate approval bound to
+the quiesced live source and its independent checkpoint. With the daemon
+still stopped, run the same command using the live installation's `LABBY_HOME`
+and its approval document. Keep the checkpoint and approval until the
+post-migration authorization and inventory checks in this runbook pass.
+Ordinary startup continues to refuse legacy stores; setting the evidence
+variable alone does not activate migration through the daemon.
+
 ## Production-shaped v5 inventory
 
 The rehearsal fixture is non-empty and includes:
@@ -104,10 +140,18 @@ Existing private user material becomes that Principal's Personal scope. A
 migrated store that was never bootstrapped receives no platform administrator,
 no Team, and no Team-Project assignment; pre-existing direct Project
 memberships survive unchanged and receive authority epoch 1.
+For a store with bootstrap generation one, the existing migration grants
+PlatformAdministrator authority to the canonical bootstrap Principal, creates
+one `Initial Team`, and records that same Principal as its owner. It adds two
+audit rows for these authority seeds. It preserves the original Organization,
+Principal, Project, identity-link, and direct-membership IDs; it does not
+replace the owner, issue credentials, or assign existing Projects to the new
+Team. Bootstrap generation remains unchanged.
+
 Installation configuration, host filesystem operations, raw logs, recovery,
-and provider credentials become Installation-owned. No Team is invented, and
-email, display name, namespace, directory name, creator string, or OAuth scope
-is never used to infer a Team or PlatformAdmin.
+and provider credentials become Installation-owned. Email, display name,
+namespace, directory name, creator string, and OAuth scope are never used to
+infer a Team or PlatformAdmin.
 
 Rows whose owner cannot be proven, whose identifiers collide after canonical
 normalization, or whose references disagree are copied without mutation to a

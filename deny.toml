@@ -37,6 +37,10 @@ allow = [
 multiple-versions = "warn"
 wildcards = "allow"
 
+[[bans.deny]]
+name = "unsafe-libyaml"
+reason = "Untrusted YAML must be parsed by the workspace pure-Rust parser."
+
 # Convention enforcement — codifies rules from /CLAUDE.md and
 # crates/labby-apis/CLAUDE.md that clippy can't enforce on its own.
 # `wrappers` whitelists *direct* dep-graph parents allowed to pull the

@@ -1,10 +1,5 @@
 //! Bounded, deduplicating Skill Library authorization audit sink.
 
-#![allow(
-    dead_code,
-    reason = "shared audit sink is consumed by the Wave 2 Skill Library dispatcher"
-)]
-
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -52,7 +47,15 @@ impl SkillLibraryCorrelationId {
         Ok(Self(value))
     }
 
-    fn as_str(&self) -> &str {
+    /// Mint a server-owned correlation. Client request IDs remain transport
+    /// metadata and therefore cannot suppress audit events by reusing a value.
+    pub(crate) fn server(prefix: &'static str) -> Self {
+        let value = format!("{prefix}-{}", ulid::Ulid::new());
+        debug_assert!(Self::parse(value.clone()).is_ok());
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -72,6 +75,7 @@ pub(crate) enum SkillLibraryAuditStage {
     Ownership,
     Commit,
     Publication,
+    #[cfg(test)]
     Response,
 }
 
@@ -85,6 +89,7 @@ pub(crate) enum SkillLibraryTerminalOutcome {
 pub(crate) enum SkillLibraryTerminalStage {
     Commit,
     Publication,
+    #[cfg(test)]
     Response,
 }
 
@@ -93,6 +98,7 @@ impl SkillLibraryTerminalStage {
         match self {
             Self::Commit => SkillLibraryAuditStage::Commit,
             Self::Publication => SkillLibraryAuditStage::Publication,
+            #[cfg(test)]
             Self::Response => SkillLibraryAuditStage::Response,
         }
     }
@@ -243,10 +249,12 @@ pub(crate) struct SkillLibraryDurableAudit {
 }
 
 impl SkillLibraryDurableAudit {
+    #[cfg(test)]
     pub(crate) fn canonical_bytes(&self) -> Result<Vec<u8>, ArtifactError> {
         canonical_json::to_canonical_vec(self)
     }
 
+    #[cfg(test)]
     pub(crate) fn digest(&self) -> Result<String, ArtifactError> {
         canonical_json::digest(self)
     }
@@ -338,6 +346,7 @@ pub(crate) fn durable_terminal_audit(
         stage: match event.stage {
             SkillLibraryAuditStage::Commit => "commit",
             SkillLibraryAuditStage::Publication => "publication",
+            #[cfg(test)]
             SkillLibraryAuditStage::Response => "response",
             SkillLibraryAuditStage::Transport
             | SkillLibraryAuditStage::AccessSnapshot
@@ -379,33 +388,39 @@ struct AuditState {
     order: VecDeque<SkillLibraryAuditKey>,
     keys: HashSet<SkillLibraryAuditKey>,
     events: VecDeque<SkillLibraryAuditEvent>,
+    evictions: u64,
 }
 
-/// Process-shared bounded audit sink. Recording the same terminal decision is idempotent.
+/// Process-shared bounded audit sink. Exact retries are deduplicated only in the
+/// in-memory retention ring; every decision is still emitted to the audit trace.
 #[derive(Clone, Default)]
 pub(crate) struct SkillLibraryAuditSink {
     state: Arc<Mutex<AuditState>>,
 }
 
 impl SkillLibraryAuditSink {
-    /// Returns true only when this decision was newly retained and emitted.
+    /// Returns true when this decision was newly retained in the bounded ring.
     pub(crate) fn record(&self, event: SkillLibraryAuditEvent) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.keys.contains(&event.key) {
-            return false;
-        }
-        while state.order.len() >= MAX_AUDIT_EVENTS {
-            if let Some(expired) = state.order.pop_front() {
-                state.keys.remove(&expired);
-                state.events.pop_front();
+        let retained = if state.keys.contains(&event.key) {
+            false
+        } else {
+            while state.order.len() >= MAX_AUDIT_EVENTS {
+                if let Some(expired) = state.order.pop_front() {
+                    state.keys.remove(&expired);
+                    state.events.pop_front();
+                    state.evictions = state.evictions.saturating_add(1);
+                }
             }
-        }
-        state.keys.insert(event.key.clone());
-        state.order.push_back(event.key.clone());
-        state.events.push_back(event.clone());
+            state.keys.insert(event.key.clone());
+            state.order.push_back(event.key.clone());
+            state.events.push_back(event.clone());
+            true
+        };
+        let evictions = state.evictions;
         drop(state);
         tracing::info!(
             correlation_id = event.key.correlation_id.as_str(),
@@ -420,9 +435,11 @@ impl SkillLibraryAuditSink {
             published_version = event.published_version,
             terminal_outcome = ?event.terminal_outcome,
             replayed = event.replayed,
+            retained,
+            audit_evictions = evictions,
             "skill library authorization decision"
         );
-        true
+        retained
     }
 
     #[cfg(test)]

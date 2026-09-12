@@ -18,6 +18,8 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+pub(crate) mod offline_migration;
+pub(crate) use migrations::MigrationEvidenceSource;
 mod outbox;
 #[allow(unused_imports)]
 pub(crate) use outbox::{AuthorityAcknowledgement, OrganizationDelivery, PendingProjection};
@@ -138,9 +140,9 @@ pub(crate) use credential_verifier::{
 #[allow(unused_imports)]
 pub(crate) use dev_container::{
     DevContainerLedgerError, DevContainerStorageFailure, RecoveryRecord,
-    authorize_and_set_dev_container_desired_state, create_approved_for_store,
-    lookup_dev_container_for_store, recovery_inventory_for_store, set_desired_for_store,
-    set_observed_for_store,
+    authorize_and_create_approved_for_store, authorize_and_set_dev_container_desired_state,
+    create_approved_for_store, lookup_dev_container_for_store, recovery_inventory_for_store,
+    set_desired_for_store, set_observed_for_store,
 };
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};

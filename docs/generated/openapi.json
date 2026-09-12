@@ -6254,9 +6254,13 @@
       "BrowserBrowserPairingApproveParams": {
         "type": "object",
         "required": [
-          "pairing_id"
+          "pairing_id",
+          "pairing_fingerprint"
         ],
         "properties": {
+          "pairing_fingerprint": {
+            "type": "string"
+          },
           "pairing_id": {
             "type": "string"
           }

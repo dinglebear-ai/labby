@@ -2,6 +2,7 @@ import { invalidateAuthorityRequests } from './authority-context.ts'
 import { MalformedAuthorityResponseError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
 
 export type SessionAuthority = AuthoritySnapshot
+export type SessionAuthorityState = 'ready' | 'transport' | 'unprovisioned'
 export type { AuthorityOwner, AuthoritySnapshot }
 
 export type BrowserSessionState =
@@ -15,6 +16,13 @@ export type BrowserSessionState =
       expiresAt: number
       csrfToken: string
       authority?: SessionAuthority
+      /**
+       * Server-declared authority state. `transport` means owner bootstrap is
+       * pending; `unprovisioned` means the identity has no memberships yet.
+       */
+      authorityState?: SessionAuthorityState
+      /** Server-provided recovery guidance for the non-ready authority states. */
+      remediation?: string
       /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
       projectId?: string
@@ -36,6 +44,8 @@ type SessionPayload =
       }
       expires_at: number
       csrf_token: string
+      authority_state?: string | null
+      remediation?: string | null
       project_id?: string | null
       principal_id?: string | null
       active_owner?: { kind?: string; id?: string } | null
@@ -81,18 +91,34 @@ function setState(next: BrowserSessionState) {
 }
 
 /**
- * The identity that decides whether a state change is an authority change.
+ * The identity that decides whether a state change changes authority or project context.
  * Transport fields (CSRF token, expiry) are deliberately excluded: a session
  * refresh that only rotates them must neither abort in-flight requests nor
  * defeat the CSRF retry in `performServiceAction`.
  */
 function sessionIdentity(state: BrowserSessionState) {
   if (state.status !== 'authenticated') return state.status
-  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}`
+  return `authenticated:${state.user.sub}:${authorityIdentity(state.authority)}:${state.projectId ?? ''}`
 }
 
 function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: true }>): SessionAuthority | undefined {
-  const hasProjection = payload.authority_generation !== undefined || payload.organization_id !== undefined || payload.owner !== undefined || payload.active_owner !== undefined
+  switch (payload.authority_state) {
+    // Valid sessions without durable authority: owner bootstrap is pending
+    // (`transport`) or the identity has no memberships (`unprovisioned`). The
+    // server sends every projection field as JSON null in both states.
+    case 'transport':
+    case 'unprovisioned':
+      return undefined
+    case 'ready':
+      return parseAuthoritySnapshot(payload as unknown as Record<string, unknown>)
+    case undefined:
+    case null:
+      break
+    default:
+      throw new MalformedAuthorityResponseError('unsupported authority_state')
+  }
+  // Servers that predate `authority_state`: a null field is not a projection.
+  const hasProjection = [payload.authority_generation, payload.organization_id, payload.owner, payload.active_owner].some((value) => value != null)
   return hasProjection ? parseAuthoritySnapshot(payload as unknown as Record<string, unknown>) : undefined
 }
 
@@ -101,14 +127,26 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     return { status: 'unauthenticated' }
   }
   const authority = normalizeAuthority(payload)
+  // normalizeAuthority already rejected unknown states, so any string left is one of ours.
+  const authorityState = payload.authority_state ?? undefined
+  const projectedProjectId = typeof payload.project_id === 'string'
+    ? payload.project_id.trim() || undefined
+    : undefined
   return {
     status: 'authenticated',
     user: payload.user,
     expiresAt: payload.expires_at,
     csrfToken: payload.csrf_token,
     authority,
+    ...(authorityState ? { authorityState: authorityState as SessionAuthorityState } : {}),
+    ...(authorityState !== 'ready' && typeof payload.remediation === 'string' && payload.remediation
+      ? { remediation: payload.remediation }
+      : {}),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
-    projectId: authority?.activeProjectId,
+    // Project-bound sessions can carry an explicit server-selected project
+    // without the durable authority projection. Preserve that binding without
+    // manufacturing authority or choosing from the caller's membership list.
+    projectId: authority?.activeProjectId ?? projectedProjectId,
   }
 }
 
@@ -121,6 +159,10 @@ export function subscribeToBrowserSession(listener: () => void) {
 
 export function getBrowserSessionState() {
   return currentState
+}
+
+export function getBrowserSessionContextIdentity() {
+  return sessionIdentity(currentState)
 }
 
 export function getSessionCsrfToken() {

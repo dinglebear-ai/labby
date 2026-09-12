@@ -25,12 +25,12 @@ tracing.workspace = true
 reqwest.workspace = true
 futures.workspace = true
 # Skills extension (SEP-2640): sha2 verifies `sha256:` resource digests;
-# serde_yaml_ng parses `SKILL.md` frontmatter for the field-by-field comparison
-# the SEP requires against a skill entry's `frontmatter`. Both stay
-# transport-neutral, so neither weakens this crate's no-rmcp/axum/clap rule.
+# serde-saphyr parses untrusted `SKILL.md` frontmatter with a pure-Rust parser
+# for the field-by-field comparison the SEP requires against a skill entry.
+# Both stay transport-neutral, so neither weakens this crate's no-rmcp/axum/clap rule.
 sha2.workspace = true
 unicode-normalization.workspace = true
-serde_yaml_ng.workspace = true
+serde-saphyr.workspace = true
 atomic-write-file = "0.3.1"
 base64.workspace = true
 

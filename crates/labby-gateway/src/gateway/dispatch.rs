@@ -1304,6 +1304,9 @@ async fn handle_skills_list(
                         project_operator_skills(&operator),
                         operator.truncated,
                         operator.age_secs,
+                        operator.refreshing,
+                        operator.refresh_age_secs,
+                        operator.retry_after_ms,
                         refresh_error,
                     )
                 }
@@ -1312,7 +1315,10 @@ async fn handle_skills_list(
                     OperatorSkillsProjection::default(),
                     false,
                     0,
-                    Some(error),
+                    false,
+                    None,
+                    None,
+                    Some(error.to_string()),
                 ),
             };
             (config, inspection)
@@ -1321,8 +1327,19 @@ async fn handle_skills_list(
     .buffered(concurrency);
 
     let mut rows = Vec::new();
-    while let Some((config, (supports_skills, projection, truncated, age_secs, error))) =
-        inspections.next().await
+    while let Some((
+        config,
+        (
+            supports_skills,
+            projection,
+            truncated,
+            age_secs,
+            refreshing,
+            refresh_age_secs,
+            retry_after_ms,
+            error,
+        ),
+    )) = inspections.next().await
     {
         if let Some(error) = error.as_deref() {
             tracing::warn!(
@@ -1348,6 +1365,9 @@ async fn handle_skills_list(
                 rejected = projection.rejected.len(),
                 truncated,
                 cache_age_secs = age_secs,
+                refreshing,
+                refresh_age_secs,
+                retry_after_ms,
                 "gateway skills upstream inspection complete"
             );
         }
@@ -1358,6 +1378,9 @@ async fn handle_skills_list(
             projection,
             truncated,
             age_secs,
+            refreshing,
+            refresh_age_secs,
+            retry_after_ms,
             error,
         ));
     }
@@ -1438,6 +1461,9 @@ fn skills_operator_row(
     projection: OperatorSkillsProjection,
     truncated: bool,
     age_secs: u64,
+    refreshing: bool,
+    refresh_age_secs: Option<u64>,
+    retry_after_ms: Option<u64>,
     error: Option<String>,
 ) -> Value {
     let excluded_count = projection.rejected.len();
@@ -1454,6 +1480,9 @@ fn skills_operator_row(
         "excluded_count": excluded_count,
         "truncated": truncated,
         "cache_age_secs": age_secs,
+        "refreshing": refreshing,
+        "refresh_started_ago_secs": refresh_age_secs,
+        "retry_after_ms": retry_after_ms,
         "error": error,
     })
 }

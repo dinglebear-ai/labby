@@ -10,7 +10,7 @@ use crate::installation::InstallationPaths;
 
 static BROWSER_BRIDGE: OnceCell<Result<Arc<BrowserBridge>, String>> = OnceCell::const_new();
 
-/// Only the validated local extension socket may create the owning runtime.
+/// Only a validated browser-extension socket may create the owning runtime.
 pub(crate) async fn initialize_browser_bridge() -> Result<Arc<BrowserBridge>, ToolError> {
     BROWSER_BRIDGE
         .get_or_init(|| async {
@@ -38,7 +38,7 @@ pub async fn browser_bridge() -> Result<Arc<BrowserBridge>, ToolError> {
         .get()
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "browser_unavailable".to_string(),
-            message: "Connect the browser extension to this local Labby server first. Remote clients must target the owning server; a separate CLI or stdio process does not own its browser connections.".to_string(),
+            message: "Connect the browser extension to this Labby server first. Other clients must target the owning server; a separate CLI or stdio process does not own its browser connections.".to_string(),
         })?
         .as_ref()
         .map(Arc::clone)

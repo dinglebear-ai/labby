@@ -36,6 +36,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
   configuration, environment, service, action, CLI, API, and OpenAPI inventory
   coverage with drift tests.
 
+### Changed
+
+- **skills/artifacts (breaking):** durable Skill Library lifecycle actions use the
+  `artifacts.*` namespace and `/v1/artifacts`; legacy `skill_library.*` configuration
+  and action names are not valid. Exact acquisition sources are configured under
+  `[[artifacts.sources]]`. The read-only `skills.*` compatibility actions remain only
+  as adapters over the canonical registry, while SEP-2640 uses native `skills/list`
+  and `skills/get`. The pinned accepted SEP contract and current URI, pagination, and
+  cache semantics are documented in `docs/contracts/skills-extension.md`.
+
 ### Fixed
 
 - **security:** pin patched npm dependencies across the root toolchain, Gateway Admin, and Palette to clear all open Dependabot alerts and current `brace-expansion` and Hono audit findings.

@@ -385,7 +385,9 @@ fn validate_nonempty(field: &'static str, value: &str) -> Result<(), SkillProvid
     Ok(())
 }
 
-/// Boxed provider future, avoiding an `async_trait` dependency.
+/// Boxed provider future so `SkillProvider` remains dyn-compatible without `async_trait`.
+/// Concrete providers pay one boxed-future allocation per operation in exchange for preserving
+/// the heterogeneous provider seam used by contract tests and future provider composition.
 pub type SkillProviderFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, SkillProviderError>> + Send + 'a>>;
 

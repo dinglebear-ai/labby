@@ -8,6 +8,7 @@ use super::error::{AccessStoreError, AccessStoreResult};
 use super::credential_schema;
 
 pub(super) const SCHEMA_VERSION: i64 = 7;
+const MAX_MIGRATION_EVIDENCE_BYTES: usize = 128 * 1024;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
 pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
 pub(super) const V6_SCHEMA_VERSION: i64 = 6;
@@ -381,8 +382,19 @@ fn verify_migration_evidence(
     found: i64,
     evidence_path: &Path,
 ) -> AccessStoreResult<MigrationOperation> {
-    let bytes = std::fs::read(evidence_path)
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(evidence_path)
         .map_err(|error| invalid_evidence(format!("cannot read evidence: {error}")))?;
+    let mut bytes = Vec::with_capacity(MAX_MIGRATION_EVIDENCE_BYTES.min(4096));
+    file.take((MAX_MIGRATION_EVIDENCE_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| invalid_evidence(format!("cannot read evidence: {error}")))?;
+    if bytes.len() > MAX_MIGRATION_EVIDENCE_BYTES {
+        return Err(invalid_evidence(
+            "migration approval evidence exceeds the size limit",
+        ));
+    }
     let evidence: MigrationEvidence = serde_json::from_slice(&bytes)
         .map_err(|error| invalid_evidence(format!("malformed evidence: {error}")))?;
     if evidence.schema_version != "labby.access-migration-approval/v1"
@@ -2055,6 +2067,20 @@ mod credential_migration_tests {
                 .unwrap(),
             V5_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn migration_evidence_file_size_is_bounded() {
+        let directory = super::super::test_support::secure_tempdir();
+        let evidence_path = directory.path().join("oversized-approval.json");
+        std::fs::write(&evidence_path, vec![b'x'; MAX_MIGRATION_EVIDENCE_BYTES + 1]).unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+
+        assert!(matches!(
+            verify_migration_evidence(&connection, V5_SCHEMA_VERSION, &evidence_path),
+            Err(AccessStoreError::MigrationEvidenceInvalid { reason })
+                if reason.contains("size limit")
+        ));
     }
 
     #[test]

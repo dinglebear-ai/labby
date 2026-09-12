@@ -8,6 +8,7 @@
 //! Skills remain data: this module never interpolates skill content into tool
 //! descriptions, prompts, or action catalogs.
 
+pub(crate) mod admission;
 pub(crate) mod aggregate;
 pub(crate) mod facade;
 pub(crate) mod local;
