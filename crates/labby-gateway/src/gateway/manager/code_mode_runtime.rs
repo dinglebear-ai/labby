@@ -307,7 +307,9 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
     ) -> Arc<UpstreamPool> {
         if let Some(pool) = self.runtime.current_pool().await {
+            pool.set_auto_reconnect(cfg.gateway.auto_reconnect);
             pool.seed_lazy_upstreams(&cfg.upstream).await;
+            pool.ensure_recovery_tasks(&cfg.upstream).await;
             return pool;
         }
 
@@ -320,11 +322,16 @@ impl GatewayManager {
             // Code Mode revision that is midway through publication.
             let _publication = self.publication_barrier.write().await;
             if let Some(pool) = self.runtime.current_pool_sync() {
+                pool.set_auto_reconnect(cfg.gateway.auto_reconnect);
                 pool.seed_lazy_upstreams(&cfg.upstream).await;
+                pool.ensure_recovery_tasks(&cfg.upstream).await;
                 return pool;
             }
-            let mut base_pool =
-                self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
+            let mut base_pool = self.new_base_pool(
+                cfg.upstream_request_timeout(),
+                cfg.upstream_relay_timeout(),
+                cfg.gateway.auto_reconnect,
+            );
             base_pool = base_pool.with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
                 UpstreamRuntimeOwner {
                     surface: "dispatch".to_string(),
@@ -340,6 +347,7 @@ impl GatewayManager {
             pool
         };
         pool.seed_lazy_upstreams(&cfg.upstream).await;
+        pool.ensure_recovery_tasks(&cfg.upstream).await;
         pool
     }
 

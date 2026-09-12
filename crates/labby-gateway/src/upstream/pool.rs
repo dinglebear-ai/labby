@@ -6,7 +6,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use dashmap::DashMap;
@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use labby_auth::upstream::cache::OauthClientCache;
-#[cfg(test)]
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use crate::registry::InProcessService;
@@ -378,6 +377,8 @@ pub struct UpstreamPool {
     /// `request_timeout` because a relayed call blocks on a human answering an
     /// elicitation forwarded from the upstream — see `pool/relay.rs`.
     relay_timeout: Duration,
+    /// Whether long-lived upstreams get periodic health/reconnect tasks.
+    auto_reconnect: Arc<AtomicBool>,
     /// Optional connector for in-process (built-in) service peers.
     /// When set, built-in lab services are reachable via the upstream pool.
     in_process_connector: Option<InProcessConnector>,
@@ -607,6 +608,7 @@ impl UpstreamPool {
             runtime_owner: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             relay_timeout: DEFAULT_RELAY_TIMEOUT,
+            auto_reconnect: Arc::new(AtomicBool::new(false)),
             in_process_connector: None,
             in_process_ensure_state: Arc::new(Mutex::new(None)),
             shared_http_client,
@@ -747,6 +749,38 @@ impl UpstreamPool {
     pub fn with_relay_timeout(mut self, timeout: Duration) -> Self {
         self.relay_timeout = timeout;
         self
+    }
+
+    /// Enable periodic recovery for disconnected upstream MCP servers.
+    #[must_use]
+    pub fn with_auto_reconnect(self, enabled: bool) -> Self {
+        self.auto_reconnect.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    /// Update periodic recovery for an already-published long-lived pool.
+    pub(crate) fn set_auto_reconnect(&self, enabled: bool) {
+        self.auto_reconnect.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Arm recovery tasks for configured long-lived upstreams.
+    pub(crate) async fn ensure_recovery_tasks(&self, configs: &[UpstreamConfig]) {
+        if !self.auto_reconnect.load(Ordering::Relaxed) {
+            let cancellations = {
+                let mut tasks = self.probe_tasks.write().await;
+                tasks
+                    .drain()
+                    .map(|(_, cancellation)| cancellation)
+                    .collect::<Vec<_>>()
+            };
+            for cancellation in cancellations {
+                cancellation.cancel();
+            }
+            return;
+        }
+        for config in configs.iter().filter(|config| config.enabled) {
+            self.ensure_probe_task(config.clone()).await;
+        }
     }
 
     /// Attach a call-usage recorder. `None` explicitly disables capture even

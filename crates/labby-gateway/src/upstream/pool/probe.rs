@@ -33,7 +33,13 @@ static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 impl UpstreamPool {
-    pub(super) async fn ensure_probe_task(&self, config: UpstreamConfig) {
+    pub(crate) async fn ensure_probe_task(&self, config: UpstreamConfig) {
+        if !self
+            .auto_reconnect
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         if config.oauth.is_some() {
             return;
         }
@@ -329,7 +335,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_probe_task_registers_before_returning() {
-        let pool = UpstreamPool::new();
+        let pool = UpstreamPool::new().with_auto_reconnect(true);
         let config = named_test_upstream_config("probe-race");
         UpstreamPool::reset_probe_task_schedule_count_for_tests("probe-race");
 
@@ -343,6 +349,40 @@ mod tests {
 
         pool.drain_for_swap("probe.registration.test").await;
         assert!(pool.probe_tasks.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn auto_reconnect_option_controls_recovery_task_schedule() {
+        let upstream = "auto-reconnect-option";
+        let config = named_test_upstream_config(upstream);
+        UpstreamPool::reset_probe_task_schedule_count_for_tests(upstream);
+
+        let disabled = UpstreamPool::new();
+        disabled
+            .ensure_recovery_tasks(std::slice::from_ref(&config))
+            .await;
+        assert_eq!(
+            UpstreamPool::probe_task_schedule_count_for_tests(upstream),
+            0
+        );
+
+        let enabled = UpstreamPool::new().with_auto_reconnect(true);
+        enabled
+            .ensure_recovery_tasks(std::slice::from_ref(&config))
+            .await;
+        assert_eq!(
+            UpstreamPool::probe_task_schedule_count_for_tests(upstream),
+            1
+        );
+        assert_eq!(enabled.probe_tasks.read().await.len(), 1);
+
+        enabled.set_auto_reconnect(false);
+        enabled
+            .ensure_recovery_tasks(std::slice::from_ref(&config))
+            .await;
+        assert!(enabled.probe_tasks.read().await.is_empty());
+
+        enabled.drain_for_swap("test.auto_reconnect").await;
     }
 
     #[tokio::test]

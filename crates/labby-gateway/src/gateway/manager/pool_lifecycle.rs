@@ -558,8 +558,11 @@ impl GatewayManager {
             "gateway reconcile"
         );
         let fresh_pool = {
-            let base_pool =
-                self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
+            let base_pool = self.new_base_pool(
+                cfg.upstream_request_timeout(),
+                cfg.upstream_relay_timeout(),
+                cfg.gateway.auto_reconnect,
+            );
             let pool = Arc::new(
                 base_pool
                     .with_runtime_origin(runtime_origin_tag(origin))
@@ -774,6 +777,11 @@ async fn probe_reload_upstreams(
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()
         .await;
+
+    // Full and selective manager reconciles use lazy seeding plus targeted
+    // connects, so `discover_all` cannot be relied on to arm recovery tasks.
+    // Schedule them after probing so failed startup connections are covered too.
+    pool.ensure_recovery_tasks(&cfg.upstream).await;
 
     // Resource ownership must be populated after tool discovery because only
     // connected peers can answer resources/list. A transactional selective
