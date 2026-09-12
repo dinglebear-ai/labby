@@ -1139,7 +1139,7 @@ fn remote_release_rollback_script_for(
          if test \"$binary_present\" = 1; then install -m 0755 \"$d/labby\" {binary_path} || failed=\"$failed binary\"; else rm -f {binary_path} || failed=\"$failed binary-remove\"; fi; \
          if test \"$assets_present\" = 1; then rm -rf {assets_dir} || failed=\"$failed assets-remove\"; cp -a \"$d/web\" {assets_dir} || failed=\"$failed assets\"; else rm -rf {assets_dir} || failed=\"$failed assets-remove\"; fi; \
          case \"$unit_file_state\" in enabled) systemctl enable {service_name} || failed=\"$failed service-enable\" ;; enabled-runtime) systemctl disable {service_name} || failed=\"$failed service-disable\"; systemctl enable --runtime {service_name} || failed=\"$failed service-enable-runtime\" ;; disabled) systemctl disable {service_name} || failed=\"$failed service-disable\" ;; *) failed=\"$failed invalid-unit-file-state\" ;; esac; \
-         case \"$active_state\" in active) systemctl start {service_name} || failed=\"$failed service-start\"; curl -fsS {ready_url} >/dev/null || failed=\"$failed readiness\" ;; inactive) systemctl stop {service_name} || failed=\"$failed service-stop-final\"; systemctl reset-failed {service_name} || failed=\"$failed service-reset-failed\" ;; failed) systemctl start {service_name} >/dev/null 2>&1 || :; actual=$(systemctl show {service_name} --property=ActiveState --value --no-pager); test \"$actual\" = failed || failed=\"$failed service-failed-state\" ;; *) failed=\"$failed invalid-active-state\" ;; esac; \
+         case \"$active_state\" in active) systemctl start {service_name} || failed=\"$failed service-start\"; ready=0; attempt=0; while test \"$attempt\" -lt 30; do attempt=$((attempt + 1)); if curl -fsS --connect-timeout 1 --max-time 1 {ready_url} >/dev/null; then ready=1; break; fi; if test \"$attempt\" -lt 30; then sleep 1; fi; done; test \"$ready\" = 1 || failed=\"$failed readiness\" ;; inactive) systemctl stop {service_name} || failed=\"$failed service-stop-final\"; systemctl reset-failed {service_name} || failed=\"$failed service-reset-failed\" ;; failed) systemctl start {service_name} >/dev/null 2>&1 || :; actual=$(systemctl show {service_name} --property=ActiveState --value --no-pager); test \"$actual\" = failed || failed=\"$failed service-failed-state\" ;; *) failed=\"$failed invalid-active-state\" ;; esac; \
          if test -n \"$failed\"; then printf 'rollback residuals:%s\\n' \"$failed\" >&2; exit 70; fi; rm -rf \"$d\""
     )
 }
@@ -3285,6 +3285,95 @@ mod tests {
         assert!(calls.contains("start labby.service"));
         assert!(deployment.exists(), "failed rollback must retain manifest");
     }
+    #[cfg(unix)]
+    #[test]
+    fn rollback_waits_for_readiness_and_retains_manifest_on_exhaustion() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (active_state, failures, expected_attempts, expected_sleeps, expected_code) in [
+            ("active", 2, 3, 2, 0),
+            ("active", 30, 30, 29, 70),
+            ("inactive", 30, 0, 0, 0),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let deployment = root.path().join("deployment");
+            let bin_dir = root.path().join("fake-bin");
+            let binary = root.path().join("labby");
+            let assets = root.path().join("web-assets");
+            let calls = root.path().join("calls");
+            let sleeps = root.path().join("sleeps");
+            std::fs::create_dir_all(deployment.join("web")).unwrap();
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            std::fs::write(deployment.join("labby"), b"prior-binary").unwrap();
+            std::fs::write(deployment.join("web/index.html"), b"prior-assets").unwrap();
+            std::fs::write(
+                deployment.join("manifest.env"),
+                format!("binary_present=1\nassets_present=1\nactive_state={active_state}\nunit_file_state=enabled\n"),
+            ).unwrap();
+            std::fs::write(&binary, b"candidate").unwrap();
+            std::fs::create_dir_all(&assets).unwrap();
+            std::fs::write(assets.join("index.html"), b"candidate-assets").unwrap();
+            std::fs::write(&calls, "").unwrap();
+            std::fs::write(&sleeps, "").unwrap();
+            for (name, content) in [
+                ("systemctl", "#!/bin/sh\nexit 0\n"),
+                ("sleep", "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$SLEEPS\"\n"),
+                (
+                    "curl",
+                    r#"#!/bin/sh
+printf '%s\n' "$*" >>"$CALLS"
+count=$(wc -l <"$CALLS")
+if test "$count" -le "$FAILURES"; then exit 7; fi
+exit 0
+"#,
+                ),
+            ] {
+                let path = bin_dir.join(name);
+                std::fs::write(&path, content).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(remote_release_rollback_script_for(
+                    deployment.to_str().unwrap(),
+                    binary.to_str().unwrap(),
+                    assets.to_str().unwrap(),
+                    "labby.service",
+                    "http://127.0.0.1/ready",
+                ))
+                .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+                .env("CALLS", &calls)
+                .env("SLEEPS", &sleeps)
+                .env("FAILURES", failures.to_string())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(expected_code));
+            assert_eq!(std::fs::read(&binary).unwrap(), b"prior-binary");
+            assert_eq!(
+                std::fs::read(assets.join("index.html")).unwrap(),
+                b"prior-assets"
+            );
+            let attempts = std::fs::read_to_string(&calls).unwrap();
+            assert_eq!(attempts.lines().count(), expected_attempts);
+            for attempt in attempts.lines() {
+                assert_eq!(
+                    attempt,
+                    "-fsS --connect-timeout 1 --max-time 1 http://127.0.0.1/ready"
+                );
+            }
+            let sleeps = std::fs::read_to_string(&sleeps).unwrap();
+            assert_eq!(sleeps.lines().count(), expected_sleeps);
+            assert!(sleeps.lines().all(|seconds| seconds == "1"));
+            assert_eq!(deployment.exists(), expected_code != 0);
+            if expected_code != 0 {
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("rollback residuals: readiness")
+                );
+            }
+        }
+    }
+
     use std::ffi::OsStr;
 
     #[test]
