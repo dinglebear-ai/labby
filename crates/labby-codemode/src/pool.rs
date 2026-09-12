@@ -235,31 +235,19 @@ impl RunnerPool {
                 claimed
             };
             if let Some(index) = claimed {
-                let runner = self.take_or_spawn_slot(index, deadline).await;
-                match runner {
-                    Ok(runner) => {
-                        return Ok(RunnerLease::pooled(
-                            Arc::clone(&self.slots[index]),
-                            Arc::clone(&self.state),
-                            Arc::clone(&self.active_leases),
-                            Arc::clone(&self.drained),
-                            index,
-                            runner,
-                            self.config,
-                        ));
-                    }
-                    Err(err) => {
-                        // Spawn failed; return the slot to the free-list so it is
-                        // retried later rather than permanently lost.
-                        self.state
-                            .lock()
-                            .expect("pool state lock")
-                            .free_slots
-                            .push_back(index);
-                        lease_finished(&self.active_leases, &self.drained);
-                        return Err(err);
-                    }
-                }
+                // Own the reservation before the first suspension point. Dropping
+                // checkout during spawn must return the slot and active count.
+                let mut lease = RunnerLease::pooled(
+                    Arc::clone(&self.slots[index]),
+                    Arc::clone(&self.state),
+                    Arc::clone(&self.active_leases),
+                    Arc::clone(&self.drained),
+                    index,
+                    None,
+                    self.config,
+                );
+                lease.runner = Some(self.take_or_spawn_slot(index, deadline).await?);
+                return Ok(lease);
             }
         }
 
@@ -284,20 +272,15 @@ impl RunnerPool {
             ensure_running(&state)?;
             self.active_leases.fetch_add(1, Ordering::AcqRel);
         }
-        let runner =
-            match spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await {
-                Ok(runner) => runner,
-                Err(err) => {
-                    lease_finished(&self.active_leases, &self.drained);
-                    return Err(err);
-                }
-            };
-        Ok(RunnerLease::ephemeral(
-            runner,
+        let mut lease = RunnerLease::ephemeral(
+            None,
             permit,
             Arc::clone(&self.active_leases),
             Arc::clone(&self.drained),
-        ))
+        );
+        lease.runner =
+            Some(spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await?);
+        Ok(lease)
     }
 
     /// Spawn a guaranteed-fresh ephemeral runner using the pool's configured
@@ -321,20 +304,15 @@ impl RunnerPool {
             ensure_running(&state)?;
             self.active_leases.fetch_add(1, Ordering::AcqRel);
         }
-        let runner =
-            match spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await {
-                Ok(runner) => runner,
-                Err(err) => {
-                    lease_finished(&self.active_leases, &self.drained);
-                    return Err(err);
-                }
-            };
-        Ok(RunnerLease::ephemeral(
-            runner,
+        let mut lease = RunnerLease::ephemeral(
+            None,
             permit,
             Arc::clone(&self.active_leases),
             Arc::clone(&self.drained),
-        ))
+        );
+        lease.runner =
+            Some(spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await?);
+        Ok(lease)
     }
 
     /// Take the runner out of a claimed slot, spawning a fresh one if the slot is
@@ -412,7 +390,7 @@ impl RunnerPool {
                     Arc::clone(&self.active_leases),
                     Arc::clone(&self.drained),
                     index,
-                    runner,
+                    Some(runner),
                     self.config,
                 ));
             }
@@ -427,7 +405,7 @@ impl RunnerPool {
             self.active_leases.fetch_add(1, Ordering::AcqRel);
         }
         Ok(RunnerLease::ephemeral(
-            PooledRunner::spawn_stub()?,
+            Some(PooledRunner::spawn_stub()?),
             permit,
             Arc::clone(&self.active_leases),
             Arc::clone(&self.drained),
@@ -485,7 +463,7 @@ impl RunnerLease {
         active_leases: Arc<AtomicUsize>,
         drained: Arc<Notify>,
         index: usize,
-        runner: PooledRunner,
+        runner: Option<PooledRunner>,
         config: PoolConfig,
     ) -> Self {
         Self {
@@ -498,12 +476,12 @@ impl RunnerLease {
                 recycle_after: config.recycle_after,
                 returned: false,
             },
-            runner: Some(runner),
+            runner,
         }
     }
 
     fn ephemeral(
-        runner: PooledRunner,
+        runner: Option<PooledRunner>,
         permit: OwnedSemaphorePermit,
         active_leases: Arc<AtomicUsize>,
         drained: Arc<Notify>,
@@ -515,7 +493,7 @@ impl RunnerLease {
                 drained,
                 returned: false,
             },
-            runner: Some(runner),
+            runner,
         }
     }
 
@@ -671,6 +649,75 @@ mod tests {
             size,
             recycle_after,
             max_overflow,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_admission_restores_pooled_overflow_and_fresh_reservations() {
+        // Hold the real spawn admission gate, so cancellation happens after
+        // checkout reserves bookkeeping but before any subprocess is launched.
+        let admission = microsandbox_admission();
+        let _held = admission
+            .acquire_many(config::microsandbox_max_runners() as u32)
+            .await
+            .unwrap();
+        for (size, fresh) in [(1, false), (0, false), (1, true)] {
+            let pool = RunnerPool::with_config_and_spawn(
+                cfg(size, 100, 1),
+                RunnerSpawn {
+                    program: "unused".into(),
+                    args: vec![],
+                },
+                Some(MicrosandboxSpawn {
+                    executable: "unused".into(),
+                    image: "unused".into(),
+                }),
+            );
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut checkout = Box::pin(async {
+                if fresh {
+                    pool.checkout_fresh(deadline).await
+                } else {
+                    pool.checkout(deadline).await
+                }
+            });
+            assert!(futures::poll!(&mut checkout).is_pending());
+            assert_eq!(pool.active_leases.load(Ordering::Acquire), 1);
+            drop(checkout);
+            assert_eq!(pool.active_leases.load(Ordering::Acquire), 0);
+            assert_eq!(pool.state.lock().unwrap().free_slots.len(), size);
+            assert_eq!(pool.available_overflow_permits(), 1);
+            tokio::time::timeout(std::time::Duration::from_millis(100), pool.shutdown())
+                .await
+                .expect("cancelled admission must not strand shutdown");
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_spawn_returns_each_admission_reservation_once() {
+        let temp = tempfile::tempdir().unwrap();
+        for (size, fresh) in [(1, false), (0, false), (1, true)] {
+            let pool = RunnerPool::with_config_and_spawn(
+                cfg(size, 100, 1),
+                RunnerSpawn {
+                    program: temp.path().join("missing-runner"),
+                    args: vec![],
+                },
+                None,
+            );
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            let result = if fresh {
+                pool.checkout_fresh(deadline).await
+            } else {
+                pool.checkout(deadline).await
+            };
+            assert!(result.is_err());
+            assert_eq!(pool.active_leases.load(Ordering::Acquire), 0);
+            assert_eq!(pool.state.lock().unwrap().free_slots.len(), size);
+            assert_eq!(pool.available_overflow_permits(), 1);
+            tokio::time::timeout(std::time::Duration::from_millis(100), pool.shutdown())
+                .await
+                .unwrap();
         }
     }
 

@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
+import {publishCurrentObservation, TabScanScheduler} from "../src/orchestration.js";
+import {discoverCurrentDocument} from "../src/scanning.js";
 import {cancelWebMcp, invokeWebMcp} from "../src/probe.js";
 
 // Run the actual worker handlers with Chrome boundary fakes; do not start its
@@ -16,7 +18,7 @@ function worker({
   const listener = {addListener() {}};
   const storageWrites = [];
   const context = vm.createContext({
-    console, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp,
+    console, URL, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp, TabScanScheduler, discoverCurrentDocument, publishCurrentObservation,
     verifiedPairingFingerprint: async (payload) => payload?.pairing_fingerprint,
     createIdentityManager: () => identityManager, IndexedDbIdentityStore: class {},
     indexedDB: {}, crypto: {subtle: {}}, bridgeFailureKind: (error) => error instanceof Error ? error.message : String(error),
@@ -25,7 +27,7 @@ function worker({
     chrome: {
       runtime: {onInstalled: listener, onStartup: listener, onMessage: listener},
       tabs: {onUpdated: listener, onActivated: listener, onRemoved: listener, get: async () => ({id: 7})},
-      alarms: {onAlarm: listener}, permissions: {onAdded: listener, onRemoved: listener},
+      alarms: {onAlarm: listener}, permissions: {onAdded: listener, onRemoved: listener, contains: async () => true},
       storage: {onChanged: listener, local: {
         get: getSettings,
         set: async (value) => { storageWrites.push({type: "set", value}); await setSettings(value); },
@@ -37,7 +39,7 @@ function worker({
   });
   const source = readFileSync(new URL("../src/service_worker.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace(/\ninitialize\(\);\s*$/, "");
-  vm.runInContext(`${source}\n globalThis.handlers = {executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, handleUiMessage, handleServerEvent, schedulePairingPoll, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }, pairingPollActive() { return pairingPollTimer !== undefined; }, pairingPollHandle() { return pairingPollTimer; }, clearPairingPoll() { clearTimeout(pairingPollTimer); pairingPollTimer = undefined; }};`, context);
+  vm.runInContext(`${source}\n globalThis.handlers = {scanTab, executeToolCall, cancelDisconnectedCalls, resumeAndScan, reportBridgeFailure, handleUiMessage, handleServerEvent, schedulePairingPoll, pendingCalls, observations, setChannel(value) { channel = value; }, pairingGeneration() { return pairingGeneration; }, advancePairingGeneration() { pairingGeneration += 1; }, pairingPollActive() { return pairingPollTimer !== undefined; }, pairingPollHandle() { return pairingPollTimer; }, clearPairingPoll() { clearTimeout(pairingPollTimer); pairingPollTimer = undefined; }};`, context);
   context.handlers.observations.set(7, {tab_id: 7, document_id: "doc", tools: []});
   context.handlers.storageWrites = storageWrites;
   return context.handlers;
@@ -201,4 +203,38 @@ test("disconnect attempts every cancellation and exposes injection failures", as
   assert.equal(first.cancelled, true);
   assert.equal(second.cancelled, true);
   assert.equal(handlers.pendingCalls.size, 0);
+});
+
+
+test("worker overlap publishes only the latest document without closing a healthy observation", async () => {
+  let release;
+  let signalStarted;
+  const started = new Promise(resolve => { signalStarted = resolve; });
+  let document = "initial-doc";
+  let injections = 0;
+  const handlers = worker({execute: async request => {
+    injections++;
+    if (request.world === "ISOLATED") {
+      const captured = document;
+      if (injections === 1) {
+        signalStarted();
+        await new Promise(resolve => { release = resolve; });
+      }
+      return [{documentId: captured, result: {url: "https://page.example/", title: captured}}];
+    }
+    return [{documentId: request.target.documentIds[0], result: {supported: true, tools: [{name: "search"}]}}];
+  }});
+  const messages = [];
+  handlers.setChannel({message: async (type, payload) => { messages.push({type, payload}); return {}; }});
+  const first = handlers.scanTab({id: 7, url: "https://page.example/"});
+  await started;
+  document = "latest-doc";
+  const second = handlers.scanTab({id: 7, url: "https://page.example/"});
+  assert.equal(injections, 1);
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(messages.map(message => message.type), ["discovery.observed"]);
+  assert.equal(messages[0].payload.observations[0].document_id, "latest-doc");
+  assert.equal(handlers.observations.get(7).document_id, "latest-doc");
+  assert.equal(injections, 4);
 });

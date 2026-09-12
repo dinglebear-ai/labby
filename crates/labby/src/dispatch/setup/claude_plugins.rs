@@ -298,6 +298,27 @@ struct CommandOutput {
     stderr: String,
 }
 
+/// Keep command descendants owned until output collection finishes or is cancelled.
+struct PluginProcessTree {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    _job: labby_winjob::JobObject,
+}
+
+impl Drop for PluginProcessTree {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(self.pid as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        // The Windows Job Object terminates its descendants when dropped.
+    }
+}
+
 async fn run_claude(args: &[&str], failure_kind: &'static str) -> Result<CommandOutput, ToolError> {
     let claude_bin = std::env::var("LABBY_CLAUDE_BIN")
         .ok()
@@ -312,8 +333,27 @@ async fn run_claude_with_bin(
     failure_kind: &'static str,
 ) -> Result<CommandOutput, ToolError> {
     let mut command = Command::new(claude_bin);
-    command.args(args).stdin(Stdio::null());
-    let child = command.output();
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = async {
+        let child = command.spawn()?;
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("failed to identify Claude CLI process"))?;
+        let _tree = PluginProcessTree {
+            #[cfg(unix)]
+            pid,
+            #[cfg(windows)]
+            _job: labby_winjob::JobObject::assign(pid).map_err(std::io::Error::other)?,
+        };
+        child.wait_with_output().await
+    };
     let output = match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -491,6 +531,62 @@ pub fn services_status_json(statuses: Vec<ServiceStatus>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_plugin_command_cannot_leave_descendant_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("completed");
+        let ready = dir.path().join("ready");
+        let args = [
+            "-c",
+            "(sleep 1; printf mutation > \"$1\") & printf ready > \"$2\"; wait",
+            "plugin-fixture",
+            marker.to_str().unwrap(),
+            ready.to_str().unwrap(),
+        ];
+        let mut running = Box::pin(run_claude_with_bin(
+            "/bin/sh",
+            &args,
+            "plugin_install_failed",
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut running => panic!("fixture finished before cancellation: {result:?}"),
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {
+                        if ready.exists() { break; }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("fixture must spawn its descendant before cancellation");
+        drop(running);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!marker.exists(), "descendant mutated after cancellation");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_plugin_command_cannot_finish_mutation_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("completed");
+        let code = "import pathlib,sys,time; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('mutation')";
+        let marker_path = marker.to_str().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            run_claude_with_bin(
+                "python3",
+                &["-c", code, marker_path],
+                "plugin_install_failed",
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!marker.exists());
+    }
+
     use super::*;
 
     #[tokio::test]

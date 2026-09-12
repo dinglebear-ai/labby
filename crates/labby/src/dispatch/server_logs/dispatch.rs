@@ -207,6 +207,21 @@ fn read_tail(path: &Path, file_bytes: u64, bytes_to_read: u64) -> Result<String,
         message: format!("failed to open server log file `{}`: {err}", path.display()),
     })?;
     let offset = file_bytes.saturating_sub(bytes_to_read);
+    let starts_on_boundary = if offset == 0 {
+        true
+    } else {
+        file.seek(SeekFrom::Start(offset - 1))
+            .map_err(|err| ToolError::internal_message(err.to_string()))?;
+        let mut preceding = [0_u8];
+        match file.read_exact(&mut preceding) {
+            Ok(()) => (),
+            // Log rotation/truncation can invalidate the inventory size. There
+            // is no tail at this offset; do not fail queries of the other files.
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(String::new()),
+            Err(err) => return Err(ToolError::internal_message(err.to_string())),
+        }
+        preceding[0] == b'\n'
+    };
     file.seek(SeekFrom::Start(offset))
         .map_err(|err| ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
@@ -219,7 +234,7 @@ fn read_tail(path: &Path, file_bytes: u64, bytes_to_read: u64) -> Result<String,
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to read server log file `{}`: {err}", path.display()),
         })?;
-    if offset > 0 {
+    if !starts_on_boundary {
         if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
             bytes.drain(..=index);
         } else {
@@ -428,6 +443,26 @@ fn contains_lower(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn truncated_log_with_stale_inventory_size_does_not_fail_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotated.jsonl");
+        std::fs::write(&path, b"new\n").unwrap();
+        assert_eq!(read_tail(&path, 100, 4).unwrap(), "");
+    }
+
+    #[test]
+    fn tail_keeps_complete_record_at_exact_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, b"old\nnew\n").unwrap();
+        assert_eq!(read_tail(&path, 8, 4).unwrap(), "new\n");
+        assert_eq!(read_tail(&path, 8, 5).unwrap(), "new\n");
+        assert_eq!(read_tail(&path, 8, 3).unwrap(), "");
+        std::fs::write(&path, b"old\nnew").unwrap();
+        assert_eq!(read_tail(&path, 7, 3).unwrap(), "new");
+    }
+
     use super::*;
 
     #[test]

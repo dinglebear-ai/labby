@@ -196,11 +196,32 @@ async fn read_path_capped(
     cap: usize,
     label: &str,
 ) -> Result<String, OpenApiError> {
-    let bytes = tokio::fs::read(path)
+    use tokio::io::AsyncReadExt;
+    let parse_error = || OpenApiError::SpecParse {
+        label: label.to_string(),
+    };
+    // Refuse special files before opening; NONBLOCK also closes the FIFO
+    // replacement race on Unix between metadata and open.
+    if !tokio::fs::metadata(path)
         .await
-        .map_err(|_| OpenApiError::SpecParse {
-            label: label.to_string(),
-        })?;
+        .map_err(|_| parse_error())?
+        .is_file()
+    {
+        return Err(parse_error());
+    }
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    let file = options.open(path).await.map_err(|_| parse_error())?;
+    if !file.metadata().await.map_err(|_| parse_error())?.is_file() {
+        return Err(parse_error());
+    }
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| parse_error())?;
     if bytes.len() > cap {
         return Err(OpenApiError::SpecTooLarge {
             label: label.to_string(),
@@ -213,6 +234,21 @@ async fn read_path_capped(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn local_spec_read_enforces_exact_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.json");
+        std::fs::write(&path, b"1234").unwrap();
+        assert_eq!(read_path_capped(&path, 4, "spec").await.unwrap(), "1234");
+        std::fs::write(&path, b"12345").unwrap();
+        assert!(matches!(
+            read_path_capped(&path, 4, "spec").await,
+            Err(OpenApiError::SpecTooLarge { .. })
+        ));
+        assert!(read_path_capped(dir.path(), 4, "spec").await.is_err());
+    }
+
     use super::*;
     use crate::config::SpecSource;
 

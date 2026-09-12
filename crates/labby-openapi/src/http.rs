@@ -370,6 +370,16 @@ fn build_url_with_params(
     op: &OperationHandle,
     params: &serde_json::Value,
 ) -> Result<(Vec<String>, url::Url), OpenApiError> {
+    // OpenAPI paths are paths, never URL references. Prefixing the join with
+    // `./` also prevents a colon in the first segment from becoming a scheme.
+    if !op.path_template.starts_with('/')
+        || op.path_template.starts_with("//")
+        || op.path_template.contains(['\\', '?', '#'])
+    {
+        return Err(OpenApiError::RequestBlockedPrivateAddr {
+            label: op.operation_id.clone(),
+        });
+    }
     let mut consumed = Vec::new();
     let mut path = String::with_capacity(op.path_template.len());
     let mut chars = op.path_template.chars();
@@ -400,15 +410,18 @@ fn build_url_with_params(
         base.set_path(&with_slash);
         with_slash
     };
-    let joined =
-        base.join(path.trim_start_matches('/'))
-            .map_err(|_| OpenApiError::UpstreamRequest {
-                label: op.operation_id.clone(),
-            })?;
+    let joined = base
+        .join(&format!("./{}", path.trim_start_matches('/')))
+        .map_err(|_| OpenApiError::UpstreamRequest {
+            label: op.operation_id.clone(),
+        })?;
     // Belt-and-suspenders: the joined path MUST still start with the operator's
     // base path prefix. Encoding already prevents `..` traversal; this catches
     // any residual normalization that would escape the configured scope.
-    if !joined.path().starts_with(base_prefix.trim_end_matches('/')) {
+    if joined.origin() != base.origin()
+        || !(joined.path() == base_prefix.trim_end_matches('/')
+            || joined.path().starts_with(&base_prefix))
+    {
         return Err(OpenApiError::RequestBlockedPrivateAddr {
             label: op.operation_id.clone(),
         });
@@ -506,6 +519,51 @@ fn apply_body(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn spec_paths_cannot_change_origin_or_escape_base_segment() {
+        for base in ["https://api.example/", "https://api.example/v1"] {
+            for path in [
+                "/https://collector.example/receive",
+                "/../v10/private",
+                "/\\\\collector.example/receive",
+                "//collector.example/receive",
+                "/?query=1",
+                "/#fragment",
+            ] {
+                let op = OperationHandle {
+                    operation_id: "allowed".into(),
+                    method: reqwest::Method::GET,
+                    path_template: path.into(),
+                    base_url: url::Url::parse(base).unwrap(),
+                    credential: None,
+                };
+                if let Ok((_, resolved)) = build_url_with_params(&op, &serde_json::json!({})) {
+                    assert_eq!(resolved.scheme(), "https");
+                    assert_eq!(resolved.host_str(), Some("api.example"));
+                    assert_eq!(resolved.port_or_known_default(), Some(443));
+                    if base.ends_with("v1") {
+                        assert!(resolved.path().starts_with("/v1/"));
+                    }
+                }
+            }
+        }
+        let op = OperationHandle {
+            operation_id: "allowed".into(),
+            method: reqwest::Method::GET,
+            path_template: "/users/{id}".into(),
+            base_url: url::Url::parse("https://api.example/v1").unwrap(),
+            credential: None,
+        };
+        assert_eq!(
+            build_url_with_params(&op, &serde_json::json!({"id":"a"}))
+                .unwrap()
+                .1
+                .as_str(),
+            "https://api.example/v1/users/a"
+        );
+    }
+
     use super::*;
 
     #[tokio::test]

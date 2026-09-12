@@ -213,6 +213,8 @@ class IncusContract(unittest.TestCase):
             git.write_text("""#!/usr/bin/env bash
 set -euo pipefail
 case $1 in
+  fetch) exit 0 ;;
+  show) printf '[workspace.package]\\nversion = "%s"\\n' "${FAKE_PREVIOUS_VERSION:-1.2.2}" ;;
   ls-remote) test ! -s "$FAKE_REMOTE" || printf '%s\\trefs/tags/labby-incus-latest\\n' "$(<"$FAKE_REMOTE")" ;;
   tag) printf '%s\\n' "$4" >"$FAKE_LOCAL" ;;
   push)
@@ -255,6 +257,21 @@ exit 64
             (receipt / "state").write_text("prepared\n")
             subprocess.run([script, "rollback"], env=env, check=True)
             self.assertEqual(remote.read_text().strip(), "a" * 40)
+
+            # Stable generation checks must reject a stale or invalid candidate
+            # before changing the remote pointer or creating a prepared receipt.
+            for candidate, previous in [("v1.2.3", "1.2.4"), ("v1.2.3-rc.1", "1.2.2"), ("v1.2.3", "invalid")]:
+                with self.subTest(candidate=candidate, previous=previous):
+                    rejected_receipt = root / f"rejected-{candidate}-{previous}"
+                    rejected = subprocess.run(
+                        [script, "promote"],
+                        env={**env, "RELEASE_TAG": candidate, "FAKE_PREVIOUS_VERSION": previous,
+                             "INCUS_POINTER_RECEIPT": str(rejected_receipt)},
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertEqual(remote.read_text().strip(), "a" * 40)
+                    self.assertFalse((rejected_receipt / "state").exists())
 
             # A crash after the CAS but before the final receipt write must
             # still be recognized as a partial promotion and rolled back.

@@ -232,11 +232,54 @@ struct CappedPipe {
     truncated: bool,
 }
 
-async fn run_capped_command(mut command: Command) -> Result<CappedGitOutput, ToolError> {
+/// Own the descendant boundary across every await, including caller cancellation.
+struct GitProcessTree {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    _job: labby_winjob::JobObject,
+}
+
+impl Drop for GitProcessTree {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{Signal, killpg};
+            use nix::unistd::Pid;
+            let _ = killpg(Pid::from_raw(self.pid as i32), Signal::SIGKILL);
+        }
+        // Windows JobObject's Drop terminates the assigned descendant tree.
+    }
+}
+
+async fn run_capped_command(command: Command) -> Result<CappedGitOutput, ToolError> {
+    run_capped_command_with_timeout(command, Duration::from_secs(10)).await
+}
+
+async fn run_capped_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<CappedGitOutput, ToolError> {
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn().map_err(|err| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to run git: {err}"),
     })?;
+    let pid = child.id().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: "failed to identify git process".to_string(),
+    })?;
+    let mut tree = Some(GitProcessTree {
+        #[cfg(unix)]
+        pid,
+        #[cfg(windows)]
+        _job: labby_winjob::JobObject::assign(pid).map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to contain git process: {err}"),
+        })?,
+    });
     let stdout = child.stdout.take().ok_or_else(|| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: "failed to capture git stdout".to_string(),
@@ -246,25 +289,24 @@ async fn run_capped_command(mut command: Command) -> Result<CappedGitOutput, Too
         message: "failed to capture git stderr".to_string(),
     })?;
 
-    let mut stdout_task = tokio::spawn(read_capped_pipe(stdout, MAX_GIT_STDOUT_BYTES));
-    let mut stderr_task = tokio::spawn(read_capped_pipe(stderr, MAX_GIT_STDERR_BYTES));
+    // These futures own their pipes locally: returning or cancellation closes
+    // them immediately, without detached drain tasks waiting for descendant EOF.
+    let stdout_read = read_capped_pipe(stdout, MAX_GIT_STDOUT_BYTES);
+    let stderr_read = read_capped_pipe(stderr, MAX_GIT_STDERR_BYTES);
+    tokio::pin!(stdout_read, stderr_read);
     let mut stdout_result = None;
     let mut stderr_result = None;
     let mut status_result = None;
-    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
 
     while stdout_result.is_none() || stderr_result.is_none() || status_result.is_none() {
         tokio::select! {
             () = &mut deadline => {
+                drop(tree.take());
                 drop(child.start_kill());
-                drop(child.wait().await);
-                if stdout_result.is_none() {
-                    drop((&mut stdout_task).await);
-                }
-                if stderr_result.is_none() {
-                    drop((&mut stderr_task).await);
-                }
+                // Best-effort reaping has a separate bounded cleanup budget.
+                drop(tokio::time::timeout(Duration::from_secs(1), child.wait()).await);
                 return Err(ToolError::Sdk {
                     sdk_kind: "timeout".to_string(),
                     message: "git command timed out".to_string(),
@@ -276,37 +318,32 @@ async fn run_capped_command(mut command: Command) -> Result<CappedGitOutput, Too
                     message: format!("failed to wait for git: {err}"),
                 })?);
             }
-            result = &mut stdout_task, if stdout_result.is_none() => {
-                let pipe = join_capped_pipe(result)?;
+            result = &mut stdout_read, if stdout_result.is_none() => {
+                let pipe = map_capped_pipe(result)?;
                 if pipe.truncated {
+                    drop(tree.take());
                     drop(child.start_kill());
                 }
                 stdout_result = Some(pipe);
             }
-            result = &mut stderr_task, if stderr_result.is_none() => {
-                let pipe = join_capped_pipe(result)?;
+            result = &mut stderr_read, if stderr_result.is_none() => {
+                let pipe = map_capped_pipe(result)?;
                 if pipe.truncated {
+                    drop(tree.take());
                     drop(child.start_kill());
                 }
                 stderr_result = Some(pipe);
             }
         }
     }
-
+    let stdout = stdout_result.expect("stdout result set");
+    let stderr = stderr_result.expect("stderr result set");
     Ok(CappedGitOutput {
         status: status_result.expect("status result set"),
-        stdout: stdout_result
-            .as_ref()
-            .expect("stdout result set")
-            .bytes
-            .clone(),
-        stdout_truncated: stdout_result.expect("stdout result set").truncated,
-        stderr: stderr_result
-            .as_ref()
-            .expect("stderr result set")
-            .bytes
-            .clone(),
-        stderr_truncated: stderr_result.expect("stderr result set").truncated,
+        stdout: stdout.bytes,
+        stdout_truncated: stdout.truncated,
+        stderr: stderr.bytes,
+        stderr_truncated: stderr.truncated,
     })
 }
 
@@ -324,18 +361,11 @@ where
     Ok(CappedPipe { bytes, truncated })
 }
 
-fn join_capped_pipe(
-    result: Result<Result<CappedPipe, std::io::Error>, tokio::task::JoinError>,
-) -> Result<CappedPipe, ToolError> {
-    result
-        .map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to join git output reader: {err}"),
-        })?
-        .map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to read git output: {err}"),
-        })
+fn map_capped_pipe(result: Result<CappedPipe, std::io::Error>) -> Result<CappedPipe, ToolError> {
+    result.map_err(|err| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!("failed to read git output: {err}"),
+    })
 }
 
 fn git_binary() -> PathBuf {
@@ -413,6 +443,85 @@ fn parse_remote_list(stdout: &str) -> Vec<Value> {
 mod tests {
     use super::*;
     use crate::state::quota::StateWorkspaceLimits;
+
+    #[cfg(unix)]
+    fn descendant_command(marker: &Path, ready: &Path, noisy: bool) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                r#"(sleep 0.5; printf survived > "$1") &
+printf ready > "$2"
+if [ "$3" = noisy ]; then
+    while :; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; done
+fi
+wait"#,
+                "git-fixture",
+            ])
+            .arg(marker)
+            .arg(ready)
+            .arg(if noisy { "noisy" } else { "quiet" });
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        command
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_timeout_and_cancellation_kill_pipe_holding_descendants() {
+        for cancel in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let marker = temp.path().join("survived");
+            let ready = temp.path().join("ready");
+            let mut running = Box::pin(run_capped_command_with_timeout(
+                descendant_command(&marker, &ready, false),
+                Duration::from_millis(100),
+            ));
+            if cancel {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    loop {
+                        tokio::select! {
+                            _ = &mut running => panic!("fixture returned before cancellation"),
+                            () = tokio::time::sleep(Duration::from_millis(5)) => {
+                                if ready.exists() { break; }
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                drop(running);
+            } else {
+                let result = tokio::time::timeout(Duration::from_millis(400), running)
+                    .await
+                    .expect("cleanup must not wait for descendant pipe EOF");
+                assert_eq!(result.err().expect("deadline must fail").kind(), "timeout");
+                assert!(ready.exists());
+            }
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            assert!(!marker.exists(), "descendant continued after Git ended");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_output_cap_kills_pipe_holding_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("survived");
+        let ready = temp.path().join("ready");
+        let output = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_capped_command(descendant_command(&marker, &ready, true)),
+        )
+        .await
+        .expect("output cap cleanup must return promptly")
+        .unwrap();
+        assert!(output.stdout_truncated);
+        assert_eq!(output.stdout.len(), MAX_GIT_STDOUT_BYTES);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!marker.exists());
+    }
 
     #[tokio::test]
     async fn git_provider_initializes_and_commits_workspace_file() {

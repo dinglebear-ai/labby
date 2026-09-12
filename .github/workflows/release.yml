@@ -433,6 +433,11 @@ jobs:
 
   release:
     name: Publish validated release
+    # npm lacks conditional dist-tag writes. Serialize the complete promotion
+    # and rollback transaction across all tags; version guards reject stale runs.
+    concurrency:
+      group: labby-stable-release-promotion
+      cancel-in-progress: false
     needs: [build, upgrade-qualification, incus-candidate, npm-candidate, mcp-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -496,6 +501,7 @@ jobs:
           set -euo pipefail
           files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
           gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true
+          touch /tmp/labby-release-was-draft
           scripts/ci/upload-immutable-release-assets.sh -- "${files[@]}"
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
@@ -519,6 +525,14 @@ jobs:
           for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
             scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
+      - name: Prepare npm stable pointer transaction
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          python3 scripts/ci/promote-npm-pointer.py prepare \
+            --package "$(node -p "require('./packages/labby-mcp/package.json').name")" \
+            --version "$(node -p "require('./packages/labby-mcp/package.json').version")" \
+            --receipt /tmp/labby-npm-pointer.json
       - name: Transactionally promote Incus rolling pointer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -532,7 +546,6 @@ jobs:
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           if npm view "$package_name@$version" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            touch /tmp/labby-npm-candidate-published
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -544,7 +557,6 @@ jobs:
         run: |
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
-          touch /tmp/labby-npm-candidate-published
       - name: Publish qualified draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -556,14 +568,15 @@ jobs:
         run: |
           package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
-          npm dist-tag add "$package_name@$version" latest
-          [[ "$(npm view "$package_name@latest" version)" == "$version" ]]
+          python3 scripts/ci/promote-npm-pointer.py promote --package "$package_name" \
+            --version "$version" --receipt /tmp/labby-npm-pointer.json
       - name: Roll back partial publication
         if: ${{ failure() }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           ROLLBACK_STATUS_FILE: /tmp/labby-release-rollback.json
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -u
           pointer_rc=0
@@ -571,16 +584,29 @@ jobs:
             INCUS_POINTER_RECEIPT=/tmp/labby-incus-pointer-receipt \
               scripts/ci/promote-incus-pointer.sh rollback || pointer_rc=$?
           fi
+          npm_rc=0
+          if [[ -f /tmp/labby-npm-pointer.json ]]; then
+            python3 scripts/ci/promote-npm-pointer.py rollback \
+              --package "$(node -p "require('./packages/labby-mcp/package.json').name")" \
+              --version "$(node -p "require('./packages/labby-mcp/package.json').version")" \
+              --receipt /tmp/labby-npm-pointer.json || npm_rc=$?
+          fi
           github_rc=0
+          # Keep assets public if a stable consumer pointer cannot be restored.
           # Promotion may have succeeded remotely even when its visibility
           # verification timed out. Restore and verify the safe draft state.
-          if ! gh release edit "$RELEASE_TAG" --draft=true ||
-             ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true; then
+          if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]; then
             github_rc=1
+          elif [[ -f /tmp/labby-release-was-draft ]]; then
+            if ! gh release edit "$RELEASE_TAG" --draft=true ||
+               ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true; then
+              github_rc=1
+            fi
           fi
+          # Successful candidate dependencies prove immutable publication, even if this job fails early.
           python3 scripts/ci/compound-release-rollback.py \
-            --pointer-rc "$pointer_rc" --github-rc "$github_rc" \
-            --npm-candidate-published "$([[ -f /tmp/labby-npm-candidate-published ]] && printf true || printf false)" \
+            --pointer-rc "$pointer_rc" --github-rc "$github_rc" --npm-pointer-rc "$npm_rc" \
+            --npm-candidate-published true \
             --mcp-version-published true \
             --output "$ROLLBACK_STATUS_FILE"
       - name: Persist compound rollback status

@@ -258,6 +258,17 @@ async fn handle(
         req,
         crate::dispatch::remote_control::actions(service),
         move |action, params| async move {
+            if matches!(
+                action
+                    .strip_prefix(&format!("{service}."))
+                    .unwrap_or(&action),
+                "help" | "schema"
+            ) {
+                return crate::dispatch::remote_control::dispatch_with_context(
+                    service, &action, params, None,
+                )
+                .await;
+            }
             let spec = crate::dispatch::remote_control::actions(service)
                 .iter()
                 .find(|candidate| candidate.name == action);
@@ -430,6 +441,33 @@ pub(crate) async fn authorize_authority_context(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn shared_discovery_does_not_require_a_remote_operation() {
+        for (service, schema_action) in [
+            ("sources", "sources.list"),
+            ("jobs", "jobs.list"),
+            ("uploads", "uploads.get"),
+            ("bundles", "bundles.list"),
+        ] {
+            for action in ["help", "schema"] {
+                let result = handle(
+                    service,
+                    State(AppState::default()),
+                    None,
+                    HeaderMap::new(),
+                    auth(&["lab:read"]),
+                    None,
+                    Json(ActionRequest {
+                        action: action.into(),
+                        params: serde_json::json!({"action": schema_action}),
+                    }),
+                )
+                .await;
+                assert!(result.is_ok(), "{service}.{action}: {result:?}");
+            }
+        }
+    }
+
     use axum::response::IntoResponse;
     use http_body_util::BodyExt as _;
 

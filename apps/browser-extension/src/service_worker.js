@@ -1,10 +1,10 @@
 import {LabbyBrowserChannel} from "./channel.js";
 import {bridgeFailureKind} from "./errors.js";
-import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
-import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
+import {discoverCurrentDocument, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
+import {cancelWebMcp, invokeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
-import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
+import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler, TabScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
 import {verifiedPairingFingerprint} from "./pairing.js";
 
@@ -481,27 +481,37 @@ async function scanAllOnce() {
  * @param {chrome.tabs.Tab | undefined} tab
  * @param {boolean} [allowActiveTab]
  */
-async function scanTab(tab, allowActiveTab = false) {
+function scanTab(tab, allowActiveTab = false) {
+  if (!tab?.id || !tab.url) return Promise.resolve();
+  const generation = (scanGenerations.get(tab.id) ?? 0) + 1;
+  scanGenerations.set(tab.id, generation);
+  return tabScanScheduler.run(tab.id, () => scanTabOnce(tab, allowActiveTab, generation));
+}
+
+const tabScanScheduler = new TabScanScheduler();
+
+/** @param {chrome.tabs.Tab} tab @param {boolean} allowActiveTab @param {number} generation */
+async function scanTabOnce(tab, allowActiveTab, generation) {
   const settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
   if (!tab?.id || !tab.url) return;
   const tabId = tab.id;
-  const generation = (scanGenerations.get(tabId) ?? 0) + 1;
-  scanGenerations.set(tabId, generation);
-  if (settings.scanningPaused || (!allowActiveTab && !(await canScanTab(tab, chrome.permissions)))) {
+  const allowed = !settings.scanningPaused && (allowActiveTab || await canScanTab(tab, chrome.permissions));
+  if (scanGenerations.get(tabId) !== generation) return;
+  if (!allowed) {
     await closeObservation(tab.id);
     return;
   }
   const {ignoredOrigins = []} = /** @type {{ignoredOrigins?: string[]}} */ (await chrome.storage.local.get("ignoredOrigins"));
+  if (scanGenerations.get(tabId) !== generation) return;
   if (ignoredOrigins.includes(new URL(tab.url).origin)) {
     await closeObservation(tab.id);
     return;
   }
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: probeWebMcp});
+    const observation = await discoverCurrentDocument(tab, chrome.scripting, chrome.permissions, ignoredOrigins, allowActiveTab);
     if (scanGenerations.get(tabId) !== generation) return;
-    const observation = buildObservation(tab, result);
     if (!observation) {
-      if (result?.documentId) await closeObservation(tab.id);
+      await closeObservation(tabId);
       return;
     }
     await publishCurrentObservation(

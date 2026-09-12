@@ -63,3 +63,29 @@ export async function publishCurrentObservation(generation, currentGeneration, p
 export function closeObservations(tabIds, close) {
   return Promise.allSettled([...tabIds].map(close));
 }
+
+/** Coalesce same-tab events and recheck the latest request after the active scan. */
+export class TabScanScheduler {
+  constructor() {
+    /** @type {Map<number, {scan: () => Promise<void>, scheduler: ScanScheduler}>} */
+    this.entries = new Map();
+  }
+
+  /** @param {number} tabId @param {() => Promise<void>} scan */
+  run(tabId, scan) {
+    let entry = this.entries.get(tabId);
+    if (!entry) {
+      /** @type {{scan: () => Promise<void>, scheduler: ScanScheduler}} */
+      const created = {scan, scheduler: new ScanScheduler(() => created.scan())};
+      entry = created;
+      this.entries.set(tabId, entry);
+    }
+    entry.scan = scan;
+    const pending = entry.scheduler.run();
+    // Cleanup observes rejection separately; callers still receive the original error.
+    void pending.finally(() => {
+      if (this.entries.get(tabId) === entry) this.entries.delete(tabId);
+    }).catch(() => {});
+    return pending;
+  }
+}
