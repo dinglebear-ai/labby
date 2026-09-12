@@ -222,11 +222,18 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # v1.13.3 reads .env and auth.db from $HOME/.labby regardless of LABBY_HOME.
         unix = self.text("scripts/ci/n-minus-one/unix")
         self.assertIn('labby_home="$user_home/.labby"', unix)
-        self.assertEqual(2, unix.count('LABBY_HOME="$labby_home"'))
-        self.assertEqual(2, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
+        self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
-        self.assertEqual(2, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+        self.assertEqual(1, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+        # With the daemon running, `gateway list` answers through v1.16's access gate.
+        for name in ("unix", "windows", "macos"):
+            self.assertNotIn("--json gateway list", self.text(f"scripts/ci/n-minus-one/{name}"), name)
+        # The candidate CLI has `incus sync`; `setup incus-sync` never existed.
+        incus_adapter = self.text("scripts/ci/n-minus-one/incus")
+        self.assertIn('incus sync --container "$name" --binary', incus_adapter)
+        self.assertNotIn("setup incus-sync", incus_adapter)
         self.assertIn("icacls '$pwsh_user_home' /inheritance:r", windows)
         # From v1.16 a bearer-mode install without an access store answers
         # gateway admin actions with setup-required; `help` stays public.

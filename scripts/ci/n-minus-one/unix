@@ -36,7 +36,8 @@ verify_persisted_state() {
     python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
     (cd "$labby_home" && sha256sum -c "$state_digest")
     grep -Fxq "LABBY_MCP_HTTP_TOKEN=$(printf '%064d' 0)" "$labby_home/.env"
-    PATH="$install_dir:$PATH" HOME="$user_home" LABBY_HOME="$labby_home" "$install_dir/labby" --json gateway list | grep -Fq '"id": "n-minus-one"'
+    # No `gateway list` here: once the daemon runs it answers through v1.16's
+    # access gate, and the config.toml checksum already proves the upstream.
 }
 
 verify_version() {
