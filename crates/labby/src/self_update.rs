@@ -91,10 +91,21 @@ fn install_release(script: &Path, tag: &str, directory: &Path) -> Result<()> {
     Ok(())
 }
 
+fn install_directory(binary: &Path) -> Result<&Path> {
+    // The verified installer publishes a fixed `labby` basename. A renamed
+    // executable would otherwise report success while leaving itself stale.
+    if binary.file_name() != Some(std::ffi::OsStr::new("labby")) {
+        bail!(
+            "Automatic updates require an executable named labby; reinstall at the standard name before enabling updates"
+        );
+    }
+    binary.parent().context("Binary has no parent directory")
+}
+
 /// Check published releases and atomically install a newer verified host binary.
 pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
     require_macos()?;
-    let directory = binary.parent().context("Binary has no parent directory")?;
+    let directory = install_directory(binary)?;
     let lock = fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -242,53 +253,189 @@ pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     if !matches!(action, "enable" | "disable") {
         bail!("Unknown schedule action {action}");
     }
-    // Render and validate the replacement before unloading an existing job.
+    let control = |operation: &str| -> Result<()> {
+        let mut command = Command::new("launchctl");
+        command.arg(operation);
+        if operation == "bootout" {
+            command.arg(format!("{domain}/{LABEL}"));
+        } else {
+            command.arg(&domain).arg(&plist);
+        }
+        if !command.status()?.success() {
+            bail!("launchctl {operation} failed for {}", plist.display());
+        }
+        Ok(())
+    };
+    if action == "disable" {
+        if loaded {
+            control("bootout")?;
+        }
+        match fs::remove_file(&plist) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        return Ok(json!({"enabled": false}));
+    }
+    // Prepare the replacement before changing the working schedule.
     let log_dir = home.join("Library/Logs/Labby");
     let content = launch_agent(
         &binary,
         &log_dir.join("auto-update.log"),
         &std::env::var("PATH")?,
     )?;
-    if action == "enable"
-        && !Command::new("gh")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
+    if !Command::new("gh")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
     {
         bail!("GitHub CLI (gh) is required to verify release attestations");
     }
-    if loaded
-        && !Command::new("launchctl")
-            .args(["bootout", &format!("{domain}/{LABEL}")])
-            .status()?
-            .success()
-    {
-        bail!("Failed to unload the existing automatic update job");
-    }
-    if action == "disable" {
-        if plist.exists() {
-            fs::remove_file(&plist)?;
-        }
-        return Ok(json!({"enabled": false}));
-    }
     fs::create_dir_all(plist.parent().context("Missing LaunchAgents directory")?)?;
     fs::create_dir_all(log_dir)?;
-    fs::write(&plist, content)?;
-    if !Command::new("launchctl")
-        .arg("bootstrap")
-        .arg(&domain)
-        .arg(&plist)
-        .status()?
-        .success()
-    {
-        bail!("Failed to load automatic updates from {}", plist.display());
-    }
+    replace_schedule(&plist, content.as_bytes(), loaded, control)?;
     Ok(json!({"enabled": true, "binary": binary, "interval_seconds": 86400, "plist": plist}))
+}
+
+/// Restore the previous on-disk and loaded schedule if activation fails.
+fn replace_schedule(
+    plist: &Path,
+    content: &[u8],
+    loaded: bool,
+    mut control: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    use std::io::Write;
+
+    let previous = match fs::read(plist) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !loaded => None,
+        Err(error) => return Err(error).context("Cannot preserve existing update schedule"),
+    };
+    let stage = |content: &[u8]| -> Result<tempfile::NamedTempFile> {
+        let mut file = tempfile::NamedTempFile::new_in(
+            plist.parent().context("Missing LaunchAgents directory")?,
+        )?;
+        file.write_all(content)?;
+        file.as_file().sync_all()?;
+        Ok(file)
+    };
+    let replacement = stage(content)?;
+    // Stage rollback bytes too, so an unwritable directory cannot stop the old
+    // job before either complete file is ready for atomic publication.
+    let backup = previous.as_deref().map(stage).transpose()?;
+    if loaded {
+        control("bootout")?;
+    }
+    let activation = (|| -> Result<()> {
+        replacement.persist(plist)?;
+        control("bootstrap")
+    })();
+    if let Err(error) = activation {
+        let rollback = (|| -> Result<()> {
+            if let Some(backup) = backup {
+                backup.persist(plist)?;
+            } else {
+                match fs::remove_file(plist) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if loaded {
+                control("bootstrap")?;
+            }
+            Ok(())
+        })();
+        if let Err(rollback_error) = rollback {
+            bail!(
+                "Update schedule activation failed: {error:#}; restoration also failed: {rollback_error:#}"
+            );
+        }
+        return Err(error).context("Update schedule activation failed; previous schedule restored");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_executable_cannot_report_an_update_to_another_binary() {
+        assert_eq!(
+            install_directory(Path::new("/opt/bin/labby")).unwrap(),
+            Path::new("/opt/bin")
+        );
+        assert!(install_directory(Path::new("/opt/bin/labby-preview")).is_err());
+    }
+
+    #[test]
+    fn failed_schedule_activation_restores_previous_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("update.plist");
+        fs::write(&plist, "previous schedule").unwrap();
+        let mut calls = Vec::new();
+        let result = replace_schedule(&plist, b"new schedule", true, |operation| {
+            calls.push(operation.to_owned());
+            if calls.len() == 2 {
+                assert_eq!(fs::read_to_string(&plist).unwrap(), "new schedule");
+                bail!("bootstrap rejected");
+            }
+            if calls.len() == 3 {
+                assert_eq!(fs::read_to_string(&plist).unwrap(), "previous schedule");
+            }
+            Ok(())
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("previous schedule restored")
+        );
+        assert_eq!(calls, ["bootout", "bootstrap", "bootstrap"]);
+        assert_eq!(fs::read_to_string(plist).unwrap(), "previous schedule");
+    }
+
+    #[test]
+    fn failed_first_schedule_activation_removes_new_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("update.plist");
+        let result = replace_schedule(&plist, b"new schedule", false, |operation| {
+            assert_eq!(operation, "bootstrap");
+            bail!("bootstrap rejected")
+        });
+        assert!(result.is_err());
+        assert!(!plist.exists());
+    }
+
+    #[test]
+    fn missing_loaded_schedule_is_preserved_without_unloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = replace_schedule(&dir.path().join("missing.plist"), b"new", true, |_| {
+            panic!("must not unload a job without rollback data")
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn schedule_rollback_failure_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("update.plist");
+        fs::write(&plist, "previous schedule").unwrap();
+        let result = replace_schedule(&plist, b"new schedule", true, |operation| {
+            if operation == "bootstrap" {
+                bail!("bootstrap rejected");
+            }
+            Ok(())
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("restoration also failed")
+        );
+        assert_eq!(fs::read_to_string(plist).unwrap(), "previous schedule");
+    }
 
     fn release(tag: &str) -> Release {
         Release {
