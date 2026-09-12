@@ -80,15 +80,168 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
     command
 }
 
-fn install_release(script: &Path, tag: &str, directory: &Path) -> Result<()> {
-    let output = installer_command(script, tag, directory).output()?;
-    if !output.status.success() {
+// Keep exclusion ownership until cancellation has killed and reaped the
+// installer. A detached blocking task can outlive the service's runtime.
+struct InstallerProcess {
+    #[cfg(unix)]
+    child: nix::unistd::Pid,
+    #[cfg(not(unix))]
+    child: std::process::Child,
+    _lock: fs::File,
+    finished: bool,
+}
+
+impl InstallerProcess {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        #[cfg(unix)]
+        {
+            use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+            Ok(match waitpid(self.child, Some(WaitPidFlag::WNOHANG))? {
+                WaitStatus::Exited(_, status) => Some(status == 0),
+                WaitStatus::Signaled(..) => Some(false),
+                _ => None,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(self.child.try_wait()?.map(|status| status.success()))
+        }
+    }
+}
+
+impl Drop for InstallerProcess {
+    fn drop(&mut self) {
+        if !self.finished {
+            #[cfg(unix)]
+            {
+                let _ = nix::sys::signal::killpg(self.child, nix::sys::signal::Signal::SIGKILL);
+                while nix::sys::wait::waitpid(self.child, None) == Err(nix::errno::Errno::EINTR) {}
+            }
+            #[cfg(not(unix))]
+            {
+                drop(self.child.kill());
+                drop(self.child.wait());
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn spawn_installer(
+    command: &mut Command,
+    stderr: &fs::File,
+    lock: &fs::File,
+) -> Result<nix::unistd::Pid> {
+    use nix::spawn::{PosixSpawnAttr, PosixSpawnFileActions, PosixSpawnFlags, posix_spawnp};
+    use std::ffi::{CString, OsString};
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+
+    let mut environment: std::collections::BTreeMap<OsString, OsString> =
+        std::env::vars_os().collect();
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            environment.insert(key.to_owned(), value.to_owned());
+        } else {
+            environment.remove(key);
+        }
+    }
+    let environment = environment
+        .into_iter()
+        .map(|(mut key, value)| {
+            key.push("=");
+            key.push(value);
+            CString::new(key.as_bytes())
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let args = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| CString::new(arg.as_bytes()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let null = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")?;
+    let mut actions = PosixSpawnFileActions::init()?;
+    actions.add_dup2(null.as_raw_fd(), 0)?;
+    actions.add_dup2(null.as_raw_fd(), 1)?;
+    actions.add_dup2(stderr.as_raw_fd(), 2)?;
+    // Only the installer inherits this descriptor. Unlike clearing CLOEXEC in
+    // the parent, child-local dup2 cannot leak the lock to unrelated spawns.
+    // Descendants retain exclusion even if the service is killed or crashes.
+    // macOS leaves CLOEXEC set when dup2's source and target are identical.
+    let lock_copy = lock.try_clone()?;
+    let lock_fd = if lock.as_raw_fd() == 9 {
+        lock_copy.as_raw_fd()
+    } else {
+        lock.as_raw_fd()
+    };
+    actions.add_dup2(lock_fd, 9)?;
+    let mut attributes = PosixSpawnAttr::init()?;
+    attributes.set_pgroup(nix::unistd::Pid::from_raw(0))?;
+    attributes.set_flags(PosixSpawnFlags::POSIX_SPAWN_SETPGROUP)?;
+    Ok(posix_spawnp(
+        &args[0],
+        &actions,
+        &attributes,
+        &args,
+        &environment,
+    )?)
+}
+
+#[cfg(not(unix))]
+fn spawn_installer(
+    command: &mut Command,
+    stderr: &fs::File,
+    _lock: &fs::File,
+) -> Result<std::process::Child> {
+    Ok(command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr.try_clone()?)
+        .spawn()?)
+}
+
+async fn install_release(script: &Path, tag: &str, directory: &Path, lock: fs::File) -> Result<()> {
+    use std::io::{Read, Seek};
+    let mut stderr = tempfile::tempfile()?;
+    let mut command = installer_command(script, tag, directory);
+    let mut process = InstallerProcess {
+        child: spawn_installer(&mut command, &stderr, &lock)?,
+        _lock: lock,
+        finished: false,
+    };
+    let status = tokio::time::timeout(Duration::from_mins(15), async {
+        loop {
+            if let Some(status) = process.try_wait()? {
+                return Ok::<bool, anyhow::Error>(status);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("Verified release installation exceeded its 15-minute deadline")??;
+    process.finished = true;
+    if !status {
+        stderr.rewind()?;
+        let mut message = Vec::new();
+        stderr.take(64 * 1024).read_to_end(&mut message)?;
         bail!(
             "Verified release install failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&message)
         );
     }
     Ok(())
+}
+
+fn acquire_update_lock(directory: &Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(directory.join(".labby-auto-update.lock"))?;
+    lock.try_lock()
+        .context("Another automatic update is running")?;
+    Ok(lock)
 }
 
 fn install_directory(binary: &Path) -> Result<&Path> {
@@ -106,13 +259,7 @@ fn install_directory(binary: &Path) -> Result<&Path> {
 pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
     require_macos()?;
     let directory = install_directory(binary)?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(directory.join(".labby-auto-update.lock"))?;
-    lock.try_lock()
-        .context("Another automatic update is running")?;
+    let lock = acquire_update_lock(directory)?;
     let output = Command::new(binary).arg("--version").output()?;
     if !output.status.success() {
         bail!("Cannot read installed Labby version");
@@ -145,15 +292,7 @@ pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("install.sh");
         fs::write(&script, INSTALL_SCRIPT)?;
-        let tag = tag.to_owned();
-        let directory = directory.to_owned();
-        tokio::task::spawn_blocking(move || {
-            // Keep the lock and staged script alive even if shutdown cancels the caller.
-            let _lock = lock;
-            let _temp = temp;
-            install_release(&script, &tag, &directory)
-        })
-        .await??;
+        install_release(&script, tag, directory, lock).await?;
     }
     Ok(json!({"installed": !dry_run, "version": tag, "binary": binary, "dry_run": dry_run}))
 }
@@ -225,6 +364,18 @@ fn launch_agent(binary: &Path, log: &Path, path: &str) -> Result<String> {
     ))
 }
 
+fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
+    fs::create_dir_all(plist.parent().context("Missing LaunchAgents directory")?)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(plist.with_extension("lock"))?;
+    lock.try_lock()
+        .context("Another updater schedule operation is running")?;
+    Ok(lock)
+}
+
 /// Configure or inspect the per-user launchd job, which invokes this executable.
 pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     require_macos()?;
@@ -237,6 +388,7 @@ pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     if dry_run {
         return Ok(json!({"action": action, "binary": binary, "plist": plist, "dry_run": true}));
     }
+    let _schedule_lock = acquire_schedule_lock(&plist)?;
     let uid = Command::new("id").arg("-u").output()?;
     if !uid.status.success() {
         bail!("Cannot determine launchd user ID");
@@ -359,6 +511,181 @@ fn replace_schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_lock_child() {
+        let Some(path) = std::env::var_os("LABBY_TEST_SCHEDULE_LOCK") else {
+            return;
+        };
+        assert!(acquire_schedule_lock(Path::new(&path)).is_err());
+    }
+
+    #[test]
+    fn schedule_lock_excludes_other_processes_and_survives_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("updater.plist");
+        let lock = acquire_schedule_lock(&plist).unwrap();
+        fs::write(&plist, "first").unwrap();
+        fs::remove_file(&plist).unwrap();
+        fs::write(&plist, "replacement").unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "self_update::tests::schedule_lock_child"])
+            .env("LABBY_TEST_SCHEDULE_LOCK", &plist)
+            .status()
+            .unwrap();
+        assert!(child.success());
+        drop(lock);
+        assert!(acquire_schedule_lock(&plist).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_installer_is_reaped_before_unlocking_and_cannot_write_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("install.sh");
+        fs::write(
+            &script,
+            r#"
+mkdir -p "$LABBY_INSTALL_DIR/.labby-install/activation-journal"
+printf 'staged' > "$LABBY_INSTALL_DIR/.labby-install/activation-journal/state"
+(sleep 1; touch "$LABBY_INSTALL_DIR/late-write") &
+echo $$ > "$LABBY_INSTALL_DIR/installer.pid"
+wait
+"#,
+        )
+        .unwrap();
+        let lock = acquire_update_lock(dir.path()).unwrap();
+        let path = dir.path().to_owned();
+        let task =
+            tokio::spawn(async move { install_release(&script, "v1.17.0", &path, lock).await });
+        let pid_file = dir.path().join("installer.pid");
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(pid) = fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<i32>().ok())
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(acquire_update_lock(dir.path()).is_err());
+        task.abort();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap_err()
+                .is_cancelled()
+        );
+        assert_eq!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        );
+        let _next_owner = acquire_update_lock(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".labby-install/activation-journal/state")).unwrap(),
+            "staged"
+        );
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!dir.path().join("late-write").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_owner_child() {
+        let Some(path) = std::env::var_os("LABBY_TEST_UPDATE_SIGNAL") else {
+            return;
+        };
+        let path = Path::new(&path);
+        let lock = acquire_update_lock(path).unwrap();
+        if std::env::var_os("LABBY_TEST_LEGACY_UPDATE_OWNER").is_some() {
+            // Reproduce the reviewed implementation: the parent alone owns
+            // the lock while an ordinary subprocess performs installation.
+            let _lock = lock;
+            assert!(
+                installer_command(&path.join("install.sh"), "v1.17.0", path)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        } else {
+            install_release(&path.join("install.sh"), "v1.17.0", path, lock)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_keeps_exclusion_after_updater_is_killed() {
+        use nix::sys::signal::{Signal, kill, killpg};
+        use nix::unistd::Pid;
+        use std::os::unix::process::CommandExt;
+        struct GroupCleanup(Pid);
+        impl Drop for GroupCleanup {
+            fn drop(&mut self) {
+                let _ = killpg(self.0, Signal::SIGKILL);
+            }
+        }
+        for legacy in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(
+                dir.path().join("install.sh"),
+                r#"
+echo $$ > "$LABBY_INSTALL_DIR/installer.pid"
+sleep 120
+"#,
+            )
+            .unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "self_update::tests::installer_owner_child"])
+                .env("LABBY_TEST_UPDATE_SIGNAL", dir.path())
+                .process_group(0);
+            if legacy {
+                command.env("LABBY_TEST_LEGACY_UPDATE_OWNER", "1");
+            }
+            let mut updater = command.spawn().unwrap();
+            let updater_pid = Pid::from_raw(i32::try_from(updater.id()).unwrap());
+            let _updater_cleanup = GroupCleanup(updater_pid);
+            let pid = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(pid) = fs::read_to_string(dir.path().join("installer.pid"))
+                        .ok()
+                        .and_then(|text| text.trim().parse::<i32>().ok())
+                    {
+                        break Pid::from_raw(pid);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let installer_group = if legacy { updater_pid } else { pid };
+            let _installer_cleanup = GroupCleanup(installer_group);
+            kill(updater_pid, Signal::SIGKILL).unwrap();
+            assert!(!updater.wait().unwrap().success());
+            // Baseline releases exclusion while the orphan is alive; the fixed
+            // child-local descriptor keeps a replacement updater excluded.
+            assert_eq!(acquire_update_lock(dir.path()).is_err(), !legacy);
+            killpg(installer_group, Signal::SIGKILL).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if acquire_update_lock(dir.path()).is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
 
     #[test]
     fn renamed_executable_cannot_report_an_update_to_another_binary() {
@@ -512,12 +839,15 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn installer_failure_propagates_without_reporting_success() {
+    #[tokio::test]
+    async fn installer_failure_propagates_without_reporting_success() {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("install.sh");
         fs::write(&script, "echo 'attestation rejected' >&2; exit 7\n").unwrap();
-        let error = install_release(&script, "v1.17.0", temp.path()).unwrap_err();
+        let lock = acquire_update_lock(temp.path()).unwrap();
+        let error = install_release(&script, "v1.17.0", temp.path(), lock)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("attestation rejected"));
     }
 

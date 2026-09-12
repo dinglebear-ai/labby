@@ -41,8 +41,10 @@ standalone updater job. Existing user configuration and durable state remain in
 `LABBY_HOME`. The installer can restore the prior service if startup fails.
 
 The server checks 60 seconds after startup and then every 24 hours. An unsuccessful
-check leaves the server running until the next check. A verified newer stable
-release replaces the executable atomically. The server stops accepting connections,
+check leaves the server running until the next check. Installation has a 15-minute
+deadline. Stopping the server cancels an in-flight installer before another update
+can start; an interrupted activation is recovered by the next installer run.
+A verified newer stable release replaces the executable atomically. The server stops accepting connections,
 allows existing requests up to 30 seconds to finish, and exits. launchd restarts
 the updated executable. Long-lived connections must reconnect after the restart.
 The update applies to the local executable, not Incus containers.
