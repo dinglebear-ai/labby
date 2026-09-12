@@ -3,8 +3,10 @@ set -euo pipefail
 syft_bin=${SYFT_BIN:-syft}
 for archive in lab-*.tar.gz lab-*.zip; do
   [[ -f "$archive" ]] || continue
-  output=${archive%.tar.gz}.spdx.json
-  output=${output%.zip}.spdx.json
+  case "$archive" in
+    *.tar.gz) output=${archive%.tar.gz}.spdx.json ;;
+    *.zip) output=${archive%.zip}.spdx.json ;;
+  esac
   subject_dir=$(mktemp -d)
   case "$archive" in
     *.tar.gz) tar -xzf "$archive" -C "$subject_dir" ;;

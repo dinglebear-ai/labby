@@ -298,10 +298,15 @@ capture_owned_state() {
     [ "$DRY_RUN" -eq 0 ] || return 0
     state_backup="/var/lib/labby/.bootstrap-state-$$"
     OWNED_STATE_BACKUP="$state_backup"
-    labby_state="$(incus exec "$NAME" -- systemctl show labby.service --property=ActiveState,UnitFileState --no-pager)"
+    labby_state="$(incus exec "$NAME" -- systemctl show labby.service --property=ActiveState,UnitFileState,LoadState --no-pager)"
     labby_active="$(printf '%s\n' "$labby_state" | sed -n 's/^ActiveState=//p')"
     labby_unit_file_state="$(printf '%s\n' "$labby_state" | sed -n 's/^UnitFileState=//p')"
+    labby_load_state="$(printf '%s\n' "$labby_state" | sed -n 's/^LoadState=//p')"
+    # A fresh container has no unit yet; restoring that means removing the one
+    # provisioning writes.
+    [ -n "$labby_unit_file_state" ] || [ "$labby_load_state" != not-found ] || labby_unit_file_state=absent
     case "$labby_unit_file_state" in
+        absent) record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote 'systemctl disable --now labby.service >/dev/null 2>&1 || :; rm -f /etc/systemd/system/labby.service; systemctl daemon-reload')" ;;
         enabled) record_rollback "incus exec $(quote "$NAME") -- systemctl enable labby.service" ;;
         enabled-runtime)
             record_rollback "incus exec $(quote "$NAME") -- systemctl enable --runtime labby.service"
@@ -317,6 +322,8 @@ capture_owned_state() {
             ;;
         inactive) ;;
         failed)
+            # The single-quoted command substitution runs in the container's sh.
+            # shellcheck disable=SC2016
             record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote 'systemctl start labby.service >/dev/null 2>&1 || :; test "$(systemctl show labby.service --property=ActiveState --value --no-pager)" = failed')"
             ;;
         *) fail "cannot transactionally capture labby.service ActiveState=$labby_active" ;;
