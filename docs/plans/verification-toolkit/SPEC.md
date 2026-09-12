@@ -33,7 +33,7 @@ Rules:
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, `StateMachine`, backend-capability vocabulary | serde, thiserror only |
+| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, backend-capability vocabulary | serde, serde_json, toml, thiserror |
 | `verify-scenario` | scenario envelope, step encoding, normalization, shrink-stability, on-disk corpus layout | `verify-core` |
 | `verify-runner` | discovery, replay engine, target registry, backend registry, orchestration, `verify` CLI | `verify-core`, `verify-scenario`, `verify-report` |
 | `verify-report` | coverage matrix, text/JSON/HTML/Markdown renderers, CI summary | `verify-core`, `verify-scenario` |
@@ -54,7 +54,10 @@ on purpose: it is what lets a project take Stateright without taking a Java
 toolchain, and it is the same reason the target registry is project-populated
 rather than path-convention-resolved (§6).
 
-`verify-core` is the dependency leaf and stays transport-free, filesystem-free,
+`verify-core` is the dependency leaf. Its dependencies are data formats only:
+`serde_json::Value` appears in the published `ScenarioTarget` signature and
+`toml` parses the catalog. The property that matters is not the crate count but
+that it stays transport-free, filesystem-free,
 and env-free — the same discipline `labby-primitives` and `labby-apis` already
 carry in this workspace.
 
@@ -172,7 +175,7 @@ envelope around project-specific steps.
   "initial": {},
   "steps": [],
   "expect": "invariant_violated",
-  "fingerprint": "b3:9f2c…"
+  "fingerprint": "s256:9f2c…"
 }
 ```
 
@@ -196,8 +199,8 @@ Contracts:
    match `expect`). Only `active` scenarios gate CI; the other two are reported
    and never fail T0. Conflating the two axes is what would otherwise make every
    incident scenario (§12) an instant T0 failure.
-4. `fingerprint` is a content hash over the *normalized* scenario, used for
-   dedup. Two counterexamples that differ only in irrelevant interleaving order
+4. `fingerprint` is a SHA-256 content hash over the *normalized* scenario,
+   written with an `s256:` prefix and used for dedup. Two counterexamples that differ only in irrelevant interleaving order
    must normalize to one fingerprint, or the corpus rots into thousands of
    near-duplicates.
 5. Scenarios are checked into the adopting project, not the toolkit.
@@ -209,7 +212,10 @@ before fingerprinting and before corpus insertion:
 
 1. **Canonical identifier renaming** — actor/resource ids are renumbered in
    order of first appearance, so `{upstream_7, upstream_2}` and
-   `{upstream_1, upstream_0}` collapse.
+   `{upstream_1, upstream_0}` collapse. The runner requires the target to opt
+   in with `allows_identifier_renaming`: every matching string value must be
+   an arbitrary identifier, with no identifier references in object keys.
+   Without that contract, opaque payload strings are preserved.
 2. **Independent-step reordering** — adjacent steps the target declares
    commutative are sorted into a canonical order. This requires an opt-in
    `fn commutes(a, b) -> bool` on the target; the default is "nothing commutes",
@@ -224,7 +230,21 @@ before fingerprinting and before corpus insertion:
    minimized.
 4. **Determinism check** — a normalized scenario must replay to the same verdict
    N times (default 3), or it is committed with `status = "quarantined"` instead
-   of `active`.
+   of `active`. Be honest about what this buys: replaying a pure function proves
+   nothing, so it catches exactly one thing — a target whose `apply` reads
+   HashMap iteration order, wall-clock time, or an RNG. That is a common way to
+   write an accidentally-nondeterministic model and worth catching cheaply; it
+   is not a general safety net.
+   Replay reports retain the complete initial invariant result as well as each
+   step result. Determinism compares both, including bounds and diagnostics;
+   an empty trace must not hide differences in its initial evidence.
+
+These four passes do not all live in one crate, and the split is forced rather
+than stylistic. Passes 1 and 2 are pure functions over the envelope and live in
+`verify-scenario`. Passes 3 and 4 are *replay-driven* — they must execute the
+scenario to learn whether a step mattered — and replay lives in `verify-runner`,
+which already depends on `verify-scenario`. Putting them in `verify-scenario`
+would be a dependency cycle.
 
 Normalization is best-effort and must never change a scenario's verdict. The
 runner asserts that: pre-normalization verdict == post-normalization verdict, or
@@ -232,7 +252,15 @@ the normalization is discarded and the raw trace is stored.
 
 ## 6. Target Interface
 
-The single interface a project implements to join.
+The interface a project implements so the toolkit can replay its scenarios.
+
+It is not, by itself, everything a fully-instrumented project implements. A
+search backend needs to enumerate *available* steps, which replay never does:
+Stateright's `Model`, for example, also requires
+`actions(&self, state, &mut Vec<Action>)`. `ScenarioTarget` deliberately has no
+analogue and should not grow one. A project adopting a search backend implements
+both traits over shared `State`/`Step` types — the backend's requirements stay in
+the backend's layer, per §2.
 
 ```rust
 pub trait ScenarioTarget {
@@ -248,7 +276,8 @@ pub trait ScenarioTarget {
         -> Result<StepOutcome, ScenarioError>;
 
     /// Evaluate one catalogued invariant against the current state.
-    fn check(&self, id: InvariantId, state: &Self::State) -> InvariantResult;
+    fn check(&self, id: &InvariantId, state: &Self::State)
+        -> Result<InvariantResult, ScenarioError>;
 
     /// Optional: declare commutativity to improve normalization (§5.1).
     fn commutes(&self, _a: &Self::Step, _b: &Self::Step) -> bool { false }
@@ -284,6 +313,16 @@ verify replay formal/scenarios/gateway/LABBY-REQ-001-a91f.json
 Targets are registered by `(project, model)` in a runner-side registry the
 adopting project populates once, so scenario files need no path conventions to
 resolve their target.
+
+`ScenarioTarget` has associated types and so is not object-safe; a registry
+cannot hold `Box<dyn ScenarioTarget>`. `verify-runner` therefore defines an
+object-safe `DynTarget` phrased in `serde_json::Value`, with a blanket
+`impl<T: ScenarioTarget> DynTarget for T`. Projects implement `ScenarioTarget`
+as documented above and never see `DynTarget`.
+
+Bounds are deliberately minimal here. Stateright additionally requires
+`Hash + Eq` on both types; a project using it adds them itself rather than every
+project paying for a backend it may never run.
 
 ## 7. Backend Adapter Contract
 
@@ -336,6 +375,24 @@ Verdict handling is driven by `status`, not by `expect` alone:
 An `unreproduced` scenario that starts matching `expect` is the interesting
 case: the model has grown the step it was missing, and the runner surfaces the
 promotion rather than silently flipping the file.
+
+"Compare final verdict" means *violated at any step*, not violated at the last
+one. A safety or security invariant that goes false mid-trace and is repaired
+before the final step counts as `invariant_violated`, and the report names the
+first violating step index. Checking only the final state would silently pass the
+most interesting counterexamples a model checker produces.
+
+Exit codes, so that callers and CI can distinguish the cases:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | every `active` scenario matched its `expect` |
+| 1 | a mismatch — the real failure |
+| 2 | no target registered for the scenario's `(project, model)` |
+| 3 | malformed scenario or catalog |
+
+2 is separate from 1 on purpose: "nobody registered the target" must never be
+readable as "the invariant holds".
 
 Replay is the common denominator of the whole design: it is the only component
 every origin kind flows through, and it is pure, deterministic, and requires no

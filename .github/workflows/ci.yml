@@ -94,6 +94,7 @@ jobs:
       security: ${{ steps.classify.outputs.security }}
       javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
       release: ${{ steps.classify.outputs.release }}
+      verification: ${{ steps.classify.outputs.verification }}
       # Comma-separated routing keys this workflow gates on that the trusted
       # base-branch classifier could not emit. The classify step already forced
       # them to `true`; this output only reports the drift to `ci-gate`.
@@ -945,6 +946,58 @@ jobs:
           install_args: just
       - run: just docs-check
 
+  verification:
+    name: Verification workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: changes
+    # `verification/` is a separate Cargo workspace, so none of the product Rust
+    # jobs above touch it. Without this job and its routing key a change
+    # confined to that directory would build and test nothing while CI reported
+    # green. See verification/CLAUDE.md.
+    if: ${{ needs.changes.outputs.verification == 'true' || needs.changes.outputs.workflow == 'true' }}
+    env:
+      CARGO_DENY_VERSION: "0.19.8"
+      CARGO_DENY_SHA256: "70e769ae3872e34d45132b17040859175e11401dc12dddb0303e0b8c7d088f3f"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just cargo:cargo-nextest
+      - run: just verify-lint
+      - run: just verify-check
+      - run: just verify-test
+      # The root `Cargo Deny` job reads the root lockfile only and never sees
+      # verification/Cargo.lock. A license gate nobody runs is worse than none.
+      #
+      # Installed from the same pinned release and checksum as that job rather
+      # than through `just verify-deny`, which assumes a cargo-deny already on
+      # PATH. The pin is a supply-chain control and applies to both workspaces.
+      - name: Run pinned Cargo Deny against the verification workspace
+        run: |
+          set -euo pipefail
+          tool_dir="$(mktemp -d)"
+          trap 'rm -rf "$tool_dir"' EXIT
+          archive="$tool_dir/cargo-deny.tar.gz"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 300 \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          printf '%s  %s\n' "$CARGO_DENY_SHA256" "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" -C "$tool_dir" --strip-components=1
+          "$tool_dir/cargo-deny" --version
+          "$tool_dir/cargo-deny" \
+            --log-level warn \
+            --manifest-path ./verification/Cargo.toml \
+            --all-features \
+            check
+
   rustdoc:
     name: Rustdoc
     runs-on: ubuntu-24.04
@@ -1634,6 +1687,7 @@ jobs:
       - extracted-crate-slices
       - docs-check
       - rustdoc
+      - verification
       - clippy
       - test
       - test-windows
@@ -1720,6 +1774,7 @@ jobs:
           require_success_or_skipped extracted-crate-slices "${{ needs.extracted-crate-slices.result }}"
           require_success_or_skipped docs-check "${{ needs.docs-check.result }}"
           require_success_or_skipped rustdoc "${{ needs.rustdoc.result }}"
+          require_success_or_skipped verification "${{ needs.verification.result }}"
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped test-windows "${{ needs.test-windows.result }}"

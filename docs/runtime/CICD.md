@@ -16,9 +16,14 @@ This document is the authoritative contract for CI, release, and artifact delive
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
 `palette`, `browser_extension`, `npm`, `docker`, `security`,
-`javascript_advisories`, `release`, and
-`unraid`. Scheduled and manual runs enable every category so periodic/manual
+`javascript_advisories`, `release`, `unraid`, and `verification`. Scheduled and manual runs enable every category so periodic/manual
 validation stays broad.
+
+The independent `verification/` Cargo workspace has its own build, lint, test,
+and dependency-audit job. Changes under that tree enable `verification` without
+enabling the product Rust matrix. Its inherited `rust-toolchain.toml`,
+`clippy.toml`, `.cargo/` configuration, and `Justfile` recipes also enable the
+job. Ordinary product Rust source changes do not build the toolkit.
 
 On pull requests the `changes` job runs the classifier from the pull request's
 **base commit** rather than the branch's own copy. Be precise about what that
