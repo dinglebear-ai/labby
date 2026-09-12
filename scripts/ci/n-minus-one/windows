@@ -49,12 +49,15 @@ args = ["mcp"]
 EOF
     printf 'LABBY_MCP_HTTP_TOKEN=%064d\n' 0 >"$labby_home/.env"
     python "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$labby_home"
-    (cd "$labby_home" && sha256sum config.toml .env) >"$state_digest"
+    # v1.16 rewrites .env on its first start, so checksum config.toml and check
+    # that the seeded token survives instead of the whole .env file.
+    (cd "$labby_home" && sha256sum config.toml) >"$state_digest"
 }
 
 verify_persisted_state() {
     python "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
     (cd "$labby_home" && sha256sum -c "$state_digest")
+    tr -d '\r' <"$labby_home/.env" | grep -Fxq "LABBY_MCP_HTTP_TOKEN=$(printf '%064d' 0)"
     pwsh -NoLogo -NoProfile -Command \
         "\$env:HOME='$pwsh_user_home'; \$env:LABBY_HOME='$pwsh_labby_home'; \$env:PATH='$pwsh_install_dir;' + \$env:PATH; & '$pwsh_install_dir\\labby.exe' --json gateway list" |
         grep -Fq '"id": "n-minus-one"'
