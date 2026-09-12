@@ -1,7 +1,9 @@
 //! Native HTTP regression coverage for cold resource discovery and recovery.
 
+use super::tests::code_mode_server;
 use super::*;
-use rmcp::model::{ClientInfo, ProtocolVersion};
+use crate::dispatch::upstream::pool::UpstreamPool;
+use rmcp::model::{ClientInfo, ProtocolVersion, ResourceTemplate, ServerCapabilities, ServerInfo};
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RunningService};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -9,6 +11,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
+use rmcp::{RoleClient, ServerHandler};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 

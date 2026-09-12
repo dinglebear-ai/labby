@@ -2748,11 +2748,15 @@ fn build_app_resource_meta(
     MetaObject(meta)
 }
 
+// Recovery fixtures need dependency testkit hooks, which product slices do not enable.
+#[cfg(all(test, feature = "gateway", feature = "proxy-testkit"))]
+#[allow(clippy::panic)]
+mod cold_regressions;
+
 #[cfg(all(test, feature = "gateway"))]
 #[allow(clippy::panic)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
-    mod cold_regressions;
     use super::*;
 
     #[cfg(feature = "skills")]
@@ -3438,7 +3442,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         manager.seed_config_unchecked_for_tests(config).await;
     }
 
-    async fn code_mode_server() -> LabMcpServer {
+    pub(super) async fn code_mode_server() -> LabMcpServer {
         code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::Root).await
     }
 
