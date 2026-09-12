@@ -175,32 +175,34 @@ installer stops and retains the journal for diagnosis.
 
 ### Automatic updates on macOS
 
-On Apple Silicon Macs, opt in to daily stable-release updates from a trusted
-repository checkout. Python 3 and GitHub CLI (`gh`) must remain installed.
+On Apple Silicon Macs, opt in to daily stable-release updates with Labby:
 
 ```bash
-python3 scripts/auto-update.py enable
-python3 scripts/auto-update.py status
+labby update --auto-update enable
+labby update --auto-update status
 ```
 
-Use `--binary /absolute/path/to/labby` for a custom installation. The updater
-copies itself and the repository installer into
-`~/Library/Application Support/Labby/auto-update/`. It runs at login and every
-24 hours while logged in. It skips drafts, prereleases, missing platform assets,
-and versions equal to or older than the installed binary. Network or verification
-errors leave the update unsuccessful and appear in `update.log` in that directory.
-The installer requires release attestations and checksums before atomic activation.
+The per-user LaunchAgent invokes the installed Labby binary at login and every
+24 hours while logged in. GitHub CLI (`gh`) must remain installed for release
+attestation verification. No Python runtime or separate updater script is needed.
 
-Automatic updates replace the host executable only. Restart running Labby
-processes to use the new version. Incus containers are not updated by this job.
-To remove the daily job:
+The native updater skips drafts, prereleases, missing platform assets, and
+versions equal to or older than the installed binary. The existing installer
+verifies release attestations and checksums before atomic replacement.
+Logs are in `~/Library/Logs/Labby/auto-update.log`.
+
+Automatic updates replace the host executable. Restart existing Labby processes
+to use the new version. Incus containers are not updated by this job.
+Run a check without installing, or disable the daily job:
 
 ```bash
-python3 scripts/auto-update.py disable
+labby update --automatic --dry-run
+labby update --auto-update disable
 ```
 
-After changing the updater or installer in a trusted checkout, run `enable` again
-to refresh the installed copies. Linux and Windows scheduling are not supported.
+Enable scheduling from the installed binary, not a temporary build directory.
+If you move the executable, enable scheduling again from its new location.
+Linux and Windows scheduling are not supported.
 
 ### Build From Source
 
