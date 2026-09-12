@@ -36,6 +36,7 @@ mod inspection;
 mod lifecycle;
 mod oauth;
 mod publication;
+mod recovery;
 mod views;
 mod virtual_servers;
 
@@ -346,7 +347,7 @@ async fn new_base_pool_carries_the_manager_usage_store() {
     )
     .with_usage_store(Arc::clone(&usage_store));
 
-    let pool = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+    let pool = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5), false);
 
     assert!(
         pool.usage_store_is_wired(),
@@ -361,8 +362,8 @@ fn new_base_pool_shares_header_recovery_metrics_across_generations() {
         dir.path().join("config.toml"),
         GatewayRuntimeHandle::default(),
     );
-    let first = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
-    let second = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+    let first = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5), false);
+    let second = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5), false);
 
     assert_eq!(
         manager

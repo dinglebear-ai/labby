@@ -82,7 +82,7 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[web]`: exported asset location and development-only auth bypass.
 - `[workspace]`: root for the optional filesystem browser. Default:
   `~/.labby/workspace`.
-- `[gateway]`: stdio spawn guard and extra allowed commands.
+- `[gateway]`: upstream recovery, stdio spawn guard, and extra allowed commands.
 - `[code_mode]`: sandbox execution and result-envelope limits.
 - `[[openapi.specs]]`: allowlisted local Code Mode OpenAPI providers.
 - `[oauth]`: callback relay targets.
@@ -401,6 +401,18 @@ credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 
 Use `labby gateway add`, `update`, `remove`, `reload`, and related
 commands rather than editing active gateway state concurrently by hand.
+
+To recover disconnected upstream MCP servers automatically, enable the
+long-lived reconnect cycle:
+
+```toml
+[gateway]
+auto_reconnect = true
+```
+
+Labby probes each enabled non-OAuth upstream every 30 seconds, backs off after
+failures, and replaces stale stdio or HTTP transports when they recover. The
+default is `false`; ephemeral connection tests never start recovery tasks.
 
 ### Upstream OAuth (authorization_code + PKCE)
 
