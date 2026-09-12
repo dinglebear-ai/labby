@@ -62,6 +62,7 @@ impl HostConfigLock {
         }
         super::secret_files::restrict_secret_file_permissions(&lock_path)
             .map_err(|_| HostWriteError::Io)?;
+        hand_to_directory_owner(&file, &parent)?;
         let start = Instant::now();
         loop {
             match file.try_lock() {
@@ -127,6 +128,7 @@ impl HostConfigLock {
         let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|_| HostWriteError::Io)?;
         super::secret_files::restrict_secret_file_permissions(temp.path())
             .map_err(|_| HostWriteError::Io)?;
+        hand_to_directory_owner(temp.as_file(), parent)?;
         temp.write_all(raw.as_bytes())
             .map_err(|_| HostWriteError::Io)?;
         temp.as_file()
@@ -135,6 +137,37 @@ impl HostConfigLock {
         temp.persist(&self.path).map_err(|_| HostWriteError::Io)?;
         sync_parent(parent)
     }
+}
+
+/// Root writing into another account's configuration directory, for example
+/// `sudo labby setup host-service install` touching `/home/labby/.labby`, must
+/// leave files that account can open. Otherwise its service later fails with
+/// `UnsafePath` on the root-owned, owner-only lock. Hand such files to the
+/// directory owner; nothing changes for a process writing its own directory.
+#[cfg(unix)]
+fn hand_to_directory_owner(file: &File, parent: &Path) -> Result<(), HostWriteError> {
+    use std::os::unix::fs::MetadataExt as _;
+    let directory = std::fs::metadata(parent).map_err(|_| HostWriteError::Io)?;
+    let current = file.metadata().map_err(|_| HostWriteError::Io)?;
+    if let Some((uid, gid)) = ownership_handoff(
+        (directory.uid(), directory.gid()),
+        (current.uid(), current.gid()),
+    ) {
+        std::os::unix::fs::fchown(file, Some(uid), Some(gid)).map_err(|_| HostWriteError::Io)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn hand_to_directory_owner(_file: &File, _parent: &Path) -> Result<(), HostWriteError> {
+    Ok(())
+}
+
+/// The owner to give a file this process created or opened for writing. A
+/// root-owned file here means the process runs as root, so hand it to the
+/// directory owner unless root owns the directory too.
+pub(crate) fn ownership_handoff(directory: (u32, u32), file: (u32, u32)) -> Option<(u32, u32)> {
+    (file.0 == 0 && directory.0 != 0 && file != directory).then_some(directory)
 }
 
 fn check_regular_or_missing(path: &Path) -> Result<(), HostWriteError> {
