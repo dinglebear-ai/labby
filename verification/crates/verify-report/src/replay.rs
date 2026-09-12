@@ -60,6 +60,9 @@ pub struct ReplayReport {
     pub expect: Expect,
     pub status: ScenarioStatus,
     pub outcome: Outcome,
+    /// Evidence from the initial state, absent only if the target could not be checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_result: Option<InvariantResult>,
     /// Index of the first step at which the invariant was false, when it was.
     /// A safety property violated mid-trace and later repaired still counts,
     /// and this is where a reader looks first.

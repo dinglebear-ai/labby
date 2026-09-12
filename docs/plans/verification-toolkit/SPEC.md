@@ -235,6 +235,9 @@ before fingerprinting and before corpus insertion:
    HashMap iteration order, wall-clock time, or an RNG. That is a common way to
    write an accidentally-nondeterministic model and worth catching cheaply; it
    is not a general safety net.
+   Replay reports retain the complete initial invariant result as well as each
+   step result. Determinism compares both, including bounds and diagnostics;
+   an empty trace must not hide differences in its initial evidence.
 
 These four passes do not all live in one crate, and the split is forced rather
 than stylistic. Passes 1 and 2 are pure functions over the envelope and live in

@@ -56,6 +56,16 @@ pub fn render_text(report: &ReplayReport) -> String {
         }
         Outcome::Matched => {}
     }
+    if let Some(initial) = &report.initial_result
+        && (report.failed()
+            || !matches!(initial.verdict, verify_core::verdict::Verdict::Verified)
+            || initial.detail.is_some())
+    {
+        let _ = write!(out, "\n            initial: {}", initial.verdict);
+        if let Some(detail) = &initial.detail {
+            let _ = write!(out, " — {detail}");
+        }
+    }
     out
 }
 
