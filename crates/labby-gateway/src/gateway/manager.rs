@@ -72,6 +72,7 @@ mod persist;
 mod pool_lifecycle;
 mod protected_routes;
 mod publication;
+mod resource_discovery;
 #[cfg(test)]
 mod tests;
 mod usage;

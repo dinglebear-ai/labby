@@ -285,17 +285,12 @@ impl UpstreamPool {
         // directly reports "not connected" on every first read — the normal
         // state for `labby mcp`, not an error.
         //
-        // Gated on the connection actually being absent, not on the upstream
-        // having healthy tools. `ensure_tools_for_upstream` tears down and
-        // reconnects whenever an upstream has no healthy tools, and a
-        // skills-only upstream never has any — routing through it
-        // unconditionally would reconnect on every single read.
-        let connected = self.connections.read().await.contains_key(&config.name);
-        if !connected
-            && self
-                .ensure_tools_for_upstream(config, subject, None)
-                .await
-                .is_err()
+        // The pool checks connection presence under its lazy-connect lock;
+        // skills-only peers do not need an exposed tool to remain reusable.
+        if self
+            .ensure_connection_for_upstream(config, subject, None)
+            .await
+            .is_err()
         {
             return Err(UpstreamSkillsError::Unavailable);
         }
