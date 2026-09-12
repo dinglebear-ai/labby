@@ -129,3 +129,13 @@ fn normalization_does_not_mutate_its_input() {
     let _ = normalize_identifiers_only(&scenario);
     assert_eq!(scenario, before);
 }
+
+#[test]
+fn distinct_object_keys_cannot_collide_in_the_commuting_sort_order() {
+    let a = scenario_with(&json!([{"a": 1, "b": 2}, {"a:1,b": 2}]), None);
+    let b = scenario_with(&json!([{"a:1,b": 2}, {"a": 1, "b": 2}]), None);
+    assert_eq!(
+        normalize_syntactic(&a, &AllCommute).steps,
+        normalize_syntactic(&b, &AllCommute).steps
+    );
+}

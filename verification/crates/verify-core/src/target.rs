@@ -100,6 +100,13 @@ pub trait ScenarioTarget {
         state: &Self::State,
     ) -> Result<InvariantResult, ScenarioError>;
 
+    /// Opt in only when every `prefix_<digits>` string value in initial state
+    /// and steps is an arbitrary identifier that can be consistently renamed.
+    /// Object keys are not renamed. Literal payloads must leave this disabled.
+    fn allows_identifier_renaming(&self) -> bool {
+        false
+    }
+
     /// Declare that two adjacent steps commute, letting normalization put them
     /// in a canonical order and collapse traces that differ only by irrelevant
     /// interleaving.

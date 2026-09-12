@@ -32,6 +32,9 @@ impl Commutes for NeverCommutes {
 
 /// Apply the syntactic passes, returning a new scenario.
 ///
+/// Calling this opts into treating every identifier-shaped string value as an
+/// arbitrary id. Use `normalize_commuting` for targets with literal payloads.
+///
 /// The input is not mutated: a caller comparing pre- and post-normalization
 /// verdicts needs both.
 pub fn normalize_syntactic(scenario: &Scenario, commutes: &dyn Commutes) -> Scenario {
@@ -45,6 +48,13 @@ pub fn normalize_syntactic(scenario: &Scenario, commutes: &dyn Commutes) -> Scen
     for step in &mut out.steps {
         renamer.rewrite(step);
     }
+    reorder_commuting(&mut out.steps, commutes);
+    out
+}
+
+/// Reorder only declared commuting steps, preserving all opaque payload strings.
+pub fn normalize_commuting(scenario: &Scenario, commutes: &dyn Commutes) -> Scenario {
+    let mut out = scenario.clone();
     reorder_commuting(&mut out.steps, commutes);
     out
 }
@@ -124,41 +134,7 @@ fn reorder_commuting(steps: &mut [Value], commutes: &dyn Commutes) {
 /// interchangeable orderings. Compares canonical text, which is stable across
 /// runs and machines.
 fn canonical_order(candidate: &Value, current: &Value) -> bool {
-    text_of(candidate) < text_of(current)
-}
-
-fn text_of(value: &Value) -> String {
-    let mut out = Vec::new();
-    write_sorted(value, &mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn write_sorted(value: &Value, out: &mut Vec<u8>) {
-    match value {
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_unstable();
-            out.push(b'{');
-            for key in keys {
-                out.extend_from_slice(key.as_bytes());
-                out.push(b':');
-                if let Some(nested) = map.get(key) {
-                    write_sorted(nested, out);
-                }
-                out.push(b',');
-            }
-            out.push(b'}');
-        }
-        Value::Array(items) => {
-            out.push(b'[');
-            for item in items {
-                write_sorted(item, out);
-                out.push(b',');
-            }
-            out.push(b']');
-        }
-        other => out.extend_from_slice(other.to_string().as_bytes()),
-    }
+    crate::fingerprint::canonical_bytes(candidate) < crate::fingerprint::canonical_bytes(current)
 }
 
 /// Convenience for callers with no commutativity knowledge.

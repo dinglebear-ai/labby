@@ -33,6 +33,6 @@ pub mod registry;
 pub mod replay;
 
 pub use dyn_target::{DynTarget, ErasedState};
-pub use minimize::{DeterminismReport, check_determinism, minimize};
+pub use minimize::{DeterminismReport, check_determinism, minimize, normalize};
 pub use registry::{TargetKey, TargetRegistry};
 pub use replay::replay;

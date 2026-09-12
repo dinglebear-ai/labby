@@ -74,9 +74,51 @@ pub fn check_determinism(
 ) -> DeterminismReport {
     let runs = runs.max(1);
     let first = replay(scenario, kind, registry, "determinism");
-    let stable = (1..runs).all(|_| {
+    let mut stable = true;
+    for _ in 1..runs {
         let again = replay(scenario, kind, registry, "determinism");
-        again.outcome == first.outcome && again.first_violation == first.first_violation
-    });
+        stable &= again == first;
+    }
     DeterminismReport { runs, stable }
+}
+
+/// Normalize with replay guards before fingerprinting a scenario for the corpus.
+///
+/// Syntactic identifier rewriting is heuristic: if it changes the observed
+/// verdict or makes a trace unreadable, retain the original trace instead.
+/// Nondeterministic replays are quarantined, never silently made active.
+pub fn normalize(
+    scenario: &Scenario,
+    kind: Kind,
+    registry: &TargetRegistry,
+    runs: usize,
+) -> Scenario {
+    struct TargetCommutes<'a>(&'a dyn crate::DynTarget);
+    impl verify_scenario::Commutes for TargetCommutes<'_> {
+        fn commutes(&self, a: &serde_json::Value, b: &serde_json::Value) -> bool {
+            self.0.commutes_erased(a, b)
+        }
+    }
+    let baseline = replay(scenario, kind, registry, "normalize");
+    let mut out = scenario.clone();
+    if matches!(
+        baseline.outcome,
+        Outcome::Matched | Outcome::Mismatched { .. } | Outcome::Promotable
+    ) && let Some(target) =
+        registry.get(&crate::TargetKey::new(&scenario.project, &scenario.model))
+    {
+        let candidate = if target.allows_identifier_renaming() {
+            verify_scenario::normalize_syntactic(scenario, &TargetCommutes(target))
+        } else {
+            verify_scenario::normalize::normalize_commuting(scenario, &TargetCommutes(target))
+        };
+        if replay(&candidate, kind, registry, "normalize").outcome == baseline.outcome {
+            out = minimize(&candidate, kind, registry);
+        }
+    }
+    if !check_determinism(&out, kind, registry, runs).stable {
+        out.status = verify_scenario::ScenarioStatus::Quarantined;
+    }
+    out.fingerprint = Some(verify_scenario::fingerprint(&out));
+    out
 }

@@ -32,6 +32,10 @@ pub trait DynTarget {
     ) -> Result<InvariantResult, ScenarioError>;
 
     fn commutes_erased(&self, a: &Value, b: &Value) -> bool;
+
+    fn allows_identifier_renaming(&self) -> bool {
+        false
+    }
 }
 
 impl<T> DynTarget for T
@@ -62,6 +66,10 @@ where
     ) -> Result<InvariantResult, ScenarioError> {
         let typed = downcast_ref::<T>(state)?;
         self.check(invariant, typed)
+    }
+
+    fn allows_identifier_renaming(&self) -> bool {
+        ScenarioTarget::allows_identifier_renaming(self)
     }
 
     fn commutes_erased(&self, a: &Value, b: &Value) -> bool {

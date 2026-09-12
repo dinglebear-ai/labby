@@ -212,7 +212,10 @@ before fingerprinting and before corpus insertion:
 
 1. **Canonical identifier renaming** — actor/resource ids are renumbered in
    order of first appearance, so `{upstream_7, upstream_2}` and
-   `{upstream_1, upstream_0}` collapse.
+   `{upstream_1, upstream_0}` collapse. The runner requires the target to opt
+   in with `allows_identifier_renaming`: every matching string value must be
+   an arbitrary identifier, with no identifier references in object keys.
+   Without that contract, opaque payload strings are preserved.
 2. **Independent-step reordering** — adjacent steps the target declares
    commutative are sorted into a canonical order. This requires an opt-in
    `fn commutes(a, b) -> bool` on the target; the default is "nothing commutes",
@@ -270,7 +273,8 @@ pub trait ScenarioTarget {
         -> Result<StepOutcome, ScenarioError>;
 
     /// Evaluate one catalogued invariant against the current state.
-    fn check(&self, id: InvariantId, state: &Self::State) -> InvariantResult;
+    fn check(&self, id: &InvariantId, state: &Self::State)
+        -> Result<InvariantResult, ScenarioError>;
 
     /// Optional: declare commutativity to improve normalization (§5.1).
     fn commutes(&self, _a: &Self::Step, _b: &Self::Step) -> bool { false }

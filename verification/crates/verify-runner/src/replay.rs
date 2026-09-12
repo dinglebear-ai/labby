@@ -14,7 +14,7 @@
 //!   on an `active` scenario; quarantined and unreproduced ones are reported.
 
 use verify_core::verdict::Verdict;
-use verify_core::{InvariantId, Kind};
+use verify_core::{InvariantId, InvariantResult, Kind};
 use verify_report::replay::{Outcome, ReplayReport, StepRecord};
 use verify_scenario::{Expect, Scenario, ScenarioStatus};
 
@@ -110,6 +110,7 @@ fn run_steps(
     let initial = target
         .check_erased(invariant, state)
         .map_err(|error| error.to_string())?;
+    validate_result(invariant, &initial)?;
     if is_violation(&initial.verdict) {
         first_violation = Some(0);
     }
@@ -122,6 +123,7 @@ fn run_steps(
         let result = target
             .check_erased(invariant, state)
             .map_err(|error| format!("step {index}: {error}"))?;
+        validate_result(invariant, &result)?;
         if is_violation(&result.verdict) && first_violation.is_none() {
             first_violation = Some(index + 1);
         }
@@ -146,9 +148,10 @@ fn observed_expectation(
         // Liveness and refinement are judged at the end of the trace: an
         // intermediate state that has not yet satisfied the property is not a
         // counterexample, it is the middle of one.
-        records
-            .last()
-            .is_some_and(|record| is_violation(&record.result.verdict))
+        records.last().map_or_else(
+            || first_violation.is_some(),
+            |record| is_violation(&record.result.verdict),
+        )
     };
     if violated {
         Expect::InvariantViolated
@@ -159,4 +162,20 @@ fn observed_expectation(
 
 const fn is_violation(verdict: &Verdict) -> bool {
     matches!(verdict, Verdict::Falsified)
+}
+
+/// An unavailable check is not evidence that the invariant holds.
+fn validate_result(invariant: &InvariantId, result: &InvariantResult) -> Result<(), String> {
+    if result.invariant != *invariant {
+        return Err(format!(
+            "target checked {} instead of {invariant}",
+            result.invariant
+        ));
+    }
+    match &result.verdict {
+        Verdict::Verified | Verdict::Falsified | Verdict::Bounded { .. } => Ok(()),
+        verdict => Err(format!(
+            "invariant {invariant} could not be evaluated: {verdict}"
+        )),
+    }
 }
