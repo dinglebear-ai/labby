@@ -166,6 +166,7 @@ fn hand_to_directory_owner(_file: &File, _parent: &Path) -> Result<(), HostWrite
 /// The owner to give a file this process created or opened for writing. A
 /// root-owned file here means the process runs as root, so hand it to the
 /// directory owner unless root owns the directory too.
+#[cfg(any(unix, test))]
 pub(crate) fn ownership_handoff(directory: (u32, u32), file: (u32, u32)) -> Option<(u32, u32)> {
     (file.0 == 0 && directory.0 != 0 && file != directory).then_some(directory)
 }
