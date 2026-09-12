@@ -4,20 +4,29 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 state_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/labby-n-minus-one/host-service"
 export LABBY_HOME=/home/labby/.labby
+baseline_token_path="$state_root/baseline-token"
+# shellcheck source=scripts/ci/n-minus-one-token.sh
+source "$repo_root/scripts/ci/n-minus-one-token.sh"
+read_current_token() { sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env" | tr -d '\r'; }
 
-service() { sudo /usr/local/bin/labby setup host-service "$1" -y; }
+# `status` takes no -y (v1.13.3 rejects it); the mutating subcommands need it.
+service() { if [[ "$1" == status ]]; then sudo /usr/local/bin/labby setup host-service status; else sudo /usr/local/bin/labby setup host-service "$1" -y; fi; }
 version() { /usr/local/bin/labby --version | grep -Fq "${1#v}"; }
 authenticated_action() {
-  token=$(sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env")
+  local token
+  token=$(retained_token) || return
   curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-    --data '{"action":"gateway.list","params":{}}' http://127.0.0.1:8765/v1/gateway >/dev/null
+    --data '{"action":"help","params":{}}' http://127.0.0.1:8765/v1/gateway >/dev/null
 }
 call() {
-  token=$(sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.env")
+  local token
+  token=$(retained_token) || return
   curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:8765/v1/$1"
 }
 customized_state() { sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$LABBY_HOME"; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -Fq 'preserved-state'; }
-state_digest() { sudo sh -c "cd '$LABBY_HOME' && sha256sum config.toml .env"; }
+# v1.16 can reformat .env. Retain the original credential separately and
+# compare it before each authenticated call; only config.toml is checksummed.
+state_digest() { sudo sh -c "cd '$LABBY_HOME' && sha256sum config.toml"; }
 require_fixture() {
   [[ "$(uname -s)" == Linux ]] || { echo 'host-service N-1 requires Linux' >&2; exit 1; }
   command -v systemctl >/dev/null
@@ -26,8 +35,13 @@ require_fixture() {
 require_fixture
 
 case "${1:-}" in
-  install-previous) sudo env LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
-  seed-state) mkdir -p "$state_root"; sudo install -d -m 0700 -o labby -g labby "$LABBY_HOME"; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; sudo systemctl stop labby.service; sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$LABBY_HOME"; if ! sudo tar -C /home/labby -czf "$state_root/full-durable-state.tar.gz" .labby; then sudo systemctl start labby.service; exit 1; fi; sudo chown -R labby:labby "$LABBY_HOME"; sudo systemctl start labby.service; sudo chown "$(id -u):$(id -g)" "$state_root/full-durable-state.tar.gz"; state_digest >"$state_root/state.sha256" ;;
+  # The unit runs as User=labby, and no labby release creates that user.
+  # Older units (v1.13.3) also list every ReadWritePaths entry without "-", so
+  # systemd refuses to start unless each directory already exists.
+  install-previous) id labby >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /home/labby --shell /usr/sbin/nologin labby; sudo install -d -m 0700 -o labby -g labby /home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}; sudo --preserve-env=GH_TOKEN env LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
+  # v1.13.3's host-service install writes no config.toml, so seed a minimal one
+  # to check config persistence the same way as the other legs.
+  seed-state) capture_baseline_token; mkdir -p "$state_root"; sudo install -d -m 0700 -o labby -g labby "$LABBY_HOME"; call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null; sudo systemctl stop labby.service; sudo sh -c "[ -f '$LABBY_HOME/config.toml' ] || printf 'config_version = 1\\n' > '$LABBY_HOME/config.toml'"; sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$LABBY_HOME"; if ! sudo tar -C /home/labby -czf "$state_root/full-durable-state.tar.gz" .labby; then sudo systemctl start labby.service; exit 1; fi; sudo chown -R labby:labby "$LABBY_HOME"; sudo systemctl start labby.service; sudo chown "$(id -u):$(id -g)" "$state_root/full-durable-state.tar.gz"; state_digest >"$state_root/state.sha256" ;;
   verify-previous) version "$LABBY_PREVIOUS_VERSION"; service status >/dev/null; state_digest | cmp - "$state_root/state.sha256"; customized_state; test -s "$state_root/full-durable-state.tar.gz" ;;
   verify-provenance) "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- true ;;
   upgrade) candidate="${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?candidate binary required}"; if sudo env LABBY_HOST_SERVICE_FAIL_AFTER=restart "$candidate" setup host-service install --install-self -y; then echo 'host upgrade fault unexpectedly succeeded' >&2; exit 1; fi; version "$LABBY_PREVIOUS_VERSION"; customized_state; "$repo_root/scripts/ci/verify-and-activate-release.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?candidate archive required}" -- sudo "$candidate" setup host-service install --install-self -y ;;
