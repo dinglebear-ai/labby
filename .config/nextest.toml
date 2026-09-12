@@ -11,3 +11,11 @@ path = "junit.xml"
 platform = 'cfg(windows)'
 filter = 'binary(=ci_changed_paths)'
 threads-required = 'num-test-threads'
+
+# Git provider cases spawn several Git processes per test. On busy Windows
+# runners, unrelated subprocess tests can exhaust the product's 10s deadline.
+# Isolate their scheduling instead of changing the runtime timeout contract.
+[[profile.ci.overrides]]
+platform = 'cfg(windows)'
+filter = 'package(labby-codemode) & test(git::provider::tests::)'
+threads-required = 'num-test-threads'

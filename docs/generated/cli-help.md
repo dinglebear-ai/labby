@@ -60,11 +60,11 @@ Commands:
   help  Print this message or the help of the given subcommand(s)
 
 Options:
+      --auto-update
+          Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon)
+
       --json
           Emit JSON instead of human-readable tables
-
-      --services <SERVICES>
-          Comma- or space-separated list of services to enable. Empty = all
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -72,11 +72,14 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --host <HOST>
-          Bind host for the HTTP transport
+      --services <SERVICES>
+          Comma- or space-separated list of services to enable. Empty = all
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --host <HOST>
+          Bind host for the HTTP transport
 
       --port <PORT>
           Bind port for the HTTP transport
@@ -1911,13 +1914,16 @@ Update labby from the latest GitHub release
 Usage: update [OPTIONS]
 
 Options:
+      --automatic
+          Install a newer stable release on this host only (macOS Apple Silicon)
+
       --json
           Emit JSON instead of human-readable tables
 
-      --version <VERSION>
-          Release tag to install. Defaults to the latest GitHub release with a Labby binary asset
+      --auto-update <AUTO_UPDATE>
+          Enable, disable, or inspect daily native macOS updates
 
-          [default: latest]
+          [possible values: enable, disable, status]
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -1925,14 +1931,19 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --version <VERSION>
+          Release tag to install. Defaults to the latest GitHub release with a Labby binary asset
+
+          [default: latest]
+
       --install-dir <INSTALL_DIR>
           Install directory for the host binary
 
       --no-incus-sync
           Do not sync the updated binary into an Incus container
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --no-web-assets
           Do not update or clear the Incus filesystem web asset directory
