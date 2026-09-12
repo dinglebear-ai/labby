@@ -52,7 +52,7 @@ authenticated_action() {
     token=$(sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$labby_home/.env")
     curl -fsS -X POST -H "Authorization: Bearer $token" \
         -H 'Content-Type: application/json' \
-        --data '{"action":"gateway.list","params":{}}' \
+        --data '{"action":"help","params":{}}' \
         http://127.0.0.1:8765/v1/gateway >/dev/null
 }
 

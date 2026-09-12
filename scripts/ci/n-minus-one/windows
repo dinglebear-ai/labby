@@ -60,6 +60,15 @@ verify_persisted_state() {
         grep -Fq '"id": "n-minus-one"'
 }
 
+# v1.16 refuses a home that anyone but the current user, SYSTEM and
+# Administrators can write, and D:\a\_temp grants more than that. Lock the
+# home down before the first start so everything inside inherits it.
+secure_home() {
+    mkdir -p "$user_home"
+    pwsh -NoLogo -NoProfile -Command \
+        "icacls '$pwsh_user_home' /inheritance:r /grant:r \"\${env:USERNAME}:(OI)(CI)F\" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null; exit \$LASTEXITCODE"
+}
+
 run_installer() {
     pwsh -NoLogo -NoProfile -File "$repo_root/scripts/install.ps1" -InstallDir "$pwsh_install_dir" -NoPathUpdate "$@"
 }
@@ -92,12 +101,12 @@ authenticated_action() {
     token=$(sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$labby_home/.env")
     curl -fsS -X POST -H "Authorization: Bearer $token" \
         -H 'Content-Type: application/json' \
-        --data '{"action":"gateway.list","params":{}}' \
+        --data '{"action":"help","params":{}}' \
         http://127.0.0.1:8765/v1/gateway >/dev/null
 }
 
 case "${1:-}" in
-    install-previous) mkdir -p "$work_root"; run_installer -Version "$LABBY_PREVIOUS_VERSION" ;;
+    install-previous) mkdir -p "$work_root"; secure_home; run_installer -Version "$LABBY_PREVIOUS_VERSION" ;;
     seed-state) start_service; seed_persisted_state; stop_service ;;
     verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
     verify-provenance) verify_provenance ;;

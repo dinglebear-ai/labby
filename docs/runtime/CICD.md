@@ -291,7 +291,10 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
    releases stayed drafts or never received assets are skipped; if no release
-   qualifies, the leg fails closed. Each adapter must install N-1 and seed
+   qualifies, the leg fails closed. The authenticated check is a bearer
+   `help` call on the gateway: from v1.16, a bearer-mode install with no access
+   store answers gateway admin actions with setup-required until an owner
+   bootstraps through OAuth. Each adapter must install N-1 and seed
    real application-schema rows in registered OAuth clients, access security
    events, and upstream usage calls, plus representative files in gateway
    configuration and credentials, snippets, imported skills, and artifact

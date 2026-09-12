@@ -200,6 +200,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("sudo --preserve-env=GH_TOKEN env", host_install)
         # The unit runs as User=labby, and no release creates that user.
         self.assertIn("sudo useradd --system", host_install)
+        # v1.13.3's `setup host-service status` rejects -y.
+        self.assertIn("sudo /usr/local/bin/labby setup host-service status;", host_service)
         # v1.13.3's unit refuses to start unless every ReadWritePaths entry exists.
         self.assertIn("/home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}", host_install)
         incus = self.text("scripts/ci/n-minus-one/incus")
@@ -225,6 +227,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
         self.assertEqual(2, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+        self.assertIn("icacls '$pwsh_user_home' /inheritance:r", windows)
+        # From v1.16 a bearer-mode install without an access store answers
+        # gateway admin actions with setup-required; `help` stays public.
+        for name in ("unix", "windows", "macos", "incus", "host-service"):
+            adapter = self.text(f"scripts/ci/n-minus-one/{name}")
+            self.assertIn('{"action":"help","params":{}}', adapter, name)
+            self.assertNotIn('"action":"gateway.list"', adapter, name)
         # Keep the service's output so the failure diagnostics can print it.
         self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
