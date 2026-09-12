@@ -9,7 +9,7 @@
     reason = "the sealed mutation primitive is wired to the canonical access adapter in a later bead"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -204,14 +204,10 @@ impl PendingSkillTransaction {
             .files
             .iter()
             .map(|file| &file.path)
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         if components.len() != self.revision.components.len()
             || file_paths.len() != self.files.len()
-            || components
-                .keys()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>()
-                != file_paths
+            || components.keys().copied().collect::<BTreeSet<_>>() != file_paths
             || self.files.iter().any(|file| {
                 components
                     .get(&file.path)
@@ -472,6 +468,46 @@ impl LibraryTimestamp {
 pub enum SkillVisibility {
     Private,
     Tenant,
+}
+
+/// Canonical, surface-neutral visibility decision for one Skill Library record.
+///
+/// Both request authorization and the Agent Skills facade delegate here so the
+/// ownership/visibility rules cannot drift between management and read surfaces.
+#[must_use]
+pub fn permits_skill_library_record(
+    tenant_id: &LibraryTenantId,
+    actor_id: &LibraryActorId,
+    project_id: &LibraryActorId,
+    team_ids: &BTreeSet<LibraryActorId>,
+    is_admin: bool,
+    is_platform_admin: bool,
+    ownership: &LibraryOwnership,
+    visibility: SkillVisibility,
+    is_active: bool,
+) -> bool {
+    if ownership.tenant_id != *tenant_id {
+        return false;
+    }
+    match ownership.owner_kind() {
+        LibraryOwnerKind::Personal => {
+            ownership.owner_id == *actor_id
+                || is_platform_admin
+                || (visibility == SkillVisibility::Tenant && is_active)
+        }
+        LibraryOwnerKind::Project => {
+            (ownership.owner_id == *project_id || is_platform_admin)
+                && (visibility == SkillVisibility::Tenant || is_admin)
+                && is_active
+        }
+        LibraryOwnerKind::Team => {
+            is_platform_admin
+                || (team_ids.len() == 1
+                    && team_ids.contains(&ownership.owner_id)
+                    && visibility == SkillVisibility::Tenant
+                    && is_active)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -943,7 +979,7 @@ impl LibrarySnapshot {
         if self.audit_intents.len() > MAX_AUDIT_INTENTS {
             return Err(ArtifactError::LibraryCorrupt("audit_limit"));
         }
-        let mut receipt_sequences = std::collections::BTreeSet::new();
+        let mut receipt_sequences = BTreeSet::new();
         for (key, receipt) in &self.receipts {
             validate_digest(key).map_err(|_| ArtifactError::LibraryCorrupt("receipt_key"))?;
             if key != &receipt.scope_digest
@@ -2232,6 +2268,103 @@ mod tests {
             let reopened: LibraryOwnership =
                 serde_json::from_value(serde_json::to_value(&scoped).unwrap()).unwrap();
             assert_eq!(reopened, scoped);
+        }
+    }
+
+    #[test]
+    fn skill_library_visibility_matrix_is_fail_closed_across_owner_kinds() {
+        let actor = LibraryActorId::from_canonical_projection("alice").unwrap();
+        let project = LibraryActorId::from_canonical_projection("project-a").unwrap();
+        let tenant = LibraryTenantId::from_canonical_projection("tenant-a").unwrap();
+        for owner_kind in [
+            LibraryOwnerKind::Personal,
+            LibraryOwnerKind::Project,
+            LibraryOwnerKind::Team,
+        ] {
+            for visibility in [SkillVisibility::Private, SkillVisibility::Tenant] {
+                for is_active in [false, true] {
+                    for is_admin in [false, true] {
+                        for is_platform_admin in [false, true] {
+                            for same_tenant in [false, true] {
+                                for team_count in 0..=2 {
+                                    let owner_id = match owner_kind {
+                                        LibraryOwnerKind::Personal => actor.clone(),
+                                        LibraryOwnerKind::Project => project.clone(),
+                                        LibraryOwnerKind::Team => {
+                                            LibraryActorId::from_canonical_projection("team-a")
+                                                .unwrap()
+                                        }
+                                    };
+                                    let owner_tenant = if same_tenant {
+                                        tenant.clone()
+                                    } else {
+                                        LibraryTenantId::from_canonical_projection("tenant-b")
+                                            .unwrap()
+                                    };
+                                    let ownership = if owner_kind == LibraryOwnerKind::Personal {
+                                        LibraryOwnership::canonical(owner_tenant, owner_id.clone())
+                                    } else {
+                                        LibraryOwnership::scoped(
+                                            owner_tenant,
+                                            owner_kind,
+                                            owner_id.clone(),
+                                        )
+                                    };
+                                    let mut teams = BTreeSet::new();
+                                    if team_count >= 1 {
+                                        teams.insert(owner_id.clone());
+                                    }
+                                    if team_count == 2 {
+                                        teams.insert(
+                                            LibraryActorId::from_canonical_projection("team-b")
+                                                .unwrap(),
+                                        );
+                                    }
+                                    let expected = if !same_tenant {
+                                        false
+                                    } else {
+                                        match owner_kind {
+                                            LibraryOwnerKind::Personal => {
+                                                ownership.owner_id == actor
+                                                    || is_platform_admin
+                                                    || (visibility == SkillVisibility::Tenant
+                                                        && is_active)
+                                            }
+                                            LibraryOwnerKind::Project => {
+                                                (ownership.owner_id == project || is_platform_admin)
+                                                    && (visibility == SkillVisibility::Tenant
+                                                        || is_admin)
+                                                    && is_active
+                                            }
+                                            LibraryOwnerKind::Team => {
+                                                is_platform_admin
+                                                    || (team_count == 1
+                                                        && visibility == SkillVisibility::Tenant
+                                                        && is_active)
+                                            }
+                                        }
+                                    };
+                                    assert_eq!(
+                                        permits_skill_library_record(
+                                            &tenant,
+                                            &actor,
+                                            &project,
+                                            &teams,
+                                            is_admin,
+                                            is_platform_admin,
+                                            &ownership,
+                                            visibility,
+                                            is_active,
+                                        ),
+                                        expected,
+                                        "kind={owner_kind:?} visibility={visibility:?} active={is_active} admin={is_admin} platform={is_platform_admin} same_tenant={same_tenant} teams={team_count}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

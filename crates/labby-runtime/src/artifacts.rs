@@ -33,7 +33,7 @@ pub use library::{
     LibraryIdempotency, LibraryMutation, LibraryMutationOutcome, LibraryMutationReceiptFacts,
     LibraryOwnerKind, LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId,
     LibraryTimestamp, SkillLibraryFile, SkillLibraryRecord, SkillTransactionBoundary,
-    SkillVisibility, qualify_materialized_skill_owner,
+    SkillVisibility, permits_skill_library_record, qualify_materialized_skill_owner,
 };
 pub use lifecycle::{
     ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,

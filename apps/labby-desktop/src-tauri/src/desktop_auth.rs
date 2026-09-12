@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
@@ -16,6 +16,7 @@ const POLL_PATH: &str = "/auth/desktop/poll";
 const REDEEM_PATH: &str = "/auth/desktop/redeem";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_FLOW_DURATION: Duration = Duration::from_secs(5 * 60);
+const MAX_AUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 enum PollResult {
@@ -47,7 +48,7 @@ struct StartRequest<'a> {
     return_to: Option<&'a str>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct StartResponse {
     authorization_url: String,
     poll_token: String,
@@ -60,7 +61,7 @@ struct PollRequest<'a> {
     poll_token: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct PollResponse {
     ready: bool,
     expires_at: i64,
@@ -151,6 +152,36 @@ fn poll_ready(
     }
 }
 
+async fn decode_json_bounded<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    context: &str,
+) -> Result<T, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_AUTH_RESPONSE_BYTES as u64)
+    {
+        return Err(format!("Labby returned an oversized {context}"));
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(MAX_AUTH_RESPONSE_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Labby returned an invalid {context}: {error}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_AUTH_RESPONSE_BYTES {
+            return Err(format!("Labby returned an oversized {context}"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("Labby returned an invalid {context}: {error}"))
+}
+
 async fn post_start(
     client: &reqwest::Client,
     origin: &str,
@@ -170,10 +201,7 @@ async fn post_start(
     if response.status() != reqwest::StatusCode::CREATED {
         return Err(format!("Labby rejected sign-in ({})", response.status()));
     }
-    let response: StartResponse = response
-        .json()
-        .await
-        .map_err(|error| format!("Labby returned an invalid sign-in response: {error}"))?;
+    let response: StartResponse = decode_json_bounded(response, "sign-in response").await?;
     if response.poll_token.is_empty() || response.redeem_code.is_empty() {
         return Err("Labby returned an incomplete sign-in response".to_owned());
     }
@@ -214,10 +242,7 @@ async fn post_poll(
     ) {
         return Err(format!("Labby could not complete sign-in ({status})"));
     }
-    let response: PollResponse = response
-        .json()
-        .await
-        .map_err(|error| format!("Labby returned an invalid sign-in status: {error}"))?;
+    let response: PollResponse = decode_json_bounded(response, "sign-in status").await?;
     poll_ready(status, &response, now).map(|ready| {
         if ready {
             PollResult::Ready
@@ -672,6 +697,34 @@ setTimeout(() => {{
             Err(error) => error,
         };
         assert!(error.contains("302"));
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn start_response_body_is_bounded_without_content_length() {
+        let (origin, request) = mock_once(|_| {
+            let body = "x".repeat(MAX_AUTH_RESPONSE_BYTES + 1);
+            format!(
+                "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}"
+            )
+        });
+        let error = run_async(post_start(&test_client(), &origin, "challenge", "/"))
+            .expect_err("oversized response must be rejected");
+        assert!(error.contains("oversized sign-in response"));
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn poll_response_body_is_bounded_without_content_length() {
+        let (origin, request) = mock_once(|_| {
+            let body = "x".repeat(MAX_AUTH_RESPONSE_BYTES + 1);
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}"
+            )
+        });
+        let error = run_async(post_poll(&test_client(), &origin, "poll", 1_000))
+            .expect_err("oversized response must be rejected");
+        assert!(error.contains("oversized sign-in status"));
         request.join().unwrap();
     }
 

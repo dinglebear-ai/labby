@@ -4,7 +4,7 @@ use rmcp::model::{
     CallToolResponse, CallToolResult, CompleteResult, CreateTaskResult, GetPromptResponse,
     GetPromptResult, GetTaskResult, Implementation, InputRequiredResult, ListPromptsResult,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, MetaObject,
-    ReadResourceResponse, ReadResourceResult,
+    ReadResourceResponse,
 };
 
 const SERVER_INFO_META_KEY: &str = "io.modelcontextprotocol/serverInfo";
@@ -51,7 +51,14 @@ pub(crate) fn stamp_read_resource_response(
     mut response: ReadResourceResponse,
 ) -> ReadResourceResponse {
     match &mut response {
-        ReadResourceResponse::Complete(ReadResourceResult { meta, .. }) => stamp_meta(meta),
+        ReadResourceResponse::Complete(result) => {
+            // Legacy upstreams omit this field. Labby owns the downstream
+            // envelope; RMCP strips it again for legacy downstream peers.
+            result
+                .result_type
+                .get_or_insert(rmcp::model::ResultType::COMPLETE);
+            stamp_meta(&mut result.meta);
+        }
         ReadResourceResponse::InputRequired(InputRequiredResult { meta, .. }) => stamp_meta(meta),
         _ => {}
     }
@@ -92,10 +99,31 @@ pub(crate) fn stamp_get_task_result(mut result: GetTaskResult) -> GetTaskResult 
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
+    use rmcp::model::{CallToolResult, ContentBlock, MetaObject, ReadResourceResult};
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn legacy_resource_response_gets_required_downstream_discriminator() {
+        let upstream = json!({"contents": [{
+            "uri": "lab://upstream/qa-vm-service/qa-vm-service://skill",
+            "mimeType": "text/markdown",
+            "text": "# QA VM skill"
+        }]});
+        let result: ReadResourceResult = serde_json::from_value(upstream.clone()).unwrap();
+        let response = stamp_read_resource_response(result.into());
+        let mut result: rmcp::model::ServerResult = response.into();
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["resultType"], "complete");
+        assert_eq!(wire["contents"], upstream["contents"]);
+        assert_eq!(wire["_meta"][SERVER_INFO_META_KEY]["name"], "labby");
+
+        result.strip_result_type_for_legacy_peer();
+        let legacy_wire = serde_json::to_value(result).unwrap();
+        assert!(legacy_wire.get("resultType").is_none());
+        assert_eq!(legacy_wire["contents"], upstream["contents"]);
+    }
 
     #[test]
     fn stamps_labby_and_preserves_upstream_identity_and_custom_metadata() {

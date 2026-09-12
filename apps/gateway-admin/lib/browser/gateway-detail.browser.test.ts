@@ -753,7 +753,10 @@ test('browser bridge operator flow approves pairing and grants exact page consen
   const session = () => ({ id: 'session-1', browser_id: 'browser-1', tab_id: 7, document_id: 'doc-1', origin: 'https://example.com', sanitized_path: '/tools', page_title: 'Example tools', catalog_revision: 42, catalog_fingerprint: 'hash', catalog_digest: catalogDigest, tools: [{ name: 'search', description: 'Search the example catalog', input_schema: { type: 'object' }, annotations: {} }], enabled, status: 'active', last_seen_at: 1_787_976_060 })
   await page.route('**/v1/browser', async (route) => {
     const body = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
-    if (body.action === 'browser.pairing.approve') approved = true
+    if (body.action === 'browser.pairing.approve') {
+      assert.equal(body.params.pairing_fingerprint, 'A1B2C3D4E5F6')
+      approved = true
+    }
     if (body.action === 'browser.session.enable') {
       assert.equal(body.params.catalog_digest, catalogDigest)
       enabled = body.params.enabled === true
@@ -769,7 +772,13 @@ test('browser bridge operator flow approves pairing and grants exact page consen
   })
 
   await page.goto(`${baseUrl}/browsers/`, { waitUntil: 'networkidle' })
-  await page.getByRole('button', { name: 'Approve' }).click()
+  const approveButton = page.getByRole('button', { name: 'Approve' })
+  assert.equal(await approveButton.isDisabled(), true)
+  const fingerprintInput = page.getByRole('textbox', { name: 'Pairing fingerprint for Work Chrome' })
+  await fingerprintInput.fill('a1b2c3d4e5f6')
+  assert.equal(await fingerprintInput.inputValue(), 'A1B2C3D4E5F6')
+  assert.equal(await approveButton.isDisabled(), false)
+  await approveButton.click()
   await assert.doesNotReject(() => page.getByText('Example tools').waitFor())
   const consent = page.getByRole('switch', { name: 'Enable tool execution for Example tools' })
   await consent.click()

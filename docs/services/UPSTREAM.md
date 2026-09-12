@@ -618,9 +618,13 @@ Every aggregated skill is relabelled under the upstream's host-assigned origin,
 so two upstreams may each publish a skill named `refunds` without collision:
 
 ```text
-skill://{origin}/{skill}/{file}
-skill://acme/refunds/SKILL.md
+skill://{gateway-origin}/skill/{upstream-origin}/{upstream-path...}
+skill://acme/skill/native/refunds/SKILL.md
 ```
+
+The host-assigned gateway origin is the configured upstream name. The original
+upstream skill URI is preserved after the literal `/skill/` marker so routing can
+recover the exact upstream identity without guessing or colliding with another source.
 
 `labby` is **reserved** for Labby's own first-party skills and can never be
 claimed by an upstream. Nothing is ever deduplicated by skill name — two
@@ -650,6 +654,15 @@ changed resource set revokes any approval bound to the previous content.
 Digests are an integrity check against drift and corruption, **not a security
 boundary**: an upstream that serves malicious content can publish a matching
 digest for it. The trust decision is `proxy_skills`.
+
+### Caching
+
+Upstream `skills/list` TTL hints are bounded by Labby: 5 seconds minimum, 1 hour
+maximum, and 5 minutes when the upstream omits a TTL. Cache entries idle for 30
+minutes are eligible for eviction. The process retains at most 512 `(upstream, subject)`
+entries, so subject-bound upstream load scales with active subjects and can churn beyond
+that cap. Failed stale refreshes are negatively cached with bounded exponential backoff,
+and operator views expose refresh age and retry delay.
 
 ### Degradation
 

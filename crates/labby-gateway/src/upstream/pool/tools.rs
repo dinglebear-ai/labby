@@ -1406,6 +1406,30 @@ impl UpstreamPool {
         catalog.get(upstream_name).map(|entry| entry.tool_health)
     }
 
+    /// Return just the names of healthy exposed tools for one upstream.
+    ///
+    /// This avoids cloning full tool schemas for consumers that only need
+    /// capability names, such as Agent Skills origin metadata.
+    pub async fn healthy_tool_names_for_upstream(&self, upstream: &str) -> Vec<String> {
+        let catalog = self.catalog.read().await;
+        let Some(entry) = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())
+        else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for name in entry.tools.values().filter_map(|tool| {
+            entry
+                .exposure_policy
+                .matches(tool.tool.name.as_ref())
+                .then(|| tool.tool.name.to_string())
+        }) {
+            insert_bounded_name(&mut names, name, MAX_UPSTREAM_TOOLS);
+        }
+        names
+    }
+
     /// Return just the names of all healthy exposed upstream tools.
     ///
     /// Cheaper than `healthy_tools()` for callers that only need tool names
