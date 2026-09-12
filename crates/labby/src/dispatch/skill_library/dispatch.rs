@@ -4,11 +4,6 @@
 //! build an exact immutable candidate, commit durable library state, then publish that same
 //! candidate without fallible work between commit and the `Arc` swap.
 
-#![allow(
-    dead_code,
-    reason = "shared Skill Library core is invoked by the Wave 3 surface adapters"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
@@ -30,16 +25,16 @@ use super::audit::{
     durable_terminal_audit, record_terminal_mutation,
 };
 use super::auth::{
-    SkillLibraryAction, SkillLibraryAuthorizationError, SkillLibraryCaller, SkillLibraryTarget,
-    authorize_at_boundary,
+    SkillLibraryAction, SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError,
+    SkillLibraryCaller, SkillLibraryTarget, authorize_at_boundary,
 };
 use super::blocking::{
     BlockingError, BoundedBlockingExecutor, FaultInjector, FaultStage, InjectedFault,
     NoFaultInjector,
 };
 use super::params::{
-    ArtifactParams, PageParams, ReadRevisionParams, SearchParams, ValidateParams, normalized_query,
-    page_limit, validate_cursor,
+    ArtifactParams, HistoryParams, PageParams, ReadRevisionParams, RefreshParams, SearchParams,
+    ValidateParams, normalized_query, page_limit, validate_cursor,
 };
 use super::types::{
     CreateVisibility, CursorPage, MutationReceipt, OwnerSummary, ProvenanceSummary,
@@ -58,7 +53,10 @@ pub(crate) trait GenerationProjection<G>: Send + Sync {
     ) -> Result<Arc<G>, ArtifactError>;
 }
 
-pub(crate) struct ArtifactFirstPartyProjection;
+#[derive(Default)]
+pub(crate) struct ArtifactFirstPartyProjection {
+    materializations: crate::skills::registry::ArtifactSkillMaterializationCache,
+}
 
 impl GenerationProjection<crate::skills::registry::FirstPartyGeneration>
     for ArtifactFirstPartyProjection
@@ -70,14 +68,23 @@ impl GenerationProjection<crate::skills::registry::FirstPartyGeneration>
         mutation: Option<&LibraryMutation>,
     ) -> Result<Arc<crate::skills::registry::FirstPartyGeneration>, ArtifactError> {
         let base = crate::skills::registry::first_party_generation_manager().generation();
-        crate::skills::registry::project_artifact_generation(store, snapshot, mutation, &base)
+        crate::skills::registry::project_artifact_generation_cached(
+            store,
+            snapshot,
+            mutation,
+            &base,
+            &self.materializations,
+        )
     }
 }
 
 /// Process-shared management core registered beneath the existing `skills` service.
 pub(crate) struct SkillLibraryService<G> {
     pub(crate) store: Arc<ArtifactStore>,
+    /// Single-lane mutation executor; waiting writers cannot consume read permits.
     pub(crate) blocking: BoundedBlockingExecutor,
+    /// Independent read/validation executor kept available during mutation fsync queues.
+    read_blocking: BoundedBlockingExecutor,
     pub(crate) publication: Arc<ActivationCoordinator<G>>,
     pub(crate) projection: Arc<dyn GenerationProjection<G>>,
     faults: Arc<dyn FaultInjector>,
@@ -90,9 +97,12 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         publication: Arc<ActivationCoordinator<G>>,
         projection: Arc<dyn GenerationProjection<G>>,
     ) -> Self {
+        let read_blocking = blocking;
+        let blocking = read_blocking.single_lane();
         Self {
             store,
             blocking,
+            read_blocking,
             publication,
             projection,
             faults: Arc::new(NoFaultInjector),
@@ -679,6 +689,90 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             .await
     }
 
+    async fn list_authorized_page(
+        &self,
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        action: SkillLibraryAction,
+        operation: &'static str,
+        cursor: Option<String>,
+        limit: Option<usize>,
+        query: Option<String>,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<Value, SkillLibraryDispatchError> {
+        let decision = authorize_at_boundary(
+            runtime,
+            caller,
+            project_id,
+            action,
+            &CanonicalArtifactId::parse("library")?,
+            SkillLibraryTarget::SharedActive,
+            correlation_id,
+        )
+        .await?;
+        let store = Arc::clone(&self.store);
+        let published_library_version = published_version(&self.publication);
+        let page = self
+            .read_blocking
+            .run(operation, move || {
+                let snapshot = store.library_snapshot()?;
+                list_page_visible(
+                    &store,
+                    &snapshot,
+                    &decision,
+                    cursor,
+                    limit,
+                    published_library_version,
+                    query.as_deref(),
+                )
+            })
+            .await
+            .map_err(map_blocking)?;
+        serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
+    }
+
+    async fn authorize_existing_record(
+        &self,
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        action: SkillLibraryAction,
+        operation: &'static str,
+        artifact_id: &str,
+        archived: ArchivedRecordAccess,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryDispatchError> {
+        let target = CanonicalArtifactId::parse(artifact_id.to_owned())?;
+        let store = Arc::clone(&self.store);
+        let artifact_id = artifact_id.to_owned();
+        let record = self
+            .read_blocking
+            .run(operation, move || {
+                store
+                    .library_snapshot()?
+                    .records
+                    .get(&artifact_id)
+                    .filter(|record| archived.target_visible(record))
+                    .cloned()
+                    .ok_or(ArtifactError::NotFound("library_record"))
+            })
+            .await
+            .map_err(map_target_lookup)?;
+        let policy_target = read_target(&record)?;
+        authorize_at_boundary(
+            runtime,
+            caller,
+            project_id,
+            action,
+            &target,
+            policy_target,
+            correlation_id,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     pub(crate) async fn dispatch(
         &self,
         runtime: &AccessRuntime,
@@ -697,116 +791,60 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         reason,
                     }
                 })?;
-                let decision = authorize_at_boundary(
+                self.list_authorized_page(
                     runtime,
                     caller,
                     project_id,
                     SkillLibraryAction::Search,
-                    &CanonicalArtifactId::parse("library")?,
-                    SkillLibraryTarget::SharedActive,
+                    "artifact_search",
+                    params.cursor,
+                    params.limit,
+                    Some(query),
                     correlation_id,
                 )
-                .await?;
-                let store = Arc::clone(&self.store);
-                let published_library_version = published_version(&self.publication);
-                let page = self
-                    .blocking
-                    .run("artifact_search", move || {
-                        let snapshot = store.library_snapshot()?;
-                        list_page_visible(
-                            &store,
-                            &snapshot,
-                            &decision,
-                            params.cursor,
-                            params.limit,
-                            published_library_version,
-                            Some(&query),
-                        )
-                    })
-                    .await
-                    .map_err(map_blocking)?;
-                serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
+                .await
             }
             "artifacts.list" => {
                 let params: PageParams = parse(params)?;
-                let decision = authorize_at_boundary(
+                self.list_authorized_page(
                     runtime,
                     caller,
                     project_id,
                     SkillLibraryAction::List,
-                    &CanonicalArtifactId::parse("library")?,
-                    SkillLibraryTarget::SharedActive,
+                    "skill_library_list",
+                    params.cursor,
+                    params.limit,
+                    None,
                     correlation_id,
                 )
-                .await?;
-                let store = Arc::clone(&self.store);
-                let published_library_version = published_version(&self.publication);
-                let page = self
-                    .blocking
-                    .run("skill_library_list", move || {
-                        let snapshot = store.library_snapshot()?;
-                        list_page_visible(
-                            &store,
-                            &snapshot,
-                            &decision,
-                            params.cursor,
-                            params.limit,
-                            published_library_version,
-                            None,
-                        )
-                    })
-                    .await
-                    .map_err(map_blocking)?;
-                serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
+                .await
             }
             "artifacts.get" => {
                 let params: ArtifactParams = parse(params)?;
-                let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
-                let store = Arc::clone(&self.store);
-                let artifact_id = params.artifact_id.clone();
-                let record = self
-                    .blocking
-                    .run("skill_library_get_target", move || {
-                        store
-                            .library_snapshot()?
-                            .records
-                            .get(&artifact_id)
-                            .cloned()
-                            .ok_or(ArtifactError::NotFound("library_record"))
-                    })
-                    .await
-                    .map_err(map_target_lookup)?;
-                let policy_target = read_target(&record)?;
-                let decision = authorize_at_boundary(
-                    runtime,
-                    caller,
-                    project_id,
-                    SkillLibraryAction::Get,
-                    &target,
-                    policy_target,
-                    correlation_id,
-                )
-                .await?;
+                let decision = self
+                    .authorize_existing_record(
+                        runtime,
+                        caller,
+                        project_id,
+                        SkillLibraryAction::Get,
+                        "skill_library_get_target",
+                        &params.artifact_id,
+                        ArchivedRecordAccess::PersonalOnly,
+                        correlation_id,
+                    )
+                    .await?;
                 let store = Arc::clone(&self.store);
                 let published_library_version = published_version(&self.publication);
                 let item = self
-                    .blocking
+                    .read_blocking
                     .run("skill_library_get", move || {
                         let snapshot = store.library_snapshot()?;
-                        let visible = snapshot
-                            .records
-                            .get(&params.artifact_id)
-                            .filter(|record| {
-                                !record.archived || decision.permits_personal(&record.ownership)
-                            })
-                            .filter(|record| {
-                                decision.permits_record(
-                                    &record.ownership,
-                                    record.visibility,
-                                    record.active_revision_id.is_some(),
-                                )
-                            })
-                            .ok_or(ArtifactError::NotFound("library_record"))?;
+                        let visible = visible_record(
+                            &snapshot,
+                            &params.artifact_id,
+                            &decision,
+                            ArchivedRecordAccess::PersonalOnly,
+                        )?;
                         Ok(VersionedSkillLibrarySummary {
                             library_version: snapshot.version,
                             item: summary(
@@ -823,54 +861,32 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             }
             "artifacts.read" => {
                 let params: ReadRevisionParams = parse(params)?;
-                let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
-                let target_store = Arc::clone(&self.store);
-                let target_artifact = params.artifact_id.clone();
-                let record = self
-                    .blocking
-                    .run("skill_library_read_target", move || {
-                        target_store
-                            .library_snapshot()?
-                            .records
-                            .get(&target_artifact)
-                            .cloned()
-                            .ok_or(ArtifactError::NotFound("library_record"))
-                    })
-                    .await
-                    .map_err(map_target_lookup)?;
-                let policy_target = read_target(&record)?;
-                let decision = authorize_at_boundary(
-                    runtime,
-                    caller,
-                    project_id,
-                    SkillLibraryAction::Read,
-                    &target,
-                    policy_target,
-                    correlation_id,
-                )
-                .await?;
+                let decision = self
+                    .authorize_existing_record(
+                        runtime,
+                        caller,
+                        project_id,
+                        SkillLibraryAction::Read,
+                        "skill_library_read_target",
+                        &params.artifact_id,
+                        ArchivedRecordAccess::PersonalOnly,
+                        correlation_id,
+                    )
+                    .await?;
                 let store = Arc::clone(&self.store);
                 let artifact_id = params.artifact_id.clone();
                 let revision_id = params.revision_id.clone();
                 let path = params.path.clone();
                 let (library_version, bytes) = self
-                    .blocking
+                    .read_blocking
                     .run("skill_library_read", move || {
                         let snapshot = store.library_snapshot()?;
-                        let current = snapshot
-                            .records
-                            .get(&artifact_id)
-                            .filter(|record| {
-                                !record.archived || decision.permits_personal(&record.ownership)
-                            })
-                            .filter(|record| {
-                                decision.permits_record(
-                                    &record.ownership,
-                                    record.visibility,
-                                    record.active_revision_id.is_some(),
-                                )
-                            })
-                            .ok_or(ArtifactError::NotFound("library_record"))?;
+                        let current = visible_record(
+                            &snapshot,
+                            &artifact_id,
+                            &decision,
+                            ArchivedRecordAccess::PersonalOnly,
+                        )?;
                         if current.visibility == SkillVisibility::Tenant
                             && !decision.permits_personal(&current.ownership)
                             && current.active_revision_id.as_deref() != Some(&revision_id)
@@ -897,56 +913,30 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 .map_err(|_| SkillLibraryDispatchError::Serialization)
             }
             "artifacts.history" => {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct History {
-                    artifact_id: String,
-                    cursor: Option<String>,
-                    limit: Option<usize>,
-                }
-                let params: History = parse(params)?;
-                let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
-                let target_store = Arc::clone(&self.store);
-                let target_artifact = params.artifact_id.clone();
-                let record = self
-                    .blocking
-                    .run("skill_library_history_target", move || {
-                        target_store
-                            .library_snapshot()?
-                            .records
-                            .get(&target_artifact)
-                            .cloned()
-                            .ok_or(ArtifactError::NotFound("library_record"))
-                    })
-                    .await
-                    .map_err(map_target_lookup)?;
-                let policy_target = read_target(&record)?;
-                let decision = authorize_at_boundary(
-                    runtime,
-                    caller,
-                    project_id,
-                    SkillLibraryAction::History,
-                    &target,
-                    policy_target,
-                    correlation_id,
-                )
-                .await?;
+                let params: HistoryParams = parse(params)?;
+                let decision = self
+                    .authorize_existing_record(
+                        runtime,
+                        caller,
+                        project_id,
+                        SkillLibraryAction::History,
+                        "skill_library_history_target",
+                        &params.artifact_id,
+                        ArchivedRecordAccess::PersonalOnly,
+                        correlation_id,
+                    )
+                    .await?;
                 let store = Arc::clone(&self.store);
                 let page = self
-                    .blocking
+                    .read_blocking
                     .run("skill_library_history", move || {
                         let snapshot = store.library_snapshot()?;
-                        let record = snapshot
-                            .records
-                            .get(&params.artifact_id)
-                            .filter(|record| {
-                                decision.permits_record(
-                                    &record.ownership,
-                                    record.visibility,
-                                    record.active_revision_id.is_some(),
-                                )
-                            })
-                            .ok_or(ArtifactError::NotFound("library_record"))?;
+                        let record = visible_record(
+                            &snapshot,
+                            &params.artifact_id,
+                            &decision,
+                            ArchivedRecordAccess::PersonalOnly,
+                        )?;
                         let page = history_page(
                             &store,
                             record,
@@ -978,7 +968,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await?;
                 let candidate = self
-                    .blocking
+                    .read_blocking
                     .run("skill_library_validate", move || {
                         let files = params
                             .files
@@ -1020,13 +1010,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 serde_json::to_value(response).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
             "artifacts.refresh" => {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Refresh {
-                    expected_library_version: u64,
-                    idempotency_key: String,
-                }
-                let params: Refresh = parse(params)?;
+                let params: RefreshParams = parse(params)?;
                 super::params::validate_idempotency_key(&params.idempotency_key).map_err(
                     |reason| ArtifactError::InvalidField {
                         field: "idempotency_key",
@@ -1169,6 +1153,48 @@ fn library_files(revision: &ArtifactRevision) -> Vec<SkillLibraryFile> {
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum ArchivedRecordAccess {
+    PersonalOnly,
+}
+
+impl ArchivedRecordAccess {
+    fn target_visible(self, _record: &SkillLibraryRecord) -> bool {
+        match self {
+            Self::PersonalOnly => true,
+        }
+    }
+
+    fn visible(
+        self,
+        record: &SkillLibraryRecord,
+        decision: &SkillLibraryAuthorizationDecision,
+    ) -> bool {
+        let archive_visible = match self {
+            Self::PersonalOnly => !record.archived || decision.permits_personal(&record.ownership),
+        };
+        archive_visible
+            && decision.permits_record(
+                &record.ownership,
+                record.visibility,
+                record.active_revision_id.is_some(),
+            )
+    }
+}
+
+fn visible_record<'a>(
+    snapshot: &'a LibrarySnapshot,
+    artifact_id: &str,
+    decision: &SkillLibraryAuthorizationDecision,
+    archived: ArchivedRecordAccess,
+) -> Result<&'a SkillLibraryRecord, ArtifactError> {
+    snapshot
+        .records
+        .get(artifact_id)
+        .filter(|record| archived.visible(record, decision))
+        .ok_or(ArtifactError::NotFound("library_record"))
+}
+
 fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchError {
     match error {
         BlockingError::Operation(error) => error.into(),
@@ -1238,7 +1264,7 @@ fn transaction_fault(
 
 fn summary(
     record: &SkillLibraryRecord,
-    decision: &super::auth::SkillLibraryAuthorizationDecision,
+    decision: &SkillLibraryAuthorizationDecision,
     current_generation: u64,
     published_library_version: u64,
 ) -> SkillLibrarySummary {
@@ -1334,7 +1360,7 @@ fn read_target(record: &SkillLibraryRecord) -> Result<SkillLibraryTarget<'_>, Ar
     match record.visibility {
         SkillVisibility::Private => Ok(SkillLibraryTarget::Personal(&record.ownership)),
         SkillVisibility::Tenant if record.active_revision_id.is_some() => {
-            Ok(SkillLibraryTarget::SharedActive)
+            Ok(SkillLibraryTarget::SharedActiveRecord(&record.ownership))
         }
         SkillVisibility::Tenant => Ok(SkillLibraryTarget::Personal(&record.ownership)),
     }
@@ -1343,7 +1369,7 @@ fn read_target(record: &SkillLibraryRecord) -> Result<SkillLibraryTarget<'_>, Ar
 fn list_page_visible(
     store: &ArtifactStore,
     snapshot: &LibrarySnapshot,
-    decision: &super::auth::SkillLibraryAuthorizationDecision,
+    decision: &SkillLibraryAuthorizationDecision,
     cursor: Option<String>,
     limit: Option<usize>,
     published_library_version: u64,
@@ -1426,7 +1452,7 @@ struct ListCursorBinding {
 
 impl ListCursorBinding {
     fn new(
-        decision: &super::auth::SkillLibraryAuthorizationDecision,
+        decision: &SkillLibraryAuthorizationDecision,
         library_version: u64,
         query: Option<&str>,
     ) -> Self {
@@ -1587,7 +1613,7 @@ fn validation_rejection(error: ArtifactError) -> Result<ValidationRejection, Art
 pub(crate) fn history_page(
     store: &ArtifactStore,
     record: &SkillLibraryRecord,
-    decision: &super::auth::SkillLibraryAuthorizationDecision,
+    decision: &SkillLibraryAuthorizationDecision,
     library_version: u64,
     cursor: Option<String>,
     limit: Option<usize>,
@@ -1646,7 +1672,7 @@ struct HistoryCursorBinding {
 
 impl HistoryCursorBinding {
     fn new(
-        decision: &super::auth::SkillLibraryAuthorizationDecision,
+        decision: &SkillLibraryAuthorizationDecision,
         library_version: u64,
         artifact_id: &str,
         ownership: &labby_runtime::artifacts::LibraryOwnership,
@@ -1756,6 +1782,7 @@ pub(crate) struct ActivationCoordinator<G> {
 }
 
 impl<G> ActivationCoordinator<G> {
+    #[cfg(test)]
     pub(crate) fn new(generation: Arc<G>, library_version: u64) -> Self {
         Self::from_cell(Arc::new(ArcSwap::from(generation)), library_version)
     }
@@ -1771,6 +1798,7 @@ impl<G> ActivationCoordinator<G> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> Arc<G> {
         self.generation.load_full()
     }
@@ -1797,6 +1825,7 @@ impl<G> ActivationCoordinator<G> {
     /// `candidate` must be completely built and validated before this call. `commit` performs the
     /// durable CAS and returns its committed library version. Once it succeeds, publication is an
     /// allocation-free `Arc` move under this mutex and cannot fail.
+    #[cfg(test)]
     pub(crate) fn commit_and_publish<E>(
         &self,
         candidate: Arc<G>,
@@ -1817,6 +1846,8 @@ impl<G> ActivationCoordinator<G> {
         Ok(committed)
     }
 
+    #[cfg(test)]
+    #[expect(dead_code, reason = "test-only activation outcome seam")]
     fn commit_and_publish_outcome<E>(
         &self,
         candidate: Arc<G>,
@@ -1913,6 +1944,7 @@ impl<G> ActivationCoordinator<G> {
 
     /// Record a durable commit discovered after restart or an interrupted response boundary.
     /// Readers retain the last-good generation until reconciliation supplies the exact candidate.
+    #[cfg(test)]
     pub(crate) fn mark_committed(&self, committed_library_version: u64) {
         let mut state = self
             .versions
@@ -2093,7 +2125,12 @@ fn record_terminal_result(
         ),
     };
     let terminal = revision_id.map_or(terminal, |revision| terminal.with_revision_id(revision));
-    let _recorded = record_terminal_mutation(audit, terminal);
+    if !record_terminal_mutation(audit, terminal) {
+        tracing::warn!(
+            service = "skill_library",
+            "terminal Skill Library audit event was not retained"
+        );
+    }
 }
 
 fn runtime_durable_audit(
@@ -2242,6 +2279,10 @@ mod tests {
         assert!(history_page_window(&revisions, Some("rev-09900"), 100, &other).is_err());
     }
 
+    #[expect(
+        dead_code,
+        reason = "fault injector retained for targeted regression tests"
+    )]
     struct OneStageFault(FaultStage);
 
     impl FaultInjector for OneStageFault {
@@ -2336,7 +2377,7 @@ mod tests {
         let store = Arc::new(ArtifactStore::new(root.path().join("artifacts")).unwrap());
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();
@@ -2468,7 +2509,7 @@ mod tests {
         let store = Arc::new(ArtifactStore::new(root.path().join("artifacts")).unwrap());
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();
@@ -2686,7 +2727,7 @@ mod tests {
                     &SkillLibraryCorrelationId::parse(format!("versioned-{action}")).unwrap(),
                 )
                 .await
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{action}: {error:?}"));
             assert_eq!(response["library_version"], 2, "{action}");
         }
         service
@@ -2726,7 +2767,7 @@ mod tests {
                     &SkillLibraryCorrelationId::parse(format!("archived-{action}")).unwrap(),
                 )
                 .await
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{action}: {error:?}"));
             assert_eq!(response["library_version"], 3, "{action}");
         }
         let durable = after_replay
@@ -2795,7 +2836,7 @@ mod tests {
         let store = Arc::new(ArtifactStore::new(artifacts_path.clone()).unwrap());
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();

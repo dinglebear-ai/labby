@@ -19,9 +19,10 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::client::IntoClientRequest 
 
 type Socket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 const EXTENSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+static BROWSER_SOCKET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn send(socket: &mut Socket, mut value: Value) {
-    value["version"] = json!(1);
+async fn send_version(socket: &mut Socket, version: u32, mut value: Value) {
+    value["version"] = json!(version);
     value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -29,6 +30,10 @@ async fn send(socket: &mut Socket, mut value: Value) {
         ))
         .await
         .unwrap();
+}
+
+async fn send(socket: &mut Socket, value: Value) {
+    send_version(socket, 2, value).await;
 }
 
 async fn receive(socket: &mut Socket) -> Value {
@@ -72,6 +77,7 @@ async fn failure(request: reqwest::RequestBuilder, status: reqwest::StatusCode, 
 
 #[tokio::test]
 async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http_dispatch() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let page_state = tempfile::tempdir().expect("owned page callback state");
     let page_record = page_state.path().join("page-record.txt");
     std::fs::write(&page_record, "before callback").unwrap();
@@ -122,13 +128,25 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
         .unwrap();
     assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-    let mut request = socket_url.into_client_request().unwrap();
+    let mut request = socket_url.clone().into_client_request().unwrap();
     request.headers_mut().insert(
         "Origin",
         format!("chrome-extension://{EXTENSION}").parse().unwrap(),
     );
     let (mut socket, upgrade) = tokio_tungstenite::connect_async(request).await.unwrap();
     assert_eq!(upgrade.status().as_u16(), 101);
+    send(&mut socket, json!({"type":"heartbeat"})).await;
+    let heartbeat = receive(&mut socket).await;
+    assert_eq!(heartbeat["type"], "acknowledged");
+    assert_eq!(heartbeat["received"], "heartbeat");
+    send(
+        &mut socket,
+        json!({"type":"pairing_status","pairing_id":"missing-pairing"}),
+    )
+    .await;
+    let missing_pairing = receive(&mut socket).await;
+    assert_eq!(missing_pairing["type"], "error");
+    assert_eq!(missing_pairing["kind"], "pairing_not_pending");
     let signing = SigningKey::from_bytes(&[41; 32]);
     send(
         &mut socket,
@@ -141,17 +159,111 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     .await;
     let pending = receive(&mut socket).await;
     assert_eq!(pending["type"], "pairing_pending");
+    let pairing_fingerprint = pending["pairing_fingerprint"]
+        .as_str()
+        .expect("pairing fingerprint");
+    assert_eq!(pairing_fingerprint.len(), 12);
+
+    let mut legacy_request = socket_url.clone().into_client_request().unwrap();
+    legacy_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut legacy_socket, _) = tokio_tungstenite::connect_async(legacy_request)
+        .await
+        .unwrap();
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({
+            "type":"pairing_request", "display_name":"Legacy client",
+            "extension_id":EXTENSION,
+            "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+        }),
+    )
+    .await;
+    let legacy_pairing = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_pairing["version"], 1);
+    assert_eq!(legacy_pairing["type"], "pairing_pending");
+    assert_eq!(legacy_pairing["pairing_id"], pending["pairing_id"]);
+    assert_eq!(legacy_pairing["pairing_fingerprint"], pairing_fingerprint);
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({"type":"pairing_status","pairing_id":pending["pairing_id"]}),
+    )
+    .await;
+    let legacy_status = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_status["version"], 1);
+    assert_eq!(legacy_status["type"], "pairing_pending");
+    assert_eq!(legacy_status["pairing_id"], pending["pairing_id"]);
+    assert_eq!(legacy_status["pairing_fingerprint"], pairing_fingerprint);
+    let mut other_extension_request = socket_url.clone().into_client_request().unwrap();
+    other_extension_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{}", "b".repeat(32))
+            .parse()
+            .unwrap(),
+    );
+    let (mut other_extension_socket, _) = tokio_tungstenite::connect_async(other_extension_request)
+        .await
+        .unwrap();
+    send(
+        &mut other_extension_socket,
+        json!({"type":"pairing_status","pairing_id":pending["pairing_id"]}),
+    )
+    .await;
+    let hidden_pairing = receive(&mut other_extension_socket).await;
+    assert_eq!(hidden_pairing["type"], "error");
+    assert_eq!(hidden_pairing["kind"], "pairing_not_pending");
+    other_extension_socket.close(None).await.unwrap();
+
     let approved = success(action(
         &client,
         base,
         &token,
         "browser.pairing.approve",
         json!({
-            "pairing_id":pending["pairing_id"]
+            "pairing_id":pending["pairing_id"],
+            "pairing_fingerprint":pairing_fingerprint
         }),
     ))
     .await;
     let browser_id = approved["id"].as_str().expect("approved browser identity");
+
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({"type":"auth_challenge","browser_id":browser_id}),
+    )
+    .await;
+    let legacy_nonce = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_nonce["version"], 1);
+    assert_eq!(legacy_nonce["type"], "auth_nonce");
+    let legacy_signature = signing.sign(
+        &URL_SAFE_NO_PAD
+            .decode(legacy_nonce["nonce"].as_str().unwrap())
+            .unwrap(),
+    );
+    send_version(
+        &mut legacy_socket,
+        1,
+        json!({
+            "type":"auth_response",
+            "challenge_id":legacy_nonce["challenge_id"],
+            "signature":URL_SAFE_NO_PAD.encode(legacy_signature.to_bytes())
+        }),
+    )
+    .await;
+    let legacy_authenticated = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_authenticated["version"], 1);
+    assert_eq!(legacy_authenticated["type"], "authenticated");
+    send_version(&mut legacy_socket, 1, json!({"type":"heartbeat"})).await;
+    let legacy_heartbeat = receive(&mut legacy_socket).await;
+    assert_eq!(legacy_heartbeat["version"], 1);
+    assert_eq!(legacy_heartbeat["type"], "acknowledged");
+    legacy_socket.close(None).await.unwrap();
+
     send(
         &mut socket,
         json!({"type":"auth_challenge","browser_id":browser_id}),
@@ -159,13 +271,44 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     .await;
     let nonce = receive(&mut socket).await;
     assert_eq!(nonce["type"], "auth_nonce");
-    let signature = signing.sign(
-        &URL_SAFE_NO_PAD
-            .decode(nonce["nonce"].as_str().unwrap())
-            .unwrap(),
-    );
+    let nonce_bytes = URL_SAFE_NO_PAD
+        .decode(nonce["nonce"].as_str().unwrap())
+        .unwrap();
+    let invalid_signing = SigningKey::from_bytes(&[42; 32]);
+    let invalid_signature = invalid_signing.sign(&nonce_bytes);
+    send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(invalid_signature.to_bytes())})).await;
+    let rejected = receive(&mut socket).await;
+    assert_eq!(rejected["type"], "error");
+    assert_eq!(rejected["kind"], "auth_failed");
+
+    let signature = signing.sign(&nonce_bytes);
     send(&mut socket, json!({"type":"auth_response", "challenge_id":nonce["challenge_id"], "signature":URL_SAFE_NO_PAD.encode(signature.to_bytes())})).await;
     assert_eq!(receive(&mut socket).await["type"], "authenticated");
+
+    // Authentication releases this socket's per-client pre-auth permit. A full
+    // client allowance must remain available while the authenticated socket is
+    // still established.
+    let idle_request = || {
+        let mut request = socket_url.clone().into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Origin",
+            format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+        );
+        request
+    };
+    let mut idle_sockets = Vec::new();
+    for _ in 0..8 {
+        let (idle, _) = tokio_tungstenite::connect_async(idle_request())
+            .await
+            .unwrap();
+        idle_sockets.push(idle);
+    }
+    drop(idle_sockets);
+
+    send(&mut socket, json!({"type":"heartbeat"})).await;
+    let heartbeat = receive(&mut socket).await;
+    assert_eq!(heartbeat["type"], "acknowledged");
+    assert_eq!(heartbeat["received"], "heartbeat");
     send(
         &mut socket,
         json!({
@@ -291,6 +434,27 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
     )
     .await;
     drop(socket);
+
+    let mut stale_request = format!("{}/browser/socket", base.replacen("http://", "ws://", 1))
+        .into_client_request()
+        .unwrap();
+    stale_request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut stale_socket, _) = tokio_tungstenite::connect_async(stale_request)
+        .await
+        .unwrap();
+    send(
+        &mut stale_socket,
+        json!({"type":"auth_challenge","browser_id":browser_id}),
+    )
+    .await;
+    let rejected_auth = receive(&mut stale_socket).await;
+    assert_eq!(rejected_auth["type"], "error");
+    assert_eq!(rejected_auth["kind"], "auth_failed");
+    stale_socket.close(None).await.unwrap();
+
     let cleanup = guard.finish().await;
     assert!(
         cleanup.failures.is_empty(),
@@ -316,7 +480,121 @@ async fn authenticated_socket_pairs_observes_calls_and_revokes_through_real_http
 }
 
 #[tokio::test]
-async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
+async fn pairing_creation_is_rate_limited_per_client() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
+    let token = uuid::Uuid::new_v4().to_string();
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", &token)
+        .start()
+        .await
+        .unwrap();
+    let url = format!(
+        "{}/browser/socket",
+        guard.connection().base_url.replacen("http://", "ws://", 1)
+    );
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Origin",
+        format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    for index in 1_u8..=8 {
+        let signing = SigningKey::from_bytes(&[index; 32]);
+        send(
+            &mut socket,
+            json!({
+                "type":"pairing_request",
+                "display_name":format!("Rate fixture {index}"),
+                "extension_id":EXTENSION,
+                "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+            }),
+        )
+        .await;
+        assert_eq!(receive(&mut socket).await["type"], "pairing_pending");
+    }
+
+    let signing = SigningKey::from_bytes(&[9; 32]);
+    send(
+        &mut socket,
+        json!({
+            "type":"pairing_request",
+            "display_name":"Rate fixture rejected",
+            "extension_id":EXTENSION,
+            "public_key":URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes())
+        }),
+    )
+    .await;
+    let terminal = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("rate-limited socket must terminate promptly");
+    match terminal {
+        None | Some(Err(_) | Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
+        Some(Ok(message)) => panic!("rate-limited pairing unexpectedly received {message:?}"),
+    }
+    assert!(guard.finish().await.failures.is_empty());
+}
+
+#[tokio::test]
+async fn global_socket_admission_is_bounded_across_trusted_client_buckets() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
+    let token = uuid::Uuid::new_v4().to_string();
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", &token)
+        .config("[api]\ntrust_forwarded_headers = true\n")
+        .start()
+        .await
+        .unwrap();
+    let url = format!(
+        "{}/browser/socket",
+        guard.connection().base_url.replacen("http://", "ws://", 1)
+    );
+    let request = |index: u8| {
+        let mut request = url.clone().into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Origin",
+            format!("chrome-extension://{EXTENSION}").parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "X-Forwarded-For",
+            format!("198.51.100.{index}").parse().unwrap(),
+        );
+        request
+    };
+    let mut sockets = Vec::new();
+    for index in 1_u8..=64 {
+        let (socket, _) = tokio_tungstenite::connect_async(request(index))
+            .await
+            .unwrap();
+        sockets.push(socket);
+    }
+    let rejected = tokio_tungstenite::connect_async(request(65))
+        .await
+        .unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(response) = rejected else {
+        panic!("global socket exhaustion must return an HTTP error");
+    };
+    assert_eq!(response.status().as_u16(), 429);
+    drop(sockets.pop());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok((socket, _)) = tokio_tungstenite::connect_async(request(65)).await {
+            sockets.push(socket);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "global socket permit was not released"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(sockets);
+    assert!(guard.finish().await.failures.is_empty());
+}
+
+#[tokio::test]
+async fn idle_socket_admission_is_bounded_per_client_and_released_after_disconnect() {
+    let _socket_test = BROWSER_SOCKET_TEST_LOCK.lock().await;
     let token = uuid::Uuid::new_v4().to_string();
     let guard = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_MCP_HTTP_TOKEN", &token)
@@ -336,7 +614,7 @@ async fn idle_socket_admission_is_bounded_and_released_after_disconnect() {
         request
     };
     let mut sockets = Vec::new();
-    for _ in 0..64 {
+    for _ in 0..8 {
         let (socket, _) = tokio::time::timeout(
             Duration::from_secs(5),
             tokio_tungstenite::connect_async(request()),

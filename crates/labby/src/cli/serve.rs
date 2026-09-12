@@ -180,7 +180,7 @@ fn bootstrap_skill_library(
     })?;
     let manager = first_party_generation_manager();
     let projection: Arc<dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>> =
-        Arc::new(ArtifactFirstPartyProjection);
+        Arc::new(ArtifactFirstPartyProjection::default());
     let candidate = projection
         .prepare(&store, &snapshot, None)
         .context("build persisted Skill Library generation")?;
@@ -234,14 +234,30 @@ fn configure_skill_library_imports(
 fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
     bootstrap: impl FnOnce() -> Result<T>,
-) -> Result<Option<T>> {
-    if ["artifacts", "bundles", "jobs", "sources", "uploads"]
+) -> Option<T> {
+    if !["artifacts", "bundles", "jobs", "sources", "uploads"]
         .iter()
         .any(|service| registry.service(service).is_some())
     {
-        bootstrap().map(Some)
-    } else {
-        Ok(None)
+        return None;
+    }
+
+    match bootstrap() {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            // Skill Library persistence is an optional subsystem from the daemon's
+            // point of view. A corrupt/truncated/forward-schema state file must not
+            // take down the public MCP endpoint, gateway controls, or operator UI.
+            // Keep the detailed cause in operator logs while transport surfaces see
+            // only the stable service_unavailable contract.
+            tracing::error!(
+                subsystem = "startup",
+                phase = "artifacts.degraded",
+                error = %error,
+                "Skill Library bootstrap failed; continuing with Artifact services unavailable"
+            );
+            None
+        }
     }
 }
 
@@ -445,7 +461,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     #[cfg(feature = "skills")]
     let skill_library_runtime =
-        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config))?;
+        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config));
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
@@ -2612,8 +2628,18 @@ mod tests {
         let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
         let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
             panic!("excluded artifacts service must not touch Artifact Library storage")
-        })
-        .unwrap();
+        });
+        assert!(result.is_none());
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn selected_artifact_service_degrades_when_skill_library_bootstrap_fails() {
+        let registry =
+            filter_registry(build_default_registry(), &["artifacts".to_owned()]).unwrap();
+        let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<u8> {
+            anyhow::bail!("corrupt persisted Skill Library fixture")
+        });
         assert!(result.is_none());
     }
 
@@ -2623,7 +2649,7 @@ mod tests {
         for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             let registry =
                 filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
-            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8));
             assert_eq!(
                 result,
                 Some(41),

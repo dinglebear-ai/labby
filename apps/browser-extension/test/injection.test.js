@@ -38,6 +38,30 @@ test("the injected probe reads a catalog without its module scope", async () => 
   });
 });
 
+test("the catalog cap is applied before traversing page-controlled entries", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const raw = Array(65);
+  for (let i = 0; i < 64; i += 1) raw[i] = tool({name: `tool-${String(i).padStart(3, "0")}`});
+  Object.defineProperty(raw, 64, {
+    get() { throw new Error("catalog traversal exceeded the cap"); },
+    enumerable: true
+  });
+  const modelContext = {
+    getTools: async () => raw,
+    executeTool: async () => "\"ok\""
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    assert.equal(observed.supported, true);
+    assert.equal(observed.tools.length, 64);
+    const normalized = normalizeTools(observed.tools);
+    const expectedCatalog = stableStringify(normalized);
+    assert.equal(await invoke(normalized[0].name, {}, "bounded-catalog", expectedCatalog), "ok");
+  });
+});
+
 test("the injected cancel resolves against the page's own global", async () => {
   const injected = inject(cancelWebMcp);
   const controller = new AbortController();
@@ -104,6 +128,55 @@ for (const [label, raw] of Object.entries(catalogs)) {
     });
   });
 }
+
+test("the injected probe drops cyclic schemas before the Chrome boundary", async () => {
+  const probe = inject(probeWebMcp);
+  const cyclic = {};
+  cyclic.self = cyclic;
+
+  await withModelContext({getTools: async () => [tool({name: "bad", inputSchema: cyclic}), tool({name: "good"})]}, async () => {
+    const observed = await probe();
+    assert.deepEqual(observed.tools.map((entry) => entry.name), ["good"]);
+  });
+});
+
+test("the injected invocation rejects cyclic results before the Chrome boundary", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const modelContext = {
+    getTools: async () => [tool({name: "safe"})],
+    executeTool: async () => {
+      const cyclic = {};
+      cyclic.self = cyclic;
+      return cyclic;
+    }
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    const expectedCatalog = stableStringify(normalizeTools(observed.tools));
+    const result = await invoke("safe", {}, "cyclic-result", expectedCatalog, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "result_too_large");
+  });
+});
+
+test("the injected invocation rejects oversized string results before parsing", async () => {
+  const probe = inject(probeWebMcp);
+  const invoke = inject(invokeWebMcp);
+  const modelContext = {
+    getTools: async () => [tool({name: "safe"})],
+    executeTool: async () => "x".repeat(131_073)
+  };
+
+  await withModelContext(modelContext, async () => {
+    const observed = await probe();
+    const expectedCatalog = stableStringify(normalizeTools(observed.tools));
+    const result = await invoke("safe", {}, "oversized-result", expectedCatalog, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "result_too_large");
+  });
+});
 
 test("a catalog that changed after observation is still rejected", async () => {
   const invoke = inject(invokeWebMcp);

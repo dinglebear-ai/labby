@@ -1,5 +1,3 @@
-#![allow(dead_code, reason = "consumed by the concurrent Wave 3 dispatcher")]
-
 use serde::Deserialize;
 
 use super::types::{CreateVisibility, LogicalFileInput};
@@ -37,6 +35,21 @@ pub(crate) fn normalized_query(value: String) -> Result<String, &'static str> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArtifactParams {
     pub(crate) artifact_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HistoryParams {
+    pub(crate) artifact_id: String,
+    pub(crate) cursor: Option<String>,
+    pub(crate) limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RefreshParams {
+    pub(crate) expected_library_version: u64,
+    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Deserialize)]

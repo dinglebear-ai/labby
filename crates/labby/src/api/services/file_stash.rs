@@ -935,17 +935,27 @@ async fn upload_impl(
     let cancel = CancellationToken::new();
     let mut guard = CancelOnDrop(Some(cancel.clone()));
     let owner: crate::access::AccessPrincipalId = (*principal).clone();
-    // Reserve and finalize in one spawned task so neither step is owned by the
-    // cancellable HTTP request future. Reserving in the handler left a window
-    // between the durable reservation and the task that answers the
-    // cancellation signal: a request dropped inside that window released the
-    // admission permits but left the reserved bytes charged until the janitor
-    // TTL. Keeping finalization spawned also lets the signal drive the shared
-    // service's reservation cleanup after the request future is gone.
+    // Own the complete side-effect transaction in one spawned task. Reserving,
+    // finalizing, final authority validation, and compensating cleanup must all
+    // outlive the cancellable HTTP request future; otherwise a disconnect after
+    // the file commit can skip the revocation-at-commit check and leave a file
+    // behind under authority the caller no longer holds.
     let upload = tokio::spawn(async move {
         let (reservation, admission) = svc.reserve_upload(&owner, &display_name, declared).await?;
-        svc.finalize_upload(reservation, admission, reader, cancel)
-            .await
+        let file_id = svc
+            .finalize_upload(reservation, admission, reader, cancel)
+            .await?;
+        if let Err(error) = principal.validate_before_commit().await {
+            if let Err(cleanup) = svc.delete(&principal, &file_id).await {
+                tracing::warn!(
+                    file_id = %file_id,
+                    error = %cleanup,
+                    "File Stash upload authority changed before commit and the compensating delete failed"
+                );
+            }
+            return Err(map_principal_error(error).error);
+        }
+        Ok(file_id)
     });
     let file_id = crate::dispatch::file_stash::observe_result(
         "api",
@@ -962,18 +972,6 @@ async fn upload_impl(
         },
     )
     .await?;
-    if let Err(error) = principal.validate_before_commit().await {
-        // Authority changed between dispatch and commit. The committed file
-        // must not survive under a scope the caller can no longer act in.
-        if let Err(cleanup) = service(&state).delete(&principal, &file_id).await {
-            tracing::warn!(
-                file_id = %file_id,
-                error = %cleanup,
-                "File Stash upload authority changed before commit and the compensating delete failed"
-            );
-        }
-        return Err(map_principal_error(error));
-    }
     guard.0 = None;
     crate::dispatch::file_stash::capture_observation_details(Some(&file_id), None, Some(declared));
     Ok((

@@ -1,14 +1,16 @@
 import {bridgeFailureKind} from "./errors.js";
 
 const VERSION = 1;
+const HEARTBEAT_INTERVAL_MS = 20_000;
 /** @typedef {{isCurrent: () => boolean, messageNow: (type: string, payload: any) => Promise<any>}} Connection */
 
 /** Plain JSON WebSocket adapter for Labby's Rust browser bridge. */
 export class LabbyBrowserChannel {
-  /** @param {{baseUrl: string, extensionId: string, browserId?: string, onChallenge: (payload: any, channel: Pick<LabbyBrowserChannel, "messageNow">) => Promise<any> | void, onReady?: () => Promise<any> | void, onEvent?: (payload: any, connection: Connection) => Promise<any> | void, onDisconnect?: (connection: Connection) => Promise<any> | void, onError?: (error: unknown, payload?: any) => void, replyTimeoutMs?: number}} options */
-  constructor({baseUrl, extensionId, browserId, onChallenge, onReady, onEvent, onDisconnect, onError = reportChannelError, replyTimeoutMs = 10_000}) {
+  /** @param {{baseUrl: string, extensionId: string, browserId?: string, onChallenge: (payload: any, channel: Pick<LabbyBrowserChannel, "messageNow">) => Promise<any> | void, onReady?: () => Promise<any> | void, onEvent?: (payload: any, connection: Connection) => Promise<any> | void, onDisconnect?: (connection: Connection) => Promise<any> | void, onError?: (error: unknown, payload?: any) => void, replyTimeoutMs?: number, heartbeatIntervalMs?: number}} options */
+  constructor({baseUrl, extensionId, browserId, onChallenge, onReady, onEvent, onDisconnect, onError = reportChannelError, replyTimeoutMs = 10_000, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS}) {
     this.baseUrl = baseUrl; this.extensionId = extensionId; this.browserId = browserId;
     this.onChallenge = onChallenge; this.onReady = onReady; this.onEvent = onEvent; this.onError = onError; this.replyTimeoutMs = replyTimeoutMs;
+    this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.onDisconnect = onDisconnect;
     /** @type {Connection | undefined} */ this.connection;
     /** @type {Map<string, {resolve: (value: any) => void, reject: (reason?: any) => void, timeout: ReturnType<typeof setTimeout>}>} */
@@ -18,6 +20,7 @@ export class LabbyBrowserChannel {
     /** @type {(value?: void) => void} */ this.resolveReady;
     /** @type {(reason?: any) => void} */ this.rejectReady;
     /** @type {ReturnType<typeof setTimeout> | undefined} */ this.reconnectTimer = undefined;
+    /** @type {ReturnType<typeof setInterval> | undefined} */ this.heartbeatTimer = undefined;
     this.reconnectAttempt = 0;
   }
 
@@ -30,13 +33,17 @@ export class LabbyBrowserChannel {
     this.socket = socket;
     const connection = {isCurrent: () => this.socket === socket, messageNow: (/** @type {string} */ type, /** @type {any} */ payload) => this.messageNow(type, payload, socket)};
     this.connection = connection;
-    this.ready.catch((error) => { if (this.socket === socket) this.onError(error, {kind: "connection_setup_failed"}); });
+    let setupErrorReported = false;
+    this.ready.catch((error) => {
+      if (this.socket === socket && !setupErrorReported) this.onError(error, {kind: "connection_setup_failed"});
+    });
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;
       try { this.receive(JSON.parse(event.data), connection); } catch (error) { this.onError(error, {kind: "invalid_json"}); }
     };
     socket.onopen = async () => {
       if (this.socket !== socket) return;
+      this.startHeartbeat(socket);
       try {
         if (this.browserId) {
           const challenge = await this.request({type: "auth_challenge", browser_id: this.browserId});
@@ -52,11 +59,15 @@ export class LabbyBrowserChannel {
         this.reconnectAttempt = 0;
       } catch (error) {
         if (this.socket !== socket) return;
-        this.onError(error, {kind: "authentication_or_resync_failed"}); this.rejectReady(error); socket.close();
+        setupErrorReported = true;
+        this.onError(error, {kind: "authentication_or_resync_failed"});
+        this.rejectReady(error);
+        socket.close();
       }
     };
     socket.onclose = () => {
       if (this.socket !== socket) return;
+      this.stopHeartbeat();
       this.socket = undefined;
       this.connection = undefined;
       this.notifyDisconnect(connection);
@@ -66,6 +77,33 @@ export class LabbyBrowserChannel {
       this.reconnectAttempt += 1;
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
+  }
+
+  /** @param {WebSocket} socket */
+  startHeartbeat(socket) {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
+        this.stopHeartbeat();
+        return;
+      }
+      try {
+        void this.request({type: "heartbeat"}, socket).catch((error) => {
+          if (this.socket !== socket) return;
+          this.onError(error, {kind: "heartbeat_failed"});
+          socket.close();
+        });
+      } catch (error) {
+        if (this.socket !== socket) return;
+        this.onError(error, {kind: "heartbeat_failed"});
+        socket.close();
+      }
+    }, this.heartbeatIntervalMs);
+  }
+
+  stopHeartbeat() {
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   /** @param {string} type @param {any} payload */
@@ -112,6 +150,7 @@ export class LabbyBrowserChannel {
 
   close() {
     clearTimeout(this.reconnectTimer);
+    this.stopHeartbeat();
     const socket = this.socket;
     const connection = this.connection;
     this.socket = undefined;
@@ -173,7 +212,7 @@ function stableStringify(value) {
 
 /** @param {any} envelope */
 function translateReply(envelope) {
-  if (envelope.type === "pairing_pending") return {payload: {status: "pending", pairing_id: envelope.pairing_id, expires_at: envelope.expires_at}};
+  if (envelope.type === "pairing_pending") return {payload: {status: "pending", pairing_id: envelope.pairing_id, expires_at: envelope.expires_at, pairing_fingerprint: envelope.pairing_fingerprint}};
   if (envelope.type === "pairing_approved") return {payload: {status: "approved", browser_id: envelope.browser_id}};
   return {payload: envelope};
 }

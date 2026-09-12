@@ -422,6 +422,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "timeout"
         | "bad_gateway"
         | "service_unavailable"
+        | "runtime_unavailable"
+        | "provider_error"
         | "provider_unavailable"
         | "provider_timeout"
         | "not_connected"
@@ -499,7 +501,8 @@ pub fn recovery_for_kind(
             retry_after_ms,
         },
         "timeout" | "network_error" | "upstream_error" | "bad_gateway"
-        | "service_unavailable" | "provider_unavailable" | "provider_timeout"
+        | "service_unavailable" | "runtime_unavailable" | "provider_error"
+        | "provider_unavailable" | "provider_timeout"
         | "not_connected" | "connection_error" | "connection_refused" | "dns_error"
         | "relay_forwarder_init_failed" => {
             AgentRecoveryAdvice {
