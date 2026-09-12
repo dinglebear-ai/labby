@@ -1277,6 +1277,7 @@ impl LabMcpServer {
         let mut regular_template_provenance = Vec::new();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
+            self.ensure_resource_upstreams_ready(&pool).await;
             for listed in pool
                 .list_upstream_resource_templates_with_provenance_allowed(
                     self.route_scope.allowed_upstreams(),
@@ -2799,8 +2800,13 @@ mod tests {
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
 
-    #[derive(Clone)]
-    struct ColdResourceServer;
+    #[derive(Clone, Default)]
+    struct ColdResourceServer {
+        connects: Arc<std::sync::atomic::AtomicUsize>,
+        entered: Option<Arc<tokio::sync::Notify>>,
+        release: Option<Arc<tokio::sync::Notify>>,
+        fail_connect: bool,
+    }
 
     impl ServerHandler for ColdResourceServer {
         fn get_info(&self) -> ServerInfo {
@@ -2810,6 +2816,38 @@ mod tests {
                     .enable_resources()
                     .build(),
             )
+        }
+
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+            let count = self
+                .connects
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                if let Some(entered) = &self.entered {
+                    entered.notify_one();
+                }
+                if let Some(release) = &self.release {
+                    release.notified().await;
+                }
+            }
+            if self.fail_connect {
+                return Err(ErrorData::internal_error("fixture connect failure", None));
+            }
+            Ok(rmcp::model::ListToolsResult::with_all_items(Vec::new()))
+        }
+
+        async fn list_resource_templates(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, ErrorData> {
+            Ok(ListResourceTemplatesResult::with_all_items(vec![
+                ResourceTemplate::new("qa-vm-service://{name}", "document"),
+            ]))
         }
 
         async fn list_resources(
@@ -2824,6 +2862,145 @@ mod tests {
         }
     }
 
+    async fn cold_discovery_fixture(
+        fixture: ColdResourceServer,
+        budget_ms: u64,
+    ) -> (LabMcpServer, Arc<UpstreamPool>, tokio::task::JoinHandle<()>) {
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = StreamableHttpService::new(
+            move || Ok(fixture.clone()),
+            Arc::new(NeverSessionManager::default()),
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(vec![address.to_string()])
+                .with_json_response(true),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+                .await
+                .unwrap();
+        });
+        let upstream = serde_json::from_value::<crate::config::UpstreamConfig>(json!({
+            "name": "qa", "url": format!("http://{address}/mcp"), "proxy_prompts": false
+        }))
+        .unwrap();
+        let pool = Arc::new(UpstreamPool::new());
+        pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
+            .await;
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        let mut config = crate::config::LabConfig::default();
+        config.gateway.mcp_list_warm_timeout_ms = Some(budget_ms);
+        config.upstream = vec![upstream];
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let mut server = code_mode_server().await;
+        server.gateway_manager = Some(manager);
+        (server, pool, task)
+    }
+
+    #[tokio::test]
+    async fn cold_discovery_singleflights_zero_tool_connections() {
+        let fixture = ColdResourceServer {
+            entered: Some(Arc::new(tokio::sync::Notify::new())),
+            release: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 5000).await;
+        let first = server.ensure_resource_upstreams_ready(&pool);
+        tokio::pin!(first);
+        tokio::select! {
+            () = &mut first => panic!("connect unexpectedly finished before release"),
+            () = fixture.entered.as_ref().unwrap().notified() => {}
+        }
+        let second = server.ensure_resource_upstreams_ready(&pool);
+        tokio::pin!(second);
+        assert!(futures::poll!(&mut second).is_pending());
+        fixture.release.as_ref().unwrap().notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(first, second);
+        })
+        .await
+        .unwrap();
+        server.ensure_resource_upstreams_ready(&pool).await;
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(pool.list_upstream_resources().await.len(), 2);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cold_discovery_obeys_overall_warm_budget() {
+        let fixture = ColdResourceServer {
+            release: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture, 20).await;
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            server.ensure_resource_upstreams_ready(&pool),
+        )
+        .await
+        .expect("listing discovery must respect its 20ms budget");
+        assert!(
+            matches!(
+                pool.upstream_tool_health("qa").await,
+                Some(crate::dispatch::upstream::types::UpstreamHealth::Healthy)
+            ),
+            "a caller warm-up deadline is not an upstream tool failure"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cold_discovery_respects_failed_connection_cooldown() {
+        let fixture = ColdResourceServer {
+            fail_connect: true,
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 5000).await;
+        for _ in 0..5 {
+            server.ensure_resource_upstreams_ready(&pool).await;
+        }
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cold_discovery_lists_templates_without_prior_reads() {
+        let (server, _pool, task) =
+            cold_discovery_fixture(ColdResourceServer::default(), 5000).await;
+        let (transport, _client) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = running
+            .service()
+            .list_resource_templates_impl(
+                None,
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .unwrap();
+        assert!(result.resource_templates.iter().any(|template| template.uri_template == "lab://upstream/qa/qa-vm-service://{name}"));
+        task.abort();
+    }
+
     #[tokio::test]
     async fn cold_resource_listing_discovers_only_allowed_resource_upstreams() {
         use rmcp::transport::streamable_http_server::{
@@ -2832,7 +3009,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let service = StreamableHttpService::new(
-            || Ok(ColdResourceServer),
+            || Ok(ColdResourceServer::default()),
             Arc::new(NeverSessionManager::default()),
             StreamableHttpServerConfig::default()
                 .with_allowed_hosts(vec![address.to_string()])

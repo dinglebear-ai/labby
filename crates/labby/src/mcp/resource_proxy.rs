@@ -40,41 +40,9 @@ impl LabMcpServer {
         let Some(manager) = &self.gateway_manager else {
             return;
         };
-        let config = manager.current_config().await;
-        let concurrency = crate::dispatch::upstream::pool::upstream_discovery_concurrency(
-            config.gateway.upstream_discovery_concurrency,
-        );
-        let upstreams = config.upstream.into_iter().filter(|upstream| {
-            upstream.enabled
-                && upstream.proxy_resources
-                && upstream.oauth.is_none()
-                && self.route_scope.allows_upstream(&upstream.name)
-        });
-        use futures::StreamExt as _;
-        let mut discoveries = futures::stream::iter(upstreams)
-            .map(|upstream| async move {
-                // Resource-only servers may have no tools. An existing peer is
-                // sufficient; do not reconnect them on every resource listing.
-                if pool
-                    .upstream_runtime_metadata(&upstream.name)
-                    .await
-                    .is_some()
-                {
-                    return;
-                }
-                if let Err(error) = pool.ensure_tools_for_upstream(&upstream, None, None).await {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service = "labby",
-                        action = "list_resources",
-                        upstream = %upstream.name,
-                        error = %error,
-                        "resource upstream discovery failed"
-                    );
-                }
-            })
-            .buffer_unordered(concurrency);
-        while discoveries.next().await.is_some() {}
+        manager
+            .ensure_resource_upstreams_ready(pool, self.route_scope.allowed_upstreams())
+            .await;
     }
 
     /// Gateway-synthetic resource branch (`lab://gateway/...`). Returns
