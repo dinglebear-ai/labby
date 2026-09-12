@@ -35,10 +35,13 @@ In hosted mode, the UI expects Rust-owned browser session auth:
 - `POST /auth/logout` clears the browser session
 - `/v1/*` uses same-origin requests with `credentials: 'include'`
 
-For local binary-served UI work, keep the same-origin `/v1` path and start `labby serve` with web auth disabled for the browser surface only:
+For local binary-served UI work, first run `pnpm build` in `apps/gateway-admin`.
+Then, from the repository root, start `labby serve` with web auth disabled for
+the browser surface only and point it at that export:
 
 ```bash
 LABBY_WEB_UI_AUTH_DISABLED=true \
+LABBY_WEB_ASSETS_DIR=apps/gateway-admin/out \
 LABBY_MCP_HTTP_TOKEN=your-local-dev-token \
 cargo run --bin labby -- serve --host 0.0.0.0 --port 8765
 ```
@@ -53,19 +56,12 @@ just chat-local
 
 Browser-facing bearer mode is intentionally disabled in the current UI. The gateway screens always use the Rust-owned browser session flow plus CSRF headers when talking to `/v1/*`. If you need a local-only backend bypass, use `LABBY_WEB_UI_AUTH_DISABLED=true` on the Rust side rather than embedding a public browser token.
 
-When the frontend and Rust backend run on different origins during local development, the backend must allow the frontend origin through CORS:
-
-```bash
-LABBY_MCP_HTTP_TOKEN=your-local-dev-token \
-LABBY_CORS_ORIGINS=http://127.0.0.1:3101 \
-cargo run --bin labby -- serve --host 0.0.0.0 --port 8765
-```
-
-```bash
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8765/v1 \
-NEXT_PUBLIC_API_TOKEN=your-local-dev-token \
-pnpm dev --hostname 127.0.0.1 --port 3101
-```
+For authenticated development, build the static export with `pnpm build` and
+serve it through the Rust host using the binary-served flow above. Open the
+Rust origin (`http://127.0.0.1:8765`) so `/auth/*` and `/v1/*` share cookies and
+CSRF state. Rebuild the export after frontend changes. A standalone Next dev
+server or `pnpm start` only serves frontend assets; it does not proxy Rust's
+session endpoints. CORS and a public browser token do not supply that proxy.
 
 ## Static Export
 

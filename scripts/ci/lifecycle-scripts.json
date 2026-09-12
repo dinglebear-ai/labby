@@ -68,6 +68,8 @@
     "scripts/tests/incus-bootstrap-transaction.sh",
     "scripts/tests/incus-bootstrap-full-fake.py",
     "scripts/ci/test-incus-contract.py",
-    "scripts/ci/test-build-on-tootie-incus.py"
+    "scripts/ci/test-build-on-tootie-incus.py",
+    "scripts/ci/test_npm_pointer.py",
+    "scripts/tests/test_timeout.py"
   ]
 }

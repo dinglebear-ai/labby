@@ -312,7 +312,7 @@ async fn run_claude_with_bin(
     failure_kind: &'static str,
 ) -> Result<CommandOutput, ToolError> {
     let mut command = Command::new(claude_bin);
-    command.args(args).stdin(Stdio::null());
+    command.args(args).stdin(Stdio::null()).kill_on_drop(true);
     let child = command.output();
     let output = match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
         Ok(Ok(output)) => output,
@@ -491,6 +491,27 @@ pub fn services_status_json(statuses: Vec<ServiceStatus>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_plugin_command_cannot_finish_mutation_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("completed");
+        let code = "import pathlib,sys,time; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('mutation')";
+        let marker_path = marker.to_str().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            run_claude_with_bin(
+                "python3",
+                &["-c", code, marker_path],
+                "plugin_install_failed",
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!marker.exists());
+    }
+
     use super::*;
 
     #[tokio::test]

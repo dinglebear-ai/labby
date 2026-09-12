@@ -171,12 +171,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release = self.text(".github/workflows/release.yml")
         candidate = release.index('npm publish --access public --tag "candidate-$version"')
         promote = release.index("scripts/ci/promote-release.sh")
-        stable = release.index('npm dist-tag add "$package_name@$version" latest')
+        stable = release.index("scripts/ci/promote-npm-pointer.py promote")
         self.assertLess(candidate, promote)
         self.assertLess(promote, stable)
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn("[.tag_name, .draft] | @tsv", reminder)
         self.assertIn("draft release is missing release-manifest.json", reminder)
+
+    def test_stable_promotion_is_serialized_and_restored_before_redraft(self):
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        job = release["jobs"]["release"]
+        self.assertEqual(job["concurrency"]["group"], "labby-stable-release-promotion")
+        self.assertEqual(job["concurrency"]["cancel-in-progress"], "false")
+        rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
+        self.assertLess(rollback.index("promote-npm-pointer.py rollback"), rollback.index('gh release edit "$RELEASE_TAG" --draft=true'))
+        self.assertIn('if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]', rollback)
+        self.assertIn('refusing to replace a newer Incus stable generation', self.text("scripts/ci/promote-incus-pointer.sh"))
 
     def test_n_minus_one_uses_real_runtime_schema_not_probe_tables(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")

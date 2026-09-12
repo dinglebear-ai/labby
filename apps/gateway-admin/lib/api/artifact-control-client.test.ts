@@ -45,3 +45,24 @@ test('raw upload stays project-bound and never serializes bytes into action JSON
     globalThis.fetch = originalFetch
   }
 })
+
+
+test('raw upload refuses a retry or success after its project changes', async () => {
+  const originalFetch = globalThis.fetch
+  const session = { status: 'authenticated' as const, user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project-1' }
+  try {
+    for (const status of [200, 403]) {
+      __setBrowserSessionStateForTests(session)
+      let calls = 0
+      globalThis.fetch = async () => {
+        calls++
+        __setBrowserSessionStateForTests({ ...session, projectId: 'project-2', csrfToken: 'new-csrf' })
+        return new Response(JSON.stringify(status === 200 ? { ok: true } : { kind: 'auth_failed' }), { status })
+      }
+      await assert.rejects(uploadArtifactBytes('upload-1', new File(['bytes'], 'test.zip')), { name: 'AbortError' })
+      assert.equal(calls, 1)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

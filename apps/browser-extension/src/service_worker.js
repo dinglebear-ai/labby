@@ -1,7 +1,7 @@
 import {LabbyBrowserChannel} from "./channel.js";
 import {bridgeFailureKind} from "./errors.js";
-import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
-import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
+import {discoverCurrentDocument, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
+import {cancelWebMcp, invokeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
@@ -497,11 +497,10 @@ async function scanTab(tab, allowActiveTab = false) {
     return;
   }
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, world: "MAIN", func: probeWebMcp});
+    const observation = await discoverCurrentDocument(tab, chrome.scripting, chrome.permissions, ignoredOrigins, allowActiveTab);
     if (scanGenerations.get(tabId) !== generation) return;
-    const observation = buildObservation(tab, result);
     if (!observation) {
-      if (result?.documentId) await closeObservation(tab.id);
+      await closeObservation(tabId);
       return;
     }
     await publishCurrentObservation(

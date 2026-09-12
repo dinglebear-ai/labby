@@ -1,8 +1,9 @@
+import { fileURLToPath } from "node:url";
 import { readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 // Roots walked recursively for unit tests. This used to be a hand-maintained
 // list of ~10 specific directories with per-entry suffixes, which silently
@@ -41,7 +42,7 @@ function collectTests(dir) {
 
   return entries.flatMap((entry) => {
     const path = join(root, entry);
-    const relativePath = relative(repoRoot, path);
+    const relativePath = relative(repoRoot, path).split(sep).join("/");
     const stats = statSync(path);
     if (stats.isDirectory()) {
       return EXCLUDED_DIR_NAMES.has(entry) || EXCLUDED_PATHS.has(relativePath)
@@ -78,8 +79,10 @@ if (strayRoots.length > 0) {
 
 console.log(`running ${tests.length} unit test file(s)`);
 
-const command = process.platform === "win32" ? "tsx.cmd" : "tsx";
-const result = spawnSync(command, ["--test", ...tests], {
+// Invoke the installed CLI with Node directly, including on Windows, without
+// passing checkout paths through a command shell.
+const cli = fileURLToPath(import.meta.resolve("tsx/cli"));
+const result = spawnSync(process.execPath, [cli, "--test", ...tests], {
   cwd: repoRoot,
   stdio: "inherit",
 });

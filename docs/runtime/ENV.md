@@ -151,11 +151,12 @@ Rules:
 
 ## Remote Gateway CLI Usage
 
-`LABBY_SERVER_URL` is the persisted fallback for plugin setup connectivity
-checks and plugin-setting export. It configures neither the daemon listener nor
-general gateway CLI/stdio discovery; those use the variables documented below.
-As client-only setup state, it is intentionally outside the generated
-per-service environment inventory.
+`LABBY_SERVER_URL` selects the remote authority for gateway CLI and direct
+stdio MCP proxy discovery, and is also persisted for plugin setup connectivity
+checks and plugin-setting export. Pair it with `LABBY_MCP_HTTP_TOKEN`; an
+explicit target fails closed instead of falling back to local configuration.
+It does not configure the daemon listener. This client-side selector is outside
+the generated per-service environment inventory.
 
 `labby gateway <subcommand>` (add/update/remove/reload/enable/disable/list/
 mcp auth */protected-route */discover/import/code *) prefers the live

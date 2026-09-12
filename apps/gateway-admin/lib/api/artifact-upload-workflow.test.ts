@@ -1,3 +1,4 @@
+import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -37,4 +38,18 @@ test('failed job start identifies the uploaded slot for cleanup or inspection', 
       && error.stage === 'starting ingestion'
       && error.uploadId === 'upload-2',
   )
+})
+
+
+test('upload workflow cannot start ingestion in another project', async () => {
+  const session = { status: 'authenticated' as const, user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project-1' }
+  __setBrowserSessionStateForTests(session)
+  let jobs = 0
+  await assert.rejects(runArtifactUpload({
+    file: new File(['bytes'], 'test.zip'), namespace: 'test',
+    create: async () => ({ id: 'upload-1' }), uploadId: created => created.id,
+    putBytes: async () => { __setBrowserSessionStateForTests({ ...session, projectId: 'project-2' }) },
+    startJob: async () => { jobs++; return {} }, onCreated: () => {},
+  }), /Authority or project context changed/)
+  assert.equal(jobs, 0)
 })

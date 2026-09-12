@@ -1,6 +1,6 @@
 'use client'
 
-import useSWR, { mutate } from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { toast } from 'sonner'
 import { gatewayApi } from '@/lib/api/gateway-client'
 import {
@@ -371,13 +371,8 @@ export function gatewaysRuntimeRequestKey(
   gateways: Gateway[] | undefined,
 ): [string, string] | null {
   return enabled && includeRuntime && gateways
-    ? ['/gateways/runtime', gateways.map((gateway) => gateway.id).join(',')]
+    ? ['/gateways/runtime', JSON.stringify(gateways)]
     : null
-}
-
-async function refreshGatewayCache(id?: string, extraKeys: string[] = []) {
-  const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
-  await Promise.all(keys.map((key) => mutate(key)))
 }
 
 // Hooks
@@ -390,6 +385,7 @@ export function useGatewaySnapshots(enabled = true) {
 }
 
 export function useGateways(enabled = true) {
+  const { mutate } = useSWRConfig()
   const configured = useGatewaySnapshots(enabled)
   const catalogWarm = useSWR(
     enabled && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
@@ -426,7 +422,7 @@ export function useGateways(enabled = true) {
       window.clearInterval(interval)
       window.clearTimeout(stop)
     }
-  }, [catalogIsStillWarming, catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId])
+  }, [catalogIsStillWarming, catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId, mutate])
 
   return {
     ...configured,
@@ -522,6 +518,12 @@ export function useProtectedMcpRoutes() {
 
 // Mutation hooks
 export function useGatewayMutations() {
+  const { mutate } = useSWRConfig()
+  const refreshGatewayCache = useCallback(async (id?: string, extraKeys: string[] = []) => {
+    const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
+    await Promise.all(keys.map((key) => mutate(key)))
+  }, [mutate])
+
   const createGateway = useCallback(async (input: CreateGatewayInput): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
       await mockDelay()
@@ -550,7 +552,7 @@ export function useGatewayMutations() {
     const gateway = await gatewayApi.create(input)
     await refreshGatewayCache(gateway.id)
     return gateway
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const discoverExternalConfigs = useCallback(async (): Promise<DiscoveredMcpServer[]> => {
     if (USE_MOCK_DATA) {
@@ -585,7 +587,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.importExternalConfigs(names)
     await refreshGatewayCache()
     return result
-  }, [])
+  }, [refreshGatewayCache])
 
   const clearImportTombstone = useCallback(async (server: DiscoveredMcpServer): Promise<void> => {
     if (USE_MOCK_DATA) {
@@ -624,7 +626,7 @@ export function useGatewayMutations() {
     const gateway = await gatewayApi.restoreImportTombstone(server)
     await refreshGatewayCache(gateway.id)
     return gateway
-  }, [])
+  }, [refreshGatewayCache])
 
   const updateGateway = useCallback(async (id: string, input: UpdateGatewayInput): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
@@ -653,7 +655,7 @@ export function useGatewayMutations() {
     const gateway = await gatewayApi.update(id, input)
     await refreshGatewayCache(id)
     return gateway
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const removeGateway = useCallback(async (id: string): Promise<void> => {
     if (USE_MOCK_DATA) {
@@ -663,7 +665,7 @@ export function useGatewayMutations() {
     }
     await gatewayApi.remove(id)
     await refreshGatewayCache()
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const removeVirtualServer = useCallback(async (id: string): Promise<void> => {
     if (USE_MOCK_DATA) {
@@ -673,7 +675,7 @@ export function useGatewayMutations() {
     }
     await gatewayApi.removeVirtualServer(id)
     await refreshGatewayCache()
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const testGateway = useCallback(async (id: string, signal?: AbortSignal): Promise<TestGatewayResult> => {
     if (USE_MOCK_DATA) {
@@ -700,7 +702,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.reload(id)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [refreshGatewayCache])
 
   const setExposurePolicy = useCallback(async (id: string, policy: ExposurePolicy): Promise<ExposurePolicy> => {
     if (USE_MOCK_DATA) {
@@ -728,7 +730,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.setExposurePolicy(id, policy)
     await refreshGatewayCache(id, [exposurePolicyKey(id)])
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const previewExposurePolicy = useCallback(async (id: string, patterns: string[], signal?: AbortSignal): Promise<ExposurePolicyPreview> => {
     if (USE_MOCK_DATA) {
@@ -760,7 +762,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.setServiceConfig(service, values)
     await refreshGatewayCache(undefined, [serviceConfigKey(service)])
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const setCodeModeConfig = useCallback(async (input: CodeModeConfigInput): Promise<CodeModeConfig> => {
     if (USE_MOCK_DATA) {
@@ -776,7 +778,7 @@ export function useGatewayMutations() {
     await mutate(CODE_MODE_CONFIG_KEY, result, false)
     await mutate(GATEWAYS_KEY)
     return result
-  }, [])
+  }, [mutate])
 
   const addLoadout = useCallback(async (loadout: GatewayLoadoutInput): Promise<GatewayLoadout> => {
     if (USE_MOCK_DATA) {
@@ -792,7 +794,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.addLoadout(loadout)
     await mutate(LOADOUTS_KEY)
     return result
-  }, [])
+  }, [mutate])
 
   const patchLoadout = useCallback(
     async (name: string, patch: GatewayLoadoutPatch): Promise<GatewayLoadout> => {
@@ -826,7 +828,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const stageLoadoutUpdate = useCallback(
@@ -879,7 +881,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const stageLoadoutRemove = useCallback(async (name: string): Promise<GatewayLoadoutStageResult> => {
@@ -930,7 +932,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.stageLoadoutRemove(name)
     await mutate(LOADOUTS_KEY)
     return result
-  }, [])
+  }, [mutate])
 
   const removeLoadout = useCallback(async (name: string): Promise<GatewayLoadout> => {
     if (USE_MOCK_DATA) {
@@ -949,7 +951,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.removeLoadout(name)
     await mutate(LOADOUTS_KEY)
     return result
-  }, [])
+  }, [mutate])
 
   const stageProtectedRouteAdd = useCallback(
     async (route: ProtectedMcpRouteInput, signal?: AbortSignal): Promise<ProtectedMcpRouteStageResult> => {
@@ -983,7 +985,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const stageProtectedRouteUpdate = useCallback(
@@ -1018,7 +1020,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const stageProtectedRouteRemove = useCallback(
@@ -1071,7 +1073,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const addProtectedRoute = useCallback(
@@ -1097,7 +1099,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const updateProtectedRoute = useCallback(
@@ -1125,7 +1127,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const removeProtectedRoute = useCallback(
@@ -1152,7 +1154,7 @@ export function useGatewayMutations() {
       await mutate(PROTECTED_MCP_ROUTES_KEY)
       return result
     },
-    [],
+    [mutate],
   )
 
   const testProtectedRoute = useCallback(
@@ -1187,7 +1189,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.enableVirtualServer(id)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const disableVirtualServer = useCallback(async (id: string): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
@@ -1202,7 +1204,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.disableVirtualServer(id)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const setVirtualServerSurface = useCallback(
     async (id: string, surface: 'cli' | 'api' | 'mcp' | 'webui', enabled: boolean): Promise<Gateway> => {
@@ -1227,7 +1229,7 @@ export function useGatewayMutations() {
       await refreshGatewayCache(id)
       return result
     },
-    [],
+    [mutate, refreshGatewayCache],
   )
 
   const enableGateway = useCallback(async (id: string): Promise<Gateway> => {
@@ -1243,7 +1245,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.enableGateway(id)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const disableGateway = useCallback(async (id: string): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
@@ -1258,7 +1260,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.disableGateway(id)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [mutate, refreshGatewayCache])
 
   const cleanupGateway = useCallback(async (
     id: string,
@@ -1285,7 +1287,7 @@ export function useGatewayMutations() {
     const result = await gatewayApi.cleanupGateway(id, aggressive, dryRun)
     await refreshGatewayCache(id)
     return result
-  }, [])
+  }, [refreshGatewayCache])
 
   return {
     createGateway,

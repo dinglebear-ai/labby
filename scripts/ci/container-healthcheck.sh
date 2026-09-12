@@ -42,8 +42,9 @@ if test "$count" -ge 9; then
   exit 1
 fi
 if test "$count" -ge 3; then
-  case "$count" in 3) delay=1;; 4) delay=2;; *) delay=3;; esac
-  if test "${LABBY_HEALTH_TEST_MODE:-0}" != 1; then sleep "$delay"; fi
+  # The scheduled healthcheck interval supplies backoff between attempts.
+  # No in-command sleep: leave three seconds for persistence and recovery.
+  delay=0
   append_log "$(date -u +%FT%TZ) restart_requested delay=$delay"
   if test "${LABBY_HEALTH_TEST_MODE:-0}" != 1; then kill -TERM 1; fi
 fi

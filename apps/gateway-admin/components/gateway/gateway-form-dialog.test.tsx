@@ -437,6 +437,7 @@ test('saving a changed protected route updates before deleting the new route', a
       assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
         'gateway.protected_route.list_state',
         'gateway.protected_route.update',
+        'gateway.protected_route.list_state',
       ])
     })
 
@@ -479,6 +480,7 @@ test('clearing a protected route removes the existing route after saving', async
       assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
         'gateway.protected_route.list_state',
         'gateway.protected_route.remove',
+        'gateway.protected_route.list_state',
       ])
     })
 

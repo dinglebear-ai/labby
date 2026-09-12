@@ -121,3 +121,30 @@ test('AuthBootstrap renders the app for a ready session', () => {
 
   assert.match(renderGate(), /children/)
 })
+
+test('authority changes replace the SWR cache and isolate late mutations', async () => {
+  const { act } = await import('react')
+  const { useSWRConfig } = await import('swr')
+  const { installTestDom, renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  installTestDom()
+  let current: ReturnType<typeof useSWRConfig> | undefined
+  function CacheConsumer() {
+    current = useSWRConfig()
+    return React.createElement('span', null, 'cache consumer')
+  }
+  __setBrowserSessionStateForTests({ ...signedIn, projectId: 'first', isAdmin: true })
+  const view = await renderClient(React.createElement(AuthBootstrap, null, React.createElement(CacheConsumer)))
+  try {
+    const first = current!
+    await act(async () => { await first.mutate('/gateways', ['first-project'], false) })
+    assert.deepEqual(first.cache.get('/gateways')?.data, ['first-project'])
+    await act(async () => {
+      __setBrowserSessionStateForTests({ ...signedIn, projectId: 'second', isAdmin: true })
+    })
+    await view.rerender(React.createElement(AuthBootstrap, null, React.createElement(CacheConsumer)))
+    assert.notEqual(current!.cache, first.cache)
+    assert.equal(current!.cache.get('/gateways'), undefined)
+    await act(async () => { await first.mutate('/gateways', ['late-first-project'], false) })
+    assert.equal(current!.cache.get('/gateways'), undefined)
+  } finally { await view.unmount() }
+})

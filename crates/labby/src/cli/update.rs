@@ -53,6 +53,11 @@ struct UpdateOutcome {
 }
 
 pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
+    if cfg!(windows) {
+        anyhow::bail!(
+            "labby update is not supported on Windows; close Labby and rerun the verified PowerShell installer described at https://github.com/dinglebear-ai/labby#quick-start to update labby.exe"
+        );
+    }
     let install_dir = resolve_install_dir(args.install_dir.as_ref())?;
     let binary = install_dir.join("labby");
 

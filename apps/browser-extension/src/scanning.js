@@ -1,3 +1,5 @@
+import {probeWebMcp} from "./probe.js";
+
 /**
  * @param {unknown} value
  * @returns {boolean}
@@ -113,4 +115,58 @@ export function ignoredObservationTabIds(observations, ignoredOrigins) {
     try { return ignored.has(new URL(observation.url).origin) ? [observation.tab_id] : []; }
     catch { return []; }
   });
+}
+
+/**
+ * Read provenance in the isolated world and pin discovery to that document.
+ * @param {chrome.tabs.Tab} tab
+ * @param {typeof chrome.scripting} scripting
+ * @param {typeof chrome.permissions} permissions
+ * @param {string[]} ignoredOrigins
+ * @param {boolean} allowActiveTab
+ */
+export async function discoverCurrentDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab) {
+  if (tab.id === undefined || pendingDiscoveries.has(tab.id)) return null;
+  const tabId = tab.id;
+  const pending = discoverDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab);
+  pendingDiscoveries.add(tabId);
+  // Keep the slot until Chrome settles, even when the worker deadline wins.
+  // Repeated events cannot accumulate more injections for an unresponsive tab.
+  void pending.finally(() => pendingDiscoveries.delete(tabId)).catch(() => {});
+  let timer;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 3_000); })
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+/** @type {Set<number>} */
+const pendingDiscoveries = new Set();
+
+/**
+ * @param {chrome.tabs.Tab} tab
+ * @param {typeof chrome.scripting} scripting
+ * @param {typeof chrome.permissions} permissions
+ * @param {string[]} ignoredOrigins
+ * @param {boolean} allowActiveTab
+ */
+async function discoverDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab) {
+  if (tab.id === undefined) return null;
+  const tabId = tab.id;
+  const [page] = await scripting.executeScript({
+    target: {tabId}, world: "ISOLATED",
+    func: () => ({url: location.href, title: document.title})
+  });
+  if (!page?.documentId || !page.result) return null;
+  const currentTab = {...tab, url: page.result.url, title: page.result.title};
+  if (!eligibleUrl(currentTab.url) || currentTab.incognito ||
+      (!allowActiveTab && !(await canScanTab(currentTab, permissions))) ||
+      ignoredOrigins.includes(new URL(currentTab.url).origin)) return null;
+  const [result] = await scripting.executeScript({
+    target: {tabId, documentIds: [page.documentId]}, world: "MAIN", func: probeWebMcp
+  });
+  if (result?.documentId !== page.documentId) return null;
+  return buildObservation(currentTab, result);
 }

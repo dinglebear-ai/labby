@@ -7,10 +7,11 @@
 //!   `crate::mcp::services::fs` for rationale).
 //!
 //! The `/v1` subtree already sits behind `authenticate_request` (see
-//! `api/router.rs::build_router`), so no per-route auth wiring is needed.
+//! `api/router.rs::build_router`). Host workspace access additionally requires
+//! installation-admin authority; project credentials cannot read host files.
 
 use axum::{
-    Json,
+    Extension, Json,
     body::Body,
     extract::{Query, State},
     http::{HeaderName, HeaderValue, StatusCode, header},
@@ -94,8 +95,10 @@ pub struct PreviewQuery {
 
 async fn handle_list(
     State(state): State<AppState>,
+    auth: Option<Extension<crate::api::oauth::AuthContext>>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    require_workspace_admin(auth.as_ref())?;
     let root = state
         .workspace_root
         .as_ref()
@@ -130,8 +133,10 @@ async fn handle_list(
 /// file before streaming).
 async fn handle_preview(
     State(state): State<AppState>,
+    auth: Option<Extension<crate::api::oauth::AuthContext>>,
     Query(query): Query<PreviewQuery>,
 ) -> Result<Response, ApiError> {
+    require_workspace_admin(auth.as_ref())?;
     let root = state
         .workspace_root
         .as_ref()
@@ -205,6 +210,18 @@ async fn handle_preview(
     // capped but unknown-length at construction time.
     response.headers_mut().remove(header::CONTENT_LENGTH);
     Ok(response)
+}
+
+fn require_workspace_admin(
+    auth: Option<&Extension<crate::api::oauth::AuthContext>>,
+) -> Result<(), ToolError> {
+    if auth.is_some_and(|auth| auth.0.scopes.iter().any(|scope| scope == "lab:admin")) {
+        return Ok(());
+    }
+    Err(ToolError::Forbidden {
+        message: "host workspace access requires installation administrator authority".into(),
+        required_scopes: vec!["lab:admin".into()],
+    })
 }
 
 fn log_ok(

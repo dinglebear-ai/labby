@@ -183,10 +183,9 @@ skill lookup and direct resource reads without hiding the gateway's own skill.
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
 The frontend build is required because the Rust binary embeds the exported
-Labby assets. It is a production build gate, not a TypeScript strictness gate:
-`apps/gateway-admin/next.config.mjs` currently sets
-`typescript.ignoreBuildErrors = true`. Run `pnpm test` in
-`apps/gateway-admin` for the frontend unit and install-script test contract.
+Labby assets. CI runs an explicit TypeScript check as well as the production
+build. Run `pnpm test` in `apps/gateway-admin` for the frontend unit and
+install-script test contract.
 
 The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
 script with its declared shell, runs ShellCheck at warning severity, and runs
@@ -303,8 +302,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts Incus-pointer
-   restoration and restoration of the GitHub release to draft.
+7. If publication fails, the rollback transaction attempts Incus-pointer and
+   npm stable-pointer restoration before returning a previously draft GitHub
+   release to draft. Attempted npm writes are explicitly compensated even when
+   registry reads still show the old tag. If either consumer pointer cannot be
+   restored, release assets remain public and recovery reports failure.
    It verifies each final state independently, emits one compound JSON record,
    and fails if any recovery step or final-state proof fails. Because npm and
    MCP versions are immutable, a failed transaction also records either
@@ -324,6 +326,8 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 9. Only after every candidate qualification and publisher succeeds does
    `release.yml` promote the draft through the verified promotion helper. It
    advances and verifies npm's `latest` dist-tag only after that promotion.
+   A shared concurrency group serializes promotion and rollback across tags;
+   npm and Incus version guards reject an older run after a newer promotion.
    Promotion failure enters the same recovery path and retains an actionable
    record of immutable registry identities that cannot be deleted.
 10. The aggregate reconciler runs immediately after Release completes and on a
@@ -433,16 +437,14 @@ Binary size is tracked but not hard-gated in CI unless repo tooling enforces a m
 The shared `build-gateway-admin` action installs dependencies, verifies the
 synced installer, runs `pnpm run test:unit`, runs `pnpm exec tsc --noEmit`, and
 then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
-assets that are compiled into the `lab` binary. Keep TypeScript explicit here:
-`next.config.mjs` intentionally ignores build-time TypeScript errors so asset
-builds are not the type-safety boundary.
+assets compiled into the `labby` binary. The explicit TypeScript check provides
+a distinct type-safety gate alongside the Next.js production build.
 
 ```bash
 cd apps/gateway-admin
 pnpm run test:unit
 pnpm exec tsc --noEmit
 pnpm test
-pnpm test:acp
 pnpm test:browser
 ```
 

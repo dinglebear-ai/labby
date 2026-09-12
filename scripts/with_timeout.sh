@@ -47,16 +47,23 @@ fi
 # `sleep $secs` child reparented to init for the full budget. With a
 # poll loop we own the timing, so an early-finishing command exits
 # cleanly without leaking long-lived sleeps.
+# Bash monitor mode gives this job an owned process group even without setsid.
+set -m
 "$@" &
 cmd_pid=$!
+set +m
+cleanup() { kill -KILL -- "-$cmd_pid" 2>/dev/null || true; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 deadline=$(( $(date +%s) + secs ))
 while kill -0 "${cmd_pid}" 2>/dev/null; do
     if [ "$(date +%s)" -ge "${deadline}" ]; then
         echo "with_timeout: '$*' exceeded ${secs}s budget — killed" >&2
-        kill -TERM "${cmd_pid}" 2>/dev/null || true
+        kill -TERM -- "-${cmd_pid}" 2>/dev/null || true
         sleep 1
-        kill -KILL "${cmd_pid}" 2>/dev/null || true
+        kill -KILL -- "-${cmd_pid}" 2>/dev/null || true
         wait "${cmd_pid}" 2>/dev/null || true
         exit 124
     fi
@@ -68,8 +75,4 @@ wait "${cmd_pid}"
 rc=$?
 set -e
 
-# If the command was killed by SIGTERM (143) attribute it to the timeout.
-if [ "${rc}" -eq 143 ]; then
-    rc=124
-fi
 exit "${rc}"

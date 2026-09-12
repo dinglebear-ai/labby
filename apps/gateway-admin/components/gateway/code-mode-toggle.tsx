@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react'
 import { Code2 } from 'lucide-react'
-import { mutate } from 'swr'
+import { useSWRConfig } from 'swr'
 import { toast } from 'sonner'
 
 import { Switch } from '@/components/ui/switch'
@@ -15,6 +15,7 @@ import { cn, getErrorMessage } from '@/lib/utils'
 import { gatewayActionTone } from './gateway-theme'
 
 export function CodeModeHeaderToggle() {
+  const { mutate } = useSWRConfig()
   const { data: codeModeConfig, isLoading, error } = useGatewayCodeModeConfig()
   const { setCodeModeConfig } = useGatewayMutations()
   const isSavingRef = useRef(false)

@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use labby_gateway::gateway::config_store::{GatewayConfigStore, StoreFuture};
 use labby_runtime::gateway_config::{GatewayConfig, ResolvedPublicUrls};
 
-use crate::config::{EnvCredential, LabConfig, home_dir};
+use crate::config::{EnvCredential, LabConfig};
 use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::error::ToolError;
 
@@ -60,9 +60,8 @@ impl LabConfigStore {
     }
 
     fn resolved_env_path(&self) -> PathBuf {
-        home_dir()
-            .map(|h| h.join(".labby").join(".env"))
-            .unwrap_or_else(|| PathBuf::from(".env"))
+        // Configuration and credentials belong to the same selected installation.
+        self.config_path.with_file_name(".env")
     }
 
     /// Backup-first atomic write of `creds` via the canonical
@@ -362,6 +361,20 @@ mod host_config {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn credentials_follow_the_selected_config_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LabConfigStore::new(
+            Arc::new(RwLock::new(LabConfig::default())),
+            dir.path().join("installation-a/config.toml"),
+        );
+        assert_eq!(
+            store.resolved_env_path(),
+            dir.path().join("installation-a/.env")
+        );
+    }
+
     use super::*;
 
     #[test]

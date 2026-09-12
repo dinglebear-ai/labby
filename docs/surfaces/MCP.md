@@ -20,15 +20,9 @@ See [TRANSPORT.md](./TRANSPORT.md) for transport and authentication boundaries.
 ## Services
 
 The generated [service catalog](../generated/service-catalog.md) is authoritative.
-The current services are:
-
-- `gateway`
-- `doctor`
-- `server_logs`
-- `setup`
-- `snippets`
-- `fs` when the feature is enabled
-- `lab_admin` when runtime-enabled
+The enabled service tools depend on the build features, runtime configuration,
+and platform. Use that catalog and live `lab.help` discovery for the current
+inventory. Linux additionally supports the principal-scoped File Stash.
 
 Each service tool accepts:
 
