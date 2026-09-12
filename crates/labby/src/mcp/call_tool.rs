@@ -2026,7 +2026,7 @@ impl LabMcpServer {
                             .into());
                         }
                     };
-                    if let Err(error) = crate::access::authorize_gateway_action(
+                    let gateway_authority = match crate::access::authorize_gateway_action(
                         &self.access_runtime,
                         identity,
                         ceiling,
@@ -2036,14 +2036,17 @@ impl LabMcpServer {
                     )
                     .await
                     {
-                        return Ok(error_result_from_envelope(build_error(
-                            &service,
-                            &action,
-                            error.kind(),
-                            "Gateway operation is not authorized",
-                        ))
-                        .into());
-                    }
+                        Ok(authority) => authority,
+                        Err(error) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                error.kind(),
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
                     if let Some(team_id) = team_id.as_deref()
                         && crate::dispatch::gateway::team_scoped_gateway_action(&action)
                         && let Err(error) =
@@ -2094,6 +2097,17 @@ impl LabMcpServer {
                             .as_deref(),
                         ),
                     };
+                    if let Some(authority) = gateway_authority.as_ref()
+                        && let Err(error) = authority.validate_before_external_effect().await
+                    {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            error.kind(),
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    }
                     let response =
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,

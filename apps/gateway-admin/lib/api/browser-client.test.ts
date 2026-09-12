@@ -17,12 +17,31 @@ test('browser client loads the operator lifecycle from the browser endpoint', as
 
   assert.deepEqual(await browserApi.list(), [])
   assert.deepEqual(await browserApi.pairings(), [])
-  assert.deepEqual(await browserApi.sessions(), [])
+  assert.deepEqual(await browserApi.sessions(), { sessions: [], next_cursor: null })
   assert.deepEqual(actions, [
     { action: 'browser.list', params: {} },
     { action: 'browser.pairing.list', params: {} },
     { action: 'browser.sessions', params: {} },
   ])
+})
+
+test('browser client forwards session cursors without unbounded auto-pagination', async () => {
+  let request: unknown
+  const original = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    request = JSON.parse(String(init?.body ?? '{}'))
+    return new Response(JSON.stringify({ sessions: [], next_cursor: 'older-page' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+  try {
+    const page = await browserApi.sessions(undefined, 'current-page')
+    assert.deepEqual(request, { action: 'browser.sessions', params: { cursor: 'current-page' } })
+    assert.deepEqual(page, { sessions: [], next_cursor: 'older-page' })
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('browser client preserves exact consent and identity mutation parameters', async () => {
@@ -56,8 +75,9 @@ test('browser client loads exact catalog details before presenting session conse
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
-    const sessions = await browserApi.sessions()
-    assert.equal(sessions[0]?.catalog_digest, 'reviewed-digest')
+    const page = await browserApi.sessions()
+    assert.equal(page.sessions[0]?.catalog_digest, 'reviewed-digest')
+    assert.equal(page.next_cursor, null)
     assert.deepEqual(actions, ['browser.sessions', 'browser.session.get'])
   } finally {
     globalThis.fetch = original

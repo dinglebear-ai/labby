@@ -5,10 +5,11 @@ use labby_primitives::access::{
     ActionRef, Capability, InstallationId, OwnerScope, ResourceFamily, ResourceId, ResourceRef,
     TeamId,
 };
-use labby_runtime::authority::AuthoritySafeBoundary;
+use labby_runtime::authority::{AuthorityLease, AuthoritySafeBoundary};
 
 use super::{
-    AccessRuntime, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+    AccessRuntime, AccessStore, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
+    authorize_action,
 };
 use crate::dispatch::error::ToolError;
 use serde_json::Value;
@@ -19,6 +20,33 @@ pub(crate) enum GatewayAuthorityClass {
     ScopedRead,
     ScopedManage,
     PlatformManage,
+}
+
+#[derive(Clone)]
+pub(crate) struct GatewayActionAuthorization {
+    store: AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+    capability: Capability,
+    lease: AuthorityLease,
+    action: String,
+}
+
+impl GatewayActionAuthorization {
+    pub(crate) async fn validate_before_external_effect(&self) -> Result<(), ToolError> {
+        let epochs = super::refresh_authority_epochs(
+            &self.store,
+            self.identity.clone(),
+            self.owner.clone(),
+            self.capability,
+        )
+        .await
+        .map_err(|error| map_authority_error(&self.action, error))?;
+        let now = now_millis()?;
+        self.lease
+            .validate_at(AuthoritySafeBoundary::BeforeExternalEffect, now, &epochs)
+            .map_err(|_| denied())
+    }
 }
 
 /// Gateway policy is team-manageable; host configuration and process/credential
@@ -163,10 +191,10 @@ pub(crate) async fn authorize_gateway_action(
     installation_id: &str,
     team_id: Option<&str>,
     action: &str,
-) -> Result<(), ToolError> {
+) -> Result<Option<GatewayActionAuthorization>, ToolError> {
     let class = gateway_authority_class(action).ok_or_else(denied)?;
     if class == GatewayAuthorityClass::Public {
-        return Ok(());
+        return Ok(None);
     }
     let store = runtime.store().await.map_err(|error| {
         tracing::warn!(
@@ -198,28 +226,25 @@ pub(crate) async fn authorize_gateway_action(
     };
     let action_ref = ActionRef::new("gateway", action).map_err(|_| denied())?;
     let resource = ResourceRef::new(
-        owner,
+        owner.clone(),
         ResourceFamily::Gateway,
         ResourceId::new(resource_id).map_err(|_| denied())?,
     );
-    let now = u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| denied())?
-            .as_millis(),
-    )
-    .map_err(|_| denied())?;
-    authorize_action(
+    let now = now_millis()?;
+    let lease = authorize_action(
         &store,
         AuthorityRequest::new(
-            identity,
+            identity.clone(),
             ActionAuthoritySpec::SCHEMA_VERSION,
             action_ref.clone(),
             resource,
             ceiling,
             None,
             now,
-            vec![AuthoritySafeBoundary::BeforeDispatch],
+            vec![
+                AuthoritySafeBoundary::BeforeDispatch,
+                AuthoritySafeBoundary::BeforeExternalEffect,
+            ],
             vec![ActionAuthoritySpec::new(
                 action_ref,
                 ResourceFamily::Gateway,
@@ -228,8 +253,29 @@ pub(crate) async fn authorize_gateway_action(
         ),
     )
     .await
-    .map(|_| ())
-    .map_err(|error| match error {
+    .map_err(|error| map_authority_error(action, error))?;
+    Ok(Some(GatewayActionAuthorization {
+        store,
+        identity,
+        owner,
+        capability,
+        lease,
+        action: action.to_owned(),
+    }))
+}
+
+fn now_millis() -> Result<u64, ToolError> {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| denied())?
+            .as_millis(),
+    )
+    .map_err(|_| denied())
+}
+
+fn map_authority_error(action: &str, error: crate::access::AccessStoreError) -> ToolError {
+    match error {
         crate::access::AccessStoreError::NotAuthorized
         | crate::access::AccessStoreError::IdentityUnavailable
         | crate::access::AccessStoreError::ProjectAccessUnavailable
@@ -244,7 +290,7 @@ pub(crate) async fn authorize_gateway_action(
             );
             unavailable()
         }
-    })
+    }
 }
 
 fn denied() -> ToolError {

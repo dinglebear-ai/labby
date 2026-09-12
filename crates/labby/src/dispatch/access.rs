@@ -381,15 +381,19 @@ pub(crate) async fn dispatch(
                 .resolve_file_stash_principal(context.identity.clone())
                 .await
                 .map_err(map_access_error)?;
+            let request = administration_authority_request(&context, action_name, &params).await?;
             let value = context
                 .store
-                .put_team_gateway_credential_binding(crate::access::PutTeamCredentialBinding {
-                    binding_id: required_string(&params, "binding_id")?,
-                    team_id: required_string(&params, "team_id")?,
-                    upstream_name: required_string(&params, "upstream_name")?,
-                    custodian_principal_id: custodian.as_str().to_owned(),
-                    rotated_at_millis: now,
-                })
+                .put_team_gateway_credential_binding_authorized(
+                    request,
+                    crate::access::PutTeamCredentialBinding {
+                        binding_id: required_string(&params, "binding_id")?,
+                        team_id: required_string(&params, "team_id")?,
+                        upstream_name: required_string(&params, "upstream_name")?,
+                        custodian_principal_id: custodian.as_str().to_owned(),
+                        rotated_at_millis: now,
+                    },
+                )
                 .await
                 .map_err(map_access_error)?;
             invalidate_team_gateway_credential(
@@ -403,22 +407,26 @@ pub(crate) async fn dispatch(
         }
         #[cfg(feature = "gateway")]
         "access.gateway_credential.revoke" => {
-            let value = context
+            let request = administration_authority_request(&context, action_name, &params).await?;
+            let binding = context
                 .store
-                .revoke_team_gateway_credential_binding(
+                .revoke_team_gateway_credential_binding_authorized(
+                    request,
                     required_string(&params, "team_id")?,
                     required_string(&params, "upstream_name")?,
                     now_millis()?,
                 )
                 .await
-                .map_err(map_access_error)?;
-            // The caller already proved `scope.manage` over this Team, so a
-            // missing binding is a caller-fixable not-found, not an outage
-            // and not a silent no-op.
-            let binding = value.ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "not_found".to_owned(),
-                message: "no Team Gateway credential binding exists for that upstream".to_owned(),
-            })?;
+                .map_err(|error| match error {
+                    crate::access::AccessStoreError::TeamCredentialBindingUnavailable => {
+                        ToolError::Sdk {
+                            sdk_kind: "not_found".to_owned(),
+                            message: "no Team Gateway credential binding exists for that upstream"
+                                .to_owned(),
+                        }
+                    }
+                    other => map_access_error(other),
+                })?;
             invalidate_team_gateway_credential(
                 &context,
                 &binding.team_id,
@@ -484,6 +492,18 @@ async fn authorize_administration(
     action: &str,
     params: &Value,
 ) -> Result<(), ToolError> {
+    let request = administration_authority_request(context, action, params).await?;
+    authorize_action(&context.store, request)
+        .await
+        .map_err(map_access_error)?;
+    Ok(())
+}
+
+async fn administration_authority_request(
+    context: &AccessDispatchContext,
+    action: &str,
+    params: &Value,
+) -> Result<AuthorityRequest, ToolError> {
     // One capability table drives the evaluator, the surface admin gate, and
     // the generated catalog; an action without a row cannot be authorized.
     let capability = required_capability(action).ok_or_else(|| unknown_action(action))?;
@@ -525,23 +545,17 @@ async fn authorize_administration(
             .as_millis(),
     )
     .map_err(|_| ToolError::internal_message("system clock unavailable"))?;
-    authorize_action(
-        &context.store,
-        AuthorityRequest::new(
-            context.identity.clone(),
-            ActionAuthoritySpec::SCHEMA_VERSION,
-            action_ref.clone(),
-            resource,
-            context.ceiling.clone(),
-            None,
-            now,
-            vec![AuthoritySafeBoundary::BeforeDispatch],
-            vec![ActionAuthoritySpec::new(action_ref, family, capability)],
-        ),
-    )
-    .await
-    .map_err(map_access_error)?;
-    Ok(())
+    Ok(AuthorityRequest::new(
+        context.identity.clone(),
+        ActionAuthoritySpec::SCHEMA_VERSION,
+        action_ref.clone(),
+        resource,
+        context.ceiling.clone(),
+        None,
+        now,
+        vec![AuthoritySafeBoundary::BeforeDispatch],
+        vec![ActionAuthoritySpec::new(action_ref, family, capability)],
+    ))
 }
 
 fn now_millis() -> Result<u64, ToolError> {
