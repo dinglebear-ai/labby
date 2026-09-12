@@ -2752,6 +2752,7 @@ fn build_app_resource_meta(
 #[allow(clippy::panic)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
+    mod cold_regressions;
     use super::*;
 
     #[cfg(feature = "skills")]
