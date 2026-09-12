@@ -370,6 +370,42 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_server_owned_updates() {
+        let cli = Cli::try_parse_from(["labby", "serve", "--auto-update"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert!(args.auto_update);
+    }
+
+    #[test]
+    fn cli_accepts_native_automatic_update_modes() {
+        for args in [
+            vec!["labby", "update", "--automatic"],
+            vec!["labby", "update", "--automatic", "--dry-run"],
+            vec!["labby", "update", "--auto-update", "enable"],
+            vec!["labby", "update", "--auto-update", "disable"],
+            vec!["labby", "update", "--auto-update", "status"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        for args in [
+            vec!["labby", "update", "--automatic", "--version", "v1.0.0"],
+            vec!["labby", "update", "--automatic", "--auto-update", "enable"],
+            vec![
+                "labby",
+                "update",
+                "--auto-update",
+                "enable",
+                "--install-dir",
+                "/tmp/bin",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
     fn cli_accepts_update_default() {
         let cli = Cli::parse_from(["labby", "update"]);
         assert!(matches!(
