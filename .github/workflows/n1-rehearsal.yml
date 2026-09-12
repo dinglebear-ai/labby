@@ -155,3 +155,9 @@ jobs:
         run: |
           GITHUB_REF="refs/tags/$CANDIDATE_TAG" GITHUB_REF_NAME="$CANDIDATE_TAG" \
             scripts/ci/qualify-n-minus-one.sh "$DEPLOYMENT" "$PREVIOUS_TAG" "$CANDIDATE_TAG"
+      - name: Show N-1 diagnostics on failure
+        if: failure()
+        shell: bash
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+        run: scripts/ci/n-minus-one-diagnostics.sh "$DEPLOYMENT"
