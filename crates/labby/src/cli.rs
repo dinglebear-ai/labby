@@ -370,6 +370,15 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_server_owned_updates() {
+        let cli = Cli::try_parse_from(["labby", "serve", "--auto-update"]).unwrap();
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert!(args.auto_update);
+    }
+
+    #[test]
     fn cli_accepts_native_automatic_update_modes() {
         for args in [
             vec!["labby", "update", "--automatic"],

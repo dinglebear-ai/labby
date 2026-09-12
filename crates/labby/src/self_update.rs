@@ -57,7 +57,7 @@ fn select_release(releases: &[Release], current: [u64; 3]) -> Option<&str> {
         .map(|(_, tag)| tag)
 }
 
-fn require_macos() -> Result<()> {
+pub(crate) fn require_macos() -> Result<()> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         bail!("Automatic updates currently support macOS Apple Silicon only");
     }
@@ -134,9 +134,58 @@ pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("install.sh");
         fs::write(&script, INSTALL_SCRIPT)?;
-        install_release(&script, tag, directory)?;
+        let tag = tag.to_owned();
+        let directory = directory.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // Keep the lock and staged script alive even if shutdown cancels the caller.
+            let _lock = lock;
+            let _temp = temp;
+            install_release(&script, &tag, &directory)
+        })
+        .await??;
     }
     Ok(json!({"installed": !dry_run, "version": tag, "binary": binary, "dry_run": dry_run}))
+}
+
+/// Wait until the server has installed an update and needs a supervised restart.
+#[cfg(unix)]
+pub(crate) async fn server_update_loop() {
+    let binary = match std::env::current_exe() {
+        Ok(binary) => binary,
+        Err(error) => {
+            tracing::error!(%error, "cannot resolve server executable for automatic updates");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    wait_for_installed_update(
+        || automatic(&binary, false),
+        Duration::from_mins(1),
+        Duration::from_hours(24),
+    )
+    .await;
+}
+
+#[cfg(unix)]
+async fn wait_for_installed_update<F, Fut>(mut check: F, initial: Duration, interval: Duration)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Value>>,
+{
+    tokio::time::sleep(initial).await;
+    loop {
+        match check().await {
+            Ok(outcome) if outcome.get("installed").and_then(Value::as_bool) == Some(true) => {
+                tracing::info!(version = ?outcome.get("version"), "verified update installed; restarting Labby server");
+                return;
+            }
+            Ok(_) => tracing::info!("automatic update check: no newer stable release"),
+            Err(error) => {
+                tracing::warn!(%error, "automatic update failed; server stays running; retry in 24 hours")
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
 }
 
 fn xml(text: &str) -> String {
@@ -253,6 +302,23 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn server_restarts_only_after_successful_installation() {
+        let mut results = std::collections::VecDeque::from([
+            Err(anyhow::anyhow!("network failure")),
+            Ok(json!({"installed": false})),
+            Ok(json!({"installed": true, "version": "v1.17.0"})),
+        ]);
+        wait_for_installed_update(
+            || std::future::ready(results.pop_front().expect("unexpected extra check")),
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .await;
+        assert!(results.is_empty());
     }
 
     #[test]

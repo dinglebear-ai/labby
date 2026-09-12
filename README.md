@@ -175,34 +175,29 @@ installer stops and retains the journal for diagnosis.
 
 ### Automatic updates on macOS
 
-On Apple Silicon Macs, opt in to daily stable-release updates with Labby:
+For a persistent macOS server, enable daily updates in the existing server job:
+
+```bash
+LABBY_SERVICE_AUTO_UPDATE=1 bash scripts/install-macos-service.sh install
+```
+
+This runs `labby serve --auto-update` under launchd and removes the separate
+updater job after the server passes its health check. See the
+[macOS setup instructions](docs/services/SETUP.md#macos-server-and-automatic-updates).
+
+For an installation without a persistent server, use the standalone daily job:
 
 ```bash
 labby update --auto-update enable
 labby update --auto-update status
-```
-
-The per-user LaunchAgent invokes the installed Labby binary at login and every
-24 hours while logged in. GitHub CLI (`gh`) must remain installed for release
-attestation verification. No Python runtime or separate updater script is needed.
-
-The native updater skips drafts, prereleases, missing platform assets, and
-versions equal to or older than the installed binary. The existing installer
-verifies release attestations and checksums before atomic replacement.
-Logs are in `~/Library/Logs/Labby/auto-update.log`.
-
-Automatic updates replace the host executable. Restart existing Labby processes
-to use the new version. Incus containers are not updated by this job.
-Run a check without installing, or disable the daily job:
-
-```bash
-labby update --automatic --dry-run
 labby update --auto-update disable
 ```
 
-Enable scheduling from the installed binary, not a temporary build directory.
-If you move the executable, enable scheduling again from its new location.
-Linux and Windows scheduling are not supported.
+Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
+verification. They skip drafts, prereleases, missing platform assets, and versions
+equal to or older than the installed binary. The installer verifies attestations
+and checksums before atomic replacement. No separate language runtime is required.
+Use `labby update --automatic --dry-run` to check without installing.
 
 ### Build From Source
 

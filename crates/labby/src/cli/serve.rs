@@ -101,6 +101,9 @@ pub struct McpServeArgs {
 /// `labby serve` arguments.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
+    /// Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon).
+    #[arg(long)]
+    pub auto_update: bool,
     /// Comma- or space-separated list of services to enable. Empty = all.
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
@@ -126,6 +129,7 @@ pub struct ServeArgs {
 pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode> {
     run(
         ServeArgs {
+            auto_update: false,
             services: args.services,
             transport: Some(Transport::Stdio),
             host: None,
@@ -276,6 +280,12 @@ async fn initialize_selected_file_stash_runtime(
 }
 
 async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+    if args.auto_update {
+        crate::self_update::require_macos()?;
+        if matches!(args.transport, Some(Transport::Stdio)) || args.command.is_some() {
+            anyhow::bail!("--auto-update requires a supervised hosted server, not stdio");
+        }
+    }
     let transport = resolve_transport(
         args.transport,
         args.command.as_ref(),
@@ -875,6 +885,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         transport,
         unix_listener_config,
         peer_auth_enabled,
+        args.auto_update,
     )
     .await;
     file_stash_runtime.shutdown().await;
@@ -1160,6 +1171,7 @@ async fn run_http(
     transport: Transport,
     unix_listener_config: Option<HostedUnixConfig>,
     peer_auth_enabled: bool,
+    auto_update: bool,
 ) -> Result<ExitCode> {
     #[cfg(feature = "gateway")]
     let code_mode_shutdown = state.gateway_manager.clone();
@@ -1258,6 +1270,7 @@ async fn run_http(
         "http router ready"
     );
     let listener_status = HostedListenerStatus {
+        auto_update,
         web_assets_enabled,
         bearer_token_configured,
         mount_http_mcp,
@@ -1314,6 +1327,7 @@ async fn prune_resource_leases(
 
 #[derive(Debug, Clone, Copy)]
 struct HostedListenerStatus {
+    auto_update: bool,
     web_assets_enabled: bool,
     bearer_token_configured: bool,
     mount_http_mcp: bool,
@@ -1386,6 +1400,81 @@ async fn wait_for_shutdown_signal(transport: &'static str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+async fn hosted_shutdown(transport: &'static str, auto_update: bool) -> Result<()> {
+    tokio::select! {
+        result = wait_for_shutdown_signal(transport) => result,
+        result = wait_for_reload_signals(transport) => result,
+        () = crate::self_update::server_update_loop(), if auto_update => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+async fn run_until_shutdown<F, S>(
+    server: F,
+    stop: tokio::sync::oneshot::Sender<()>,
+    shutdown: S,
+    drain_timeout: Duration,
+) -> Result<()>
+where
+    F: Future<Output = std::io::Result<()>>,
+    S: Future<Output = Result<()>>,
+{
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => { result?; }
+        result = shutdown => {
+            result?;
+            let _ = stop.send(());
+            match tokio::time::timeout(drain_timeout, &mut server).await {
+                Ok(result) => result?,
+                Err(_) => tracing::warn!("server drain deadline reached; closing remaining connections"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod update_shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn update_shutdown_signals_the_listener_and_waits_for_drain() {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = drained.clone();
+        let server = async move {
+            stopped.await.unwrap();
+            tokio::task::yield_now().await;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        run_until_shutdown(
+            server,
+            stop,
+            std::future::ready(Ok(())),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(drained.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn update_shutdown_does_not_wait_forever_for_long_lived_connections() {
+        let (stop, _stopped) = tokio::sync::oneshot::channel();
+        run_until_shutdown(
+            std::future::pending(),
+            stop,
+            std::future::ready(Ok(())),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+    }
+}
+
 async fn serve_tcp_listener(
     host: &str,
     port: u16,
@@ -1452,13 +1541,27 @@ async fn serve_tcp_listener(
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     #[cfg(unix)]
-    tokio::select! {
-        result = axum::serve(listener, service) => { result?; }
-        result = wait_for_reload_signals("http") => { result?; }
-        result = wait_for_shutdown_signal("http") => { result?; }
+    {
+        use std::future::IntoFuture;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = axum::serve(listener, service)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .into_future();
+        run_until_shutdown(
+            server,
+            stop,
+            hosted_shutdown("http", status.auto_update),
+            Duration::from_secs(30),
+        )
+        .await?;
     }
     #[cfg(not(unix))]
-    axum::serve(listener, service).await?;
+    {
+        let _ = status.auto_update;
+        axum::serve(listener, service).await?;
+    }
     Ok(())
 }
 
@@ -1473,6 +1576,7 @@ async fn serve_unix_listener(
         bearer_token_configured,
         mount_http_mcp,
         peer_auth_enabled,
+        ..
     } = status;
     let socket_kind = if config.abstract_socket() {
         "abstract"
@@ -1541,11 +1645,20 @@ async fn serve_unix_listener(
     );
 
     let service = router.into_make_service_with_connect_info::<unix_listener::UnixConnectInfo>();
-    tokio::select! {
-        result = axum::serve(listener, service) => { result?; }
-        result = wait_for_reload_signals("unix_socket") => { result?; }
-        result = wait_for_shutdown_signal("unix_socket") => { result?; }
-    }
+    use std::future::IntoFuture;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, service)
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
+        })
+        .into_future();
+    run_until_shutdown(
+        server,
+        stop,
+        hosted_shutdown("unix_socket", status.auto_update),
+        Duration::from_secs(30),
+    )
+    .await?;
     Ok(())
 }
 

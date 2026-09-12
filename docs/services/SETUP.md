@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-08-23"
+updated: "2026-09-11"
 ---
 
 # Setup Service
@@ -20,6 +20,51 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
+
+## macOS server and automatic updates
+
+On Apple Silicon, the persistent server can own its update schedule. This uses
+one per-user LaunchAgent for both the server and its daily update check.
+
+After installing the Labby binary and GitHub CLI (`gh`), run this command from
+a trusted repository checkout:
+
+```bash
+LABBY_SERVICE_AUTO_UPDATE=1 bash scripts/install-macos-service.sh install
+bash scripts/install-macos-service.sh status
+```
+
+The installer enables `labby serve --auto-update`, preserves a stable `LABBY_HOME`
+(default `~/.labby`), and records the executable search path for release verification.
+After the server passes its health check, it removes `net.labby.auto-update`, the
+standalone updater job. Existing user configuration and durable state remain in
+`LABBY_HOME`. The installer can restore the prior service if startup fails.
+
+The server checks 60 seconds after startup and then every 24 hours. An unsuccessful
+check leaves the server running until the next check. A verified newer stable
+release replaces the executable atomically. The server stops accepting connections,
+allows existing requests up to 30 seconds to finish, and exits. launchd restarts
+the updated executable. Long-lived connections must reconnect after the restart.
+The update applies to the local executable, not Incus containers.
+
+Server and updater messages use `~/.labby/serve.log` and `~/.labby/serve.error.log`
+(or the configured `LABBY_STATE_DIR`). The existing verified installer retains
+its rollback receipt under `<install-dir>/.labby-install/`.
+
+To disable automatic updates while keeping the server:
+
+```bash
+LABBY_SERVICE_AUTO_UPDATE=0 bash scripts/install-macos-service.sh install
+```
+
+Automatic updates are opt-in. Without `LABBY_SERVICE_AUTO_UPDATE=1`, installation
+does not enable them. Run `serve --auto-update` only under a supervisor configured
+to restart the process after a successful exit. It is unsupported for stdio MCP.
+
+For CLI-only installations, `labby update --auto-update enable` installs a separate
+daily LaunchAgent instead. Use `labby update --auto-update disable` to remove it.
+macOS can retain old labels in Login Items after their LaunchAgent files are removed;
+the remaining service files determine what can start at login.
 
 ## Safety Model
 
