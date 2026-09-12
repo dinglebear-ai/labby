@@ -7,8 +7,16 @@
 //! Only the **syntactic** normalization passes live in this crate — canonical
 //! identifier renaming and commutativity reordering, both pure functions over
 //! the envelope. The replay-driven passes (prefix minimization, the determinism
-//! check) need to execute a scenario to know whether a step mattered, so they
-//! live in `verify-runner` alongside the replay engine. Putting them here would
-//! be a dependency cycle.
-//!
-//! Contents arrive in M2.
+//! check) must execute a scenario to learn whether a step mattered, and replay
+//! lives in `verify-runner`, which already depends on this crate. Putting them
+//! here would be a dependency cycle.
+
+pub mod envelope;
+pub mod fingerprint;
+pub mod normalize;
+
+pub use envelope::{
+    Expect, Origin, OriginKind, SCENARIO_SCHEMA, Scenario, ScenarioLoadError, ScenarioStatus,
+};
+pub use fingerprint::{FINGERPRINT_PREFIX, fingerprint};
+pub use normalize::{Commutes, normalize_syntactic};
