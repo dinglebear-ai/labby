@@ -117,6 +117,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/install.sh",
             "scripts/install.ps1",
             "scripts/install-macos-service.sh",
+            "scripts/auto-update.py",
             "apps/gateway-admin/scripts/sync-install-script.mjs",
             "apps/gateway-admin/scripts/sync-install-script.test.mjs",
         },

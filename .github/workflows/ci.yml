@@ -300,6 +300,8 @@ jobs:
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
           go version
           echo "actionlint=v1.7.7"
+      - name: Test automatic update selection and execution
+        run: python3 -m unittest discover -s scripts/tests -p test_auto_update.py
       - name: Test CI policy helpers
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2

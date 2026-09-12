@@ -173,6 +173,35 @@ binary or either receipt, the installer writes a recovery journal beneath
 snapshot when it finds an interrupted activation. If restoration fails, the
 installer stops and retains the journal for diagnosis.
 
+### Automatic updates on macOS
+
+On Apple Silicon Macs, opt in to daily stable-release updates from a trusted
+repository checkout. Python 3 and GitHub CLI (`gh`) must remain installed.
+
+```bash
+python3 scripts/auto-update.py enable
+python3 scripts/auto-update.py status
+```
+
+Use `--binary /absolute/path/to/labby` for a custom installation. The updater
+copies itself and the repository installer into
+`~/Library/Application Support/Labby/auto-update/`. It runs at login and every
+24 hours while logged in. It skips drafts, prereleases, missing platform assets,
+and versions equal to or older than the installed binary. Network or verification
+errors leave the update unsuccessful and appear in `update.log` in that directory.
+The installer requires release attestations and checksums before atomic activation.
+
+Automatic updates replace the host executable only. Restart running Labby
+processes to use the new version. Incus containers are not updated by this job.
+To remove the daily job:
+
+```bash
+python3 scripts/auto-update.py disable
+```
+
+After changing the updater or installer in a trusted checkout, run `enable` again
+to refresh the installed copies. Linux and Windows scheduling are not supported.
+
 ### Build From Source
 
 Prerequisites:
