@@ -33,7 +33,7 @@ Rules:
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, `StateMachine`, backend-capability vocabulary | serde, thiserror only |
+| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, backend-capability vocabulary | serde, serde_json, toml, thiserror |
 | `verify-scenario` | scenario envelope, step encoding, normalization, shrink-stability, on-disk corpus layout | `verify-core` |
 | `verify-runner` | discovery, replay engine, target registry, backend registry, orchestration, `verify` CLI | `verify-core`, `verify-scenario`, `verify-report` |
 | `verify-report` | coverage matrix, text/JSON/HTML/Markdown renderers, CI summary | `verify-core`, `verify-scenario` |
@@ -54,7 +54,10 @@ on purpose: it is what lets a project take Stateright without taking a Java
 toolchain, and it is the same reason the target registry is project-populated
 rather than path-convention-resolved (§6).
 
-`verify-core` is the dependency leaf and stays transport-free, filesystem-free,
+`verify-core` is the dependency leaf. Its dependencies are data formats only:
+`serde_json::Value` appears in the published `ScenarioTarget` signature and
+`toml` parses the catalog. The property that matters is not the crate count but
+that it stays transport-free, filesystem-free,
 and env-free — the same discipline `labby-primitives` and `labby-apis` already
 carry in this workspace.
 
