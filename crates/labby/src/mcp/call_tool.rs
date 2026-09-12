@@ -312,40 +312,22 @@ pub(super) fn skill_library_callback_boundary(
 
 #[cfg(feature = "skills")]
 pub(super) fn skill_library_callback_correlation(
-    value: Option<&str>,
+    _client_request_id: Option<&str>,
 ) -> Result<crate::dispatch::skill_library::audit::SkillLibraryCorrelationId, ToolError> {
-    static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let value = value.map(str::to_owned).unwrap_or_else(|| {
-        format!(
-            "mcp-skill-library-{}",
-            REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        )
-    });
-    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(value).map_err(|()| {
-        ToolError::InvalidParam {
-            message: "invalid request correlation".to_owned(),
-            param: "x-request-id".to_owned(),
-        }
-    })
+    Ok(
+        crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::server(
+            "mcp-skill-library",
+        ),
+    )
 }
 
 #[cfg(feature = "skills")]
-fn skill_library_safe_callback_correlation(context: &RequestContext<RoleServer>) -> String {
-    static REJECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let supplied = context
-        .extensions
-        .get::<axum::http::request::Parts>()
-        .and_then(|parts| parts.headers.get("x-request-id"))
-        .and_then(|value| value.to_str().ok());
-    if let Some(value) = supplied
-        && skill_library_callback_correlation(Some(value)).is_ok()
-    {
-        return value.to_owned();
-    }
-    format!(
-        "mcp-skill-library-rejection-{}",
-        REJECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+fn skill_library_safe_callback_correlation(_context: &RequestContext<RoleServer>) -> String {
+    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::server(
+        "mcp-skill-library-rejection",
     )
+    .as_str()
+    .to_owned()
 }
 
 #[cfg(feature = "gateway")]
@@ -1913,13 +1895,8 @@ impl LabMcpServer {
             } else if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
-                    self.dispatch_artifact_tool_boxed(
-                        &context,
-                        request.meta.as_ref(),
-                        &action,
-                        params,
-                    )
-                    .await
+                    self.dispatch_artifact_tool_boxed(&context, &action, params)
+                        .await
                 }
                 #[cfg(not(feature = "skills"))]
                 {
@@ -2049,7 +2026,7 @@ impl LabMcpServer {
                             .into());
                         }
                     };
-                    if let Err(error) = crate::access::authorize_gateway_action(
+                    let gateway_authority = match crate::access::authorize_gateway_action(
                         &self.access_runtime,
                         identity,
                         ceiling,
@@ -2059,14 +2036,17 @@ impl LabMcpServer {
                     )
                     .await
                     {
-                        return Ok(error_result_from_envelope(build_error(
-                            &service,
-                            &action,
-                            error.kind(),
-                            "Gateway operation is not authorized",
-                        ))
-                        .into());
-                    }
+                        Ok(authority) => authority,
+                        Err(error) => {
+                            return Ok(error_result_from_envelope(build_error(
+                                &service,
+                                &action,
+                                error.kind(),
+                                "Gateway operation is not authorized",
+                            ))
+                            .into());
+                        }
+                    };
                     if let Some(team_id) = team_id.as_deref()
                         && crate::dispatch::gateway::team_scoped_gateway_action(&action)
                         && let Err(error) =
@@ -2117,6 +2097,17 @@ impl LabMcpServer {
                             .as_deref(),
                         ),
                     };
+                    if let Some(authority) = gateway_authority.as_ref()
+                        && let Err(error) = authority.validate_before_external_effect().await
+                    {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            &action,
+                            error.kind(),
+                            "Gateway operation is not authorized",
+                        ))
+                        .into());
+                    }
                     let response =
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,

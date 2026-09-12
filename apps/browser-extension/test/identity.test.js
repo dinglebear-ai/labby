@@ -72,7 +72,7 @@ test("persists a non-extractable Ed25519 CryptoKey across worker restart", async
 });
 
 test("legacy private JWK is removed and forces a new unpaired identity", async () => {
-  const storage = new MemoryStorage({privateKey: {kty: "OKP", d: "secret"}, publicKey: "old", browserId: "browser", pairingId: "pair"});
+  const storage = new MemoryStorage({privateKey: {kty: "OKP", d: "secret"}, publicKey: "old", browserId: "browser", pairingId: "pair", pairingFingerprint: "A1B2C3D4E5F6"});
   const state = manager(new MemoryKeyStore(), storage);
   const identity = await state.identity.ensure();
   assert.notEqual(identity.publicKey, "old");
@@ -83,7 +83,7 @@ test("legacy private JWK is removed and forces a new unpaired identity", async (
 test("corrupt records fail closed, rotate, and clear stale association", async () => {
   const keyStore = new MemoryKeyStore();
   keyStore.value = {version: 1, publicKey: "broken", privateKey: {extractable: false}};
-  const storage = new MemoryStorage({browserId: "stale", pairingId: "pending"});
+  const storage = new MemoryStorage({browserId: "stale", pairingId: "pending", pairingFingerprint: "A1B2C3D4E5F6"});
   const state = manager(keyStore, storage);
   const repaired = await state.identity.ensure();
   assert.notEqual(repaired.publicKey, "broken");
@@ -99,13 +99,27 @@ test("concurrent startup initialization creates one durable identity", async () 
 });
 
 test("revocation erases credential and association before re-pair", async () => {
-  const state = manager(new MemoryKeyStore(), new MemoryStorage({browserId: "revoked"}));
+  const state = manager(new MemoryKeyStore(), new MemoryStorage({browserId: "revoked", pairingId: "pending", pairingFingerprint: "A1B2C3D4E5F6"}));
   const prior = await state.identity.ensure();
   await state.identity.revoke();
   assert.equal(state.keyStore.value, undefined);
   assert.deepEqual(state.storage.values, {});
   const replacement = await state.identity.ensure();
   assert.notEqual(replacement.publicKey, prior.publicKey);
+});
+
+test("revocation clears the server association before erasing the credential", async () => {
+  const order = [];
+  class OrderedKeyStore extends MemoryKeyStore {
+    async clear() { order.push("credential"); await super.clear(); }
+  }
+  class OrderedStorage extends MemoryStorage {
+    async remove(keys) { order.push("association"); await super.remove(keys); }
+  }
+  const state = manager(new OrderedKeyStore(), new OrderedStorage({browserId: "revoked"}));
+  await state.identity.ensure();
+  await state.identity.revoke();
+  assert.deepEqual(order.slice(-2), ["association", "credential"]);
 });
 
 test("revocation waits for racing identity creation and erases its committed key", async () => {

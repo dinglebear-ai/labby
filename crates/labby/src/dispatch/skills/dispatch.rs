@@ -151,9 +151,7 @@ fn visible_skill_file_to_json(file: crate::skills::facade::VisibleSkillFile) -> 
 }
 
 fn entry_origin(entry: &labby_runtime::skills::wire::SkillEntry) -> Option<String> {
-    labby_runtime::skills::parse_skill_uri(&entry.uri)
-        .ok()
-        .map(|uri| uri.origin().to_string())
+    entry.origin()
 }
 
 fn not_found(uri: &str, kind: &str) -> ToolError {
@@ -263,6 +261,15 @@ mod tests {
                 .unwrap()
                 .matches(read["text"].as_str().unwrap().as_bytes())
         );
+    }
+
+    #[tokio::test]
+    async fn compatibility_get_does_not_alias_supporting_file_uris() {
+        let context = first_party_context();
+        let uri = "skill://labby/using-labby/README.md";
+        let result = dispatch_with_context(&context, "skills.get", json!({ "uri": uri })).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), "not_found");
     }
 
     #[tokio::test]

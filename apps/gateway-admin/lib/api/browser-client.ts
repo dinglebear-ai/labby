@@ -42,12 +42,12 @@ export const browserApi = {
   async pairings(signal?: AbortSignal) {
     return (await browserAction<BrowserPairingListResponse>('browser.pairing.list', {}, signal)).pairings
   },
-  approvePairing: (pairingId: string, signal?: AbortSignal) =>
-    browserAction<BrowserIdentity>('browser.pairing.approve', { pairing_id: pairingId }, signal),
+  approvePairing: (pairingId: string, pairingFingerprint: string, signal?: AbortSignal) =>
+    browserAction<BrowserIdentity>('browser.pairing.approve', { pairing_id: pairingId, pairing_fingerprint: pairingFingerprint }, signal),
   revoke: (browserId: string, signal?: AbortSignal) =>
     browserAction<BrowserIdentity>('browser.revoke', { browser_id: browserId }, signal),
-  async sessions(signal?: AbortSignal) {
-    const page = await browserAction<BrowserSessionListResponse>('browser.sessions', {}, signal)
+  async sessions(signal?: AbortSignal, cursor?: string) {
+    const page = await browserAction<BrowserSessionListResponse>('browser.sessions', cursor ? { cursor } : {}, signal)
     const sessions: BrowserSession[] = []
     // Lists intentionally omit catalogs. Fetch the reviewed detail in bounded batches.
     for (let offset = 0; offset < page.sessions.length; offset += 4) {
@@ -55,7 +55,7 @@ export const browserApi = {
         browserAction<BrowserSession>('browser.session.get', { session_id: session.id }, signal)))
       sessions.push(...details)
     }
-    return sessions
+    return { sessions, next_cursor: page.next_cursor ?? null }
   },
   setSessionEnabled: (sessionId: string, enabled: boolean, catalogDigest: string, signal?: AbortSignal) =>
     browserAction<BrowserSession>('browser.session.enable', { session_id: sessionId, enabled, catalog_digest: catalogDigest }, signal),

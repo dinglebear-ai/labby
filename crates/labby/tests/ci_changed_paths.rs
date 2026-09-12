@@ -16,12 +16,12 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn repository_contract_checks_cargo_manifests_outside_ignored_directories() {
-    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(include_str!(
+    let workflow: serde_json::Value = serde_saphyr::from_str(include_str!(
         "../../../.github/workflows/repository-contract.yml"
     ))
     .expect("parse repository contract workflow");
     let steps = workflow["jobs"]["contract"]["steps"]
-        .as_sequence()
+        .as_array()
         .expect("contract steps");
     let checkout = steps
         .iter()
@@ -103,10 +103,10 @@ fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
 fn rustfmt_lane_selects_writable_rust_homes_before_toolchain_install() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
-    let workflow: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&workflow).expect("valid CI workflow YAML");
+    let workflow: serde_json::Value =
+        serde_saphyr::from_str(&workflow).expect("valid CI workflow YAML");
     let steps = workflow["jobs"]["fmt"]["steps"]
-        .as_sequence()
+        .as_array()
         .expect("Format job steps must remain present");
     let homes_index = steps
         .iter()
@@ -201,10 +201,10 @@ fn linux_build_preflight_installs_nothing_when_prerequisites_are_present() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
             .expect("read setup-rust-kache action");
-    let action: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&action).expect("parse composite action");
+    let action: serde_json::Value =
+        serde_saphyr::from_str(&action).expect("parse composite action");
     let preflight = action["runs"]["steps"]
-        .as_sequence()
+        .as_array()
         .and_then(|steps| steps.first())
         .and_then(|step| step["run"].as_str())
         .expect("first action step has a shell preflight");
@@ -252,10 +252,10 @@ fn shared_rust_setup_does_not_require_desktop_packages() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
             .expect("read setup-rust-kache action");
-    let action: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&action).expect("parse composite action");
+    let action: serde_json::Value =
+        serde_saphyr::from_str(&action).expect("parse composite action");
     let preflight = action["runs"]["steps"]
-        .as_sequence()
+        .as_array()
         .and_then(|steps| steps.first())
         .and_then(|step| step["run"].as_str())
         .expect("first action step has a shell preflight");
@@ -566,6 +566,18 @@ fn auth_matrix_changes_route_to_conformance() {
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+    }
+}
+
+#[test]
+fn skills_contract_docs_route_to_rust_conformance_tests() {
+    for path in [
+        "docs/contracts/skills-extension.md",
+        "docs/seps/2640-skills-extension.mdx",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
         assert_eq!(out["rust_test"], "true", "{path}");
     }
 }
@@ -954,8 +966,8 @@ fn ci_workflow_text() -> String {
     fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml")
 }
 
-fn ci_workflow_yaml(text: &str) -> serde_yaml_ng::Value {
-    serde_yaml_ng::from_str(text).expect("parse ci.yml")
+fn ci_workflow_yaml(text: &str) -> serde_json::Value {
+    serde_saphyr::from_str(text).expect("parse ci.yml")
 }
 
 #[test]
@@ -981,12 +993,9 @@ fn gated_changed_path_keys_are_declared_and_classifier_backed() {
     let workflow_text = ci_workflow_text();
     let workflow = ci_workflow_yaml(&workflow_text);
     let outputs = workflow["jobs"]["changes"]["outputs"]
-        .as_mapping()
+        .as_object()
         .expect("changes job declares outputs");
-    let declared: BTreeSet<String> = outputs
-        .keys()
-        .map(|key| key.as_str().expect("output name").to_string())
-        .collect();
+    let declared: BTreeSet<String> = outputs.keys().cloned().collect();
     let emitted: BTreeSet<String> = classify("pull_request", &["README.md"])
         .into_keys()
         .collect();
@@ -1015,7 +1024,7 @@ fn gated_changed_path_keys_are_declared_and_classifier_backed() {
     }
 
     for (name, expression) in outputs {
-        let name = name.as_str().expect("output name");
+        let name = name.as_str();
         let expression = expression.as_str().expect("output expression").trim();
         assert_eq!(
             expression,
@@ -1040,20 +1049,20 @@ fn ci_gate_aggregates_every_non_advisory_job() {
     let workflow_text = ci_workflow_text();
     let workflow = ci_workflow_yaml(&workflow_text);
     let jobs: BTreeSet<String> = workflow["jobs"]
-        .as_mapping()
+        .as_object()
         .expect("ci.yml declares jobs")
         .keys()
-        .map(|name| name.as_str().expect("job name").to_string())
+        .cloned()
         .collect();
     let gate = &workflow["jobs"]["ci-gate"];
     let aggregated: BTreeSet<String> = gate["needs"]
-        .as_sequence()
+        .as_array()
         .expect("ci-gate declares needs")
         .iter()
         .map(|need| need.as_str().expect("job name").to_string())
         .collect();
     let checks = gate["steps"]
-        .as_sequence()
+        .as_array()
         .expect("ci-gate steps")
         .iter()
         .filter_map(|step| step["run"].as_str())
@@ -1113,7 +1122,7 @@ struct ClassifyRun {
 fn classify_step_script() -> String {
     let workflow = ci_workflow_yaml(&ci_workflow_text());
     workflow["jobs"]["changes"]["steps"]
-        .as_sequence()
+        .as_array()
         .expect("changes job steps")
         .iter()
         .find(|step| step["id"].as_str() == Some("classify"))
@@ -1588,11 +1597,12 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(config.contains("\"draft\": true"));
     assert!(config.contains("\"force-tag-creation\": true"));
 
-    let release_config: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&release).expect("valid release workflow YAML");
+    let release_config: serde_json::Value =
+        serde_saphyr::from_str(&release).expect("valid release workflow YAML");
+    let expected_tags: serde_json::Value =
+        serde_saphyr::from_str("['v*']").expect("tag filter YAML");
     assert_eq!(
-        release_config["on"]["push"]["tags"],
-        serde_yaml_ng::to_value(["v*"]).expect("tag filter YAML"),
+        release_config["on"]["push"]["tags"], expected_tags,
         "release publication must be triggered by version tags"
     );
     assert!(!release.contains("types: [published]"));

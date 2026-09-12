@@ -24,7 +24,7 @@ use labby_primitives::authority_projection::{
 use labby_primitives::canonical_json;
 use labby_primitives::digest::Sha256Digest;
 use reqwest::{Client, StatusCode, Url};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 use crate::access::AccessStore;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_AUTHORITY_RESPONSE_BYTES: usize = 1024 * 1024;
 const LOOP_INTERVAL: Duration = Duration::from_secs(5);
 /// Readiness is stale when no Depot acknowledgement (snapshot or heartbeat)
 /// arrived within two heartbeat intervals.
@@ -328,10 +329,7 @@ impl AuthorityProjectionSender {
         if response.status() != StatusCode::OK {
             return Err(ProjectionSendError::Rejected);
         }
-        let readiness: ProjectionReadiness = response
-            .json()
-            .await
-            .map_err(|_| ProjectionSendError::InvalidResponse)?;
+        let readiness: ProjectionReadiness = decode_authority_response(response).await?;
         if !readiness.accepting.unwrap_or(readiness.ready) {
             return Err(ProjectionSendError::Rejected);
         }
@@ -363,10 +361,7 @@ impl AuthorityProjectionSender {
             StatusCode::CONFLICT => return Err(ProjectionSendError::ChainDiverged),
             _ => return Err(ProjectionSendError::Rejected),
         }
-        let response: ProjectionResponse = response
-            .json()
-            .await
-            .map_err(|_| ProjectionSendError::InvalidResponse)?;
+        let response: ProjectionResponse = decode_authority_response(response).await?;
         if response.ack.organization_id != envelope.organization_id
             || !Sha256Digest::is_canonical(&response.ack.last_envelope_digest)
         {
@@ -849,6 +844,34 @@ impl ProjectionLoopState {
     }
 }
 
+async fn decode_authority_response<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, ProjectionSendError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_AUTHORITY_RESPONSE_BYTES as u64)
+    {
+        return Err(ProjectionSendError::InvalidResponse);
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(MAX_AUTHORITY_RESPONSE_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ProjectionSendError::Transport)?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_AUTHORITY_RESPONSE_BYTES {
+            return Err(ProjectionSendError::InvalidResponse);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| ProjectionSendError::InvalidResponse)
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -989,6 +1012,37 @@ mod tests {
     use ed25519_dalek::{Verifier as _, VerifyingKey};
     use labby_auth::{Authenticator, VerifiedIdentity};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn authority_projection_response_bodies_are_bounded() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let router = Router::new().route(
+            "/",
+            get(|| async {
+                Json(json!({
+                    "ready": true,
+                    "organizations": {},
+                    "padding": "x".repeat(MAX_AUTHORITY_RESPONSE_BYTES + 1),
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let response = Client::new()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        assert!(matches!(
+            decode_authority_response::<ProjectionReadiness>(response).await,
+            Err(ProjectionSendError::InvalidResponse)
+        ));
+    }
 
     #[test]
     fn managed_projection_health_fails_closed_until_synchronized() {

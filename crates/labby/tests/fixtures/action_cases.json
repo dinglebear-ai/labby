@@ -108,7 +108,7 @@
     "scenario_id": "live_invoke::browser::browser_pairing_approve",
     "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
-    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"pairing_id": "$fixture.pairing_id"}},
+    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"pairing_id": "$fixture.pairing_id", "pairing_fingerprint": "$fixture.pairing_fingerprint"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",

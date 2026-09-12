@@ -55,6 +55,52 @@ test('performServiceAction treats a team or project switch under the same genera
   await assert.rejects(pending, isAbort)
 })
 
+test('performServiceAction rejects a project-bound response after the project changes without an authority projection', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-b' })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
+test('performServiceAction rejects an unprojected response after the authenticated subject changes', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  const release = blockedFetch()
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'two' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-a' })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
+test('performServiceAction rejects a stale non-success response before surfacing its service error', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  let release: (() => void) | undefined
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  globalThis.fetch = (async () => {
+    await blocked
+    return new Response(JSON.stringify({ kind: 'conflict', message: 'stale project error' }), { status: 409 })
+  }) as typeof fetch
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-b' })
+  release?.()
+  await assert.rejects(pending, isAbort)
+})
+
+test('performServiceAction rejects a stale network failure before surfacing backend_unreachable', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  let release: (() => void) | undefined
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  globalThis.fetch = (async () => {
+    await blocked
+    throw new Error('old project socket failure')
+  }) as typeof fetch
+  const pending = run()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 2, csrfToken: 'two', projectId: 'project-b' })
+  release?.()
+  await assert.rejects(pending, isAbort)
+})
+
 test('performServiceAction treats gaining or losing the authority projection as a change', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one' })
   let release = blockedFetch()
@@ -108,6 +154,36 @@ test('performServiceAction retries a CSRF failure under a stable authority proje
 
   assert.deepEqual(await run(), { ok: true })
   assert.deepEqual(actionCsrfTokens, ['expired-csrf', 'fresh-csrf'])
+})
+
+test('performServiceAction never retries an auth failure under a different project context', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'one' },
+    expiresAt: 1,
+    csrfToken: 'expired-csrf',
+    projectId: 'project-a',
+  })
+  let actionCalls = 0
+  globalThis.fetch = (async (input) => {
+    if (input === '/auth/session') {
+      return new Response(JSON.stringify({
+        authenticated: true,
+        user: { sub: 'one' },
+        expires_at: 2,
+        csrf_token: 'fresh-csrf',
+        project_id: 'project-b',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    actionCalls += 1
+    return new Response(JSON.stringify({ kind: 'auth_failed', message: 'session expired' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  await assert.rejects(run(), isAbort)
+  assert.equal(actionCalls, 1, 'the failed project-a action must not replay against project-b')
 })
 
 test('safeFanout returns per-item failures without rejecting the whole fan-out', async () => {

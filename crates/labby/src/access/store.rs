@@ -114,12 +114,44 @@ impl AccessStore {
     }
 
     #[cfg(feature = "gateway")]
+    pub(crate) async fn put_team_gateway_credential_binding_authorized(
+        &self,
+        request: super::AuthorityRequest,
+        input: super::gateway_credential::PutTeamCredentialBinding,
+    ) -> AccessStoreResult<labby_runtime::gateway_authority::TeamCredentialBinding> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::put_authorized(connection, request, &input)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
     pub(crate) async fn list_team_gateway_credential_bindings(
         &self,
         team_id: String,
     ) -> AccessStoreResult<Vec<labby_runtime::gateway_authority::TeamCredentialBinding>> {
         self.with_connection(move |connection| {
             super::gateway_credential::list(connection, &team_id)
+        })
+        .await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn revoke_team_gateway_credential_binding_authorized(
+        &self,
+        request: super::AuthorityRequest,
+        team_id: String,
+        upstream_name: String,
+        now_millis: u64,
+    ) -> AccessStoreResult<labby_runtime::gateway_authority::TeamCredentialBinding> {
+        self.with_connection(move |connection| {
+            super::gateway_credential::revoke_authorized(
+                connection,
+                request,
+                &team_id,
+                &upstream_name,
+                now_millis,
+            )
         })
         .await
     }
@@ -442,6 +474,18 @@ impl AccessStore {
                 lease_expires_at,
                 now,
             )
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn recover_expired_agent_sessions(
+        &self,
+        now: i64,
+    ) -> AccessStoreResult<usize> {
+        let path = Arc::clone(&self.path);
+        tokio::task::spawn_blocking(move || {
+            super::agent::AgentDefinitionStore::open(&path)?.recover_expired_sessions(now)
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
@@ -1008,6 +1052,7 @@ impl AccessStore {
         identity: labby_auth::VerifiedIdentity,
         project_id: String,
         selected_team_id: Option<String>,
+        permission: super::Permission,
     ) -> AccessStoreResult<super::authorization::DepotDelegationAuthoritySnapshot> {
         self.with_connection(move |connection| {
             super::authorization::depot_delegation_authority(
@@ -1015,6 +1060,7 @@ impl AccessStore {
                 &identity,
                 &project_id,
                 selected_team_id.as_deref(),
+                permission,
             )
         })
         .await

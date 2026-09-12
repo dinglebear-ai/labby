@@ -60,27 +60,26 @@ pub struct SkillResource {
     pub size: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 enum DynamicResources {
     Dynamic,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ResourcesWire {
-    Manifest(Vec<SkillResource>),
-    Dynamic(DynamicResources),
 }
 
 fn deserialize_resources<'de, D>(deserializer: D) -> Result<Option<Vec<SkillResource>>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    ResourcesWire::deserialize(deserializer).map(|resources| match resources {
-        ResourcesWire::Manifest(resources) => Some(resources),
-        ResourcesWire::Dynamic(DynamicResources::Dynamic) => None,
-    })
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(value) if value == "dynamic" => Ok(None),
+        value @ Value::Array(_) => serde_json::from_value::<Vec<SkillResource>>(value)
+            .map(Some)
+            .map_err(<D::Error as serde::de::Error>::custom),
+        _ => Err(<D::Error as serde::de::Error>::custom(
+            "resources must be an array or \"dynamic\"",
+        )),
+    }
 }
 
 fn serialize_resources<S>(
@@ -126,6 +125,20 @@ impl SkillEntry {
     #[must_use]
     pub fn is_unverifiable(&self) -> bool {
         self.resources.is_none()
+    }
+
+    /// Host-assigned origin parsed from this entry URI.
+    #[must_use]
+    pub fn origin(&self) -> Option<String> {
+        super::parse_skill_uri(&self.uri)
+            .ok()
+            .map(|uri| uri.origin().to_string())
+    }
+
+    /// String-valued frontmatter field, when present with the expected type.
+    #[must_use]
+    pub fn frontmatter_str(&self, key: &str) -> Option<&str> {
+        self.frontmatter.get(key).and_then(Value::as_str)
     }
 }
 

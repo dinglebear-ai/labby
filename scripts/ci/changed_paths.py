@@ -65,6 +65,14 @@ def is_auth_conformance_input(path: str) -> bool:
     )
 
 
+def is_skills_conformance_input(path: str) -> bool:
+    """Documentation inputs pinned directly by the accepted Skills contract tests."""
+    return path in {
+        "docs/contracts/skills-extension.md",
+        "docs/seps/2640-skills-extension.mdx",
+    }
+
+
 def is_js_dependency_input(path: str) -> bool:
     return path.endswith(("/package.json", "/package-lock.json", "/pnpm-lock.yaml")) or path in {
         "package.json",
@@ -193,6 +201,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     # compilation and runtime behavior just as directly as a Rust source edit.
     rust_test = rust_sources or rust_manifests
     rust_test = rust_test or any_match(paths, is_auth_conformance_input)
+    rust_test = rust_test or any_match(paths, is_skills_conformance_input)
     security = any_match(
         paths,
         lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),
