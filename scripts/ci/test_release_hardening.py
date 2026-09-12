@@ -196,7 +196,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn('sha256sum "$archive"', verify)
         self.assertNotIn('sha256sum "$candidate"', bind)
         host_service = self.text("scripts/ci/n-minus-one/host-service")
-        self.assertIn("install-previous) sudo --preserve-env=GH_TOKEN env", host_service)
+        host_install = host_service[host_service.index("install-previous)"):host_service.index("seed-state)")]
+        self.assertIn("sudo --preserve-env=GH_TOKEN env", host_install)
+        # The unit runs as User=labby, and no release creates that user.
+        self.assertIn("sudo useradd --system", host_install)
         incus = self.text("scripts/ci/n-minus-one/incus")
         install_previous = incus[incus.index("install-previous)"):incus.index("seed-state)")]
         self.assertIn('scripts/install.sh"', install_previous)
@@ -711,6 +714,40 @@ class ReleaseHelperTests(unittest.TestCase):
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, relative)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(saved)
+
+    def test_durable_state_seeds_only_what_an_older_baseline_created(self) -> None:
+        helper = ROOT / "scripts/ci/n-minus-one-durable-state.py"
+        # v1.13.3 in bearer mode: no auth.db, no access.db, and an older usage schema.
+        old_usage = "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL)"
+        with tempfile.TemporaryDirectory() as tmp:
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute(old_usage)
+            seed = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertEqual(0, seed.returncode, seed.stderr)
+            self.assertIn("not in N-1, not verified: auth.db", seed.stderr)
+            self.assertIn("not in N-1, not verified: access.db", seed.stderr)
+            manifest = json.loads((Path(tmp) / "n-minus-one-seeded.json").read_text())
+            self.assertEqual(["usage.db"], manifest["seeded"])
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            # The candidate migrates usage.db in place; the seeded row must survive that.
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("ALTER TABLE upstream_calls ADD COLUMN response_bytes INTEGER")
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("DELETE FROM upstream_calls")
+            self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            (Path(tmp) / "n-minus-one-seeded.json").unlink()
+            self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+        with tempfile.TemporaryDirectory() as tmp:
+            none = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, none.returncode)
+            self.assertIn("created none of the durable databases", none.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute(old_usage.replace("elapsed_ms INTEGER NOT NULL)", "elapsed_ms INTEGER NOT NULL,unknown_required TEXT NOT NULL)"))
+            unknown = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, unknown.returncode)
+            self.assertIn("cannot seed usage.db/upstream_calls", unknown.stderr)
 
     def test_n_minus_one_adapters_preserve_final_authenticated_proof(self) -> None:
         self.assertFalse((ROOT / "scripts/ci/n-minus-one/compose").exists())
