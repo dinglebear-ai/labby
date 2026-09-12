@@ -2439,6 +2439,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "web.disable_auth" => serde_json::json!(cfg.web.disable_auth),
         "auth" => serde_json::to_value(&cfg.auth).unwrap_or(serde_json::Value::Null),
         "code_mode.enabled" => serde_json::json!(cfg.code_mode.enabled),
+        "gateway.auto_reconnect" => serde_json::json!(cfg.gateway.auto_reconnect),
         "gateway.disable_spawn_guard" => serde_json::json!(cfg.gateway.disable_spawn_guard),
         "oauth.machines" => {
             serde_json::to_value(&cfg.oauth.machines).unwrap_or(serde_json::Value::Null)

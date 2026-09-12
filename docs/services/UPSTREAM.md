@@ -524,8 +524,13 @@ Each upstream has independent health tracking.
 ### Recovery
 
 - A successful proxied call resets the upstream to healthy (0 failures).
-- The code defines a `REPROBE_INTERVAL` of 30 seconds and tracks when an upstream became unhealthy.
-- Automatic scheduled re-probing is not currently wired into the runtime. In practice, recovery happens when a later proxied call or resource request succeeds.
+- Set `[gateway].auto_reconnect = true` to arm a long-lived recovery task for
+  each enabled non-OAuth upstream. The task probes every 30 seconds with
+  bounded exponential backoff after failures.
+- A failed heartbeat removes the stale connection and starts a fresh MCP
+  transport. This covers stdio child-process restarts and HTTP reconnects.
+- Recovery tasks are disabled by default. Ephemeral `gateway.test` probes never
+  create background tasks.
 
 ## Response Size Cap
 
