@@ -110,7 +110,7 @@ impl GatewayManager {
             let cfg = self.config.read().await;
             (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
         };
-        let pool = self.new_base_pool(request_timeout, relay_timeout);
+        let pool = self.new_base_pool(request_timeout, relay_timeout, false);
         pool.discover_all_for_subject(&[config], subject).await;
         let snapshot = OauthStatusDiscoverySnapshot {
             completed_at: tokio::time::Instant::now(),

@@ -12,6 +12,12 @@ const INSTALL_SCRIPT: &str = include_str!("../../../../scripts/install.sh");
 
 #[derive(Debug, Args, Clone)]
 pub struct UpdateArgs {
+    /// Install a newer stable release on this host only (macOS Apple Silicon).
+    #[arg(long, conflicts_with_all = ["auto_update", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets"])]
+    pub automatic: bool,
+    /// Enable, disable, or inspect daily native macOS updates.
+    #[arg(long, value_parser = ["enable", "disable", "status"], conflicts_with_all = ["automatic", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets", "no_incus_sync"])]
+    pub auto_update: Option<String>,
     /// Release tag to install. Defaults to the latest GitHub release with a Labby binary asset.
     #[arg(long, default_value = "latest")]
     pub version: String,
@@ -53,6 +59,17 @@ struct UpdateOutcome {
 }
 
 pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
+    if let Some(action) = &args.auto_update {
+        let outcome = crate::self_update::schedule(action, args.dry_run)?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.automatic {
+        let outcome =
+            crate::self_update::automatic(&std::env::current_exe()?, args.dry_run).await?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let install_dir = resolve_install_dir(args.install_dir.as_ref())?;
     let binary = install_dir.join("labby");
 

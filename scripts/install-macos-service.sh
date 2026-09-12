@@ -8,6 +8,7 @@ plist_path="${service_dir}/${service_label}.plist"
 binary_path="${LABBY_SERVICE_BIN:-${HOME}/.local/bin/labby}"
 service_host="${LABBY_SERVICE_HOST:-127.0.0.1}"
 service_port="${LABBY_SERVICE_PORT:-8765}"
+service_auto_update="${LABBY_SERVICE_AUTO_UPDATE:-0}"
 labby_home="${LABBY_HOME:-${HOME}/.labby}"
 state_dir="${LABBY_STATE_DIR:-${labby_home}}"
 
@@ -22,6 +23,7 @@ Environment overrides:
   LABBY_SERVICE_BIN    Labby executable (default: ~/.local/bin/labby)
   LABBY_SERVICE_HOST   Bind host (default: 127.0.0.1)
   LABBY_SERVICE_PORT   Bind port (default: 8765)
+  LABBY_SERVICE_AUTO_UPDATE  Enable daily updates inside the server: 0 or 1 (default: 0)
   LABBY_HOME           Stable config/state/working directory (default: ~/.labby)
   LABBY_STATE_DIR      Log directory (default: ~/.labby)
 EOF
@@ -68,6 +70,12 @@ write_plist() {
     local escaped_label
     local escaped_host
     local escaped_port
+    local update_argument=""
+    local escaped_path
+    escaped_path=$(xml_escape "$PATH")
+    if [[ "$service_auto_update" == 1 ]]; then
+        update_argument='<string>--auto-update</string>'
+    fi
 
     escaped_binary=$(xml_escape "$binary_path")
     escaped_working_dir=$(xml_escape "$labby_home")
@@ -90,6 +98,7 @@ write_plist() {
     <array>
         <string>${escaped_binary}</string>
         <string>serve</string>
+        ${update_argument}
         <string>--host</string>
         <string>${escaped_host}</string>
         <string>--port</string>
@@ -101,6 +110,8 @@ write_plist() {
     <string>${escaped_working_dir}</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>${escaped_path}</string>
         <key>LABBY_HOME</key>
         <string>${escaped_working_dir}</string>
     </dict>
@@ -180,6 +191,14 @@ install_service() {
         exit 1
     fi
 
+    if [[ "$service_auto_update" != 0 && "$service_auto_update" != 1 ]]; then
+        echo "error: LABBY_SERVICE_AUTO_UPDATE must be 0 or 1" >&2
+        return 1
+    fi
+    if [[ "$service_auto_update" == 1 ]]; then
+        command -v gh >/dev/null || { echo "error: GitHub CLI (gh) is required for automatic updates" >&2; return 1; }
+    fi
+
     local previous_plist=""
     local was_loaded=0
     local status
@@ -223,6 +242,10 @@ install_service() {
         return "$status"
     }
     rm -f "$previous_plist"
+    if [[ "$service_auto_update" == 1 ]]; then
+        # Only retire the standalone job after the combined server is healthy.
+        "$binary_path" update --auto-update disable
+    fi
     echo "Labby macOS service is running: ${service_domain}/${service_label}"
     echo "health: http://${service_host}:${service_port}/health"
 }

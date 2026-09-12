@@ -674,6 +674,32 @@ test_launchd_propagates_launchctl_failures() {
     fi
 }
 
+test_launchd_integrates_updates_after_health_check() {
+    local case_root="$test_root/launchd-auto-update"
+    local fake_bin="$case_root/fake-bin" home="$case_root/home"
+    mkdir -p "$home/.local/bin"
+    cat >"$home/.local/bin/labby" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$HOME/binary-calls"
+EOF
+    chmod 755 "$home/.local/bin/labby"
+    make_fake_launchd_tools "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' >"$fake_bin/gh"
+    chmod 755 "$fake_bin/gh"
+    run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=1 >/dev/null
+    assert_contains "$home/Library/LaunchAgents/ai.dinglebear.labby.plist" '<string>--auto-update</string>'
+    assert_contains "$home/binary-calls" 'update --auto-update disable'
+    rm "$home/binary-calls"
+    if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=1 LABBY_TEST_CURL_FAIL=1 LABBY_TEST_HEALTH_ATTEMPTS=1 >"$case_root/out" 2>"$case_root/err"; then
+        fail "unhealthy combined server install succeeded"
+    fi
+    [ ! -e "$home/binary-calls" ] || fail "retired updater before server became healthy"
+    if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=invalid >"$case_root/out" 2>"$case_root/err"; then
+        fail "accepted invalid auto-update mode"
+    fi
+}
+
+test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary
