@@ -186,6 +186,20 @@ impl UpstreamPool {
             if !config.enabled {
                 return Ok(false);
             }
+            // Connection-only callers reuse an already registered peer, including
+            // in-process skill providers. Do not turn that readiness check into
+            // a new OAuth tool-discovery request. Tool discovery remains scoped
+            // to the caller below, even when a regular peer exists.
+            if readiness == Readiness::Connection
+                && config.oauth.is_some()
+                && oauth_subject.is_some()
+            {
+                let connect_lock = self.lazy_connect_lock(&config.name).await;
+                let _connect_guard = connect_lock.lock().await;
+                if self.upstream_is_ready(&config.name, readiness).await {
+                    return Ok(false);
+                }
+            }
             // OAuth tool discovery is identity-scoped. Keep its peer and tool list
             // in the per-(upstream, subject) cache; publishing either into the
             // process-global connection/catalog maps lets the first authenticated
