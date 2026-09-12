@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { AURORA_CARD_TITLE, AURORA_DENSE_META, AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { browserApi } from '@/lib/api/browser-client'
@@ -27,6 +28,15 @@ type BrowserData = {
 }
 
 const POLL_INTERVAL_MS = 5_000
+const PAIRING_FINGERPRINT_LENGTH = 12
+
+function normalizePairingFingerprint(value: string): string {
+  return value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, PAIRING_FINGERPRINT_LENGTH)
+}
+
+function validPairingFingerprint(value: string): boolean {
+  return new RegExp(`^[0-9A-F]{${PAIRING_FINGERPRINT_LENGTH}}$`).test(value)
+}
 
 function browserName(browsers: BrowserIdentity[], id: string): string {
   return browsers.find((browser) => browser.id === id)?.display_name ?? 'Unknown browser'
@@ -44,6 +54,7 @@ export function BrowserBridgePage() {
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string>()
   const [busyKey, setBusyKey] = React.useState<string>()
+  const [pairingFingerprints, setPairingFingerprints] = React.useState<Record<string, string>>({})
   const [revokeTarget, setRevokeTarget] = React.useState<BrowserIdentity>()
   const loadGeneration = React.useRef(0)
   const mutationPending = React.useRef(false)
@@ -141,22 +152,45 @@ export function BrowserBridgePage() {
         <Card variant="strong">
           <CardHeader className="border-b border-aurora-border-default/70">
             <CardTitle className={AURORA_CARD_TITLE}>Pending pairing requests</CardTitle>
-            <CardDescription>Approve only extension identities you initiated from a browser you control.</CardDescription>
+            <CardDescription>Enter the fingerprint shown by the requesting extension and approve only when it matches the browser you control.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 pb-6 md:grid-cols-2">
-            {data.pairings.map((pairing) => (
-              <div key={pairing.id} className="flex min-w-0 items-center gap-3 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/8 p-4">
-                <ShieldCheck className="size-5 shrink-0 text-aurora-warn" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-aurora-text-primary">{pairing.display_name}</div>
-                  <div className={cn(AURORA_DENSE_META, 'truncate font-mono text-aurora-text-muted')} title={pairing.extension_id}>{pairing.extension_id}</div>
-                  <div className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Expires {formatUiRelativeTime(pairing.expires_at * 1000)}</div>
+            {data.pairings.map((pairing) => {
+              const fingerprint = pairingFingerprints[pairing.id] ?? ''
+              const canApprove = validPairingFingerprint(fingerprint)
+              return (
+                <div key={pairing.id} className="grid min-w-0 gap-3 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/8 p-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+                  <ShieldCheck className="size-5 shrink-0 text-aurora-warn" />
+                  <div className="min-w-0">
+                    <div className="font-medium text-aurora-text-primary">{pairing.display_name}</div>
+                    <div className={cn(AURORA_DENSE_META, 'truncate font-mono text-aurora-text-muted')} title={pairing.extension_id}>{pairing.extension_id}</div>
+                    <div className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Expires {formatUiRelativeTime(pairing.expires_at * 1000)}</div>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <label className="min-w-0 flex-1 text-xs font-medium text-aurora-text-primary">
+                        <span>Fingerprint from extension</span>
+                        <Input
+                          aria-label={`Pairing fingerprint for ${pairing.display_name}`}
+                          autoComplete="off"
+                          className="mt-1 font-mono uppercase"
+                          inputMode="text"
+                          maxLength={PAIRING_FINGERPRINT_LENGTH}
+                          placeholder="A1B2C3D4E5F6"
+                          spellCheck={false}
+                          value={fingerprint}
+                          onChange={(event) => setPairingFingerprints((current) => ({
+                            ...current,
+                            [pairing.id]: normalizePairingFingerprint(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <Button size="sm" onClick={() => void mutate(`pair:${pairing.id}`, () => browserApi.approvePairing(pairing.id, fingerprint), `${pairing.display_name} paired`)} disabled={Boolean(busyKey) || !canApprove}>
+                        {busyKey === `pair:${pairing.id}` ? <Loader2 className="animate-spin" /> : <Check />}Approve
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                <Button size="sm" onClick={() => void mutate(`pair:${pairing.id}`, () => browserApi.approvePairing(pairing.id), `${pairing.display_name} paired`)} disabled={Boolean(busyKey)}>
-                  {busyKey === `pair:${pairing.id}` ? <Loader2 className="animate-spin" /> : <Check />}Approve
-                </Button>
-              </div>
-            ))}
+              )
+            })}
           </CardContent>
         </Card>
       ) : null}

@@ -1,5 +1,5 @@
 import {BROAD_ORIGINS, disableAllTabs, enableAllTabs} from "./permissions.js";
-import {parseLoopbackBaseUrl} from "./base_url.js";
+import {parseBaseUrl} from "./base_url.js";
 
 /**
  * Every element below is declared in popup.html. Failing loudly on a missing
@@ -20,32 +20,38 @@ const paused = /** @type {HTMLInputElement} */ (required("#paused"));
 const disclosure = /** @type {HTMLElement} */ (required("#disclosure"));
 const status = /** @type {HTMLElement} */ (required("#status"));
 
-const saved = /** @type {{baseUrl?: string, scanningMode?: string, scanningPaused?: boolean, bridgeStatus?: {state?: string, message?: string}}} */ (
-  await chrome.storage.local.get(["baseUrl", "scanningMode", "scanningPaused", "bridgeStatus"])
+const saved = /** @type {{baseUrl?: string, scanningMode?: string, scanningPaused?: boolean, pairingFingerprint?: string, bridgeStatus?: {state?: string, message?: string}}} */ (
+  await chrome.storage.local.get(["baseUrl", "scanningMode", "scanningPaused", "pairingFingerprint", "bridgeStatus"])
 );
 baseUrl.value = saved.baseUrl || "http://127.0.0.1:8765";
 mode.value = saved.scanningMode || "granted_sites";
 paused.checked = saved.scanningPaused || false;
 await renderDisclosure();
-renderBridgeStatus(saved.bridgeStatus);
+let currentBridgeStatus = saved.bridgeStatus;
+let currentPairingFingerprint = saved.pairingFingerprint;
+renderBridgeStatus(currentBridgeStatus, currentPairingFingerprint);
 
 chrome.storage.onChanged.addListener((changes) => {
-  const bridgeStatus = /** @type {{state?: string, message?: string} | undefined} */ (changes.bridgeStatus?.newValue);
-  renderBridgeStatus(bridgeStatus);
+  if ("bridgeStatus" in changes) currentBridgeStatus = /** @type {{state?: string, message?: string} | undefined} */ (changes.bridgeStatus.newValue);
+  if ("pairingFingerprint" in changes) currentPairingFingerprint = /** @type {string | undefined} */ (changes.pairingFingerprint.newValue);
+  renderBridgeStatus(currentBridgeStatus, currentPairingFingerprint);
 });
 
-/** @param {{state?: string, message?: string} | undefined} bridgeStatus */
-function renderBridgeStatus(bridgeStatus) {
+/** @param {{state?: string, message?: string} | undefined} bridgeStatus @param {string | undefined} pairingFingerprint */
+function renderBridgeStatus(bridgeStatus, pairingFingerprint) {
   if (bridgeStatus?.state === "error") status.textContent = `Bridge error: ${bridgeStatus.message || "connection failed"}`;
   else if (bridgeStatus?.state === "connected") status.textContent = "Connected to Labby.";
+  else if (bridgeStatus?.state === "pairing") status.textContent = pairingFingerprint
+    ? `Pairing pending. Fingerprint: ${pairingFingerprint}. Confirm this fingerprint when approving in Labby.`
+    : "Pairing pending. Approve it in Labby.";
 }
 
 required("#save").addEventListener("click", async () => {
   let normalizedBaseUrl;
   try {
-    normalizedBaseUrl = parseLoopbackBaseUrl(baseUrl.value);
+    normalizedBaseUrl = parseBaseUrl(baseUrl.value);
   } catch {
-    status.textContent = "Labby must use a loopback URL such as http://127.0.0.1:8765.";
+    status.textContent = "Enter a Labby origin such as http://127.0.0.1:8765 or https://labby.example.com. Remote services require HTTPS.";
     return;
   }
   if (mode.value === "all_tabs") {
@@ -71,7 +77,10 @@ required("#pair").addEventListener("click", async () => {
   try {
     const reply = await chrome.runtime.sendMessage({type: "pair", displayName: "Chrome"});
     if (!reply?.ok) throw new Error(reply?.error || reply?.kind || "Pairing request failed");
-    status.textContent = "Pairing request sent. Approve it in Labby.";
+    const pairingFingerprint = reply?.payload?.pairing_fingerprint;
+    status.textContent = pairingFingerprint
+      ? `Pairing request sent. Fingerprint: ${pairingFingerprint}. Confirm this fingerprint when approving in Labby.`
+      : "Pairing request sent. Approve it in Labby.";
   } catch (error) { status.textContent = error instanceof Error ? error.message : "Pairing request failed."; }
 });
 mode.addEventListener("change", renderDisclosure);

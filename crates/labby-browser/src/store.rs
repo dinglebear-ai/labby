@@ -19,11 +19,13 @@ mod storage_tests;
 pub use storage::BrowserStorageLock;
 
 const PAIRING_TTL_SECONDS: i64 = 300;
+const MAX_PENDING_PAIRINGS: i64 = 64;
 const CHALLENGE_TTL_SECONDS: i64 = 60;
+const MAX_PENDING_AUTH_CHALLENGES: i64 = 64;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 32;
 const MAX_SESSIONS_PER_BROWSER: i64 = 256;
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const DEFAULT_SESSION_PAGE_SIZE: usize = 50;
 const MAX_SESSION_PAGE_SIZE: usize = 100;
 // The facade owns one mutex-protected SQLite connection. Admit only one blocking
@@ -125,6 +127,14 @@ pub struct PairingRequest {
     pub status: PairingStatus,
     pub expires_at: i64,
     pub browser_id: Option<String>,
+}
+
+impl PairingRequest {
+    /// Short out-of-band fingerprint that binds operator approval to this exact key.
+    #[must_use]
+    pub fn pairing_fingerprint(&self) -> String {
+        derive_pairing_fingerprint(&self.id, &self.extension_id, &self.public_key)
+    }
 }
 
 /// One-time authentication challenge.
@@ -282,9 +292,15 @@ impl Store {
     pub async fn pending_pairings(&self) -> Result<Vec<PairingRequest>> {
         self.call(BlockingStore::pending_pairings).await
     }
-    pub async fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+    pub async fn approve_pairing(
+        &self,
+        id: &str,
+        pairing_fingerprint: &str,
+    ) -> Result<BrowserRecord> {
         let id = id.to_owned();
-        self.call(move |s| s.approve_pairing(&id)).await
+        let pairing_fingerprint = pairing_fingerprint.to_owned();
+        self.call(move |s| s.approve_pairing(&id, &pairing_fingerprint))
+            .await
     }
     pub async fn browser(&self, id: &str) -> Result<Option<BrowserRecord>> {
         let id = id.to_owned();
@@ -300,6 +316,10 @@ impl Store {
     pub(crate) async fn create_challenge(&self, id: &str) -> Result<AuthChallenge> {
         let id = id.to_owned();
         self.call(move |s| s.create_challenge(&id)).await
+    }
+    pub(crate) async fn challenge(&self, id: &str) -> Result<AuthChallenge> {
+        let id = id.to_owned();
+        self.call(move |s| s.challenge(&id)).await
     }
     pub(crate) async fn take_challenge(&self, id: &str) -> Result<AuthChallenge> {
         let id = id.to_owned();
@@ -440,7 +460,9 @@ impl BlockingStore {
         })
     }
 
-    /// Create or refresh one pending pairing request.
+    /// Create or reuse one pending pairing request. A retry may reuse only the
+    /// exact identity that created the pending request; its expiry,
+    /// operator-visible metadata, and credential are immutable until it resolves.
     fn request_pairing(
         &self,
         display_name: &str,
@@ -450,17 +472,46 @@ impl BlockingStore {
         validate_pairing_input(display_name, extension_id, &public_key)?;
         let now = now_seconds()?;
         let expires_at = now + PAIRING_TTL_SECONDS;
-        let id = Uuid::new_v4().to_string();
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE extension_id=?2 AND status='pending'",
-            params![now, extension_id],
+            "DELETE FROM browser_pairing_requests WHERE status='expired' AND resolved_at IS NOT NULL AND resolved_at<=?1",
+            params![now - PAIRING_TTL_SECONDS],
         )?;
         transaction.execute(
-            "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
-            params![id, display_name, extension_id, public_key, expires_at, now],
+            "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE status='pending' AND expires_at<=?1",
+            params![now],
         )?;
+        let existing = transaction
+            .query_row(
+                "SELECT id,extension_id FROM browser_pairing_requests WHERE public_key=?1 AND status='pending' LIMIT 1",
+                params![&public_key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let id = if let Some((id, existing_extension_id)) = existing {
+            if existing_extension_id != extension_id {
+                return Err(BrowserError::InvalidRequest(
+                    "a pairing request is already pending for this browser identity".to_string(),
+                ));
+            }
+            id
+        } else {
+            let pending: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM browser_pairing_requests WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )?;
+            if pending >= MAX_PENDING_PAIRINGS {
+                return Err(BrowserError::ServerBusy);
+            }
+            let id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
+                params![id, display_name, extension_id, public_key, expires_at, now],
+            )?;
+            id
+        };
         transaction.commit()?;
         drop(connection);
         self.pairing(&id)?.ok_or(BrowserError::NotFound)
@@ -495,7 +546,7 @@ impl BlockingStore {
     }
 
     /// Approve a pairing and create the durable browser identity.
-    fn approve_pairing(&self, id: &str) -> Result<BrowserRecord> {
+    fn approve_pairing(&self, id: &str, pairing_fingerprint: &str) -> Result<BrowserRecord> {
         let now = now_seconds()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -505,17 +556,25 @@ impl BlockingStore {
                 "pairing request is not pending".to_string(),
             ));
         }
+        if !pairing
+            .pairing_fingerprint()
+            .eq_ignore_ascii_case(pairing_fingerprint)
+        {
+            return Err(BrowserError::InvalidRequest(
+                "pairing fingerprint does not match".to_string(),
+            ));
+        }
         transaction.execute(
-            "UPDATE document_sessions SET enabled=0,status='closed',last_seen_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE extension_id=?2 AND revoked_at IS NULL) AND status='active'",
-            params![now, pairing.extension_id],
+            "UPDATE document_sessions SET enabled=0,status='closed',last_seen_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE public_key=?2 AND revoked_at IS NULL) AND status='active'",
+            params![now, &pairing.public_key],
         )?;
         transaction.execute(
-            "UPDATE browser_auth_challenges SET used_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE extension_id=?2 AND revoked_at IS NULL) AND used_at IS NULL",
-            params![now, pairing.extension_id],
+            "UPDATE browser_auth_challenges SET used_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE public_key=?2 AND revoked_at IS NULL) AND used_at IS NULL",
+            params![now, &pairing.public_key],
         )?;
         transaction.execute(
-            "UPDATE browsers SET revoked_at=?1 WHERE extension_id=?2 AND revoked_at IS NULL",
-            params![now, pairing.extension_id],
+            "UPDATE browsers SET revoked_at=?1 WHERE public_key=?2 AND revoked_at IS NULL",
+            params![now, &pairing.public_key],
         )?;
         let browser_id = Uuid::new_v4().to_string();
         transaction.execute(
@@ -580,25 +639,74 @@ impl BlockingStore {
         self.browser(id)?.ok_or(BrowserError::NotFound)
     }
 
-    /// Create a one-time random challenge for an active browser.
+    /// Create or reuse one live challenge for an active browser.
     pub(crate) fn create_challenge(&self, browser_id: &str) -> Result<AuthChallenge> {
-        let browser = self
-            .browser(browser_id)?
-            .ok_or(BrowserError::AuthenticationFailed)?;
-        if browser.revoked_at.is_some() {
+        let now = now_seconds()?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let active = transaction
+            .query_row(
+                "SELECT 1 FROM browsers WHERE id=?1 AND revoked_at IS NULL",
+                [browser_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !active {
             return Err(BrowserError::AuthenticationFailed);
         }
-        let now = now_seconds()?;
+        transaction.execute(
+            "DELETE FROM browser_auth_challenges WHERE used_at IS NOT NULL OR expires_at<=?1",
+            params![now],
+        )?;
+        if let Some(challenge) = transaction
+            .query_row(
+                "SELECT id,browser_id,nonce,expires_at FROM browser_auth_challenges WHERE browser_id=?1 AND used_at IS NULL AND expires_at>?2 ORDER BY created_at DESC LIMIT 1",
+                params![browser_id, now],
+                map_challenge,
+            )
+            .optional()?
+        {
+            transaction.commit()?;
+            return Ok(challenge);
+        }
+        let pending: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM browser_auth_challenges WHERE used_at IS NULL AND expires_at>?1",
+            params![now],
+            |row| row.get(0),
+        )?;
+        if pending >= MAX_PENDING_AUTH_CHALLENGES {
+            return Err(BrowserError::ServerBusy);
+        }
         let challenge = AuthChallenge {
             id: Uuid::new_v4().to_string(),
             browser_id: browser_id.to_string(),
             nonce: Uuid::new_v4().as_bytes().to_vec(),
             expires_at: now + CHALLENGE_TTL_SECONDS,
         };
-        self.lock()?.execute(
+        transaction.execute(
             "INSERT INTO browser_auth_challenges(id,browser_id,nonce,expires_at,created_at) VALUES(?1,?2,?3,?4,?5)",
             params![challenge.id, challenge.browser_id, challenge.nonce, challenge.expires_at, now],
         )?;
+        transaction.commit()?;
+        Ok(challenge)
+    }
+
+    /// Read one live challenge without consuming it.
+    pub(crate) fn challenge(&self, id: &str) -> Result<AuthChallenge> {
+        let now = now_seconds()?;
+        let connection = self.lock()?;
+        let challenge = connection
+            .query_row(
+                "SELECT id,browser_id,nonce,expires_at FROM browser_auth_challenges WHERE id=?1 AND used_at IS NULL",
+                [id],
+                map_challenge,
+            )
+            .optional()?
+            .ok_or(BrowserError::AuthenticationFailed)?;
+        if challenge.expires_at <= now {
+            return Err(BrowserError::AuthenticationFailed);
+        }
         Ok(challenge)
     }
 
@@ -610,7 +718,7 @@ impl BlockingStore {
             .query_row(
                 "SELECT id,browser_id,nonce,expires_at FROM browser_auth_challenges WHERE id=?1 AND used_at IS NULL",
                 [id],
-                |row| Ok(AuthChallenge { id: row.get(0)?, browser_id: row.get(1)?, nonce: row.get(2)?, expires_at: row.get(3)? }),
+                map_challenge,
             )
             .optional()?
             .ok_or(BrowserError::AuthenticationFailed)?;
@@ -916,6 +1024,15 @@ fn pairing_row(connection: &Connection, id: &str) -> Result<Option<PairingReques
         .map_err(Into::into)
 }
 
+fn map_challenge(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthChallenge> {
+    Ok(AuthChallenge {
+        id: row.get(0)?,
+        browser_id: row.get(1)?,
+        nonce: row.get(2)?,
+        expires_at: row.get(3)?,
+    })
+}
+
 fn map_pairing(row: &rusqlite::Row<'_>) -> rusqlite::Result<PairingRequest> {
     let status: String = row.get(4)?;
     let status = PairingStatus::parse(&status).map_err(|error| {
@@ -942,6 +1059,20 @@ fn map_browser(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserRecord> {
         last_seen_at: row.get(5)?,
         revoked_at: row.get(6)?,
     })
+}
+
+fn derive_pairing_fingerprint(id: &str, extension_id: &str, public_key: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"labby-browser-pairing-fingerprint-v1");
+    for field in [id.as_bytes(), extension_id.as_bytes(), public_key] {
+        digest.update((field.len() as u64).to_le_bytes());
+        digest.update(field);
+    }
+    let digest = digest.finalize();
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5]
+    )
 }
 
 pub(crate) fn digest_catalog(
@@ -1111,6 +1242,40 @@ fn migrate(connection: &Connection) -> Result<()> {
             )?;
             connection.execute(
                 "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
+                [3_i64],
+            )?;
+        }
+        if version <= 3 {
+            // v3 keyed active identities by extension id. The same Ed25519 key
+            // could therefore appear under multiple extension ids. Such rows
+            // are ambiguous under v4's credential identity model, so migrate
+            // fail-closed: preserve history but revoke every duplicated active
+            // credential and expire every duplicated pending approval target.
+            let migration_now = now_seconds()?;
+            connection.execute(
+                "UPDATE document_sessions SET enabled=0,status='closed',last_seen_at=?1                  WHERE status='active' AND browser_id IN (                   SELECT id FROM browsers WHERE revoked_at IS NULL AND public_key IN (                     SELECT public_key FROM browsers WHERE revoked_at IS NULL GROUP BY public_key HAVING COUNT(*)>1                   )                 )",
+                params![migration_now],
+            )?;
+            connection.execute(
+                "UPDATE browser_auth_challenges SET used_at=?1                  WHERE used_at IS NULL AND browser_id IN (                   SELECT id FROM browsers WHERE revoked_at IS NULL AND public_key IN (                     SELECT public_key FROM browsers WHERE revoked_at IS NULL GROUP BY public_key HAVING COUNT(*)>1                   )                 )",
+                params![migration_now],
+            )?;
+            connection.execute(
+                "UPDATE browsers SET revoked_at=?1 WHERE revoked_at IS NULL AND public_key IN (                   SELECT public_key FROM browsers WHERE revoked_at IS NULL GROUP BY public_key HAVING COUNT(*)>1                 )",
+                params![migration_now],
+            )?;
+            connection.execute(
+                "UPDATE browser_pairing_requests SET status='expired',resolved_at=?1                  WHERE status='pending' AND public_key IN (                   SELECT public_key FROM browser_pairing_requests WHERE status='pending' GROUP BY public_key HAVING COUNT(*)>1                 )",
+                params![migration_now],
+            )?;
+            connection.execute_batch(
+                "DROP INDEX IF EXISTS browsers_active_extension;
+                 DROP INDEX IF EXISTS browser_pairing_active_extension;
+                 CREATE UNIQUE INDEX IF NOT EXISTS browsers_active_public_key ON browsers(public_key) WHERE revoked_at IS NULL;
+                 CREATE UNIQUE INDEX IF NOT EXISTS browser_pairing_active_public_key ON browser_pairing_requests(public_key) WHERE status='pending';",
+            )?;
+            connection.execute(
+                "UPDATE browser_meta SET value=?1 WHERE key='schema_version'",
                 [CURRENT_SCHEMA_VERSION],
             )?;
         }
@@ -1167,9 +1332,255 @@ mod tests {
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
         assert_eq!(request.status, PairingStatus::Pending);
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         assert_eq!(browser.extension_id, extension_id());
-        assert!(store.approve_pairing(&request.id).is_err());
+        assert!(
+            store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pairing_approval_requires_the_extension_fingerprint() {
+        let store = BlockingStore::memory().unwrap();
+        let request = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let fingerprint = request.pairing_fingerprint();
+        assert_eq!(fingerprint.len(), 12);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let error = store
+            .approve_pairing(&request.id, "000000000000")
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_request");
+        assert_eq!(store.pending_pairings().unwrap().len(), 1);
+
+        let browser = store
+            .approve_pairing(&request.id, &fingerprint.to_ascii_lowercase())
+            .unwrap();
+        assert_eq!(browser.extension_id, extension_id());
+    }
+
+    #[test]
+    fn pairing_retry_reuses_the_pending_slot_for_the_same_key() {
+        let store = BlockingStore::memory().unwrap();
+        let first = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let shortened_expiry = first.expires_at - 30;
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE browser_pairing_requests SET expires_at=?1 WHERE id=?2",
+                params![shortened_expiry, first.id],
+            )
+            .unwrap();
+        let retried = store
+            .request_pairing("Chrome renamed", extension_id(), vec![7; 32])
+            .unwrap();
+        assert_eq!(retried.id, first.id);
+        assert_eq!(retried.display_name, "Chrome");
+        assert_eq!(retried.public_key, vec![7; 32]);
+        assert_eq!(retried.expires_at, shortened_expiry);
+        assert_eq!(store.pending_pairings().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn distinct_browser_keys_can_pair_concurrently_under_one_extension_id() {
+        let store = BlockingStore::memory().unwrap();
+        let first = store
+            .request_pairing("Chrome one", extension_id(), vec![7; 32])
+            .unwrap();
+        let second = store
+            .request_pairing("Chrome two", extension_id(), vec![8; 32])
+            .unwrap();
+
+        assert_ne!(second.id, first.id);
+        let pending = store.pending_pairings().unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(
+            pending
+                .iter()
+                .any(|pairing| pairing.public_key == vec![7; 32])
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|pairing| pairing.public_key == vec![8; 32])
+        );
+    }
+
+    #[test]
+    fn re_pairing_one_browser_key_does_not_revoke_another_installation() {
+        let store = BlockingStore::memory().unwrap();
+        let first_pairing = store
+            .request_pairing("Chrome one", extension_id(), vec![7; 32])
+            .unwrap();
+        let first = store
+            .approve_pairing(&first_pairing.id, &first_pairing.pairing_fingerprint())
+            .unwrap();
+        let second_pairing = store
+            .request_pairing("Chrome two", extension_id(), vec![8; 32])
+            .unwrap();
+        let second = store
+            .approve_pairing(&second_pairing.id, &second_pairing.pairing_fingerprint())
+            .unwrap();
+        assert!(
+            store
+                .browser(&first.id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
+        );
+        assert!(
+            store
+                .browser(&second.id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
+        );
+
+        let replacement_pairing = store
+            .request_pairing("Chrome one replacement", extension_id(), vec![7; 32])
+            .unwrap();
+        let replacement = store
+            .approve_pairing(
+                &replacement_pairing.id,
+                &replacement_pairing.pairing_fingerprint(),
+            )
+            .unwrap();
+        assert!(
+            store
+                .browser(&first.id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_some()
+        );
+        assert!(
+            store
+                .browser(&second.id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
+        );
+        assert!(
+            store
+                .browser(&replacement.id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_pairing_capacity_is_bounded() {
+        let store = BlockingStore::memory().unwrap();
+        for index in 0..MAX_PENDING_PAIRINGS as u8 {
+            store
+                .request_pairing("Chrome", extension_id(), vec![index; 32])
+                .unwrap();
+        }
+        let error = store
+            .request_pairing(
+                "One too many",
+                extension_id(),
+                vec![MAX_PENDING_PAIRINGS as u8; 32],
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), "server_busy");
+        assert_eq!(
+            store.pending_pairings().unwrap().len(),
+            MAX_PENDING_PAIRINGS as usize
+        );
+    }
+
+    #[test]
+    fn auth_challenge_reaps_old_rows_and_reuses_one_browser_pending_challenge() {
+        let store = BlockingStore::memory().unwrap();
+        let request = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
+
+        let used = store.create_challenge(&browser.id).unwrap();
+        store.take_challenge(&used.id).unwrap();
+        let expired = store.create_challenge(&browser.id).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE browser_auth_challenges SET expires_at=0 WHERE id=?1",
+                params![expired.id],
+            )
+            .unwrap();
+
+        let live = store.create_challenge(&browser.id).unwrap();
+        let reused = store.create_challenge(&browser.id).unwrap();
+        assert_eq!(reused.id, live.id);
+        assert_eq!(reused.browser_id, live.browser_id);
+        assert_eq!(reused.nonce, live.nonce);
+        let peeked = store.challenge(&live.id).unwrap();
+        assert_eq!(peeked.id, live.id);
+        let consumed = store.take_challenge(&live.id).unwrap();
+        assert_eq!(consumed.id, live.id);
+        assert_eq!(
+            store.take_challenge(&live.id).unwrap_err().kind(),
+            "auth_failed"
+        );
+        let remaining: i64 = store
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM browser_auth_challenges", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn auth_challenge_capacity_is_bounded_across_distinct_browsers() {
+        let store = BlockingStore::memory().unwrap();
+        for index in 0..MAX_PENDING_AUTH_CHALLENGES {
+            let key = vec![index as u8; 32];
+            let request = store
+                .request_pairing("Chrome", extension_id(), key)
+                .unwrap();
+            let browser = store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .unwrap();
+            store.create_challenge(&browser.id).unwrap();
+        }
+        let key = vec![MAX_PENDING_AUTH_CHALLENGES as u8; 32];
+        let request = store
+            .request_pairing("One too many", extension_id(), key)
+            .unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
+        let error = store.create_challenge(&browser.id).unwrap_err();
+        assert_eq!(error.kind(), "server_busy");
+        let pending: i64 = store
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM browser_auth_challenges WHERE used_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, MAX_PENDING_AUTH_CHALLENGES);
     }
 
     #[test]
@@ -1178,7 +1589,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         let observation = CatalogObservation {
             tab_id: 1,
             document_id: "doc".into(),
@@ -1215,7 +1628,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         store
             .observe(
                 &browser.id,
@@ -1258,7 +1673,9 @@ mod tests {
         let request = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .unwrap();
-        let browser = store.approve_pairing(&request.id).unwrap();
+        let browser = store
+            .approve_pairing(&request.id, &request.pairing_fingerprint())
+            .unwrap();
         let mut observation = CatalogObservation {
             tab_id: 1,
             document_id: "doc".into(),
@@ -1337,7 +1754,9 @@ mod tests {
             let request = store
                 .request_pairing("Chrome", extension_id(), vec![7; 32])
                 .unwrap();
-            let browser = store.approve_pairing(&request.id).unwrap();
+            let browser = store
+                .approve_pairing(&request.id, &request.pairing_fingerprint())
+                .unwrap();
             store.revoke_browser(&browser.id).unwrap();
             browser.id
         };
@@ -1445,13 +1864,173 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrates_extension_uniqueness_to_browser_credentials() {
+        let directory = private_test_directory();
+        let path = directory.path().join("browser.sqlite3");
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX browsers_active_public_key;
+                 DROP INDEX browser_pairing_active_public_key;
+                 CREATE UNIQUE INDEX browsers_active_extension ON browsers(extension_id) WHERE revoked_at IS NULL;
+                 CREATE UNIQUE INDEX browser_pairing_active_extension ON browser_pairing_requests(extension_id) WHERE status='pending';
+                 UPDATE browser_meta SET value='3' WHERE key='schema_version';",
+            )
+            .unwrap();
+        drop(connection);
+
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(path).unwrap();
+        let marker: String = connection
+            .query_row(
+                "SELECT value FROM browser_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let old_indexes: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('browsers_active_extension','browser_pairing_active_extension')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let credential_indexes: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('browsers_active_public_key','browser_pairing_active_public_key')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, CURRENT_SCHEMA_VERSION.to_string());
+        assert_eq!(old_indexes, 0);
+        assert_eq!(credential_indexes, 2);
+    }
+
+    #[tokio::test]
+    async fn migration_v4_revokes_ambiguous_duplicate_credentials() {
+        let directory = private_test_directory();
+        let path = directory.path().join("browser.sqlite3");
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX browsers_active_public_key;
+                 DROP INDEX browser_pairing_active_public_key;
+                 CREATE UNIQUE INDEX browsers_active_extension ON browsers(extension_id) WHERE revoked_at IS NULL;
+                 CREATE UNIQUE INDEX browser_pairing_active_extension ON browser_pairing_requests(extension_id) WHERE status='pending';
+                 UPDATE browser_meta SET value='3' WHERE key='schema_version';",
+            )
+            .unwrap();
+        let key = vec![9_u8; 32];
+        for (index, (browser_id, extension_id)) in [
+            ("legacy-a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("legacy-b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let index = i64::try_from(index).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO browsers(id,display_name,extension_id,public_key,paired_at) VALUES(?1,?2,?3,?4,?5)",
+                    params![browser_id, format!("Legacy {index}"), extension_id, key, index + 1],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,enabled,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,'https://example.com','/','Legacy',1,'fingerprint','[]','active',1,1,1)",
+                    params![format!("session-{index}"), browser_id, index, format!("doc-{index}")],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO browser_auth_challenges(id,browser_id,nonce,expires_at,created_at) VALUES(?1,?2,?3,4000000000,1)",
+                    params![format!("challenge-{index}"), browser_id, vec![index as u8; 16]],
+                )
+                .unwrap();
+        }
+        for (index, extension_id) in [
+            "cccccccccccccccccccccccccccccccc",
+            "dddddddddddddddddddddddddddddddd",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let created_at = i64::try_from(index).unwrap() + 2;
+            connection
+                .execute(
+                    "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,'Legacy pairing',?2,?3,'pending',4000000000,?4)",
+                    params![format!("pairing-{index}"), extension_id, key, created_at],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        drop(Store::open(&path).await.unwrap());
+        let connection = Connection::open(path).unwrap();
+        let active: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM browsers WHERE public_key=?1 AND revoked_at IS NULL",
+                params![key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let revoked: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM browsers WHERE public_key=?1 AND revoked_at IS NOT NULL",
+                params![key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let closed_sessions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM document_sessions WHERE browser_id IN ('legacy-a','legacy-b') AND status='closed' AND enabled=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let live_challenges: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM browser_auth_challenges WHERE browser_id IN ('legacy-a','legacy-b') AND used_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pending_pairings: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM browser_pairing_requests WHERE public_key=?1 AND status='pending'",
+                params![key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let expired_pairings: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM browser_pairing_requests WHERE public_key=?1 AND status='expired' AND resolved_at IS NOT NULL",
+                params![key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0);
+        assert_eq!(revoked, 2);
+        assert_eq!(closed_sessions, 2);
+        assert_eq!(live_challenges, 0);
+        assert_eq!(pending_pairings, 0);
+        assert_eq!(expired_pairings, 2);
+    }
+
+    #[tokio::test]
     async fn session_pages_are_bounded_stable_summaries_with_exact_detail() {
         let store = Store::memory().await.unwrap();
         let pairing = store
             .request_pairing("Chrome", extension_id(), vec![7; 32])
             .await
             .unwrap();
-        let browser = store.approve_pairing(&pairing.id).await.unwrap();
+        let browser = store
+            .approve_pairing(&pairing.id, &pairing.pairing_fingerprint())
+            .await
+            .unwrap();
         for tab_id in 0..5 {
             store
                 .observe(

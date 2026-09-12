@@ -3,9 +3,10 @@ import {bridgeFailureKind} from "./errors.js";
 import {buildObservation, canScanTab, ignoredObservationTabIds, stableStringify} from "./scanning.js";
 import {cancelWebMcp, invokeWebMcp, probeWebMcp} from "./probe.js";
 import {reconcileModeAfterRemoval} from "./permissions.js";
-import {parseLoopbackBaseUrl} from "./base_url.js";
+import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
+import {verifiedPairingFingerprint} from "./pairing.js";
 
 /** @typedef {{url: string, title: string, tools: unknown[], tab_id: number, document_id: string}} Observation */
 
@@ -25,6 +26,22 @@ const pendingCalls = new Map();
 let pairingPollTimer;
 /** @type {number | undefined} */
 let pairingPollExpiresAt;
+let pairingGeneration = 0;
+/** @type {Promise<void>} */
+let pairingStateLifecycle = Promise.resolve();
+
+/** @template T @param {() => Promise<T>} operation @returns {Promise<T>} */
+function serializedPairingState(operation) {
+  const result = pairingStateLifecycle.then(operation, operation);
+  pairingStateLifecycle = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+/** @param {number} generation @param {LabbyBrowserChannel} activeChannel */
+function pairingStateIsCurrent(generation, activeChannel) {
+  return generation === pairingGeneration && channel === activeChannel;
+}
+
 const identityManager = createIdentityManager({
   keyStore: new IndexedDbIdentityStore(indexedDB),
   storage: chrome.storage.local,
@@ -82,7 +99,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function initialize() {
   await chrome.alarms.create("labby-periodic-scan", {periodInMinutes: 1});
   const settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
-  try { settings.baseUrl = parseLoopbackBaseUrl(settings.baseUrl); } catch {
+  try { settings.baseUrl = parseBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
     await chrome.storage.local.set({baseUrl: settings.baseUrl});
   }
@@ -104,20 +121,41 @@ async function initialize() {
   else if (identity.browserId) await scanAll();
 }
 
-/** @param {unknown} error @param {unknown} context */
+/** @param {unknown} error @param {{kind?: string, pairingId?: string, pairingGeneration?: number} | unknown} context */
 async function reportBridgeFailure(error, context) {
   const message = bridgeFailureKind(error);
   console.error("Labby browser bridge connection failed", {kind: message});
-  await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
+  const failureContext = /** @type {{kind?: string, pairingId?: string, pairingGeneration?: number}} */ (context && typeof context === "object" ? context : {});
+  if (typeof failureContext.pairingGeneration === "number" && failureContext.pairingGeneration !== pairingGeneration) return;
+
   if (message === "auth_failed") {
+    const failedChannel = channel;
+    channel = undefined;
+    if (failedChannel) {
+      failedChannel.browserId = undefined;
+      failedChannel.close();
+    }
     await identityManager.revoke();
-    if (channel) channel.browserId = undefined;
+    await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
+    return;
   }
-  if (message === "pairing_not_pending") {
-    await chrome.storage.local.remove("pairingId");
-    clearTimeout(pairingPollTimer);
-    pairingPollTimer = undefined;
+
+  if (message === "pairing_not_pending" && typeof failureContext.pairingId === "string" && typeof failureContext.pairingGeneration === "number") {
+    await serializedPairingState(async () => {
+      if (failureContext.pairingGeneration !== pairingGeneration) return;
+      const current = await chrome.storage.local.get("pairingId");
+      if (failureContext.pairingGeneration !== pairingGeneration || current.pairingId !== failureContext.pairingId) return;
+      clearTimeout(pairingPollTimer);
+      pairingPollTimer = undefined;
+      pairingPollExpiresAt = undefined;
+      await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+      if (failureContext.pairingGeneration !== pairingGeneration) return;
+      await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
+    });
+    return;
   }
+
+  await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
 }
 
 /**
@@ -141,44 +179,95 @@ async function authenticate(challenge, challengeChannel) {
 }
 
 async function resumeAndScan() {
-  const {browserId, pairingId} = await chrome.storage.local.get(["browserId", "pairingId"]);
+  const activeChannel = requireChannel();
+  const generation = pairingGeneration;
+  const {pairingId} = await chrome.storage.local.get("pairingId");
+  const browserId = activeChannel.browserId;
   if (!browserId && pairingId) {
-    const reply = await requireChannel().message("pairing.status", {pairing_id: pairingId});
+    let reply;
+    try {
+      reply = await activeChannel.message("pairing.status", {pairing_id: pairingId});
+    } catch (error) {
+      if (bridgeFailureKind(error) === "pairing_not_pending") {
+        await reportBridgeFailure(error, {kind: "pairing_poll_failed", pairingId, pairingGeneration: generation});
+        return;
+      }
+      throw error;
+    }
+    if (generation !== pairingGeneration) return;
     if (reply?.payload?.status === "approved" && reply.payload.browser_id) {
-      await handleServerEvent({type: "pairing.approved", payload: reply.payload});
+      await handleServerEvent(
+        {type: "pairing.approved", payload: {...reply.payload, pairing_id: pairingId}},
+        undefined,
+        generation
+      );
       return;
     }
-    schedulePairingPoll(reply?.payload?.expires_at);
+    const identity = await ensureIdentity();
+    const pairingFingerprint = await verifiedPairingFingerprint(reply?.payload, chrome.runtime.id, identity.publicKey);
+    const current = await serializedPairingState(async () => {
+      if (generation !== pairingGeneration) return false;
+      const association = await chrome.storage.local.get("pairingId");
+      if (generation !== pairingGeneration || association.pairingId !== pairingId) return false;
+      await chrome.storage.local.set({
+        bridgeStatus: {state: "pairing", updatedAt: Date.now()},
+        ...(pairingFingerprint ? {pairingFingerprint} : {})
+      });
+      if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
+      return true;
+    });
+    if (!current) return;
+    schedulePairingPoll(reply?.payload?.expires_at, generation);
   }
   if (browserId) {
+    const cleaned = await serializedPairingState(async () => {
+      if (!pairingStateIsCurrent(generation, activeChannel)) return false;
+      await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+      return pairingStateIsCurrent(generation, activeChannel);
+    });
+    if (!cleaned || !pairingStateIsCurrent(generation, activeChannel)) return;
     await syncBrowserSettings();
+    if (!pairingStateIsCurrent(generation, activeChannel)) return;
     await resync();
-    await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
+    if (!pairingStateIsCurrent(generation, activeChannel)) return;
+    await serializedPairingState(async () => {
+      if (pairingStateIsCurrent(generation, activeChannel)) {
+        await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
+      }
+    });
   }
 }
 
-/** @param {number | undefined} expiresAt */
-function schedulePairingPoll(expiresAt) {
+/** @param {number | undefined} expiresAt @param {number} [generation] */
+function schedulePairingPoll(expiresAt, generation = pairingGeneration) {
+  if (generation !== pairingGeneration) return;
   clearTimeout(pairingPollTimer);
   pairingPollExpiresAt = expiresAt ?? pairingPollExpiresAt;
   if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) {
     pairingPollTimer = undefined;
     pairingPollExpiresAt = undefined;
-    void finalizePairingExpiry().catch((error) => reportBridgeFailure(error, {kind: "pairing_expiry_cleanup_failed"}));
+    void finalizePairingExpiry(generation).catch((error) => reportBridgeFailure(error, {kind: "pairing_expiry_cleanup_failed", pairingGeneration: generation}));
     return;
   }
   pairingPollTimer = setTimeout(() => {
+    if (generation !== pairingGeneration) return;
     void resumeAndScan().catch(async (error) => {
-      await reportBridgeFailure(error, {kind: "pairing_poll_failed"});
+      await reportBridgeFailure(error, {kind: "pairing_poll_failed", pairingGeneration: generation});
+      if (generation !== pairingGeneration) return;
       const {pairingId} = await chrome.storage.local.get("pairingId");
-      if (pairingId) schedulePairingPoll(pairingPollExpiresAt);
+      if (generation === pairingGeneration && pairingId) schedulePairingPoll(pairingPollExpiresAt, generation);
     });
   }, 2_000);
 }
 
-async function finalizePairingExpiry() {
-  await chrome.storage.local.remove("pairingId");
-  await chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
+/** @param {number} generation */
+async function finalizePairingExpiry(generation) {
+  await serializedPairingState(async () => {
+    if (generation !== pairingGeneration) return;
+    await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+    if (generation !== pairingGeneration) return;
+    await chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
+  });
 }
 
 async function syncBrowserSettings() {
@@ -201,15 +290,33 @@ async function syncBrowserSettings() {
 /**
  * @param {{type?: string, payload?: any} | undefined} envelope
  * @param {import('./channel.js').Connection} [connection]
+ * @param {number} [expectedPairingGeneration]
  */
-async function handleServerEvent(envelope, connection) {
+async function handleServerEvent(envelope, connection, expectedPairingGeneration = pairingGeneration) {
   if (envelope?.type === "pairing.approved" && envelope.payload?.browser_id) {
-    if (channel?.browserId !== envelope.payload.browser_id) {
-      await chrome.storage.local.set({browserId: envelope.payload.browser_id});
+    const activeChannel = channel;
+    const appliedGeneration = await serializedPairingState(async () => {
+      if (expectedPairingGeneration !== pairingGeneration) return undefined;
+      if (envelope.payload.pairing_id) {
+        const current = await chrome.storage.local.get("pairingId");
+        if (expectedPairingGeneration !== pairingGeneration || current.pairingId !== envelope.payload.pairing_id) return undefined;
+      }
+      const generation = ++pairingGeneration;
+      clearTimeout(pairingPollTimer);
+      pairingPollTimer = undefined;
+      pairingPollExpiresAt = undefined;
+      if (activeChannel?.browserId !== envelope.payload.browser_id) {
+        await chrome.storage.local.set({browserId: envelope.payload.browser_id});
+      }
+      await chrome.storage.local.remove(["pairingId", "pairingFingerprint"]);
+      return generation;
+    });
+    if (appliedGeneration === undefined || appliedGeneration !== pairingGeneration) return;
+    if (channel === activeChannel) {
+      activeChannel?.close();
+      if (channel === activeChannel) channel = undefined;
     }
-    await chrome.storage.local.remove("pairingId");
-    channel?.close();
-    channel = undefined;
+    if (appliedGeneration !== pairingGeneration) return;
     await initialize();
     return;
   }
@@ -463,11 +570,53 @@ async function resync() {
  */
 async function handleUiMessage(message) {
   if (message.type === "pair") {
-    const identity = await ensureIdentity();
-    const reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
-    if (reply?.payload?.pairing_id) await chrome.storage.local.set({pairingId: reply.payload.pairing_id});
-    schedulePairingPoll(reply?.payload?.expires_at);
-    void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
+    const transition = await serializedPairingState(async () => {
+      const previous = await chrome.storage.local.get("pairingId");
+      const previousExpiresAt = pairingPollExpiresAt;
+      const generation = ++pairingGeneration;
+      clearTimeout(pairingPollTimer);
+      pairingPollTimer = undefined;
+      pairingPollExpiresAt = undefined;
+      return {generation, previousPairingId: previous.pairingId, previousExpiresAt};
+    });
+    let reply;
+    let identity;
+    try {
+      identity = await ensureIdentity();
+      reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
+      if (!reply?.payload?.pairing_id) throw new Error("invalid_pairing_reply");
+    } catch (error) {
+      /** @type {number | undefined} */
+      let restoredGeneration;
+      await serializedPairingState(async () => {
+        if (transition.generation !== pairingGeneration || !transition.previousPairingId) return;
+        const current = await chrome.storage.local.get("pairingId");
+        if (transition.generation !== pairingGeneration || current.pairingId !== transition.previousPairingId) return;
+        restoredGeneration = ++pairingGeneration;
+        schedulePairingPoll(transition.previousExpiresAt, restoredGeneration);
+      });
+      if (restoredGeneration !== undefined) {
+        void resumeAndScan().catch((resumeError) => reportBridgeFailure(resumeError, {
+          kind: "pairing_poll_failed", pairingGeneration: restoredGeneration
+        }));
+      }
+      throw error;
+    }
+    const pairingFingerprint = await verifiedPairingFingerprint(reply.payload, chrome.runtime.id, identity.publicKey);
+    const stored = await serializedPairingState(async () => {
+      if (transition.generation !== pairingGeneration) return false;
+      await chrome.storage.local.set({
+        pairingId: reply.payload.pairing_id,
+        bridgeStatus: {state: "pairing", updatedAt: Date.now()},
+        ...(pairingFingerprint ? {pairingFingerprint} : {})
+      });
+      if (!pairingFingerprint) await chrome.storage.local.remove("pairingFingerprint");
+      return transition.generation === pairingGeneration;
+    });
+    if (stored) {
+      schedulePairingPoll(reply.payload.expires_at, transition.generation);
+      void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed", pairingGeneration: transition.generation}));
+    }
     return {ok: true, ...reply};
   }
   if (message.type === "scan-now") {

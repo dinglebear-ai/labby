@@ -2570,6 +2570,12 @@
         "ty": "string",
         "required": true,
         "description": "Pending pairing request id"
+      },
+      {
+        "name": "pairing_fingerprint",
+        "ty": "string",
+        "required": true,
+        "description": "Fingerprint displayed by the requesting browser extension"
       }
     ],
     "returns": "Browser",

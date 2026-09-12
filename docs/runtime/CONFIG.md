@@ -373,10 +373,14 @@ trust_forwarded_headers = true
 ```
 
 This setting makes `X-Forwarded-Host` authoritative for protected-route and
-route-metadata selection; it does not change client-IP attribution or trust
-`X-Forwarded-Proto`. Enable it only when direct access to Labby's listener is
-blocked and every trusted proxy overwrites, rather than appends or preserves,
-the inbound `X-Forwarded-Host` value. Otherwise a client can choose the virtual
+route-metadata selection. For the public browser WebSocket only, it also makes
+the first (left-most) `X-Forwarded-For` address authoritative for per-client pre-auth and
+pairing admission buckets; other client-IP attribution is unchanged, and
+`X-Forwarded-Proto` is not trusted. Enable it only when direct access to Labby's
+listener is blocked and every trusted proxy sanitizes the forwarding headers it
+passes to Labby. In particular, the first `X-Forwarded-For` address must be proxy
+controlled and `X-Forwarded-Host` must be overwritten rather than preserving
+an untrusted inbound value. Otherwise a client can choose the virtual
 protected resource by supplying that header. Prefer preserving the original
 `Host` and leaving this setting at its secure default of `false`.
 

@@ -51,12 +51,12 @@ test('browser client preserves exact consent and identity mutation parameters', 
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
   }) as typeof fetch
 
-  await browserApi.approvePairing('pair-1')
+  await browserApi.approvePairing('pair-1', 'A1B2C3D4E5F6')
   await browserApi.setSessionEnabled('session-1', true, 'reviewed-digest')
   await browserApi.revoke('browser-1')
 
   assert.deepEqual(actions, [
-    { action: 'browser.pairing.approve', params: { pairing_id: 'pair-1' } },
+    { action: 'browser.pairing.approve', params: { pairing_id: 'pair-1', pairing_fingerprint: 'A1B2C3D4E5F6' } },
     { action: 'browser.session.enable', params: { session_id: 'session-1', enabled: true, catalog_digest: 'reviewed-digest' } },
     { action: 'browser.revoke', params: { browser_id: 'browser-1' } },
   ])

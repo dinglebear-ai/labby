@@ -70,7 +70,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `artifacts` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `browser` | `browser.call` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `browser_id*: string`<br>`tab_id*: integer`<br>`document_id*: string`<br>`catalog_revision*: integer`<br>`catalog_digest*: string`<br>`tool_name*: string`<br>`arguments: object`<br>`timeout_ms: integer` | `PageToolResult` | mcp, api |
 | `browser` | `browser.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `BrowserList` | mcp, api |
-| `browser` | `browser.pairing.approve` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `pairing_id*: string` | `Browser` | mcp, api |
+| `browser` | `browser.pairing.approve` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `pairing_id*: string`<br>`pairing_fingerprint*: string` | `Browser` | mcp, api |
 | `browser` | `browser.pairing.list` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `BrowserPairingList` | mcp, api |
 | `browser` | `browser.revoke` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `browser_id*: string` | `Browser` | mcp, api |
 | `browser` | `browser.session.enable` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `session_id*: string`<br>`catalog_digest*: string`<br>`enabled*: boolean` | `BrowserSession` | mcp, api |
