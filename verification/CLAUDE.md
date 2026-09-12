@@ -27,7 +27,7 @@ behavior in layer 3.
 
 | Crate | May depend on |
 | --- | --- |
-| `verify-core` | `serde`, `thiserror` only — no filesystem, no env, no transport |
+| `verify-core` | `serde`, `serde_json`, `toml`, `thiserror` — data formats only, no filesystem, no env, no transport |
 | `verify-scenario` | `verify-core` |
 | `verify-report` | `verify-core`, `verify-scenario` |
 | `verify-runner` | `verify-core`, `verify-scenario`, `verify-report` |

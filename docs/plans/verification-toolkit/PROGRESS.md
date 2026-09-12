@@ -9,7 +9,7 @@
 - [x] Agreed a cross-backend spec DSL is out of scope.
 - [x] Researched and pinned candidate upstream versions (SPEC §3.1).
 - [x] M0 incubation workspace, CI routing key, and `just verify-*` recipes.
-- [ ] M1 core vocabulary and catalog.
+- [x] M1 `verify-core`: invariant identity, catalog and its four validation rules, verdicts, backend capability vocabulary, `ScenarioTarget`.
 - [ ] M2 scenario format and replay engine.
 - [ ] M3 first Labby model (`crates/labby-model`, request lifecycle).
 - [ ] M4 Stateright backend.
@@ -40,6 +40,23 @@
    Projects never see it.
 7. **Normalization is split across two crates.** The replay-driven passes cannot
    live in `verify-scenario` without a dependency cycle.
+
+## Decisions Made During M1
+
+8. **`verify-core` depends on `serde_json` and `toml`, not just `serde`.**
+   `serde_json::Value` is in the published `ScenarioTarget::init` signature and
+   `toml` parses the catalog. The earlier "serde, thiserror only" wording named
+   a crate count rather than the property that matters — transport-free,
+   filesystem-free, env-free — and has been corrected in SPEC §3 and
+   `verification/CLAUDE.md`.
+9. **`Catalog::validate` returns every violation, not the first.** A catalog
+   author fixing one id per CI run is a slow loop.
+10. **Kind decides trace-wide judgement.** `Kind::violated_at_any_step()` is
+    true for safety and security, so replay judges those over the whole trace
+    rather than the final state (SPEC §8).
+11. **`Capabilities::default()` claims nothing.** Defaulting to "claims
+    everything" would silently disable the capability gate for any backend
+    whose author left the field unfilled.
 
 ## Open Decisions
 
