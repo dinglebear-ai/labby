@@ -10,7 +10,7 @@
 - [x] Researched and pinned candidate upstream versions (SPEC §3.1).
 - [x] M0 incubation workspace, CI routing key, and `just verify-*` recipes.
 - [x] M1 `verify-core`: invariant identity, catalog and its four validation rules, verdicts, backend capability vocabulary, `ScenarioTarget`.
-- [ ] M2 scenario format and replay engine.
+- [x] M2 scenario envelope, fingerprint, syntactic and replay-driven normalization, target registry, replay engine, `verify` CLI, and a worked fixture example.
 - [ ] M3 first Labby model (`crates/labby-model`, request lifecycle).
 - [ ] M4 Stateright backend.
 - [ ] M5 reporting.
@@ -57,6 +57,24 @@
 11. **`Capabilities::default()` claims nothing.** Defaulting to "claims
     everything" would silently disable the capability gate for any backend
     whose author left the field unfilled.
+
+## Decisions Made During M2
+
+12. **`verify-report` ships from M2, minimal.** SPEC §3 has `verify-runner`
+    depending on it and `ReplayReport` has to live somewhere; starting it now
+    avoids moving a public type out of the runner at M5.
+13. **The invariant is evaluated before the first step.** A scenario whose
+    initial state already violates is a real finding, not a step-zero blind
+    spot; `first_violation == 0` means "already false on arrival".
+14. **Minimization refuses to shrink a scenario that never reproduced.**
+    Otherwise every candidate "still fails to reproduce" and the trace shrinks
+    to nothing — the same trap as minimizing a golden trace, from the other side.
+15. **`commutes_erased` returns false for a step it cannot deserialize.** A step
+    that cannot be read cannot be known to commute, and guessing would silently
+    merge distinct counterexamples.
+16. **The fixture is an example, not a test-only type.** `tests/replay.rs`
+    includes it by path, so one definition both proves the interface and serves
+    as the worked example M3 copies.
 
 ## Open Decisions
 
