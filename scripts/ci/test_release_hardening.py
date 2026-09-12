@@ -200,12 +200,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("sudo --preserve-env=GH_TOKEN env", host_install)
         # The unit runs as User=labby, and no release creates that user.
         self.assertIn("sudo useradd --system", host_install)
+        # v1.13.3's unit refuses to start unless every ReadWritePaths entry exists.
+        self.assertIn("/home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}", host_install)
         incus = self.text("scripts/ci/n-minus-one/incus")
         install_previous = incus[incus.index("install-previous)"):incus.index("seed-state)")]
         self.assertIn('scripts/install.sh"', install_previous)
         self.assertIn("--local-binary", install_previous)
         self.assertNotIn("--version", install_previous)
         self.assertIn("exec sg incus-admin", incus)
+        # Docker's FORWARD DROP policy otherwise blocks the container's network.
+        self.assertIn("sudo iptables -I DOCKER-USER -i incusbr0 -j ACCEPT", incus)
         # Hosted runners have no ZFS; `incus admin init --minimal` creates a dir pool.
         self.assertIn("--storage-driver dir --storage-pool default", install_previous)
         diagnostics = steps["Show N-1 diagnostics on failure"]
@@ -221,6 +225,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
         self.assertEqual(2, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
+        # Keep the service's output so the failure diagnostics can print it.
+        self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
+        self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
+        self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
 
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -728,6 +736,11 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertIn("not in N-1, not verified: access.db", seed.stderr)
             manifest = json.loads((Path(tmp) / "n-minus-one-seeded.json").read_text())
             self.assertEqual(["usage.db"], manifest["seeded"])
+            self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
+            # The usage store prunes rows older than its retention window, so
+            # the seeded row must carry a current timestamp.
+            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+                database.execute("DELETE FROM upstream_calls WHERE ts_unix < CAST(strftime('%s','now') AS INTEGER) - 86400")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The candidate migrates usage.db in place; the seeded row must survive that.
             with sqlite3.connect(Path(tmp) / "usage.db") as database:

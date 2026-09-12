@@ -18,6 +18,13 @@ ensure_fixture() {
   [[ "$(uname -s)" == Linux ]] || { echo 'Incus N-1 requires Linux' >&2; exit 1; }
   if ! command -v incus >/dev/null; then sudo apt-get update; sudo apt-get install -y incus; fi
   sudo incus storage list --format csv | grep -q . || sudo incus admin init --minimal
+  # Docker on hosted runners sets the FORWARD policy to DROP, which cuts
+  # containers on the Incus bridge off from the network.
+  if sudo iptables -L DOCKER-USER >/dev/null 2>&1; then
+    sudo iptables -C DOCKER-USER -i incusbr0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -i incusbr0 -j ACCEPT
+    sudo iptables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null ||
+      sudo iptables -I DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  fi
   incus info >/dev/null 2>&1 && return
   # A fresh install does not add the runner user to incus-admin for this login
   # session, so re-run the stage under that group to reach the daemon socket.

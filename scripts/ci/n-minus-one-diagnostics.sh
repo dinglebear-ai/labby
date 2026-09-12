@@ -8,7 +8,7 @@ root="${RUNNER_TEMP:-/tmp}/labby-n-minus-one"
 command -v cygpath >/dev/null 2>&1 && root=$(cygpath -u "$root")
 section() { printf '\n===== %s\n' "$1"; }
 
-for log in "$root"/*/service.log; do
+for log in "$root"/*/service*.log; do
   [[ -f "$log" ]] || continue
   section "$log"
   tail -n 200 "$log"

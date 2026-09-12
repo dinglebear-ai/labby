@@ -29,6 +29,10 @@ pwsh_pid_file="$pid_file"
 if command -v cygpath >/dev/null 2>&1; then
     pwsh_pid_file=$(cygpath -w "$pid_file")
 fi
+pwsh_work_root="$work_root"
+if command -v cygpath >/dev/null 2>&1; then
+    pwsh_work_root=$(cygpath -w "$work_root")
+fi
 
 seed_persisted_state() {
     mkdir -p "$labby_home"
@@ -74,7 +78,7 @@ verify_provenance() {
 }
 start_service() {
     pwsh -NoLogo -NoProfile -Command \
-        "\$env:HOME='$pwsh_user_home'; \$env:LABBY_HOME='$pwsh_labby_home'; \$p=Start-Process -FilePath '$pwsh_install_dir\\labby.exe' -ArgumentList 'serve' -PassThru; Set-Content -NoNewline -Path '$pwsh_pid_file' -Value \$p.Id"
+        "\$env:HOME='$pwsh_user_home'; \$env:LABBY_HOME='$pwsh_labby_home'; \$p=Start-Process -FilePath '$pwsh_install_dir\\labby.exe' -ArgumentList 'serve' -RedirectStandardOutput '$pwsh_work_root\\service.log' -RedirectStandardError '$pwsh_work_root\\service.err.log' -PassThru; Set-Content -NoNewline -Path '$pwsh_pid_file' -Value \$p.Id"
     for _ in {1..50}; do curl -fsS http://127.0.0.1:8765/ready >/dev/null && return; sleep 0.2; done
     echo 'service did not become ready' >&2; return 1
 }

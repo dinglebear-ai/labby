@@ -8,7 +8,7 @@ columns its table has, and records what it seeded. `verify` then requires
 exactly those classes to survive upgrade, restart and rollback. Absent classes
 are always named, and nothing is skipped silently.
 """
-import argparse, json, os, sqlite3, sys
+import argparse, json, os, sqlite3, sys, time
 from pathlib import Path
 
 p = argparse.ArgumentParser()
@@ -17,6 +17,9 @@ p.add_argument("root", type=Path)
 a = p.parse_args()
 root = a.root
 marker = "labby-n-minus-one-durable-state-v1"
+# Seed current timestamps: usage.db prunes rows older than its retention
+# window, and access.db keeps only the newest security events.
+now = int(time.time())
 manifest_path = root / "n-minus-one-seeded.json"
 files = {
     "skills/n-minus-one/SKILL.md": f"---\nname: n-minus-one\ndescription: {marker}\n---\n{marker}\n",
@@ -27,14 +30,14 @@ files = {
 semantic_rows = {
     "auth.db": (
         "registered_clients",
-        {"client_id": "labby-n1-client", "redirect_uris": '["http://127.0.0.1/n1"]', "created_at": 1},
+        {"client_id": "labby-n1-client", "redirect_uris": '["http://127.0.0.1/n1"]', "created_at": now},
         "SELECT redirect_uris FROM registered_clients WHERE client_id='labby-n1-client'",
         ('["http://127.0.0.1/n1"]',),
     ),
     "access.db": (
         "access_security_events",
         {
-            "event_id": "labby-n1-access-event", "occurred_at": 1, "event_kind": "credential_verify",
+            "event_id": "labby-n1-access-event", "occurred_at": now, "event_kind": "credential_verify",
             "decision": "deny", "reason_code": "n1_compatibility", "target_fingerprint": bytes.fromhex("11" * 32),
             "peer_fingerprint": None, "metadata_json": '{"fixture":"n1"}',
         },
@@ -44,7 +47,7 @@ semantic_rows = {
     "usage.db": (
         "upstream_calls",
         {
-            "ts_unix": 1, "upstream_name": "n-minus-one", "tool_name": "state-probe", "capability": "tools",
+            "ts_unix": now, "upstream_name": "n-minus-one", "tool_name": "state-probe", "capability": "tools",
             "operation": "tool.call", "subject_scoped": 0, "actor": "release-qualification", "outcome": "success",
             "elapsed_ms": 1, "response_bytes": 1,
         },
