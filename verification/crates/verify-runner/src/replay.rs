@@ -32,7 +32,7 @@ pub fn replay(
     label: &str,
 ) -> ReplayReport {
     let key = TargetKey::new(&scenario.project, &scenario.model);
-    let base = |outcome: Outcome, first_violation, steps| ReplayReport {
+    let base = |outcome: Outcome, initial_result, first_violation, steps| ReplayReport {
         scenario: label.to_owned(),
         project: scenario.project.clone(),
         model: scenario.model.clone(),
@@ -40,6 +40,7 @@ pub fn replay(
         expect: scenario.expect,
         status: scenario.status,
         outcome,
+        initial_result,
         first_violation,
         steps,
     };
@@ -50,6 +51,7 @@ pub fn replay(
                 project: scenario.project.clone(),
                 model: scenario.model.clone(),
             },
+            None,
             None,
             Vec::new(),
         );
@@ -63,16 +65,26 @@ pub fn replay(
                     reason: error.to_string(),
                 },
                 None,
+                None,
                 Vec::new(),
             );
         }
     };
 
     let invariant: &InvariantId = &scenario.invariant;
-    let (records, first_violation) = match run_steps(target, scenario, invariant, &mut state) {
-        Ok(outcome) => outcome,
-        Err(reason) => return base(Outcome::Malformed { reason }, None, Vec::new()),
-    };
+    let mut initial_result = None;
+    let (records, first_violation) =
+        match run_steps(target, scenario, invariant, &mut state, &mut initial_result) {
+            Ok(outcome) => outcome,
+            Err(reason) => {
+                return base(
+                    Outcome::Malformed { reason },
+                    initial_result,
+                    None,
+                    Vec::new(),
+                );
+            }
+        };
 
     let observed = observed_expectation(kind, first_violation, &records);
     let outcome = if observed == scenario.expect {
@@ -90,7 +102,7 @@ pub fn replay(
         }
     };
 
-    base(outcome, first_violation, records)
+    base(outcome, initial_result, first_violation, records)
 }
 
 /// Walk the trace, recording each step's effect and the invariant after it.
@@ -103,6 +115,7 @@ fn run_steps(
     scenario: &Scenario,
     invariant: &InvariantId,
     state: &mut crate::dyn_target::ErasedState,
+    initial_result: &mut Option<InvariantResult>,
 ) -> Result<(Vec<StepRecord>, Option<usize>), String> {
     let mut records = Vec::with_capacity(scenario.steps.len());
     let mut first_violation = None;
@@ -110,6 +123,7 @@ fn run_steps(
     let initial = target
         .check_erased(invariant, state)
         .map_err(|error| error.to_string())?;
+    *initial_result = Some(initial.clone());
     validate_result(invariant, &initial)?;
     if is_violation(&initial.verdict) {
         first_violation = Some(0);

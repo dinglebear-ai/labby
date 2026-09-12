@@ -456,3 +456,91 @@ fn repaired_violation_counts_for_safety_but_not_final_state_properties() {
         }
     );
 }
+
+struct AlternatingInitialEvidence(std::cell::Cell<bool>);
+impl verify_core::target::ScenarioTarget for AlternatingInitialEvidence {
+    type State = (bool, bool);
+    type Step = serde_json::Value;
+
+    fn init(
+        &self,
+        _: &serde_json::Value,
+    ) -> Result<Self::State, verify_core::target::ScenarioError> {
+        let previous = self.0.replace(!self.0.get());
+        Ok((previous, false))
+    }
+
+    fn apply(
+        &self,
+        state: &mut Self::State,
+        _: &Self::Step,
+    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
+        state.1 = true;
+        Ok(verify_core::target::StepOutcome::Applied)
+    }
+
+    fn check(
+        &self,
+        id: &verify_core::InvariantId,
+        state: &Self::State,
+    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
+        let verdict = if state.0 && !state.1 {
+            verify_core::verdict::Verdict::Bounded {
+                bounds: vec![verify_core::verdict::Bound {
+                    dimension: "depth".into(),
+                    limit: 1,
+                }],
+            }
+        } else {
+            verify_core::verdict::Verdict::Verified
+        };
+        Ok(verify_core::InvariantResult::new(id.clone(), verdict))
+    }
+}
+
+#[test]
+fn determinism_preserves_initial_evidence_even_with_identical_final_results() {
+    for steps in [json!([]), json!([{}])] {
+        let targets = TargetRegistry::new().with(
+            TargetKey::new("fixture", "request"),
+            Box::new(AlternatingInitialEvidence(std::cell::Cell::new(false))),
+        );
+        let trace = scenario(&steps, "invariant_holds");
+        assert!(!check_determinism(&trace, Kind::Safety, &targets, 3).stable);
+        assert_eq!(
+            verify_runner::normalize(&trace, Kind::Safety, &targets, 3).status,
+            ScenarioStatus::Quarantined
+        );
+    }
+}
+
+#[test]
+fn reports_preserve_and_render_initial_evidence() {
+    let targets = TargetRegistry::new().with(
+        TargetKey::new("fixture", "request"),
+        Box::new(VerdictModel(verify_core::verdict::Verdict::Bounded {
+            bounds: vec![verify_core::verdict::Bound {
+                dimension: "depth".into(),
+                limit: 2,
+            }],
+        })),
+    );
+    let report = replay(
+        &scenario(&json!([]), "invariant_holds"),
+        Kind::Safety,
+        &targets,
+        "initial evidence",
+    );
+    let encoded = serde_json::to_value(&report).unwrap();
+    assert_eq!(encoded["initial_result"]["invariant"], "FIXTURE-REQ-001");
+    let decoded: verify_report::replay::ReplayReport =
+        serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(decoded, report);
+    assert!(verify_report::text::render_text(&report).contains("initial: bounded (depth <= 2)"));
+
+    // Earlier report JSON remains readable without inventing initial evidence.
+    let mut legacy = encoded;
+    legacy.as_object_mut().unwrap().remove("initial_result");
+    let legacy: verify_report::replay::ReplayReport = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.initial_result.is_none());
+}
