@@ -6,6 +6,7 @@ import {reconcileModeAfterRemoval} from "./permissions.js";
 import {parseBaseUrl} from "./base_url.js";
 import {closeObservations, executionAllowed, publishCurrentObservation, ScanScheduler} from "./orchestration.js";
 import {createIdentityManager, IndexedDbIdentityStore} from "./identity.js";
+import {verifiedPairingFingerprint} from "./pairing.js";
 
 /** @typedef {{url: string, title: string, tools: unknown[], tab_id: number, document_id: string}} Observation */
 
@@ -202,7 +203,8 @@ async function resumeAndScan() {
       );
       return;
     }
-    const pairingFingerprint = reply?.payload?.pairing_fingerprint;
+    const identity = await ensureIdentity();
+    const pairingFingerprint = await verifiedPairingFingerprint(reply?.payload, chrome.runtime.id, identity.publicKey);
     const current = await serializedPairingState(async () => {
       if (generation !== pairingGeneration) return false;
       const association = await chrome.storage.local.get("pairingId");
@@ -578,8 +580,9 @@ async function handleUiMessage(message) {
       return {generation, previousPairingId: previous.pairingId, previousExpiresAt};
     });
     let reply;
+    let identity;
     try {
-      const identity = await ensureIdentity();
+      identity = await ensureIdentity();
       reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
       if (!reply?.payload?.pairing_id) throw new Error("invalid_pairing_reply");
     } catch (error) {
@@ -599,7 +602,7 @@ async function handleUiMessage(message) {
       }
       throw error;
     }
-    const pairingFingerprint = reply.payload.pairing_fingerprint;
+    const pairingFingerprint = await verifiedPairingFingerprint(reply.payload, chrome.runtime.id, identity.publicKey);
     const stored = await serializedPairingState(async () => {
       if (transition.generation !== pairingGeneration) return false;
       await chrome.storage.local.set({

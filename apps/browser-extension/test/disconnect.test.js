@@ -17,6 +17,7 @@ function worker({
   const storageWrites = [];
   const context = vm.createContext({
     console, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp,
+    verifiedPairingFingerprint: async (payload) => payload?.pairing_fingerprint,
     createIdentityManager: () => identityManager, IndexedDbIdentityStore: class {},
     indexedDB: {}, crypto: {subtle: {}}, bridgeFailureKind: (error) => error instanceof Error ? error.message : String(error),
     stableStringify: JSON.stringify, canScanTab: async () => true,
