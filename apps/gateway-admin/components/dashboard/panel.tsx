@@ -20,12 +20,16 @@ export function DashboardPanel({
   bodyClassName,
   headerStyle,
   titleStyle,
+  titleControl,
+  elevation = 'medium',
   metaStyle,
   bodyStyle,
   variant = 'card',
   children,
 }: {
   title: string
+  titleControl?: ReactNode
+  elevation?: 'medium' | 'strong'
   icon?: ReactNode
   iconTone?: 'accent' | 'pink' | 'warn' | 'error' | 'success'
   iconVariant?: 'tile' | 'plain'
@@ -52,7 +56,7 @@ export function DashboardPanel({
           variant === 'inline' ? 'none' : '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
         background:
           'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
-        boxShadow: variant === 'inline' ? 'none' : 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.04)',
+        boxShadow: variant === 'inline' ? 'none' : `var(--aurora-shadow-${elevation}), inset 0 1px 0 color-mix(in srgb, var(--aurora-text-primary) 4%, transparent)`,
       }}
     >
       <div
@@ -83,7 +87,7 @@ export function DashboardPanel({
             ...titleStyle,
           }}
         >
-          {title}
+          {titleControl ?? title}
         </span>
         <div style={{ flex: 1 }} />
         {meta ? (

@@ -37,6 +37,7 @@ test('skill validation panel renders the six skill checks from draft state and s
   )
   try {
     assert.equal(view.container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow'), '5')
+    assert.match(view.container.querySelector('[role="progressbar"] > div')?.getAttribute('class') ?? '', /bg-aurora-success/)
     const text = view.container.textContent ?? ''
     assert.match(text, /Validation5 of 6/)
     assert.match(text, /Name is a slug/)

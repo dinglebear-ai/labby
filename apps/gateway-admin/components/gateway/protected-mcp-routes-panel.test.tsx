@@ -14,10 +14,18 @@ test('protected MCP routes panel renders management controls', () => {
   )
 
   assert.match(markup, /Protected MCP routes/)
-  assert.match(markup, /New route/)
+  assert.match(markup, /Add route/)
   assert.match(markup, /Public host/)
   assert.match(markup, /Loadout/)
   assert.match(markup, /Backend URL/)
   assert.match(markup, /Test/)
   assert.match(markup, /Smoke/)
+})
+
+
+test('upstream route view keeps the editor closed until Add route is used', () => {
+  const markup = renderToStaticMarkup(<SWRConfig value={{ provider: () => new Map() }}><ProtectedMcpRoutesPanel upstreamNames={['cortex']} /></SWRConfig>)
+  assert.match(markup, /Add route/)
+  assert.doesNotMatch(markup, /id="protected-route-public-host"/)
+  assert.doesNotMatch(markup, /<table/)
 })

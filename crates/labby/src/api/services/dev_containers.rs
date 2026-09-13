@@ -35,7 +35,16 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 
 /// Read-only actions a browser session may issue without a CSRF token.
 fn csrf_exempt(action: &str) -> bool {
-    matches!(action, "help" | "schema" | "dev_containers.list")
+    matches!(
+        action,
+        "help"
+            | "schema"
+            | "dev_containers.list"
+            | "dev_containers.templates.list"
+            | "dev_containers.templates.get"
+            | "dev_containers.build.get"
+            | "dev_containers.launch_reference"
+    )
 }
 
 async fn handle(

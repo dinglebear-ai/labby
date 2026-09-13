@@ -12,7 +12,14 @@ export interface ServerLogEntry {
 
 export interface ServerLogsResult {
   kind: 'server_logs'
+  filters?: {
+    level?: string | null
+    levels?: string[]
+    service?: string | null
+  }
   entries: ServerLogEntry[]
+  available_sources?: string[]
+  available_sources_complete?: boolean
   matched: number
   scanned_lines: number
   malformed_lines: number

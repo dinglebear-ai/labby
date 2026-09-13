@@ -1,0 +1,37 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import React, { act } from 'react'
+import type { DepotProviderOption, FederatedArtifact } from '@/lib/api/depot-client'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
+
+const providers = [{ id: 'source-a', name: 'First source', enabled: true }, { id: 'source-b', name: 'Disabled source', enabled: false }] as DepotProviderOption[]
+
+test('source controls preserve exact provider IDs and applied filters can be cleared', async () => {
+  const window = installTestDom()
+  for (const name of ['Event', 'NodeFilter', 'HTMLInputElement'] as const) Object.defineProperty(globalThis, name, { value: window[name], configurable: true })
+  const { DiscoverSearchControls } = await import('./discover-search-controls')
+  const changes: Array<[string, string]> = []
+  const view = await renderClient(<DiscoverSearchControls query="" onQuery={() => {}} providers={providers} artifacts={[]} kind="skill" selectedProvider="source-a" onFilter={(field, value) => changes.push([field, value])} />)
+  try {
+    const enabled = view.container.querySelector<HTMLButtonElement>('[aria-label="Filter to First source"]')!
+    assert.equal(enabled.getAttribute('aria-pressed'), 'true')
+    assert.equal(view.container.querySelector<HTMLButtonElement>('[aria-label="Filter to Disabled source"]')?.disabled, true)
+    await act(async () => enabled.click())
+    assert.deepEqual(changes, [['provider', 'all']])
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Remove kind filter"]')!.click())
+    assert.deepEqual(changes, [['provider', 'all'], ['kind', 'all']])
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Kind and source filters"]')!.click())
+    assert.match(document.body.textContent ?? '', /All kinds/)
+    assert.match(document.body.textContent ?? '', /All sources/)
+  } finally { await view.unmount(); await window.happyDOM.close() }
+})
+
+test('provider brands require an unambiguous returned source origin', async () => {
+  const { discoveryProviderOrigins } = await import('./discover-search-controls')
+  const observed = discoveryProviderOrigins([
+    { providerId: 'aggregate', sourceOrigin: 'claude' }, { providerId: 'aggregate', sourceOrigin: 'github' },
+    { providerId: 'source', sourceOrigin: 'gemini' }, { providerId: 'source', sourceOrigin: 'gemini' },
+    { providerId: 'named-github' },
+  ] as FederatedArtifact[])
+  assert.deepEqual([...observed], [['source', 'gemini']])
+})

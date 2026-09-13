@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
+import { CircleDot, Info, Network, Server, Wrench, FileText, MessageSquare, BookOpen } from 'lucide-react'
 
 /**
  * Header-card chrome for the Gateway detail *page* — tab bar, attached stat
@@ -491,7 +492,7 @@ export function DetailCapabilityCluster({
         display: 'flex',
         alignItems: 'center',
         gap: 3,
-        paddingBottom: 4,
+        paddingBottom: 6,
         ...style,
       }}
       {...rest}
@@ -775,71 +776,26 @@ export interface DetailKeyValueRow {
  * "Connection & Network" / "Server Metadata" all share this chrome: a
  * panel-medium card with an uppercase header band and baseline-aligned rows.
  */
-export function DetailKeyValueCard({
-  label,
-  rows,
-}: {
-  label: React.ReactNode
-  rows: DetailKeyValueRow[]
-}) {
+export function DetailKeyValueCard({ label, rows }: { label: React.ReactNode; rows: DetailKeyValueRow[] }) {
+  const catalog = label === 'Catalog'
+  const metadata = String(label).toLowerCase() === 'server metadata'
+  const tone = metadata ? 'var(--aurora-accent-pink)' : catalog ? 'var(--aurora-accent-strong)' : 'var(--aurora-success)'
+  const Icon = catalog ? Server : metadata ? Info : Network
+  const rowIcon = (name: string) => name.startsWith('Tools') ? Wrench : name.startsWith('Prompts') ? MessageSquare : name.startsWith('Resources') ? FileText : name.startsWith('Skills') ? BookOpen : CircleDot
   return (
-    <div
-      style={{
-        borderRadius: 'var(--radius-2)',
-        border:
-          '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-        background:
-          'linear-gradient(180deg, var(--aurora-panel-medium-top), transparent), var(--aurora-panel-medium)',
-        boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.035)',
-        overflow: 'hidden',
-        minWidth: 0,
-      }}
-    >
-      <div
-        style={{
-          padding: '11px 16px',
-          borderBottom:
-            '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-          background: 'var(--gw0-0_30)',
-          fontSize: 10.5,
-          fontWeight: 700,
-          letterSpacing: '0.15em',
-          textTransform: 'uppercase',
-          color: 'var(--aurora-text-muted)',
-        }}
-      >
-        {label}
+    <div style={{ borderRadius: 'var(--radius-2)', border: '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))', background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))', boxShadow: 'var(--aurora-shadow-medium), var(--aurora-highlight-medium)', overflow: 'hidden', minWidth: 0, minHeight: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderBottom: '1px solid color-mix(in srgb, var(--aurora-border-default) 60%, var(--aurora-page-bg))', background: 'var(--gw0-0_38)' }}>
+        <span style={{ display: 'grid', placeItems: 'center', width: 18, height: 18, borderRadius: 6, color: tone, border: `1px solid color-mix(in srgb, ${tone} 32%, transparent)`, background: `color-mix(in srgb, ${tone} 9%, transparent)` }}><Icon size={12} strokeWidth={1.7} /></span>
+        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--aurora-text-muted)' }}>{label}</span>
       </div>
-      <div style={{ padding: '6px 0' }}>
-        {rows.map((row) => (
-          <div
-            key={row.label}
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '6px 16px',
-            }}
-          >
-            <span
-              style={{ fontSize: 11.5, color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}
-            >
-              {row.label}
-            </span>
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 560,
-                color: row.valueColor ?? 'var(--aurora-text-primary)',
-                textAlign: 'right',
-                wordBreak: 'break-all',
-              }}
-            >
-              {row.value}
-            </span>
+      <div style={{ padding: '4px 0 5px' }}>
+        {rows.map((row) => {
+          const RowIcon = rowIcon(row.label)
+          return <div key={row.label} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '2px 14px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, fontSize: 11.5, lineHeight: 1.35, color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}><RowIcon size={11} style={{ color: tone, opacity: 0.75, flexShrink: 0 }}/>{row.label}</span>
+            <span style={{ fontSize: 11.5, fontWeight: 650, lineHeight: 1.35, fontVariantNumeric: 'tabular-nums', color: row.valueColor ?? 'var(--aurora-text-primary)', textAlign: 'right', wordBreak: 'break-all' }}>{row.value}</span>
           </div>
-        ))}
+        })}
       </div>
     </div>
   )
@@ -848,7 +804,7 @@ export function DetailKeyValueCard({
 /** Grid the mock uses for the overview's key/value card row. */
 export const DETAIL_KV_GRID_STYLE: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-  gap: 12,
-  alignItems: 'start',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
+  gap: 14,
+  alignItems: 'stretch',
 }

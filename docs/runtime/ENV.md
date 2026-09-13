@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-09-13"
 ---
 
 # Environment Variables
@@ -39,6 +39,32 @@ The access store has no independent environment override.
 `access.db`. A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
+
+## Dev Container Runtime
+
+Production Dev Containers require one complete restricted Incus HTTPS
+configuration:
+
+```env
+LABBY_DEV_CONTAINER_INCUS_URL=https://tootie:8443
+LABBY_DEV_CONTAINER_INCUS_PROJECT=labby-dev-containers
+LABBY_DEV_CONTAINER_INCUS_CLIENT_CERT=/home/labby/.labby/incus/client.crt
+LABBY_DEV_CONTAINER_INCUS_CLIENT_KEY=/home/labby/.labby/incus/client.key
+LABBY_DEV_CONTAINER_INCUS_SERVER_CERT=/home/labby/.labby/incus/server.crt
+```
+
+The URL must be an HTTPS origin with no credentials, query, fragment, or path.
+The project is always added by Labby and cannot be overridden in the URL. All
+three credential paths must be absolute, regular, non-symlink files of at most
+64 KiB. The client key must have no group or world permissions. Labby disables
+proxy discovery and built-in certificate roots for this client, pins the Incus
+server certificate, and presents the configured client certificate and key.
+
+Leaving all five variables unset makes the runtime unavailable. Setting only a
+subset or supplying invalid values also fails closed; there is no local-socket,
+default-project, or unauthenticated fallback. The test-only deterministic
+runtime remains gated by the `proxy-testkit` feature and
+`LABBY_E2E_DETERMINISTIC_EXECUTORS`.
 
 ## Depot Discovery Credentials
 
@@ -265,12 +291,12 @@ required/optional environment-variable matrix, secret flags, and examples.
 ### Access-store migration approval
 
 Opening an existing access schema older than the binary's schema (any of v1
-through v6 with a schema-v7 binary) is denied unless the operator supplies an
+through v7 with a schema-v8 binary) is denied unless the operator supplies an
 approval document bound to an independent rollback checkpoint, the exact
 source and target, and an explicit activation:
 
 ```env
-LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v7.json
+LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v8.json
 ```
 
 The JSON document uses schema `labby.access-migration-approval/v1` and contains

@@ -37,6 +37,18 @@ const REMOTE_LIMIT: ParamSpec = ParamSpec {
     required: false,
     description: "Bounded remote page size",
 };
+const REMOTE_QUERY: ParamSpec = ParamSpec {
+    name: "query",
+    ty: "string",
+    required: false,
+    description: "Case-insensitive remote catalog query containing 3 to 200 characters",
+};
+const REMOTE_KIND: ParamSpec = ParamSpec {
+    name: "kind",
+    ty: "string",
+    required: false,
+    description: "Supported Artifact kind filter",
+};
 
 pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
     ActionSpec {
@@ -62,7 +74,13 @@ pub(crate) const CALLBACK_REMOTE_ACTIONS: [ActionSpec; 4] = [
         destructive: false,
         requires_admin: false,
         returns: "RemoteArtifactPage",
-        params: &[REMOTE_CONNECTION, REMOTE_CURSOR, REMOTE_LIMIT],
+        params: &[
+            REMOTE_CONNECTION,
+            REMOTE_CURSOR,
+            REMOTE_KIND,
+            REMOTE_LIMIT,
+            REMOTE_QUERY,
+        ],
     },
     ActionSpec {
         name: "artifacts.get_remote",

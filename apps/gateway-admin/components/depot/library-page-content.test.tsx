@@ -54,7 +54,7 @@ test('compact collection table preserves real metadata and single inspection act
     assert.equal(table.getAttribute('aria-label'), 'Library artifacts')
     assert.match(table.className, /table-fixed/)
     assert.match(table.parentElement!.className, /max-h-\[56vh\]/)
-    assert.deepEqual([...table.querySelectorAll('th')].map(cell => cell.textContent), ['Kind', 'Artifact', 'Tags', 'Visibility', 'Open'])
+    assert.deepEqual([...table.querySelectorAll('th')].map(cell => cell.textContent), ['Kind', 'Artifact', 'Tags', 'Visibility', 'Upstream', 'Updated', 'Open'])
     assert.ok(table.querySelector('[title="actual-owner"]'))
     assert.match(table.textContent ?? '', /automation/)
     assert.match(table.textContent ?? '', /verified-source/)
@@ -165,17 +165,17 @@ test('initial catalog load preserves an artifact deep link', async () => {
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
     requested.push({ url: String(url), action: body.action, params: body.params })
-    return envelope(body.action === 'artifacts.get_remote' ? { artifact: { id: 'alpha', title: 'Linked artifact' } } : { artifacts: [] })
+    return envelope(body.action === 'artifacts.get' ? { item: { artifact_id: 'alpha', name: 'Linked artifact', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } } : { items: [], can_create: false })
   }
   const view = await renderClient(page('alpha'))
   try {
     await flush()
     assert.equal(new URLSearchParams(window.location.search).get('artifact'), 'alpha')
     assert.match(document.querySelector('[role="dialog"]')?.textContent ?? '', /Linked artifact/)
-    const deepLink = requested.find(request => request.action === 'artifacts.get_remote')
+    const deepLink = requested.find(request => request.action === 'artifacts.get')
     assert.ok(deepLink, 'the deep link must resolve through the artifacts control plane')
     assert.equal(deepLink.url, '/v1/artifacts')
-    assert.deepEqual(deepLink.params, { id: 'alpha' })
+    assert.deepEqual(deepLink.params, { artifact_id: 'alpha' })
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
@@ -190,14 +190,14 @@ test('detail responses and retained details cannot cross selection or session bo
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
-    if (body.action === 'artifacts.get_remote') { const read = deferred(); reads.push(read); return read.promise }
-    return envelope({ artifacts: [] })
+    if (body.action === 'artifacts.get') { const read = deferred(); reads.push(read); return read.promise }
+    return envelope({ items: [], can_create: false })
   }
   const view = await renderClient(page('alpha'))
   try {
     await flush()
     await view.rerender(page('bravo'))
-    await act(async () => reads[1].resolve(envelope({ artifact: { id: 'bravo', title: 'Bravo private details' } })))
+    await act(async () => reads[1].resolve(envelope({ item: { artifact_id: 'bravo', name: 'Bravo private details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     assert.match(document.body.textContent ?? '', /Bravo private details/)
     const dialog = document.querySelector('[role="dialog"]')!
     assert.match(dialog.className, /max-w-\[720px\]/)
@@ -209,8 +209,8 @@ test('detail responses and retained details cannot cross selection or session bo
     await view.rerender(page('charlie'))
     assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details/)
     assert.equal(document.body.querySelector('a[href="/depot?artifact=bravo"]'), null)
-    await act(async () => reads[2].resolve(envelope({ artifact: { id: 'charlie', title: 'Charlie private details' } })))
-    await act(async () => reads[0].resolve(envelope({ artifact: { id: 'alpha', title: 'Alpha stale details' } })))
+    await act(async () => reads[2].resolve(envelope({ item: { artifact_id: 'charlie', name: 'Charlie private details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
+    await act(async () => reads[0].resolve(envelope({ item: { artifact_id: 'alpha', name: 'Alpha stale details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
     await view.rerender(page('charlie'))
@@ -231,7 +231,7 @@ test('late page failures and successes cannot overwrite a new query', async () =
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
     if (body.params.cursor) { const read = deferred(); pending.push(read); return read.promise }
-    return envelope({ artifacts: [{ id: body.params.query || 'initial', title: body.params.query || 'Initial item' }], nextCursor: 'next' })
+    return envelope({ items: [{ artifact_id: body.params.query || 'initial', name: body.params.query || 'Initial item', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' }], next_cursor: 'next', can_create: false })
   }
   const view = await renderClient(page(''))
   try {
@@ -244,7 +244,7 @@ test('late page failures and successes cannot overwrite a new query', async () =
     const props = (input as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key]
     await act(async () => props.onChange({ target: { value: 'New query' } }))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
-    await act(async () => pending[0].resolve(envelope({ artifacts: [{ id: 'stale', title: 'Stale page' }] })))
+    await act(async () => pending[0].resolve(envelope({ items: [{ artifact_id: 'stale', name: 'Stale page', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' }], can_create: false })))
     assert.doesNotMatch(view.container.textContent ?? '', /Stale page/)
     assert.match(view.container.textContent ?? '', /New query/)
     act(() => more().click())
@@ -279,10 +279,6 @@ test.afterEach(() => {
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
 })
 
-function statValue(container: HTMLElement, label: string) {
-  return container.querySelector(`[data-console-hero-stat="${label}"] [data-console-hero-stat-value="1"]`)?.textContent?.trim()
-}
-
 async function renderLibrary(depot: Record<string, unknown>) {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
   const requested: string[] = []
@@ -291,7 +287,7 @@ async function renderLibrary(depot: Record<string, unknown>) {
     requested.push(path)
     if (path === '/v1/depot/status') return Response.json({ depot })
     if (path === '/v1/depot/publish') return Response.json({ available: depot.enabled === true && depot.authority === 'write' })
-    return Response.json({ artifacts: [], total: 0 })
+    return depot.error ? Response.json({ message: depot.error }, { status: 403 }) : Response.json({ items: [], can_create: depot.can_create === true })
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
   const view = await renderClient(
@@ -306,29 +302,20 @@ async function renderLibrary(depot: Record<string, unknown>) {
   return { view, requested }
 }
 
-/**
- * The access stat and the live/unavailable pulse must not be rendered from a
- * hardcoded capability or `DepotStatus` literal. They must reflect the
- * server's `/v1/depot/publish` and `/v1/depot/status` projections.
- */
-test('the Library access and pulse come from current server projections', async () => {
-  const write = await renderLibrary({ configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(write.view.container, 'Your access'), 'Read + publish'))
-  assert.ok(write.requested.includes('/v1/depot/status'), 'the page must ask the server for the Depot status')
-  assert.match(write.view.container.textContent ?? '', /live catalog/)
-  await write.view.unmount()
-
-  const disabled = await renderLibrary({ configured: true, enabled: false, authority: 'read', maxResponseBytes: 1_048_576 })
-  await waitFor(() => assert.equal(statValue(disabled.view.container, 'Your access'), 'Read only'))
-  assert.match(disabled.view.container.textContent ?? '', /Depot unavailable/)
-  assert.doesNotMatch(disabled.view.container.textContent ?? '', /live catalog/)
-  await disabled.view.unmount()
+test('Library uses local acquired records and access without a remote Depot dependency', async () => {
+  const local = await renderLibrary({ can_create: true })
+  await waitFor(() => assert.equal(local.view.container.querySelector('[data-library-access]')?.textContent, 'Read + create'))
+  assert.match(local.view.container.textContent ?? '', /Local acquired artifacts/)
+  assert.equal(local.requested.some(path => path.startsWith('/v1/depot')), false)
+  await local.view.unmount()
+  const readOnly = await renderLibrary({ can_create: false })
+  await waitFor(() => assert.equal(readOnly.view.container.querySelector('[data-library-access]')?.textContent, 'Read only'))
+  await readOnly.view.unmount()
 })
 
-test('a Depot status the browser cannot validate is surfaced as an error instead of a fabricated authority', async () => {
-  const broken = await renderLibrary({ configured: true, enabled: true, authority: 'root', maxResponseBytes: 1 })
-  await waitFor(() => assert.match(broken.view.container.textContent ?? '', /incompatible status response/))
-  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read + publish')
-  assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read only')
-  await broken.view.unmount()
+test('missing project context directs the operator to the existing workspace selector', async () => {
+  const missing = await renderLibrary({ error: 'Skill Library project context is required' })
+  await waitFor(() => assert.match(missing.view.container.textContent ?? '', /Choose a project in the workspace selector/))
+  assert.match(missing.view.container.textContent ?? '', /Project access is required/)
+  await missing.view.unmount()
 })

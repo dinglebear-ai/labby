@@ -4,6 +4,7 @@ import * as React from 'react'
 
 import { ConsoleShellProvider } from '@/components/console/console-shell-context'
 import { ConsoleSidebar } from '@/components/console/console-sidebar'
+import { ConsoleGlobalTools } from '@/components/console/console-global-tools'
 import { ConsoleTopbar } from '@/components/console/console-topbar'
 
 /**
@@ -57,6 +58,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               {children}
             </div>
           </main>
+          <ConsoleGlobalTools />
         </div>
       </div>
     </ConsoleShellProvider>

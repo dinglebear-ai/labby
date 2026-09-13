@@ -4,7 +4,8 @@ import * as React from 'react'
 import { Menu, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
-import { ConsoleStatusStrip } from '@/components/console/console-status-strip'
+import { ConsoleStatusStrip, useConsoleStatus } from '@/components/console/console-status-strip'
+import { ConsoleNotifications } from '@/components/console/console-notifications'
 import { AccountMenu } from '@/components/console/console-sidebar'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
@@ -25,6 +26,7 @@ function isMacOS() {
  */
 export function ConsoleTopbar() {
   const { setCrumbSlot, setActionSlot, mobileNavOpen, toggleMobileNav } = useConsoleShell()
+  const status = useConsoleStatus()
   const [searchHovered, setSearchHovered] = React.useState(false)
   const [modKey, setModKey] = React.useState('⌘')
 
@@ -50,7 +52,7 @@ export function ConsoleTopbar() {
         borderBottom:
           '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
         boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.035)',
-        background: 'color-mix(in srgb, var(--aurora-control-surface) 48%, transparent)',
+        background: 'var(--console-chrome-bg)',
         position: 'relative',
         zIndex: 40,
       }}
@@ -71,13 +73,14 @@ export function ConsoleTopbar() {
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 11,
+          gap: 3,
           fontSize: 12.5,
           lineHeight: 'normal',
           minWidth: 0,
+          flexShrink: 0,
         }}
       />
-      <ConsoleStatusStrip />
+      <ConsoleStatusStrip state={status} />
 
       <div style={{ flex: 1 }} />
 
@@ -114,7 +117,6 @@ export function ConsoleTopbar() {
           fontFamily: 'inherit',
           fontSize: 12.5,
           lineHeight: 'normal',
-          marginRight: 34,
           cursor: 'pointer',
           boxShadow: searchHovered
             ? '0 0 0 3px rgba(41,182,246,0.09), 0 0 16px rgba(41,182,246,0.10), inset 0 1px 0 rgba(255,255,255,0.05)'
@@ -152,12 +154,12 @@ export function ConsoleTopbar() {
             flexShrink: 0,
             display: 'inline-flex',
             alignItems: 'center',
-            height: 20,
+            height: 18,
             padding: '0 5px',
             marginRight: -3,
             borderRadius: 5,
-            border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
-            background: 'color-mix(in srgb, var(--aurora-page-bg) 38%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--aurora-border-default) 80%, var(--aurora-page-bg))',
+            background: 'var(--gw0-0_38)',
             color: 'var(--aurora-text-muted)',
             fontSize: 10,
             lineHeight: 'normal',
@@ -171,6 +173,7 @@ export function ConsoleTopbar() {
       <div
         ref={setActionSlot}
         data-actioncluster="1"
+        className="empty:!hidden"
         style={{
           flexShrink: 0,
           display: 'flex',
@@ -178,6 +181,7 @@ export function ConsoleTopbar() {
           gap: 5,
         }}
       />
+      <ConsoleNotifications state={status} />
       <AccountMenu placement="topbar" />
     </header>
   )

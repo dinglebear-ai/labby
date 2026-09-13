@@ -369,6 +369,12 @@ async fn handle(
     let team_id = team_id.map(str::to_owned);
     let access_runtime = Arc::clone(&state.access_runtime);
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
+    let usage_actor_tag = auth_context
+        .0
+        .actor_key
+        .as_deref()
+        .or_else(|| auth.as_ref().map(|value| value.0.sub.as_str()))
+        .map(crate::mcp::context::redact_subject_for_logging);
     let auth_for_dispatch = auth.clone();
     let gateway_authority_for_dispatch = gateway_authority.clone();
     let manager = state
@@ -392,6 +398,7 @@ async fn handle(
         move |action, params| {
             let manager = Arc::clone(&manager);
             let subject = subject.clone();
+            let usage_actor_tag = usage_actor_tag.clone();
             let auth = auth_for_dispatch.clone();
             let gateway_authority = gateway_authority_for_dispatch.clone();
             async move {
@@ -425,14 +432,21 @@ async fn handle(
                     team_id.as_deref(),
                     oauth_subject.as_deref(),
                 );
-                let mut response = crate::dispatch::gateway::dispatch_with_manager_scoped(
-                    &manager,
-                    &action,
-                    params,
-                    crate::dispatch::gateway::GatewayEnrichmentScope {
-                        route_visible_upstreams: None,
-                        oauth_subject,
-                    },
+                let mut response = labby_runtime::usage_actor::scope_attributed(
+                    labby_runtime::usage_actor::UsageAttribution::inbound(
+                        usage_actor_tag,
+                        "api",
+                        None,
+                    ),
+                    crate::dispatch::gateway::dispatch_with_manager_scoped(
+                        &manager,
+                        &action,
+                        params,
+                        crate::dispatch::gateway::GatewayEnrichmentScope {
+                            route_visible_upstreams: None,
+                            oauth_subject,
+                        },
+                    ),
                 )
                 .await?;
                 // Only Team-scoped policy responses are projected through the

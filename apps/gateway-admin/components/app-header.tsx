@@ -4,6 +4,7 @@ import { Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { ChevronRight } from 'lucide-react'
+import { consoleNavItems } from '@/components/console/nav-model'
 
 import { useOptionalConsoleShell } from '@/components/console/console-shell-context'
 
@@ -21,62 +22,33 @@ interface AppHeaderProps {
 const CRUMB_RAIL_STYLE: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 11,
+  gap: 3,
   fontSize: 12.5,
   lineHeight: 'normal',
   minWidth: 0,
 }
 
-function BreadcrumbTrail({ breadcrumbs }: { breadcrumbs: AppBreadcrumb[] }) {
-  return (
-    <>
-      {breadcrumbs.map((crumb, index) => {
-        const isLeaf = index === breadcrumbs.length - 1
-        return (
-          <Fragment key={`${crumb.label}-${index}`}>
-            {index > 0 ? (
-              <ChevronRight
-                size={12}
-                strokeWidth={1.7}
-                style={{ color: 'var(--aurora-text-muted)', flexShrink: 0 }}
-              />
-            ) : null}
-            {crumb.href && !isLeaf ? (
-              <Link
-                href={crumb.href}
-                style={{
-                  fontSize: 12.5,
-                  lineHeight: 'normal',
-                  fontWeight: 600,
-                  color: 'var(--aurora-text-muted)',
-                  whiteSpace: 'nowrap',
-                  textDecoration: 'none',
-                }}
-              >
-                {crumb.label}
-              </Link>
-            ) : (
-              <span
-                data-crumbleaf={isLeaf ? '1' : undefined}
-                style={{
-                  fontSize: 12.5,
-                  lineHeight: 'normal',
-                  fontWeight: 600,
-                  color: isLeaf ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  minWidth: isLeaf && breadcrumbs.length > 1 ? 110 : undefined,
-                }}
-              >
-                {crumb.label}
-              </span>
-            )}
-          </Fragment>
-        )
-      })}
-    </>
-  )
+function BreadcrumbTrail({ breadcrumbs, icon }: { breadcrumbs: AppBreadcrumb[]; icon?: React.ReactNode }) {
+  return <>{breadcrumbs.map((crumb, index) => {
+    const isLeaf = index === breadcrumbs.length - 1
+    const Icon = consoleNavItems.find(item => item.label === crumb.label)?.icon
+    const mark = index === 0 && icon ? icon : Icon ? <Icon size={14} strokeWidth={1.7} /> : null
+    const style: React.CSSProperties = {
+      display: 'inline-flex', alignItems: 'center', gap: 6, height: 26,
+      padding: index > 0 ? '0 10px' : '0 9px', borderRadius: 8,
+      border: index > 0 ? '1px solid color-mix(in srgb, var(--aurora-accent-primary) 26%, transparent)' : '1px solid transparent',
+      background: index > 0 ? 'color-mix(in srgb, var(--aurora-accent-primary) 8%, transparent)' : 'none',
+      fontSize: 12.5, lineHeight: 'normal', fontWeight: index > 0 ? 700 : 600,
+      color: isLeaf ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)',
+      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      minWidth: index > 0 ? 96 : undefined, maxWidth: 220, textDecoration: 'none',
+    }
+    const content = <>{mark ? <span aria-hidden className="grid shrink-0 place-items-center text-aurora-accent-strong">{mark}</span> : null}<span className="truncate">{crumb.label}</span></>
+    return <Fragment key={`${crumb.label}-${index}`}>
+      {index > 0 ? <ChevronRight size={13} strokeWidth={1.7} className="shrink-0 text-aurora-text-muted" /> : null}
+      {crumb.href && !isLeaf ? <Link href={crumb.href} style={style}>{content}</Link> : <span data-crumbleaf={isLeaf ? '1' : undefined} style={style}>{content}</span>}
+    </Fragment>
+  })}</>
 }
 
 /**
@@ -90,7 +62,7 @@ function BreadcrumbTrail({ breadcrumbs }: { breadcrumbs: AppBreadcrumb[] }) {
  */
 export function AppHeader({ breadcrumbs = [], actions, icon }: AppHeaderProps) {
   const shell = useOptionalConsoleShell()
-  const trail = <>{icon ? <span aria-hidden="true" className="grid shrink-0 place-items-center text-aurora-accent-strong">{icon}</span> : null}<BreadcrumbTrail breadcrumbs={breadcrumbs} /></>
+  const trail = <BreadcrumbTrail breadcrumbs={breadcrumbs} icon={icon} />
 
   if (!shell) {
     return (

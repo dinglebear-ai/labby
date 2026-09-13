@@ -294,6 +294,7 @@ impl PublishedToolCatalogSnapshot {
 
 pub(super) struct CatalogState {
     entries: HashMap<String, UpstreamEntry>,
+    notification_incidents: HashMap<String, HashMap<String, (String, String)>>,
     incarnations: HashMap<String, super::incarnation::ConnectionIncarnation>,
     published: Result<Arc<PublishedToolCatalogSnapshot>, ToolCatalogPublicationError>,
     determinant: ProjectionDeterminant,
@@ -490,6 +491,7 @@ impl CatalogState {
     pub(super) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            notification_incidents: HashMap::new(),
             incarnations: HashMap::new(),
             published: Ok(Arc::new(PublishedToolCatalogSnapshot {
                 generation: next_generation(),
@@ -1013,6 +1015,40 @@ impl CatalogState {
     }
 
     fn publish_if_changed(&mut self) {
+        self.notification_incidents
+            .retain(|name, _| self.entries.contains_key(name));
+        for (name, entry) in &self.entries {
+            let incidents = self.notification_incidents.entry(name.clone()).or_default();
+            for (condition, error, health) in [
+                ("tools", &entry.tool_last_error, entry.tool_health),
+                ("prompts", &entry.prompt_last_error, entry.prompt_health),
+                (
+                    "resources",
+                    &entry.resource_last_error,
+                    entry.resource_health,
+                ),
+                ("skills", &entry.skill_last_error, entry.skill_health),
+            ] {
+                if error.is_none() && health.is_routable() {
+                    incidents.remove(condition);
+                    continue;
+                }
+                let fingerprint = format!(
+                    "{}:{}",
+                    health.is_routable(),
+                    error.as_deref().unwrap_or("")
+                );
+                if incidents
+                    .get(condition)
+                    .is_none_or(|(old, _)| old != &fingerprint)
+                {
+                    incidents.insert(
+                        condition.to_owned(),
+                        (fingerprint, uuid::Uuid::new_v4().to_string()),
+                    );
+                }
+            }
+        }
         self.resource_sources
             .retain(|upstream, _| self.entries.contains_key(upstream));
         self.resource_template_sources
@@ -1117,6 +1153,23 @@ impl Drop for CatalogWriteGuard<'_> {
 }
 
 impl UpstreamPool {
+    /// Stable per-condition incident identities, updated on runtime mutations,
+    /// so recovery and recurrence are visible even without an attached browser.
+    pub async fn notification_incidents(&self, upstream: &str) -> HashMap<String, String> {
+        self.catalog
+            .read()
+            .await
+            .notification_incidents
+            .get(upstream)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|(condition, (_, id))| (condition.clone(), id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) async fn catalog_write(&self) -> CatalogWriteGuard<'_> {
         CatalogWriteGuard(self.catalog.write().await)
     }
@@ -2400,6 +2453,51 @@ mod tests {
         pool.published_tool_catalog()
             .await
             .expect("published catalog")
+    }
+
+    #[tokio::test]
+    async fn notification_identity_tracks_unobserved_recovery_without_poll_churn() {
+        let pool = UpstreamPool::new();
+        pool.catalog_write()
+            .await
+            .insert("notify".into(), entry("notify", "read"));
+        assert!(pool.notification_incidents("notify").await.is_empty());
+        pool.catalog_write()
+            .await
+            .get_mut("notify")
+            .unwrap()
+            .tool_last_error = Some("failed".into());
+        let first = pool.notification_incidents("notify").await;
+        pool.catalog_write()
+            .await
+            .get_mut("notify")
+            .unwrap()
+            .tool_last_error = Some("failed".into());
+        assert_eq!(pool.notification_incidents("notify").await, first);
+        pool.catalog_write()
+            .await
+            .get_mut("notify")
+            .unwrap()
+            .tool_last_error = None;
+        pool.catalog_write()
+            .await
+            .get_mut("notify")
+            .unwrap()
+            .tool_last_error = Some("failed".into());
+        assert_ne!(
+            pool.notification_incidents("notify").await["tools"],
+            first["tools"]
+        );
+        let recovered = pool.notification_incidents("notify").await;
+        pool.catalog_write()
+            .await
+            .get_mut("notify")
+            .unwrap()
+            .prompt_last_error = Some("prompt failed".into());
+        assert_eq!(
+            pool.notification_incidents("notify").await["tools"],
+            recovered["tools"]
+        );
     }
 
     #[tokio::test]

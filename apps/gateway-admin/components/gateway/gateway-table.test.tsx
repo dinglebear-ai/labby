@@ -118,8 +118,23 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
   assert.ok(markup.indexOf('Neo4j Memory') < markup.indexOf('Zed Search'))
   assert.match(markup, /uvx neo4j-memory-mcp/)
   assert.match(markup, /Sort by server/)
-  assert.match(markup, /Sort by runtime age/)
-  assert.match(markup, /aria-sort="none"[^>]*><span>Runtime age<\/span>/)
+  assert.match(markup, /Sort by uptime/)
+  assert.match(markup, /aria-sort="none"[^>]*><span>Uptime<\/span>/)
+})
+
+test('gateway table presents a readable label while preserving the configured identifier', () => {
+  const configured = {
+    ...gateway,
+    id: 'agent-os_windows-mcp',
+    name: 'agent-os_windows-mcp',
+  }
+  const markup = renderToStaticMarkup(
+    <GatewayTable gateways={[configured]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+
+  assert.match(markup, />Agent OS Windows MCP<\/a>/)
+  assert.match(markup, /href="\/gateway\?id=agent-os_windows-mcp"/)
+  assert.match(markup, /title="agent-os_windows-mcp · Healthy"/)
 })
 
 
@@ -166,4 +181,12 @@ test('gateway table exposes stale service removal for unknown in-process service
 
   assert.match(markup, /Remove stale service/)
   assert.doesNotMatch(markup, /Remove gateway/)
+})
+
+test('disabled servers have a separate group and never claim a connected or disconnected status', () => {
+  const markup = renderToStaticMarkup(<GatewayTable gateways={[{ ...gateway, enabled: false, name: 'disabled-upstream' }]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
+  assert.match(markup, /title="Disabled"/)
+  assert.doesNotMatch(markup, />Healthy<\/span>/)
+  assert.doesNotMatch(markup, /title="Disconnected"/)
+  assert.doesNotMatch(markup, /data-gateway-column="clients"/)
 })

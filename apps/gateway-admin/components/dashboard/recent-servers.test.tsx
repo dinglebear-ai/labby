@@ -30,3 +30,9 @@ test('at most five supplied rows are shown without sorting them', () => {
   assert.match(html, /Server 4/)
   assert.doesNotMatch(html, /Server 5|Server 6/)
 })
+
+test('disabled servers are not reported as disconnected failures', () => {
+  const html = renderToStaticMarkup(<RecentServers gateways={[{ ...gateway, enabled: false, status: { ...gateway.status, connected: false } }]}/> )
+  assert.match(html, /aria-label="Disabled"/)
+  assert.doesNotMatch(html, /aria-label="Disconnected"/)
+})

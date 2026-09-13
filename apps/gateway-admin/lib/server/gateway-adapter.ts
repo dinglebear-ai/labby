@@ -39,6 +39,7 @@ export interface BackendServerConfigSummaryView {
 }
 
 export interface BackendServerView {
+  notification_incidents?: Record<string, string>
   id: string
   name: string
   source: string
@@ -99,6 +100,7 @@ export interface BackendGatewayRuntimeView {
 }
 
 export interface BackendGatewayMcpRuntimeView {
+  notification_incidents?: Record<string, string>
   name: string
   enabled?: boolean
   connected?: boolean
@@ -401,7 +403,7 @@ export function normalizeServerView(
   }
   const isLabService = view.source === 'in_process'
   const catalogWarming = (view.warnings ?? []).some((warning) => warning.code === 'catalog_warming')
-  const warnings = (view.warnings ?? []).map((warning) => {
+  const warnings = (view.warnings ?? []).map((warning): GatewayWarning | null => {
     if (warning.code === 'catalog_warming') {
       return null
     }
@@ -416,6 +418,7 @@ export function normalizeServerView(
     const classified = classifyWarning(message)
 
     return {
+      occurrence_id: view.notification_incidents?.[warning.code.startsWith('prompts') ? 'prompts' : warning.code.startsWith('resources') ? 'resources' : warning.code.startsWith('skills') ? 'skills' : 'tools'],
       code: warning.code ?? classified.code,
       message,
       timestamp: warningTimestampNow(),
@@ -465,7 +468,7 @@ export function normalizeServerView(
       proxy_skills: config.proxy_skills,
     },
     status: {
-      healthy: (view.connected ?? false) && warnings.length === 0,
+      healthy: (view.connected ?? false) && !catalogWarming && warnings.length === 0,
       connected: view.connected ?? false,
       catalog_warming: catalogWarming,
       ...(lastError ? { last_error: lastError } : {}),

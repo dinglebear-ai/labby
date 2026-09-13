@@ -39,6 +39,7 @@ pub(super) fn migrate(connection: &mut Connection, snapshot_id: &str) -> Result<
         .map_err(FileStashStoreError::sqlite)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(FileStashStoreError::sqlite)?;
+        validate(&tx, snapshot_id)?;
         tx.commit().map_err(FileStashStoreError::sqlite)?;
     }
     validate(connection, snapshot_id)
@@ -98,7 +99,14 @@ CREATE TRIGGER stash_file_usage_insert AFTER INSERT ON files WHEN NEW.ready=1 BE
 CREATE TRIGGER stash_file_usage_delete AFTER DELETE ON files WHEN OLD.ready=1 BEGIN UPDATE stash_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE owner_principal_id=OLD.owner_principal_id; UPDATE stash_instance_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE singleton=1; END;
 ";
 
+// The original v1 metadata table permits only schema_version=1. Rebuild it
+// within the same transaction before updating the version, retaining the
+// snapshot identity and timestamp verbatim until the migration is validated.
 const MIGRATE_V1_TO_V2: &str = r"
+CREATE TABLE stash_metadata_v2(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version IN(1,2)),schema_fingerprint TEXT NOT NULL,snapshot_id TEXT NOT NULL CHECK(length(snapshot_id)>0),updated_at INTEGER NOT NULL) STRICT;
+INSERT INTO stash_metadata_v2 SELECT singleton,schema_version,schema_fingerprint,snapshot_id,updated_at FROM stash_metadata;
+DROP TABLE stash_metadata;
+ALTER TABLE stash_metadata_v2 RENAME TO stash_metadata;
 CREATE TABLE stash_usage(owner_principal_id TEXT PRIMARY KEY,committed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(committed_bytes>=0),reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reserved_bytes>=0),live_files INTEGER NOT NULL DEFAULT 0 CHECK(live_files>=0),pending_files INTEGER NOT NULL DEFAULT 0 CHECK(pending_files>=0)) STRICT;
 INSERT INTO stash_usage(owner_principal_id,committed_bytes,reserved_bytes,live_files,pending_files) SELECT owner_principal_id,SUM(committed_bytes),SUM(reserved_bytes),SUM(live_files),SUM(pending_files) FROM (SELECT owner_principal_id,SUM(size_bytes) committed_bytes,0 reserved_bytes,COUNT(*) live_files,0 pending_files FROM files WHERE ready=1 GROUP BY owner_principal_id UNION ALL SELECT owner_principal_id,0,SUM(reserved_bytes),0,COUNT(*) FROM pending_uploads GROUP BY owner_principal_id) GROUP BY owner_principal_id;
 CREATE TABLE stash_instance_usage(singleton INTEGER PRIMARY KEY CHECK(singleton=1),committed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(committed_bytes>=0),reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reserved_bytes>=0),live_files INTEGER NOT NULL DEFAULT 0 CHECK(live_files>=0),pending_files INTEGER NOT NULL DEFAULT 0 CHECK(pending_files>=0)) STRICT;
@@ -110,3 +118,96 @@ CREATE TRIGGER stash_pending_usage_delete AFTER DELETE ON pending_uploads BEGIN 
 CREATE TRIGGER stash_file_usage_insert AFTER INSERT ON files WHEN NEW.ready=1 BEGIN INSERT INTO stash_usage(owner_principal_id,committed_bytes,live_files) VALUES(NEW.owner_principal_id,NEW.size_bytes,1) ON CONFLICT(owner_principal_id) DO UPDATE SET committed_bytes=committed_bytes+NEW.size_bytes,live_files=live_files+1; UPDATE stash_instance_usage SET committed_bytes=committed_bytes+NEW.size_bytes,live_files=live_files+1 WHERE singleton=1; END;
 CREATE TRIGGER stash_file_usage_delete AFTER DELETE ON files WHEN OLD.ready=1 BEGIN UPDATE stash_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE owner_principal_id=OLD.owner_principal_id; UPDATE stash_instance_usage SET committed_bytes=committed_bytes-OLD.size_bytes,live_files=live_files-1 WHERE singleton=1; END;
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Literal legacy contract, including the constraint observed in deployed
+    // v1 databases. Do not derive this fixture from the current schema.
+    const LEGACY_V1: &str = r"
+CREATE TABLE stash_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),schema_fingerprint TEXT NOT NULL,snapshot_id TEXT NOT NULL CHECK(length(snapshot_id)>0),updated_at INTEGER NOT NULL) STRICT;
+INSERT INTO stash_metadata VALUES(1,1,'labby-file-stash-v1-20260905-service-3','legacy-snapshot',1234);
+CREATE TABLE files(file_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL,size_bytes INTEGER NOT NULL,ready INTEGER NOT NULL) STRICT;
+INSERT INTO files VALUES('file-one','owner-one',17,1);
+CREATE TABLE pending_uploads(upload_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL,reserved_bytes INTEGER NOT NULL) STRICT;
+INSERT INTO pending_uploads VALUES('upload-one','owner-one',23);
+PRAGMA application_id=1279677233;
+PRAGMA user_version=1;
+";
+
+    fn legacy() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(LEGACY_V1).unwrap();
+        connection
+    }
+
+    #[test]
+    fn legacy_v1_constraint_migrates_and_preserves_snapshot_and_usage() {
+        let mut connection = legacy();
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+        let metadata: (i64, String, String) = connection
+            .query_row(
+                "SELECT schema_version,schema_fingerprint,snapshot_id FROM stash_metadata",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            metadata,
+            (
+                2,
+                "labby-file-stash-v2-20260906-quota-counters".into(),
+                "legacy-snapshot".into()
+            )
+        );
+        let usage: (i64, i64, i64, i64) = connection.query_row(
+            "SELECT committed_bytes,reserved_bytes,live_files,pending_files FROM stash_instance_usage",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        ).unwrap();
+        assert_eq!(usage, (17, 23, 1, 1));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejected_v1_snapshot_rolls_back_metadata_rebuild_and_new_tables() {
+        let mut connection = legacy();
+        assert!(matches!(
+            migrate(&mut connection, "wrong-snapshot"),
+            Err(FileStashStoreError::BackupMismatch)
+        ));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let metadata: (i64, String, i64) = connection
+            .query_row(
+                "SELECT schema_version,snapshot_id,updated_at FROM stash_metadata",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(metadata, (1, "legacy-snapshot".into(), 1234));
+        assert!(
+            connection
+                .execute("UPDATE stash_metadata SET schema_version=2", [])
+                .is_err()
+        );
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('stash_metadata_v2','stash_usage','stash_instance_usage','stash_recovery')", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        migrate(&mut connection, "legacy-snapshot").unwrap();
+    }
+}

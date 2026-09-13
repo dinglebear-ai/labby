@@ -64,6 +64,10 @@
   /* Lightened from #90a9b9 to meet WCAG AA (≥4.5:1) on panel-medium #102330.
      Reference-aligned lift; remains comfortably above WCAG AA on panel-medium. */
   --aurora-text-muted: #a9c6d8;
+  --console-chrome-bg: color-mix(in srgb, #0f2334 48%, transparent);
+  --console-section-label: #93b2c5;
+  --console-workspace-label: #97b6c9;
+  --console-context-text: #9bbacd;
   --aurora-accent-primary: #29b6f6;
   --aurora-accent-strong: #67cbfa;
   --aurora-accent-deep: #1c7fac;
@@ -307,6 +311,10 @@
   --aurora-border-strong: #9fbfcc;
   --aurora-text-primary: #162126;
   --aurora-text-muted: #4a6872;
+  --console-chrome-bg: color-mix(in srgb, var(--aurora-panel-medium) 48%, transparent);
+  --console-section-label: #4a6872;
+  --console-workspace-label: #4a6872;
+  --console-context-text: #4a6872;
   --aurora-accent-primary: #0288d1;
   --aurora-accent-strong: #0277bd;
   --aurora-accent-deep: #01579b;
@@ -931,9 +939,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   font-size: 0 !important;
 }
 
-[data-slot='button']:has(svg) > svg,
-[data-slot='dropdown-menu-trigger']:has(svg) > svg,
-[data-icon-text-control]:has(svg) > svg {
+[data-slot='button']:has(svg):not([data-visible-label]) > svg,
+[data-slot='dropdown-menu-trigger']:has(svg):not([data-visible-label]) > svg,
+[data-icon-text-control]:has(svg):not([data-visible-label]) > svg {
   width: 1rem;
   height: 1rem;
 }
@@ -956,9 +964,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-actioncluster] button {
     min-width: 40px;
   }
-  [data-slot='button']:has(svg),
-  [data-slot='dropdown-menu-trigger']:has(svg),
-  [data-icon-text-control]:has(svg) {
+  [data-slot='button']:has(svg):not([data-visible-label]),
+  [data-slot='dropdown-menu-trigger']:has(svg):not([data-visible-label]),
+  [data-icon-text-control]:has(svg):not([data-visible-label]) {
     --aurora-icon-control-size: 2.75rem;
     height: var(--aurora-icon-control-size) !important;
     min-height: var(--aurora-icon-control-size) !important;
@@ -1140,4 +1148,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   .console-root * {
     transition-duration: 1ms !important;
   }
+}
+
+[data-scopemenu] > button:hover {
+  border-color: var(--aurora-border-strong) !important;
+  background: var(--aurora-hover-bg) !important;
 }

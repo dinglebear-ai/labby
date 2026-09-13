@@ -14,6 +14,8 @@
     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "harness_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "idempotency_key": "matrix-agent-request",
+    "input": "Inspect the isolated Agent fixture",
     "loadout_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "owner_id": "bootstrap-owner",
     "owner_kind": "personal",

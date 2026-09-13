@@ -5,10 +5,10 @@ import Link from 'next/link'
 import { Bot, Globe, HardDrive, Network, TrendingDown } from 'lucide-react'
 import { DashboardPanel } from './panel'
 import { MetricBarList } from './metric-bars'
+import { readableTarget } from '@/lib/dashboard/readable-target'
 import { DASH_METRIC_SM, dashPill } from './ui'
 import { formatCompactNumber } from '@/lib/dashboard/dashboard-metrics'
 import type {
-  ActorFacet,
   ActorKind,
   ActorUsageEntry,
   DashboardMetrics,
@@ -39,7 +39,10 @@ function RowShell({
 }
 
 const ACTOR_FACETS: Array<{ key: ActorKind; label: string; unit: string }> = [
+  { key: 'subject', label: 'Subjects', unit: 'subject' },
+  { key: 'client', label: 'Clients', unit: 'client' },
   { key: 'agent', label: 'Agents', unit: 'agent' },
+  { key: 'unknown', label: 'Unknown', unit: 'unknown identity' },
   { key: 'device', label: 'Devices', unit: 'device' },
   { key: 'ip', label: 'IPs', unit: 'IP' },
 ]
@@ -54,18 +57,18 @@ function ActorRowContent({ entry, maxCalls }: { entry: ActorUsageEntry; maxCalls
   const ratio = maxCalls > 0 ? Math.max(0, Math.min(100, entry.calls / maxCalls * 100)) : 0
   const initials = entry.label.split(/\s+/).filter(Boolean).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase()
   return (
-    <span className="flex min-w-0 flex-1 flex-col gap-1.5 py-0.5">
+    <span title={entry.detail ?? entry.id} className="flex min-w-0 flex-1 flex-col gap-1.5 py-0.5">
       <span className="flex min-w-0 items-center gap-2">
-      {entry.kind === 'agent' ? <span aria-hidden="true" className="grid size-6 shrink-0 place-items-center rounded-[7px] border border-aurora-accent-pink-deep/35 bg-aurora-accent-pink/10 text-[9px] font-bold text-aurora-accent-pink">{initials}</span> : <ActorIcon kind={entry.kind} />}
+      {entry.kind === 'agent' ? <span aria-hidden="true" className="grid size-[18px] shrink-0 place-items-center rounded-[6px] border border-aurora-accent-pink-deep/35 bg-aurora-accent-pink/10 text-[8.5px] font-bold text-aurora-accent-pink">{initials}</span> : <ActorIcon kind={entry.kind} />}
       <span
         className={cn(
-          'min-w-0 flex-1 truncate text-[12.5px] font-semibold text-aurora-text-primary',
+          'min-w-0 flex-1 truncate text-[12px] font-medium text-aurora-text-primary',
           entry.kind === 'ip' && 'font-mono text-[13px]',
         )}
       >
         {entry.label}
       </span>
-      <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">
+      <span className="shrink-0 text-[11px] font-semibold tabular-nums text-aurora-text-muted">
         {formatCompactNumber(entry.calls)} calls
       </span>
       </span>
@@ -84,20 +87,20 @@ export function MostActivePanel({
   onSelectActor,
   actorKindsCollected = true,
 }: {
-  actors: { agent: ActorFacet; device: ActorFacet; ip: ActorFacet }
+  actors: DashboardMetrics['actors']
   window: MetricsWindow
   onSelectActor: (entry: ActorUsageEntry) => void
   actorKindsCollected?: boolean
 }) {
-  const [facet, setFacet] = useState<ActorKind>('agent')
-  const current = actors[facet]
+  const [facet, setFacet] = useState<ActorKind>(() => actors.client?.active ? 'client' : actors.subject?.active ? 'subject' : actors.agent.active ? 'agent' : actors.unknown ? 'unknown' : 'agent')
+  const current = actors[facet] ?? { active: 0, top: [] }
   const meta = ACTOR_FACETS.find((f) => f.key === facet)!
   const top = current.top.slice(0, 5)
   const maxCalls = Math.max(0, ...top.map(entry => entry.calls))
 
   return (
     <DashboardPanel
-      title={actorKindsCollected ? 'Most active' : 'Most active subjects'}
+      title={actorKindsCollected ? `Most active ${meta.label.toLowerCase()}` : actors.unknown ? 'Most active unknown identities' : 'Most active subjects'}
       iconTone="pink"
       icon={<Bot className="size-4" />}
       meta={actorKindsCollected
@@ -109,7 +112,7 @@ export function MostActivePanel({
         aria-label="Actor facet"
         className="inline-flex items-center gap-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface p-0.5"
       >
-        {ACTOR_FACETS.map((f) => {
+        {ACTOR_FACETS.filter(f => actors[f.key] && (actors.subject ? !['device', 'ip'].includes(f.key) : !['subject', 'client', 'unknown'].includes(f.key))).map((f) => {
           const active = f.key === facet
           return (
             <button
@@ -214,7 +217,7 @@ export function LeastUsedPanel({
   return (
     <DashboardPanel title="Least used" iconTone="warn" icon={<TrendingDown className="size-4" />} meta={`of ${distinct} distinct`}>
       <MetricBarList tone="warn" empty="No upstream calls in this window." items={tools.slice(0, 4).map(tool => ({
-        key: tool.id ?? tool.name, label: tool.label ?? tool.name, value: tool.calls,
+        key: tool.id ?? tool.name, label: readableTarget(tool.label ?? tool.name), title: tool.name, value: tool.calls,
         display: `${formatCompactNumber(tool.calls)} calls`,
         onSelect: onSelect ? () => onSelect(tool.name) : undefined,
       }))}/>

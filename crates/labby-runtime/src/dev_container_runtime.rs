@@ -1,6 +1,10 @@
 //! Surface-neutral Dev Container execution and recovery orchestration.
 
-use std::{collections::BTreeSet, future::Future, pin::Pin};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+};
 
 use labby_primitives::dev_container::{
     ApprovedTemplate, DevContainerId, HostCapability, ImageDigest, LifecycleNonce,
@@ -40,6 +44,44 @@ pub struct EngineHandle {
     pub lifecycle_nonce: LifecycleNonce,
 }
 
+/// An operator-pinned Incus profile. The digest covers the profile's effective
+/// `config` and `devices` descriptor; the adapter verifies it immediately
+/// before submitting a create effect.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IncusProfileReference {
+    pub name: String,
+    pub content_digest: String,
+}
+
+/// Resolved launch environment. Values are deliberately non-serializable and
+/// redacted from `Debug`; only the Incus adapter can iterate the values when it
+/// constructs the create request.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct ResolvedLaunchEnvironment(BTreeMap<String, String>);
+
+impl std::fmt::Debug for ResolvedLaunchEnvironment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedLaunchEnvironment")
+            .field("names", &self.0.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl ResolvedLaunchEnvironment {
+    #[must_use]
+    pub fn new(values: BTreeMap<String, String>) -> Self {
+        Self(values)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+}
+
 /// Engine launch request. `image_digest` must be the canonical `sha256:` image
 /// of the approved template; [`create`] re-parses and pins it before any engine
 /// call, and [`EngineCreateRequest::for_template`] fills it from the template
@@ -53,6 +95,9 @@ pub struct EngineCreateRequest {
     pub disk_bytes: u64,
     pub lifetime_seconds: u64,
     pub host_capabilities: BTreeSet<HostCapability>,
+    pub launch_manifest_digest: String,
+    pub profiles: Vec<IncusProfileReference>,
+    pub environment: ResolvedLaunchEnvironment,
 }
 
 impl EngineCreateRequest {
@@ -63,6 +108,9 @@ impl EngineCreateRequest {
         template: &ApprovedTemplate,
         resources: crate::dev_container::LaunchResources,
         host_capabilities: BTreeSet<HostCapability>,
+        launch_manifest_digest: String,
+        profiles: Vec<IncusProfileReference>,
+        environment: ResolvedLaunchEnvironment,
     ) -> Self {
         Self {
             handle,
@@ -72,6 +120,9 @@ impl EngineCreateRequest {
             disk_bytes: resources.disk_bytes,
             lifetime_seconds: resources.lifetime_seconds,
             host_capabilities,
+            launch_manifest_digest,
+            profiles,
+            environment,
         }
     }
 
@@ -503,6 +554,9 @@ mod tests {
                 disk_bytes: 2_000,
                 lifetime_seconds: 30,
                 host_capabilities: BTreeSet::from([HostCapability::HostNetwork]),
+                launch_manifest_digest: format!("sha256:{}", "c".repeat(64)),
+                profiles: Vec::new(),
+                environment: ResolvedLaunchEnvironment::default(),
             },
         )
         .await;
@@ -540,6 +594,9 @@ mod tests {
                 lifetime_seconds: 30,
             },
             BTreeSet::new(),
+            format!("sha256:{}", "c".repeat(64)),
+            Vec::new(),
+            ResolvedLaunchEnvironment::default(),
         );
         assert_eq!(request.image().unwrap(), *template.image());
         request.image_digest = format!("sha256:{}", "b".repeat(64));

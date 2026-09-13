@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Archive, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, ShieldCheck, Table2, Users, X } from 'lucide-react'
+import { GitFork, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, Table2, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
@@ -14,11 +14,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
+import { type DepotArtifact } from '@/lib/api/depot-client'
+import { skillLibrary, type SkillLibraryItem } from '@/lib/api/skill-library-client'
+import { localLibraryArtifact } from './local-library-model'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
+import { LibraryNewLoadout } from './library-new-loadout'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
-import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
+import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact, filterLibraryView, libraryRevisionDate, type LibraryView } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { updateLibraryUrl as updateUrl } from './library-url'
 
@@ -27,19 +30,17 @@ type LibraryState = {
   cursor?: string
   error?: string
   loading: boolean
-  status?: DepotStatus
-  publishing?: DepotPublishCapability
+  canCreate?: boolean
   total?: number
 }
 
-const PAGE_SIZE = 50
 type ViewMode = 'table' | 'list' | 'cards'
 
 export function libraryFilterKinds(artifacts: DepotArtifact[]) {
   return [...new Set([...ARTIFACT_TYPES, ...collectArtifactKinds(artifacts)])]
 }
 
-export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag }: { artifacts: DepotArtifact[]; kind: string; onKind: (kind: string) => void; tag?: string; onTag?: (tag: string | undefined) => void }) {
+export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag, libraryView, onView }: { artifacts: DepotArtifact[]; kind: string; onKind: (kind: string) => void; tag?: string; onTag?: (tag: string | undefined) => void; libraryView?: LibraryView; onView?: (view: LibraryView) => void }) {
   const [expanded, setExpanded] = useState(false)
   const filtersId = useId()
   return <aside aria-label="Library filters" data-lbrail="1" className="min-w-0 self-start lg:sticky lg:top-3">
@@ -47,7 +48,11 @@ export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag }: { art
       <Filter aria-hidden="true" className="size-3.5 shrink-0"/><span className="min-w-0 flex-1 truncate">Filters · {kind === 'all' ? 'All artifacts' : artifactTypeDefinition(kind).label}{tag ? ` · ${tag}` : ''}</span><ChevronDown aria-hidden="true" className={`size-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}/>
     </button>
     <div id={filtersId} className={`${expanded ? 'block' : 'hidden'} space-y-3 max-[900px]:mt-3 min-[901px]:block`}>
-    <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong p-2 shadow-[var(--aurora-shadow-medium)]">
+    <div className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong p-[7px] shadow-[var(--aurora-shadow-medium)]">
+      {libraryView && onView ? <>
+        {([['all', 'All Artifacts', Box], ['forks', 'Forks', GitFork], ['published', 'Published', Globe], ['team', 'Team', Users], ['private', 'Private', LockKeyhole]] as const).map(([value, label, Icon]) => <button key={value} type="button" title="Filter loaded library records" aria-pressed={libraryView === value} onClick={() => onView(value)} className="flex h-[30px] w-full items-center gap-[9px] rounded-lg border border-transparent px-[9px] text-left text-[12.5px] font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:border-aurora-border-strong aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><Icon size={13}/><span className="min-w-0 flex-1">{label}</span><span className="text-[10.5px] tabular-nums opacity-75">{filterLibraryView(artifacts, value).length}</span></button>)}
+        <button type="button" disabled title="Upstream revision comparison is not available for this library" className="flex h-[30px] w-full items-center gap-[9px] rounded-lg px-[9px] text-left text-[12.5px] font-semibold text-aurora-text-muted opacity-60"><RefreshCw size={13}/><span className="flex-1">Behind Upstream</span><span>—</span></button>
+      </> : <>
       <p className="px-2 pb-2 pt-1 text-[10px] font-semibold text-aurora-text-muted">Artifact types · loaded results</p>
       {['all', ...libraryFilterKinds(artifacts)].map(value => {
         const definition = artifactTypeDefinition(value)
@@ -57,11 +62,12 @@ export function LibraryFilterRail({ artifacts, kind, onKind, tag, onTag }: { art
           <Icon aria-hidden="true" className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">{value === 'all' ? 'All artifacts' : definition.label}</span><span className="text-[10.5px] tabular-nums opacity-75">{count}</span>
         </button>
       })}
+      </>}
     </div>
     <section aria-label="Tags" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong">
       <h2 className="border-b border-aurora-border-subtle bg-aurora-control-surface px-3 py-2 text-[10px] font-semibold text-aurora-text-muted">Tags · loaded results</h2>
       <div className="flex flex-wrap gap-1.5 p-3">
-        {collectArtifactTags(artifacts).map(({ tag: value, count }) => <Button data-visible-label="1" key={value} variant="outline" size="sm" aria-pressed={tag === value} onClick={() => onTag?.(tag === value ? undefined : value)} className="h-[23px] max-w-full gap-1.5 rounded-md px-2 text-[10.5px] aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-selected-bg"><span className="truncate">{value}</span><span className="tabular-nums text-aurora-text-muted">{count}</span></Button>)}
+        {collectArtifactTags(artifacts).map(({ tag: value, count }) => <Button data-visible-label="1" key={value} variant="outline" size="sm" aria-pressed={tag === value} onClick={() => onTag?.(tag === value ? undefined : value)} className="h-[22px] max-w-full gap-[5px] rounded-full px-[9px] text-[10.5px] aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-selected-bg"><span className="truncate">{value}</span><span className="tabular-nums text-aurora-text-muted">{count}</span></Button>)}
         {collectArtifactTags(artifacts).length === 0 ? <p className="text-xs leading-5 text-aurora-text-muted">No tags supplied in loaded results.</p> : null}
       </div>
     </section>
@@ -85,9 +91,9 @@ export function LibraryVisibility({ visibility }: { visibility?: string }) {
 export function LibraryArtifactTable({ artifacts, onInspect }: { artifacts: DepotArtifact[]; onInspect: (id: string) => void }) {
   return <div className="aurora-scrollbar max-h-[56vh] overflow-auto">
     <table aria-label="Library artifacts" className="w-full min-w-[560px] table-fixed text-left">
-      <colgroup><col className="w-[106px]"/><col/><col className="w-[132px]"/><col className="w-[92px]"/><col className="w-[42px]"/></colgroup>
+      <colgroup><col className="w-[106px]"/><col/><col className="w-[132px]"/><col className="w-[92px]"/><col className="w-[106px]"/><col className="w-[85px]"/><col className="w-[30px]"/></colgroup>
       <thead className="sticky top-0 z-10 bg-aurora-panel-strong"><tr className="border-b border-aurora-border-subtle text-[9.5px] font-bold uppercase tracking-[.1em] text-aurora-text-muted">
-        {['Kind', 'Artifact', 'Tags', 'Visibility'].map(label => <th key={label} scope="col" className="px-2 py-2 first:pl-4">{label}</th>)}
+        {['Kind', 'Artifact', 'Tags', 'Visibility', 'Upstream', 'Updated'].map(label => <th key={label} scope="col" className="px-2 py-2 first:pl-4">{label}</th>)}
         <th scope="col" className="px-2 py-2"><span className="sr-only">Open</span></th>
       </tr></thead>
       <tbody>{artifacts.map(artifact => {
@@ -100,6 +106,8 @@ export function LibraryArtifactTable({ artifacts, onInspect }: { artifacts: Depo
           </button></td>
           <td className="px-2 py-[9px] text-[10.5px] text-aurora-text-muted"><div className="flex gap-1 overflow-hidden" title={artifact.descriptor?.tags?.join(', ')}>{artifact.descriptor?.tags?.length ? artifact.descriptor.tags.map(tag => <span key={tag} className="h-[17px] max-w-[116px] shrink-0 truncate rounded border border-[color-mix(in_srgb,var(--aurora-accent-primary)_22%,transparent)] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_8%,transparent)] px-[7px] text-[9.5px] font-[650] leading-[15px] text-aurora-accent-strong">{tag}</span>) : '—'}</div></td>
           <td className="truncate px-2 py-[9px] text-[10.5px] font-semibold"><LibraryVisibility visibility={artifact.publication?.visibility}/></td>
+          <td className="truncate px-2 py-[9px] text-[10.5px] text-aurora-text-muted" title={artifact.lineage?.upstreamArtifactId}>{artifact.lineage?.upstreamArtifactId ? <span className="inline-flex items-center gap-1 text-aurora-accent-strong"><GitFork size={11}/>{artifact.lineage.following ? 'Following' : 'Linked'}</span> : '—'}</td>
+          <td className="px-2 py-[9px] text-[10.5px] tabular-nums text-aurora-text-muted">{libraryRevisionDate(artifact) ? <time dateTime={libraryRevisionDate(artifact)} title="Current revision created">{new Date(libraryRevisionDate(artifact)!).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time> : '—'}</td>
           <td className="py-[9px] pl-2 pr-4"><ChevronRight aria-hidden="true" className="size-3.5 text-aurora-text-muted"/></td>
         </tr>
       })}</tbody>
@@ -160,30 +168,15 @@ function SessionLibraryPage() {
     const loadingSessionEpoch = getBrowserSessionEpoch()
     const isCurrent = () => !signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
     setState((current) => cursor
-      ? { ...current, loading: true, error: undefined, publishing: undefined }
+      ? { ...current, loading: true, error: undefined }
       : { artifacts: [], loading: true })
     try {
-      // Read the server's live status before issuing caller-bound library reads.
-      const status = await depotStatus(signal)
+      const response = await skillLibrary.list(search, signal, cursor)
       if (!isCurrent()) return
-      const [response, publishing] = await Promise.all([
-        controlPlaneAction<{ artifacts?: DepotArtifact[]; nextCursor?: string; total?: number }>(
-          'artifacts',
-          'artifacts.list_remote',
-          { limit: PAGE_SIZE, ...(search ? { query: search } : {}), ...(cursor ? { cursor } : {}) },
-          signal,
-        ),
-        depotPublishCapability(signal).catch(() => undefined),
-      ])
-      if (!isCurrent()) return
-      setState((current) => ({
-        artifacts: cursor ? [...current.artifacts, ...(response.artifacts ?? [])] : (response.artifacts ?? []),
-        cursor: response.nextCursor,
-        loading: false,
-        status,
-        publishing,
-        total: response.total,
-      }))
+      setState((current) => {
+        const artifacts = cursor ? [...current.artifacts, ...response.items.map(localLibraryArtifact)] : response.items.map(localLibraryArtifact)
+        return { artifacts, cursor: response.next_cursor ?? undefined, loading: false, canCreate: response.can_create, total: response.next_cursor ? undefined : artifacts.length }
+      })
     } catch (error) {
       if (isCurrent()) setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error), loading: false }))
     }
@@ -211,16 +204,15 @@ function SessionLibraryPage() {
     const loadingSessionEpoch = getBrowserSessionEpoch()
     const isCurrent = () => !controller.signal.aborted && loadingSessionEpoch === getBrowserSessionEpoch()
     setDetailLoading(true)
-    void depotStatus(controller.signal)
-      .then(() => isCurrent() ? controlPlaneAction<{ artifact?: DepotArtifact }>('artifacts', 'artifacts.get_remote', { id: selectedId }, controller.signal) : undefined)
-      .then((response) => { if (isCurrent()) setDetail(response?.artifact ? { selectedId, artifact: response.artifact } : null) })
+    void controlPlaneAction<{ item: SkillLibraryItem }>('artifacts', 'artifacts.get', { artifact_id: selectedId }, controller.signal)
+      .then((response) => { if (isCurrent()) setDetail(response.item ? { selectedId, artifact: localLibraryArtifact(response.item) } : null) })
       .catch((error) => { if (isCurrent()) toast.error(error instanceof Error ? error.message : String(error)) })
       .finally(() => { if (isCurrent()) setDetailLoading(false) })
     return () => controller.abort()
   }, [selectedId])
 
-  const kinds = useMemo(() => collectArtifactKinds(state.artifacts), [state.artifacts])
-  const visible = useMemo(() => sortLibraryArtifacts(filterLibraryArtifacts(state.artifacts, kind, tag), sort), [kind, tag, sort, state.artifacts])
+  const [libraryView, setLibraryView] = useState<LibraryView>('all')
+  const visible = useMemo(() => sortLibraryArtifacts(filterLibraryArtifacts(filterLibraryView(state.artifacts, libraryView), kind, tag), sort), [kind, tag, sort, libraryView, state.artifacts])
   const copy = useCallback(async (label: string, value: string) => {
     await navigator.clipboard.writeText(value)
     setCopied(label)
@@ -243,17 +235,18 @@ function SessionLibraryPage() {
   return <>
     <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
     <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
-      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={state.error || state.total === undefined ? {} : { artifacts: state.total }} />} pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'live catalog' : 'Depot unavailable' }} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button><Button variant="outline" size="sm" disabled={state.loading} onClick={() => void load(activeQuery)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}Refresh</Button></div>} stats={[
-        { label: activeQuery ? 'Matches' : 'Published artifacts', value: state.total ?? '—', icon: <Archive size={12}/> },
-        { label: 'Loaded', value: state.artifacts.length, icon: <Box size={12}/> },
-        { label: 'Kinds loaded', value: kinds.length, icon: <FileText size={12}/> },
-        { label: 'Your access', value: state.publishing?.available ? 'Read + publish' : state.publishing?.reason === 'owner_link_approval_pending' ? 'Confirm owner link' : state.publishing ? 'Read only' : 'Unknown', icon: <ShieldCheck size={12}/> },
+      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={state.error || state.total === undefined ? {} : { artifacts: state.total }} />} actions={<div className="flex items-center gap-[7px]"><Button variant="outline" size="icon" aria-label="Export loaded library metadata" title="Export loaded artifact metadata; this does not include artifact content" className="size-9 rounded-[10px]" disabled={state.loading || state.artifacts.length === 0} onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify({ artifacts: state.artifacts, complete: !state.cursor, total: state.total }, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'library-metadata.json'; anchor.click(); URL.revokeObjectURL(url) }}><Download size={13}/></Button><LibraryNewLoadout/></div>} stats={[
+        { label: 'Artifacts', value: state.total ?? '—', suffix: 'in library' },
+        { label: 'Forks', value: state.loading ? '—' : filterLibraryView(state.artifacts, 'forks').length, suffix: 'loaded records', tone: 'var(--aurora-accent-pink)' },
+        { label: 'Behind', value: '—', suffix: 'not reported', tone: 'var(--aurora-accent-strong)' },
+        { label: 'Public', value: state.loading ? '—' : filterLibraryView(state.artifacts, 'published').length, suffix: 'loaded records', tone: 'var(--aurora-success)' },
+        { label: 'Loadouts', value: state.loading ? '—' : state.artifacts.filter((artifact) => artifactKind(artifact) === 'loadout').length, suffix: 'loaded artifacts' },
       ]}/>
-      {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Refresh after Depot is connected.</p></DashboardPanel> : null}
+      {state.error ? <DashboardPanel title="Library unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}</p>{state.error.toLowerCase().includes('project context') ? <p className="text-sm text-aurora-text-muted">Choose a project in the workspace selector at the top of the sidebar, then return to Library. Project access is required to read acquired artifacts.</p> : <p className="text-sm text-aurora-text-muted">Refresh to retry loading the local artifact library.</p>}</DashboardPanel> : null}
       <div data-lbgrid="1" className="grid min-w-0 items-start gap-3.5 min-[901px]:grid-cols-[214px_minmax(0,1fr)]">
-      <LibraryFilterRail artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
+      <LibraryFilterRail libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
       <div className="min-w-0">
-      <section aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface px-[13px] py-[9px]"><div data-library-search="1" className="relative min-w-24 max-w-[320px] flex-1"><Search className="absolute left-[11px] top-1/2 size-[13px] -translate-y-1/2 text-aurora-text-muted"/><Input aria-label="Search library" className="h-[30px] w-full rounded-[9px] pl-8 pr-8 text-[12.5px]" placeholder="Search the full Depot catalog…" value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-aurora-text-muted" onClick={() => setQuery('')}><X className="size-4"/></button> : null}</div><span className="text-[11px] font-semibold tabular-nums text-aurora-text-muted">{visible.length} shown</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/><Popover><PopoverTrigger asChild><Button variant="outline" size="sm" aria-label="Filter library by artifact type" className={`h-[26px] rounded-full px-[11px] text-[11px] ${kind !== 'all' ? 'border-aurora-accent-primary text-aurora-text-primary' : ''}`}><Filter className="size-3.5"/>{kind === 'all' ? 'Filters' : artifactTypeDefinition(kind).label}<ChevronDown className="size-3.5"/></Button></PopoverTrigger><PopoverContent align="end" className="w-64 p-2"><div className="px-2 pb-2 pt-1"><p className="text-xs font-semibold text-aurora-text-primary">Artifact type</p><p className="mt-0.5 text-[11px] text-aurora-text-muted">Show one catalog family at a time.</p></div><button type="button" onClick={() => { setKind('all'); updateUrl({ kind: 'all' }) }} aria-pressed={kind === 'all'} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border border-aurora-border-subtle"><Box className="size-3.5"/></span><span className="flex-1 font-semibold">All artifacts</span>{kind === 'all' ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button>{libraryFilterKinds(state.artifacts).map((item) => { const definition = artifactTypeDefinition(item); const Icon = definition.icon; return <button key={item} type="button" onClick={() => { setKind(item); updateUrl({ kind: item }) }} aria-pressed={kind === item} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border" style={{ color: definition.color, borderColor: `color-mix(in srgb, ${definition.color} 38%, transparent)` }}><Icon className="size-3.5"/></span><span className="flex-1 font-semibold">{definition.label}</span>{kind === item ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button> })}</PopoverContent></Popover><div className="hidden rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5 sm:flex">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode]) => <button key={mode} type="button" aria-label={`${label} view`} title={`${label} view`} aria-pressed={view === mode} onClick={() => setView(mode)} className="rounded p-1.5 text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-3.5"/></button>)}</div></div>
+      <section aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface px-[13px] py-[9px]"><div data-library-search="1" className="relative min-w-24 max-w-[320px] flex-1"><Search className="absolute left-[11px] top-1/2 size-[13px] -translate-y-1/2 text-aurora-text-muted"/><Input aria-label="Search library" className="h-[30px] w-full rounded-[9px] pl-8 pr-8 text-[12.5px]" placeholder="Search the full Depot catalog…" value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-aurora-text-muted" onClick={() => setQuery('')}><X className="size-4"/></button> : null}</div><span className="text-[11px] font-semibold tabular-nums text-aurora-text-muted">{visible.length} shown</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/><Popover><PopoverTrigger asChild><Button variant="outline" size="sm" data-visible-label="1" aria-label="Filter library by artifact type" className={`h-[26px] rounded-full px-[11px] text-[11px] ${kind !== 'all' ? 'border-aurora-accent-primary text-aurora-text-primary' : ''}`}><Filter className="size-3.5"/>{kind === 'all' ? 'Filters' : artifactTypeDefinition(kind).label}<ChevronDown className="size-3.5"/></Button></PopoverTrigger><PopoverContent align="end" className="w-64 p-2"><div className="px-2 pb-2 pt-1"><p className="text-xs font-semibold text-aurora-text-primary">Artifact type</p><p className="mt-0.5 text-[11px] text-aurora-text-muted">Show one catalog family at a time.</p></div><button type="button" onClick={() => { setKind('all'); updateUrl({ kind: 'all' }) }} aria-pressed={kind === 'all'} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border border-aurora-border-subtle"><Box className="size-3.5"/></span><span className="flex-1 font-semibold">All artifacts</span>{kind === 'all' ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button>{libraryFilterKinds(state.artifacts).map((item) => { const definition = artifactTypeDefinition(item); const Icon = definition.icon; return <button key={item} type="button" onClick={() => { setKind(item); updateUrl({ kind: item }) }} aria-pressed={kind === item} className="flex w-full items-center gap-2 rounded-aurora-1 px-2 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-text-primary"><span className="grid size-7 place-items-center rounded-aurora-1 border" style={{ color: definition.color, borderColor: `color-mix(in srgb, ${definition.color} 38%, transparent)` }}><Icon className="size-3.5"/></span><span className="flex-1 font-semibold">{definition.label}</span>{kind === item ? <Check className="size-4 text-aurora-accent-primary"/> : null}</button> })}</PopoverContent></Popover><div className="hidden rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5 sm:flex">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode]) => <button key={mode} type="button" aria-label={`${label} view`} title={`${label} view`} aria-pressed={view === mode} onClick={() => setView(mode)} className="rounded p-1.5 text-aurora-text-muted transition-colors hover:text-aurora-text-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-3.5"/></button>)}</div></div>
         <div className="flex flex-wrap items-center gap-2 border-b border-aurora-border-subtle px-4 py-2">
           <span className="text-[10.5px] font-semibold text-aurora-text-primary">{kind === 'all' ? 'All artifact types' : artifactTypeDefinition(kind).label}</span>
           {kind !== 'all' ? <button type="button" onClick={() => { setKind('all'); updateUrl({ kind: 'all' }) }} className="inline-flex items-center gap-1 rounded-full border border-aurora-border-subtle px-2 py-1 text-[11px] text-aurora-text-muted hover:text-aurora-text-primary">Clear filter<X className="size-3"/></button> : null}
@@ -264,6 +257,7 @@ function SessionLibraryPage() {
         {!state.loading && visible.length === 0 ? <p className="py-10 text-center text-sm text-aurora-text-muted">No loaded artifacts match this view.</p> : null}
         {state.cursor ? <div className="border-t border-aurora-border-subtle p-3 text-center"><Button variant="outline" disabled={state.loading} onClick={() => void load(activeQuery, state.cursor)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : null}Load 50 more</Button></div> : null}
       </section>
+      <div aria-label="Library connection" className="mt-2 flex items-center gap-2 text-[10.5px] text-aurora-text-muted"><span>{state.loading ? 'Loading local library…' : state.error ? 'Local library unavailable' : 'Local acquired artifacts'}</span><span aria-hidden="true">·</span><span data-library-access="1">{state.canCreate === undefined ? 'Unknown access' : state.canCreate ? 'Read + create' : 'Read only'}</span><button type="button" className="ml-auto rounded px-1.5 hover:text-aurora-accent-strong" disabled={state.loading} onClick={() => void load(activeQuery)}>Refresh</button><a className="hover:text-aurora-accent-strong" href="/depot">Discover</a></div>
       </div>
       </div>
     </div></div>

@@ -120,6 +120,27 @@
 # No env var override; config-file only.
 # root = "~/.labby/workspace"              # default: ~/.labby/workspace
 
+# ── Agent Harnesses ──────────────────────────────────────────────────────────
+#
+# Agents are disabled until an operator explicitly approves at least one local
+# harness. Commands and working directories must be absolute. Prompts are sent
+# on stdin; stdout becomes the retained transcript. `agents.harnesses` reports
+# the descriptor digest to pin in an Agent definition. Environment values stay
+# in .env/the service manager; only their names belong here.
+
+[agents]
+# [[agents.harnesses]]
+# id = "codex"
+# content_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+# repository_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+# image_digest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+# loadout_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+# catalog_generation = "catalog-1"
+# command = "/usr/local/bin/codex"
+# args = ["exec", "--json", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only", "--skip-git-repo-check", "-"]
+# cwd = "/srv/labby/agent-workspace"
+# inherit_env = ["OPENAI_API_KEY"]
+
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #
 # The gateway only allows known-safe runtimes and transports (npx, uvx, docker,

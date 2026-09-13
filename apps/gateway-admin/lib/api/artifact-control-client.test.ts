@@ -2,7 +2,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { controlPlaneAction, uploadArtifactBytes } from './artifact-control-client.ts'
+import {
+  controlPlaneAction,
+  getRemoteArtifact,
+  listRemoteArtifacts,
+  publishSkillBundle,
+  setRemoteArtifactPublication,
+  type RemoteArtifactProjection,
+  uploadArtifactBytes,
+} from './artifact-control-client.ts'
+
+const artifact: RemoteArtifactProjection = {
+  descriptor: { id: 'artifact-1', kind: 'agent', namespace: 'examples', name: 'reviewer' },
+  currentRevision: { id: 'revision-1', contentDigest: 'sha256:revision-1', components: [] },
+  revisionCount: 1,
+  stateVersion: 'sha256:state-1',
+  license: {},
+  lineage: { following: false },
+  provenance: {},
+  publication: { state: 'draft', visibility: 'private', distribution: 'metadata' },
+}
 
 test('control-plane actions use only the selected Labby service and action', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project' })
@@ -46,7 +65,6 @@ test('raw upload stays project-bound and never serializes bytes into action JSON
   }
 })
 
-
 test('raw upload refuses a retry or success after its project changes', async () => {
   const originalFetch = globalThis.fetch
   const session = { status: 'authenticated' as const, user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project-1' }
@@ -62,6 +80,52 @@ test('raw upload refuses a retry or success after its project changes', async ()
       await assert.rejects(uploadArtifactBytes('upload-1', new File(['bytes'], 'test.zip')), { name: 'AbortError' })
       assert.equal(calls, 1)
     }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('remote Artifact listing forwards the provider query and kind filters', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project' })
+  const originalFetch = globalThis.fetch
+  let capturedBody = ''
+  globalThis.fetch = async (_input, init) => {
+    capturedBody = String(init?.body)
+    return new Response(JSON.stringify({ artifacts: [], total: 0 }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const result = await listRemoteArtifacts({ query: 'review', kind: 'agent', limit: 25 }, { connectionId: 'primary' })
+    assert.deepEqual(result, { artifacts: [], total: 0 })
+    assert.deepEqual(JSON.parse(capturedBody), {
+      action: 'artifacts.list_remote',
+      params: { query: 'review', kind: 'agent', limit: 25, connection_id: 'primary' },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Artifact lifecycle mutations derive the optimistic concurrency guard from the typed projection', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project' })
+  const originalFetch = globalThis.fetch
+  let capturedBody = ''
+  globalThis.fetch = async (_input, init) => {
+    capturedBody = String(init?.body)
+    return new Response(JSON.stringify({ artifact: { ...artifact, stateVersion: 'sha256:state-2', publication: { state: 'published', visibility: 'public', distribution: 'metadata' } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const result = await setRemoteArtifactPublication(artifact, { state: 'published', visibility: 'public', distribution: 'metadata' })
+    assert.equal(result.artifact.stateVersion, 'sha256:state-2')
+    assert.deepEqual(JSON.parse(capturedBody), {
+      action: 'artifacts.set_publication',
+      params: {
+        id: 'artifact-1',
+        expected_version: 'sha256:state-1',
+        state: 'published',
+        visibility: 'public',
+        distribution: 'metadata',
+      },
+    })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -108,4 +172,34 @@ test('raw upload can retry after a transport-only CSRF refresh', async () => {
     assert.equal(uploads, 2)
     assert.equal(refreshes, 1)
   } finally { globalThis.fetch = originalFetch }
+})
+
+test('typed Artifact receipts reject lifecycle state without stateVersion', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project' })
+  const originalFetch = globalThis.fetch
+  const missingVersion: Record<string, unknown> = { ...artifact }
+  delete missingVersion.stateVersion
+  globalThis.fetch = async () => new Response(JSON.stringify({ artifact: missingVersion }), { status: 200, headers: { 'content-type': 'application/json' } })
+  try {
+    await assert.rejects(() => getRemoteArtifact('artifact-1'), /incompatible Artifact receipt.*stateVersion/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('typed Skill bundle publish receipts require the immutable live and pinned mounts', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, projectId: 'project' })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    bundle: { slug: 'review-kit', description: '', visibility: 'oauth', members: 1, versions: 1, latestVersion: 1, drift: { clean: true, added: [], removed: [], changed: [], missing: [] } },
+    version: { number: 1, publishedAt: '2026-09-13T00:00:00Z', skills: 1 },
+    mounts: ['/b/review-kit/mcp', '/b/review-kit/v1/mcp'],
+  }), { status: 200, headers: { 'content-type': 'application/json' } })
+  try {
+    const receipt = await publishSkillBundle('review-kit')
+    assert.equal(receipt.version.number, 1)
+    assert.deepEqual(receipt.mounts, ['/b/review-kit/mcp', '/b/review-kit/v1/mcp'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })

@@ -58,3 +58,5 @@ pub use service_registry::{
     ServiceRegistryPublicationGeneration,
 };
 pub use shared::SHARED_GATEWAY_OAUTH_SUBJECT;
+
+mod host_metrics;

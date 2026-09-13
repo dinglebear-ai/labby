@@ -29,3 +29,16 @@ test('revision ages use real timestamps with deterministic server and future-dat
     assert.equal(revisionAge(timestamp, authored + seconds * 1000), expected)
   }
 })
+
+
+test('source metric rankings put missing values last and never manufacture verification', () => {
+  const reported = [
+    { providerId: 'source', artifactId: 'missing' },
+    { providerId: 'source', artifactId: 'zero', metrics: { installs: 0, forks: 0 }, publisherVerified: false },
+    { providerId: 'source', artifactId: 'known', metrics: { installs: 20, forks: 3 }, publisherVerified: true },
+  ] as FederatedArtifact[]
+  assert.deepEqual(selectDiscoveryResults(reported, 'installs').map(row => row.artifactId), ['known', 'zero', 'missing'])
+  assert.deepEqual(selectDiscoveryResults(reported, 'forks').map(row => row.artifactId), ['known', 'zero', 'missing'])
+  assert.deepEqual(selectDiscoveryResults(reported, 'verified').map(row => row.artifactId), ['known', 'missing', 'zero'])
+  assert.deepEqual(reported.map(row => row.artifactId), ['missing', 'zero', 'known'])
+})

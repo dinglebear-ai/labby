@@ -110,6 +110,9 @@ function UsageExplorer() {
   const [operation, setOperation] = useState<string>(params.get('operation') ?? ALL)
   const [subjectScope, setSubjectScope] = useState<string>(params.get('subject') ?? ALL)
   const [agent, setAgent] = useState<string>(params.get('agent') ?? ALL)
+  const [clientName, setClientName] = useState(params.get('client_name') ?? '')
+  const [clientVersion, setClientVersion] = useState(params.get('client_version') ?? '')
+  const [agentId, setAgentId] = useState(params.get('agent_id') ?? '')
   const [ip, setIp] = useState<string>(params.get('ip') ?? ALL)
   const [outcome, setOutcome] = useState<string>(params.get('outcome') ?? ALL)
   const [errorKind, setErrorKind] = useState<string>(params.get('error') ?? ALL)
@@ -132,6 +135,9 @@ function UsageExplorer() {
     if (operation !== ALL) next.set('operation', operation)
     if (subjectScope !== ALL) next.set('subject', subjectScope)
     if (agent !== ALL) next.set('agent', agent)
+    if (clientName) next.set('client_name', clientName)
+    if (clientVersion) next.set('client_version', clientVersion)
+    if (agentId) next.set('agent_id', agentId)
     if (ip !== ALL) next.set('ip', ip)
     if (outcome !== ALL) next.set('outcome', outcome)
     if (errorKind !== ALL) next.set('error', errorKind)
@@ -144,7 +150,7 @@ function UsageExplorer() {
     if (focusHour) next.set('hour', focusHour)
     const query = next.toString()
     router.replace(query ? `/usage/?${query}` : '/usage/', { scroll: false })
-  }, [agent, capability, debouncedSearch, errorKind, focus, focusHour, focusMetric, focusPercentile, ip, operation, outcome, router, sinceMs, subjectScope, tool, untilMs, upstream, window])
+  }, [agent, agentId, capability, clientName, clientVersion, debouncedSearch, errorKind, focus, focusHour, focusMetric, focusPercentile, ip, operation, outcome, router, sinceMs, subjectScope, tool, untilMs, upstream, window])
 
   const { data, isLoading, error, mutate } = useToolCalls({
     window,
@@ -156,6 +162,9 @@ function UsageExplorer() {
     operation: operation === ALL ? undefined : operation,
     subject_scoped: subjectScope === ALL ? undefined : subjectScope === 'subject',
     agent: agent === ALL ? undefined : agent,
+    client_name: clientName || undefined,
+    client_version: clientVersion || undefined,
+    agent_id: agentId || undefined,
     ip: ip === ALL ? undefined : ip,
     outcome: outcome === ALL ? undefined : (outcome as CallOutcome),
     error_kind: errorKind === ALL ? undefined : errorKind,
@@ -190,6 +199,16 @@ function UsageExplorer() {
   const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
   const showingTo = Math.min(pageIndex * PAGE_SIZE + (data?.calls.length ?? 0), filtered)
   const hasTimeSlice = sinceMs !== undefined || untilMs !== undefined
+  const hasAttributionFilter = Boolean(clientName || clientVersion || agentId)
+  const moreFilterCount = [
+    tool !== ALL,
+    capability !== ALL,
+    operation !== ALL,
+    subjectScope !== ALL,
+    agent !== ALL,
+    errorKind !== ALL,
+    showIps && ip !== ALL,
+  ].filter(Boolean).length
 
   const heroStats = [
     {
@@ -306,6 +325,31 @@ function UsageExplorer() {
           </div>
         ) : null}
 
+        {hasAttributionFilter ? (
+          <div className="flex items-center gap-2 rounded-aurora-2 border border-aurora-accent-pink-deep/25 bg-aurora-accent-pink/5 px-4 py-2.5 text-xs text-aurora-text-primary">
+            <Users className="size-3.5 shrink-0 text-aurora-accent-pink" />
+            <span className="font-semibold">Exact identity filter:</span>
+            <span className="min-w-0 truncate">
+              {agentId ? `Agent ${agentId}` : `Client ${clientName}${clientVersion ? ` ${clientVersion}` : ''}`}
+              {agent !== ALL ? ` · actor ${agent}` : ''}
+            </span>
+            <button
+              type="button"
+              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 font-semibold text-aurora-text-muted hover:text-aurora-text-primary"
+              onClick={() => {
+                setAgent(ALL)
+                setClientName('')
+                setClientVersion('')
+                setAgentId('')
+                resetPaging()
+              }}
+            >
+              <X className="size-3" />
+              Clear identity
+            </button>
+          </div>
+        ) : null}
+
         {hasTimeSlice ? (
           <div
             style={{
@@ -347,7 +391,7 @@ function UsageExplorer() {
         >
           <div className="space-y-3">
             <div data-activity-filters="1" className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
-              <div className="flex h-[36px] min-w-0 items-center gap-2 rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px]">
+              <div className="flex h-[34px] min-w-0 items-center gap-2 rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px]">
                 <Search aria-hidden="true" className="size-3.5 shrink-0 text-aurora-text-muted" strokeWidth={1.7} />
                 <input
                   name="search"
@@ -368,15 +412,22 @@ function UsageExplorer() {
                 <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
               </Select>
               <details className="group relative">
-                <summary className="flex h-[34px] min-w-[115.765625px] cursor-pointer list-none items-center justify-center gap-[6px] rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold leading-normal text-aurora-text-primary hover:border-aurora-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden">
-                  <SlidersHorizontal className="size-[13px]" strokeWidth={1.8} /> More filters
+                <summary
+                  aria-label={`More filters${moreFilterCount ? `, ${moreFilterCount} active` : ''}`}
+                  className={cn(
+                    'flex h-[34px] min-w-[115.765625px] cursor-pointer list-none items-center justify-center gap-[6px] rounded-[9px] border border-aurora-border-default bg-[var(--gw0-0_40)] px-[11px] text-xs font-semibold leading-normal hover:border-aurora-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&::-webkit-details-marker]:hidden',
+                    moreFilterCount ? 'text-aurora-accent-strong' : 'text-aurora-text-primary',
+                  )}
+                >
+                  <SlidersHorizontal className="size-[13px]" strokeWidth={1.8} />
+                  More filters{moreFilterCount ? ` · ${moreFilterCount}` : ''}
                 </summary>
                 <div className="absolute right-0 z-30 mt-2 grid w-[min(44rem,85vw)] grid-cols-2 gap-2 rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-aurora-panel md:grid-cols-3">
                   <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
                   <Select value={capability} onValueChange={(value) => { setCapability(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Capability" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All capabilities</SelectItem>{capabilityOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
                   <Select value={operation} onValueChange={(value) => { setOperation(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Operation" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All operations</SelectItem>{operationOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
                   <Select value={subjectScope} onValueChange={(value) => { setSubjectScope(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Scope" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All scopes</SelectItem><SelectItem value="shared">Shared</SelectItem><SelectItem value="subject">OAuth subject</SelectItem></SelectContent></Select>
-                  <Select value={agent} onValueChange={(value) => { setAgent(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); setClientName(''); setClientVersion(''); setAgentId(''); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>
                   <Select value={errorKind} onValueChange={(value) => { setErrorKind(value); if (value !== ALL) setOutcome('failed'); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Failure kind" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All failure kinds</SelectItem>{errorOptions.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}</SelectContent></Select>
                   {showIps ? <Select value={ip} onValueChange={(value) => { setIp(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="IP" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All IPs</SelectItem>{ipOptions.map((addr) => <SelectItem key={addr} value={addr}>{addr}</SelectItem>)}</SelectContent></Select> : null}
                 </div>
@@ -449,7 +500,7 @@ function UsageExplorer() {
                         gap: 12,
                         alignItems: 'center',
                         width: '100%',
-                        height: 59,
+                        minHeight: 44,
                         padding: '7px 15px',
                       }}
                       onClick={(event) => {

@@ -1,7 +1,7 @@
 ---
 title: "Dev Containers"
 created: "2026-09-07"
-updated: "2026-09-07"
+updated: "2026-09-13"
 ---
 
 # Dev Containers
@@ -12,8 +12,10 @@ document freezes the contract and persistence boundary. Labby registers the
 `start`, `stop`, `destroy`, and `reconcile`, exposed over HTTP at
 `POST /v1/dev-containers` and as the `dev_containers` MCP tool. The container
 engine is the pluggable `labby_runtime::dev_container_runtime::ContainerRuntime`
-contract; the product default is the disabled runtime, so no real container
-engine ships yet and launches fail closed until one is wired.
+contract. Production uses an explicitly configured, project-restricted Incus
+HTTPS endpoint. Launches fail closed when that endpoint or any required mutual
+TLS credential is absent or invalid; Labby never falls back to a local Incus
+socket or the Incus `default` project.
 
 Every instance has exactly one installation, Team, Project, or Personal owner.
 Its durable record pins an administrator-approved template and an immutable
@@ -76,3 +78,21 @@ and MCP adapters are thin: they pass the `action` plus `params` envelope to the
 shared `dev_containers` dispatch, which owns admission, ledger, and
 reconciliation semantics. Exact parameters, scopes, and destructive
 classification are in the generated [action catalog](../generated/action-catalog.md).
+
+## Incus runtime
+
+The runtime certificate must be restricted by Incus to one dedicated project.
+That project must be confined to the approved managed network and storage pool,
+deny privileged and nested containers, deny low-level configuration and host
+devices, and enforce project-wide instance, CPU, memory, disk, and process
+limits. Its default profile supplies only the root disk and a managed NIC. It
+must not contain host paths or runtime sockets.
+
+Labby derives each Incus instance name from the durable instance ID plus its
+lifecycle nonce, labels the instance with both values, and verifies those
+labels before every state change or deletion. Creation sends only the approved
+image fingerprint and the stored CPU, memory, disk, and lifetime ceilings.
+Templates that request a host capability are rejected by this runtime.
+
+The required environment variables and credential-file rules are documented in
+[Environment Variables](../runtime/ENV.md#dev-container-runtime).

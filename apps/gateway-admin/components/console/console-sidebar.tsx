@@ -20,10 +20,13 @@ import {
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
 
+import { useConsoleStatus } from '@/components/console/console-status-strip'
+import { getStats, StashError } from '@/lib/stash/client'
 import { LabbyIcon } from '@/components/labby-icon'
 import { useConsoleShell } from '@/components/console/console-shell-context'
 import {
   capabilityAwareNavSections,
+  consoleNavSections,
   isNavItemActive,
   type ConsoleNavItem,
 } from '@/components/console/nav-model'
@@ -48,23 +51,15 @@ function switchWorkspace(selection: { teamId?: string | null; projectId?: string
 const PINNED_KEY = 'labby-nav-pinned'
 const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
+const SECTION_ORDER_KEY = 'labby-nav-sections-v4'
+const SECTION_IDS = consoleNavSections.map(section => section.id)
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
 const SIDEBAR_WIDTH_EXPANDED = '224px'
 const SIDEBAR_WIDTH_COLLAPSED = '58px'
 
 /** The sidebar's own tinted plate — the mock lifts it off the page background. */
-const SIDEBAR_BG = 'color-mix(in srgb, #0f2334 48%, transparent)'
-/** Ring colour for status pips, matched to the sidebar plate rather than the page. */
-const PIP_RING = 'color-mix(in srgb, #0f2334 80%, var(--aurora-page-bg))'
-
-const NAV_PIPS: Record<string, string> = {
-  Gateway: 'var(--aurora-warn)',
-  Logs: 'var(--aurora-error)',
-  Library: 'var(--aurora-accent-primary)',
-  Agents: 'var(--aurora-success)',
-}
-
+const SIDEBAR_BG = 'var(--console-chrome-bg)'
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = window.localStorage.getItem(key)
@@ -113,7 +108,7 @@ function NavItem({
     <Link
       href={item.href}
       data-navitem="1"
-      aria-current={active ? 'true' : 'false'}
+      aria-current={active ? 'page' : undefined}
       data-tip={item.tooltip}
       title={collapsed ? '' : item.tooltip}
       draggable
@@ -169,7 +164,6 @@ function NavItem({
         }}
       >
         <Icon size={16} strokeWidth={1.8} />
-        {NAV_PIPS[item.id] ? <span aria-hidden style={{ position: 'absolute', right: -2, top: -2, width: 7, height: 7, borderRadius: 999, background: NAV_PIPS[item.id], boxShadow: `0 0 0 2px ${PIP_RING}, 0 0 7px ${NAV_PIPS[item.id]}` }} /> : null}
       </span>
 
       {collapsed ? null : (
@@ -199,7 +193,7 @@ function NavItem({
                 style={{
                   fontSize: 9.5,
                   lineHeight: 1.4,
-                  color: 'color-mix(in srgb, var(--aurora-text-muted) 80%, transparent)',
+                  color: 'var(--console-context-text)',
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -252,7 +246,7 @@ function NavItem({
             />
           </span>
 
-          <span
+          {/^⌘[1-9]$/.test(item.kbd) ? <span
             data-kbd="1"
             style={{
               flexShrink: 0,
@@ -262,7 +256,7 @@ function NavItem({
             }}
           >
             {item.kbd}
-          </span>
+          </span> : null}
         </>
       )}
     </Link>
@@ -339,7 +333,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
     <div
       ref={rootRef}
       data-accountmenu="1"
-      style={{ padding: placement === 'topbar' ? 0 : '10px 10px 12px', minWidth: 0, position: 'relative' }}
+      style={{ padding: placement === 'topbar' ? 0 : '10px 10px 12px', marginLeft: placement === 'topbar' ? 2 : undefined, flexShrink: 0, minWidth: 0, position: 'relative' }}
     >
       {open ? (
         <div
@@ -549,7 +543,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
           }`,
           background: hovered
             ? 'var(--aurora-hover-bg)'
-            : 'linear-gradient(180deg, var(--aurora-panel-medium-top), transparent), color-mix(in srgb, var(--aurora-panel-medium) 55%, var(--aurora-nav-bg))',
+            : 'var(--gw0-0_40)',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)',
           fontFamily: 'inherit',
           cursor: 'pointer',
@@ -590,7 +584,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
               height: 8,
               borderRadius: 999,
               background: user ? 'var(--aurora-success)' : 'var(--aurora-warn)',
-              boxShadow: `0 0 4px ${user ? 'var(--aurora-success)' : 'var(--aurora-warn)'}, 0 0 0 2px ${PIP_RING}`,
+              boxShadow: `0 0 4px ${user ? 'var(--aurora-success)' : 'var(--aurora-warn)'}, 0 0 0 2px ${SIDEBAR_BG}`,
             }}
           />
         </div>
@@ -626,35 +620,7 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
                 {email}
               </div>
             </div>
-            <span
-              title="Gateway environment"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                height: 16,
-                padding: '0 6px',
-                borderRadius: 4,
-                fontSize: 8,
-                fontWeight: 700,
-                letterSpacing: '0.1em',
-                color: 'var(--aurora-success)',
-                background: 'color-mix(in srgb, var(--aurora-success) 11%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--aurora-success) 30%, transparent)',
-                flexShrink: 0,
-              }}
-            >
-              <span
-                style={{
-                  width: 4,
-                  height: 4,
-                  borderRadius: 999,
-                  background: 'currentColor',
-                  boxShadow: '0 0 4px currentColor',
-                }}
-              />
-              PROD
-            </span>
+
           </>
         )}
       </button>
@@ -669,9 +635,22 @@ export function ConsoleSidebar() {
   const router = useRouter()
   const session = useBrowserSession()
   const authority = session.status === 'authenticated' ? session.authority : undefined
+  const status = useConsoleStatus()
+  const [stashSupported, setStashSupported] = React.useState(true)
+  React.useEffect(() => {
+    const controller = new AbortController()
+    setStashSupported(true)
+    if (authority?.capabilities.includes('scope.read')) {
+      getStats(controller.signal).catch(error => {
+        if (!controller.signal.aborted && error instanceof StashError && error.status === 404) setStashSupported(false)
+      })
+    }
+    return () => controller.abort()
+  }, [authority])
+
   const navSections = React.useMemo(
-    () => capabilityAwareNavSections(authority?.capabilities ?? []),
-    [authority?.capabilities],
+    () => capabilityAwareNavSections(authority?.capabilities ?? [], stashSupported),
+    [authority?.capabilities, stashSupported],
   )
   const { collapsed, toggleCollapsed, mobileNavOpen, setMobileNavOpen } = useConsoleShell()
   const [isMobile, setIsMobile] = React.useState(false)
@@ -679,6 +658,19 @@ export function ConsoleSidebar() {
   const [pinned, setPinned] = React.useState<string[]>([])
   const [folded, setFolded] = React.useState<Record<string, boolean>>({})
   const [order, setOrder] = React.useState<Record<string, string[]>>({})
+  const [sectionOrder, setSectionOrder] = React.useState<string[]>(SECTION_IDS)
+  const sectionDragRef = React.useRef<string | null>(null)
+  const orderedSections = [...navSections].sort((left, right) => sectionOrder.indexOf(left.id) - sectionOrder.indexOf(right.id))
+  const depotRoute = ['/depot', '/create', '/library'].some(route => pathname === route || pathname.startsWith(`${route}/`))
+  const workspaceRoute = ['/agents', '/tasks', '/dev-containers', '/projects', '/stash'].some(route => pathname === route || pathname.startsWith(`${route}/`))
+  const teamRealm = workspaceRoute && (authority?.activeOwner.kind === 'team' || Boolean(authority?.activeTeamId))
+  const realmColor = teamRealm ? 'var(--aurora-success)' : depotRoute ? 'var(--aurora-accent-strong)' : 'var(--aurora-accent-pink)'
+  const realmBackground = teamRealm ? 'var(--aurora-success)' : depotRoute ? 'var(--aurora-accent-primary)' : 'var(--aurora-accent-pink)'
+  const realmBorder = teamRealm
+    ? 'color-mix(in srgb, var(--aurora-success) 32%, transparent)'
+    : depotRoute
+      ? 'color-mix(in srgb, var(--aurora-accent-primary) 30%, transparent)'
+      : 'color-mix(in srgb, var(--aurora-accent-pink-deep) 38%, transparent)'
   const [toggleHovered, setToggleHovered] = React.useState(false)
   const [workspaceOpen, setWorkspaceOpen] = React.useState(false)
   const dragRef = React.useRef<{ section: string; id: string } | null>(null)
@@ -688,6 +680,9 @@ export function ConsoleSidebar() {
     setPinned(readJson<string[]>(PINNED_KEY, []))
     setFolded(readJson<Record<string, boolean>>(FOLDED_KEY, {}))
     setOrder(readJson<Record<string, string[]>>(ORDER_KEY, {}))
+    const saved = readJson<unknown>(SECTION_ORDER_KEY, [])
+    const valid = Array.isArray(saved) ? [...new Set(saved.filter((id): id is string => typeof id === 'string' && SECTION_IDS.includes(id)))] : []
+    setSectionOrder([...valid, ...SECTION_IDS.filter(id => !valid.includes(id))])
   }, [])
 
   React.useEffect(() => {
@@ -797,6 +792,16 @@ export function ConsoleSidebar() {
     [order, pinned],
   )
 
+  const moveSection = React.useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId || !SECTION_IDS.includes(sourceId) || !SECTION_IDS.includes(targetId)) return
+    setSectionOrder(current => {
+      const next = current.filter(id => id !== sourceId)
+      next.splice(next.indexOf(targetId), 0, sourceId)
+      writeJson(SECTION_ORDER_KEY, next)
+      return next
+    })
+  }, [])
+
   const handleDrop = React.useCallback(
     (sectionId: string, targetId: string) => {
       const drag = dragRef.current
@@ -843,6 +848,7 @@ export function ConsoleSidebar() {
         display: 'flex',
         flexDirection: 'column',
         background: SIDEBAR_BG,
+        lineHeight: 'normal',
         transition: 'width 240ms cubic-bezier(0.2,0.8,0.2,1)',
       }}
     >
@@ -892,9 +898,9 @@ export function ConsoleSidebar() {
         }}
       >
         {visuallyCollapsed ? (
-          <ChevronRight size={13} strokeWidth={2} />
+          <ChevronRight size={12} strokeWidth={1.7} />
         ) : (
-          <ChevronLeft size={13} strokeWidth={2} />
+          <ChevronLeft size={12} strokeWidth={1.7} />
         )}
       </button>
 
@@ -903,13 +909,14 @@ export function ConsoleSidebar() {
           display: 'flex',
           flexDirection: 'column',
           height: '100%',
+          minHeight: 0,
           overflow: 'visible',
         }}
       >
         {/* Brand */}
         <Link
-          href="/"
-          aria-label="Go to Overview"
+          href="/depot"
+          aria-label="Go to Discover"
           title="Labby — gateway control plane"
           style={{
             display: 'flex',
@@ -937,7 +944,7 @@ export function ConsoleSidebar() {
               placeItems: 'center',
             }}
           >
-            <LabbyIcon size={24} />
+            <LabbyIcon size={30} />
           </div>
           {visuallyCollapsed ? null : (
             <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -950,32 +957,32 @@ export function ConsoleSidebar() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                Depot
+                De<span style={{ color: 'var(--aurora-accent-strong)' }}>pot</span>
               </div>
               <span
+                data-realm-badge="1"
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
                   height: 15,
                   padding: '0 5px',
                   borderRadius: 4,
-                  border:
-                    '1px solid color-mix(in srgb, var(--aurora-error) 42%, transparent)',
-                  background: 'color-mix(in srgb, var(--aurora-error) 10%, transparent)',
+                  border: `1px solid ${realmBorder}`,
+                  background: `color-mix(in srgb, ${realmBackground} 9%, transparent)`,
                   fontSize: 8,
                   fontWeight: 700,
                   letterSpacing: '0.12em',
-                  color: 'color-mix(in srgb, var(--aurora-error) 72%, white)',
+                  color: realmColor,
                 }}
               >
-                LABBY
+                {depotRoute ? 'DEPOT' : 'LABBY'}
               </span>
             </div>
           )}
         </Link>
 
         {/* Workspace switcher */}
-        <div style={{ position: 'relative', padding: visuallyCollapsed ? '7px 8px 4px' : '7px 6px 4px' }}>
+        <div data-scopemenu="1" style={{ position: 'relative', flexShrink: 0, padding: '8px 8px 4px' }}>
           <button
             type="button"
             aria-label="Switch workspace"
@@ -986,18 +993,20 @@ export function ConsoleSidebar() {
               setWorkspaceOpen((value) => !value)
             }}
             style={{
-              width: '100%', minHeight: visuallyCollapsed ? 40 : 38, borderRadius: 10,
-              border: workspaceOpen ? '1px solid var(--aurora-warn)' : '1px solid color-mix(in srgb, var(--aurora-border-strong) 75%, transparent)',
-              boxShadow: workspaceOpen ? '0 0 0 1px var(--aurora-warn), inset 0 1px 0 rgba(255,255,255,.05)' : 'inset 0 1px 0 rgba(255,255,255,.04)',
-              background: 'linear-gradient(180deg,var(--aurora-panel-medium-top),var(--aurora-panel-medium))',
-              color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 8,
-              padding: visuallyCollapsed ? 4 : '4px 8px', cursor: 'pointer', textAlign: 'left',
+              width: '100%', height: 38, borderRadius: 11,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+              background: 'var(--gw0-0_40)',
+              color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 9,
+              padding: visuallyCollapsed ? 0 : '0 10px 0 6px', justifyContent: visuallyCollapsed ? 'center' : 'flex-start',
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
             }}
           >
-            <span style={{ width: 27, height: 27, borderRadius: 999, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 45%,transparent)', boxShadow: '0 0 8px rgba(244,114,182,.16)' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span>
-            {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, lineHeight: 1.08 }}><small style={{ display: 'block', fontSize: 8.5, fontWeight: 750, letterSpacing: '.12em', color: 'var(--aurora-text-muted)' }}>WORKSPACE · {authority?.activeOwner.kind?.toUpperCase() ?? 'UNAVAILABLE'}</small><strong style={{ display: 'block', fontSize: 12.5 }}>{authority?.activeOwner.id ?? 'No workspace'}</strong></span><ChevronsUpDown size={13} color="var(--aurora-text-muted)"/></>}
+            <span style={{ width: 24, height: 24, borderRadius: 8, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 34%,transparent)', color: 'var(--aurora-accent-strong)', fontSize: 9, fontWeight: 700 }}>
+              {authority?.activeOwner.kind === 'team' ? authority.activeOwner.id.slice(0, 2).toUpperCase() : <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
+            </span>
+            {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}><small style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--console-workspace-label)' }}>WORKSPACE</small><strong style={{ fontSize: 12, fontWeight: 650, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 2 }}>{authority?.activeOwner.kind === 'personal' ? 'Personal' : authority?.projects.find(project => project.id === authority.activeOwner.id)?.name ?? authority?.activeOwner.id ?? 'No workspace'}</strong></span><ChevronsUpDown size={12} strokeWidth={1.8} color="var(--aurora-text-muted)"/></>}
           </button>
-          {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 51, left: 6, right: 6, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, #173549, #102939)', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
+          {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 'calc(100% + 4px)', left: 8, right: 8, minWidth: 210, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
             <button type="button" data-menurow="1" disabled={!authority} aria-disabled={!authority} title={authority ? undefined : 'Workspace selection is unavailable until the server projects your authority.'} onClick={() => { if (switchWorkspace({})) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority?.activeOwner.kind === 'personal' ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: authority ? 'pointer' : 'not-allowed', opacity: authority ? 1 : 0.55 }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your private workspace</small></span>{authority?.activeOwner.kind === 'personal' ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>
             {authority && authority.teams.length === 0 ? <p className="px-2 py-2 text-[11px] text-aurora-text-muted">You are not currently a member of a Team.</p> : null}
             {authority?.teams.map((team) => <button key={team.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ teamId: team.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeTeamId === team.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>{team.id.slice(0,2).toUpperCase()}</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>{team.id}</strong><small style={{ color: 'var(--aurora-text-muted)' }}>{team.role}</small></span>{authority.activeTeamId === team.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
@@ -1017,18 +1026,35 @@ export function ConsoleSidebar() {
             minWidth: 0,
             minHeight: 0,
             overflowY: 'auto',
-            overflowX: 'visible',
+            overflowX: 'hidden',
+            scrollbarWidth: 'thin',
           }}
         >
-          {navSections.map((section) => {
+          {orderedSections.map((section, sectionIndex) => {
             const isFolded = Boolean(folded[section.id])
             const items = orderedItems(section)
 
             return (
               <React.Fragment key={section.id}>
+                {visuallyCollapsed && sectionIndex > 0 ? <div style={{ height: 1, flexShrink: 0, margin: '5px 6px', background: 'color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))' }} /> : null}
                 {visuallyCollapsed ? null : (
                   <button
                     type="button"
+                    data-nav-section={section.id}
+                    draggable
+                    title="Drag to reorder sections"
+                    onDragStart={(event) => {
+                      sectionDragRef.current = section.id
+                      dragRef.current = null
+                      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+                    }}
+                    onDragOver={(event) => { if (sectionDragRef.current) event.preventDefault() }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      if (sectionDragRef.current) moveSection(sectionDragRef.current, section.id)
+                      sectionDragRef.current = null
+                    }}
+                    onDragEnd={() => { sectionDragRef.current = null }}
                     onClick={() => toggleFold(section.id)}
                     aria-expanded={!isFolded}
                     style={{
@@ -1045,7 +1071,7 @@ export function ConsoleSidebar() {
                       fontWeight: 700,
                       letterSpacing: '0.11em',
                       textTransform: 'uppercase',
-                      color: 'color-mix(in srgb, var(--aurora-text-muted) 70%, transparent)',
+                      color: 'var(--console-section-label)',
                       textAlign: 'left',
                       transition: 'color 150ms ease-out',
                     }}
@@ -1085,13 +1111,19 @@ export function ConsoleSidebar() {
                     {items.map((item) => (
                       <NavItem
                         key={item.id}
-                        item={item}
+                        item={status.kind === 'ready' && (item.id === 'Overview' || item.id === 'Gateway') ? {
+                          ...item,
+                          contextLine: item.id === 'Overview'
+                            ? `${status.snapshot.total} servers · ${status.snapshot.tools} tools`
+                            : `${status.snapshot.total} servers · ${status.snapshot.total - status.snapshot.connected} disconnected`,
+                        } : item}
                         sectionId={section.id}
                         active={isNavItemActive(item.href, pathname)}
                         collapsed={visuallyCollapsed}
                         pinned={pinned.includes(item.id)}
                         onTogglePin={togglePin}
                         onDragStart={(id) => {
+                          sectionDragRef.current = null
                           dragRef.current = { section: section.id, id }
                         }}
                         onDropOn={(id) => handleDrop(section.id, id)}

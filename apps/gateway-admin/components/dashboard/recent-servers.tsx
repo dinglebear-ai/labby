@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import type { Gateway } from '@/lib/types/gateway'
 
-export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport'> & {
+export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport' | 'enabled'> & {
   status: Pick<Gateway['status'], 'healthy' | 'connected' | 'exposed_tool_count'>
 }
 
@@ -20,8 +20,8 @@ export function RecentServers({ gateways, loading = false, error = false }: { ga
       : error ? <p role="status" className="px-[14px] py-3 text-xs text-aurora-text-muted">Recent servers are unavailable.</p>
       : gateways.length === 0 ? <div className="px-[14px] py-3 text-xs text-aurora-text-muted"><p>No servers configured.</p><Link href="/gateways" className="mt-2 inline-block text-aurora-accent-strong underline">Add server</Link></div>
       : <ul>{gateways.slice(0, 5).map(gateway => {
-        const status = !gateway.status.connected ? 'Disconnected' : gateway.status.healthy ? 'Healthy' : 'Needs Attention'
-        const color = !gateway.status.connected ? 'bg-aurora-error' : gateway.status.healthy ? 'bg-aurora-success' : 'bg-aurora-warn'
+        const status = gateway.enabled === false ? 'Disabled' : !gateway.status.connected ? 'Disconnected' : gateway.status.healthy ? 'Healthy' : 'Needs Attention'
+        const color = gateway.enabled === false ? 'bg-aurora-text-muted' : !gateway.status.connected ? 'bg-aurora-error' : gateway.status.healthy ? 'bg-aurora-success' : 'bg-aurora-warn'
         return <li key={gateway.id} className="border-t border-aurora-border-subtle/70 first:border-t-0"><Link href={gatewayDetailHref(gateway.id)} className="flex min-w-0 items-center gap-[9px] px-[14px] py-2 hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary">
           <span title={status} aria-label={status} className={`size-1.5 shrink-0 rounded-full ${color}`}/>
           <span className="min-w-0 flex-1 truncate font-display text-[12.5px] font-bold text-aurora-text-primary">{gateway.name}</span>

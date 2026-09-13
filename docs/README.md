@@ -29,7 +29,8 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | --- | --- | --- |
 | `access` | [access-control/](./access-control/) | Principals, Teams, Projects, memberships, roles, and effective authority |
 | `projects` | [services/ACCESS.md#projects](./services/ACCESS.md#projects) | Team-scoped Project lifecycle: list, create, get, update, archive |
-| `agents`, `tasks` | [services/AGENT_TASKS.md](./services/AGENT_TASKS.md) | Owner-scoped Agent definitions, durable Tasks, admission, execution, and revocation |
+| `agents` | [services/AGENTS.md](./services/AGENTS.md) | Operator-approved harnesses, immutable Agent definitions, bounded sessions, and revocation |
+| `tasks` | [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
 | `browser` | [services/BROWSER.md](./services/BROWSER.md) | Rust-native WebMCP browser bridge, pairing, discovery, consent, and bounded invocation |
 | `dev_containers` | [services/DEV_CONTAINERS.md](./services/DEV_CONTAINERS.md) | Owner-scoped development-container definitions, leases, recovery, and lifecycle |
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |

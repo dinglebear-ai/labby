@@ -1011,7 +1011,7 @@ test('normalizeServerView ignores custom gateway resource discovery method-not-f
   assert.deepEqual(gateway.warnings, [])
 })
 
-test('normalizeServerView treats catalog warming as advisory for a connected gateway', () => {
+test('normalizeServerView keeps catalog warming distinct from verified healthy state', () => {
   const gateway = normalizeServerView({
     id: 'context7',
     name: 'context7',
@@ -1034,7 +1034,7 @@ test('normalizeServerView treats catalog warming as advisory for a connected gat
   })
 
   assert.equal(gateway.status.connected, true)
-  assert.equal(gateway.status.healthy, true)
+  assert.equal(gateway.status.healthy, false)
   assert.equal(gateway.status.last_error, undefined)
   assert.equal(gateway.status.catalog_warming, true)
   assert.deepEqual(gateway.warnings, [])

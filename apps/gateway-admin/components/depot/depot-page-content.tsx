@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { Compass, Loader2, Plus, Search, SlidersHorizontal } from 'lucide-react'
+import { Compass, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
@@ -11,11 +11,11 @@ import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { DiscoverResultTabs } from './discover-result-tabs'
+import { DiscoverSearchControls } from './discover-search-controls'
 import { getArtifact, listArtifacts, listProviderOptions, type DepotArtifact, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
-import { artifactKey, DISCOVERY_KINDS } from '@/lib/depot/provider-model'
+import { artifactKey } from '@/lib/depot/provider-model'
 import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
 import { RequestLanes } from './request-lanes'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
@@ -105,6 +105,8 @@ function SessionDepotPage() {
     if (contextRef.current !== contextKey) invalidateContext(contextKey)
   }, [contextKey, initialQuery, invalidateContext, kind, query, selectedProvider])
   const changeFilter = useCallback((field: 'kind' | 'provider', value: string) => {
+    // Re-selecting an active filter must preserve any in-flight catalog request.
+    if (value === (field === 'provider' ? selectedProvider : kind)) return
     invalidateContext(JSON.stringify([field === 'provider' ? value : selectedProvider, field === 'kind' ? value : kind, query.trim()]))
     const params = new URLSearchParams(window.location.search)
     if (value === 'all') params.delete(field)
@@ -182,7 +184,6 @@ function SessionDepotPage() {
   },[])
   const visible = visibleArtifacts(state.window)
   const [sort, setSort] = useState<DiscoverySort>('catalog')
-  const kinds = DISCOVERY_KINDS
   const results = selectDiscoveryResults(visible.items, sort)
   const resultCount=state.total??state.window.rowCount
   const incomplete = Boolean(state.error) || (state.coverage !== undefined && state.coverage !== 'complete' && state.coverage !== 'empty')
@@ -200,59 +201,24 @@ function SessionDepotPage() {
           { label: 'Last crawl', value: <span title="Crawl timestamps are not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
           { label: 'Verified publishers', value: <span title="Publisher verification is not reported by the connected sources." className="text-sm font-normal text-aurora-text-muted">Not reported</span> },
         ]}>
-        <div className="space-y-[var(--space-3)] px-6 py-3.5 sm:pl-[82px]">
-          <div className="flex min-w-0 items-center gap-[9px] rounded-[12px] border border-aurora-border-strong bg-aurora-control-surface px-[13px] focus-within:ring-2 focus-within:ring-aurora-accent-primary">
-            <Search aria-hidden="true" className="size-4 shrink-0 text-aurora-accent-strong" />
-            <Input name="artifact-search" aria-label="Search Depot artifacts" className="h-10 min-w-0 flex-1 border-0 bg-transparent px-0 font-medium shadow-none focus-visible:ring-0" value={query}
-              onChange={event => {
-                const next = event.target.value
-                invalidateContext(JSON.stringify([selectedProvider, kind, next.trim()]))
-                setQuery(next)
-                setActiveQuery(next.trim())
-                const params = new URLSearchParams(window.location.search)
-                params.delete('artifact'); params.delete('artifactProvider')
-                if (selectedId) router.replace(`${pathname}${params.size ? `?${params}` : ''}`, { scroll: false })
-              }}
-              placeholder="Search artifacts across your sources" />
-            <Popover>
-              <PopoverTrigger asChild><Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Kind and source filters"><SlidersHorizontal aria-hidden="true" className="size-4" /></Button></PopoverTrigger>
-              <PopoverContent align="end" aria-label="Kind and source filters" className="aurora-scrollbar max-h-[min(32rem,70svh)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto rounded-aurora-2 border-aurora-border-strong bg-aurora-panel-strong text-aurora-text-primary">
-                <fieldset className="space-y-2"><legend className="text-sm font-semibold">Artifact kind</legend>
-                  <div className="flex flex-wrap gap-2">{['all', ...kinds].map(value => <Button key={value} size="sm" variant={kind === value ? 'secondary' : 'ghost'} aria-pressed={kind === value} onClick={() => { if (value !== kind) changeFilter('kind', value) }}>{value === 'all' ? 'All kinds' : value}</Button>)}</div>
-                </fieldset>
-                <fieldset className="space-y-2"><legend className="text-sm font-semibold">Source</legend>
-                  {[{ id: 'all', name: 'All sources', enabled: true }, ...providers].map(provider => <Button key={provider.id} size="sm" className="w-full justify-start" variant={selectedProvider === provider.id ? 'secondary' : 'ghost'} disabled={!provider.enabled} aria-pressed={selectedProvider === provider.id} onClick={() => {
-                    if (provider.id === selectedProvider) return
-                    changeFilter('provider', provider.id)
-                  }}>{provider.name}</Button>)}
-                </fieldset>
-                <p className="text-xs text-aurora-text-muted">Kinds filter the full catalog before pagination.</p>
-              </PopoverContent>
-            </Popover>
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-[var(--space-3)]">
-            <div role="group" aria-label="Depot sources" className="flex flex-wrap gap-[var(--space-2)]">
-              {[{id: 'all', name: 'All sources', enabled: true}, ...providers].map(provider =>
-                <Button key={provider.id} size="sm" variant={selectedProvider === provider.id ? 'secondary' : 'ghost'}
-                  disabled={!provider.enabled} aria-pressed={selectedProvider === provider.id}
-                  onClick={() => {
-                    if (provider.id === selectedProvider) return
-                    changeFilter('provider', provider.id)
-                  }}>{provider.name}</Button>
-              )}
-            </div>
-          </div>
-        </div>
+        <DiscoverSearchControls query={query} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} onQuery={next => {
+          invalidateContext(JSON.stringify([selectedProvider, kind, next.trim()]))
+          setQuery(next)
+          setActiveQuery(next.trim())
+          const params = new URLSearchParams(window.location.search)
+          params.delete('artifact'); params.delete('artifactProvider')
+          if (selectedId) router.replace(`${pathname}${params.size ? `?${params}` : ''}`, { scroll: false })
+        }} />
       </ConsoleHero>
       {incomplete&&!state.loading?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
       <section aria-labelledby="artifact-results-title" className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3 border-b border-aurora-border-default pb-3">
-          <div role="group" aria-label="Artifact kind" className="flex flex-1 flex-wrap gap-2">
-            {['all', ...kinds].map(value => <Button key={value} size="sm" variant={kind === value ? 'secondary' : 'ghost'} aria-pressed={kind === value} onClick={() => { if (value !== kind) changeFilter('kind', value) }}>{value === 'all' ? 'All artifacts' : value}</Button>)}
-          </div>
-          <DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={setView} density={density} setDensity={setDensity} />
+        <div className="flex flex-wrap items-end gap-2 border-b border-aurora-border-default/55">
+          <DiscoverResultTabs artifacts={visible.items} sort={sort} setSort={setSort} />
+          <span className="min-w-3 flex-1" />
+          <span className="mb-[5px] inline-flex h-[22px] items-center rounded-md border border-aurora-border-default/50 bg-aurora-control-surface px-[9px] text-[10.5px] font-[650] tabular-nums text-aurora-text-muted" title={`${state.window.rowCount} retained results; sorting applies to loaded artifacts.`}>{state.loading ? 'Searching…' : incomplete && state.total === undefined ? 'Total unavailable' : `${results.length} shown · ${state.exact ? '' : '≥ '}${resultCount}`}</span>
+          <div className="pb-1"><DiscoverViewOptions sort={sort} setSort={setSort} layout={view} setLayout={setView} density={density} setDensity={setDensity} /></div>
         </div>
-        <div className="flex items-end justify-between gap-3 px-0.5"><h2 id="artifact-results-title" className="text-base font-semibold text-aurora-text-primary">{activeQuery?`Results for “${activeQuery}”`:'Catalog results'}</h2><span className="text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Searching…':incomplete&&state.total===undefined?'Total unavailable':`${results.length} shown · ${state.window.rowCount} retained of ${state.exact?'':'at least '}${resultCount}`}</span></div>
+        <h2 id="artifact-results-title" className="sr-only">{activeQuery ? `Results for “${activeQuery}”` : 'Catalog results'}</h2>
         {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
         {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
         {query.trim().length>0&&query.trim().length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} loading={state.loading} incomplete={incomplete} view={view} density={density} now={now} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>}

@@ -219,6 +219,12 @@ pub struct GatewayUsageMetricsParams {
     #[serde(default)]
     pub actor: Option<String>,
     #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub client_version: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
     pub outcome: Option<String>,
     #[serde(default)]
     pub search: Option<String>,
@@ -252,6 +258,12 @@ pub struct GatewayUsageCallsParams {
     pub subject_scoped: Option<bool>,
     #[serde(default)]
     pub actor: Option<String>,
+    #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub client_version: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub outcome: Option<String>,
     #[serde(default)]

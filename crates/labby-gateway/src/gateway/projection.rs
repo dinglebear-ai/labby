@@ -10,7 +10,7 @@ use crate::gateway::view_models::{
 };
 use crate::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
-use crate::upstream::types::{UpstreamCapability, UpstreamHealth};
+use crate::upstream::types::{UpstreamCapability, UpstreamHealth, UpstreamRuntimeMetadata};
 use labby_runtime::gateway_config::{CodeModeConfig, UpstreamConfig, normalize_code_mode_hint};
 use labby_runtime::redact::{
     redact_secret_like_segments, redact_stdio_args, redact_stdio_value, redact_url,
@@ -546,6 +546,17 @@ fn catalog_is_warming(
         && !last_error_present
 }
 
+/// Whether the shared upstream pool currently owns a live transport.
+///
+/// Catalog entries are seeded before a connection is opened, and their
+/// capability health starts routable so lazy discovery can proceed. Neither a
+/// routable health bucket nor cached capability counts prove that a transport
+/// exists. Runtime metadata is published from the pool's live connection map,
+/// so its presence is the connection boundary used by operator projections.
+fn has_live_transport(runtime: Option<&UpstreamRuntimeMetadata>) -> bool {
+    runtime.is_some()
+}
+
 pub(super) async fn upstream_summary_with_health(
     pool: Option<&UpstreamPool>,
     upstream_name: &str,
@@ -580,23 +591,12 @@ pub(super) async fn server_view_from_upstream(
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
-    // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
-    // upstream counts as connected when it has no recorded error and is either
-    // actively exposing capabilities or healthy. The health term keeps lazily
-    // discovered upstreams — whose catalog stays empty until their first use —
-    // from rendering as "Disconnected" at rest, while upstreams with stale
-    // exposed counts plus a current error still surface as down.
-    let exposing_capabilities = summary.exposed_tool_count > 0
-        || summary.exposed_resource_count > 0
-        || summary.exposed_prompt_count > 0
-        || summary.exposed_skill_count > 0;
-    let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
-    let connected = last_error.is_none() && (exposing_capabilities || health_ok);
     let enabled = upstream.enabled;
     let runtime = match pool {
         Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
         None => None,
     };
+    let connected = has_live_transport(runtime.as_ref());
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     let catalog_warming =
         catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
@@ -629,6 +629,10 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
+        notification_incidents: match pool {
+            Some(pool) => pool.notification_incidents(&upstream.name).await,
+            None => Default::default(),
+        },
         id: upstream.name.clone(),
         name: upstream.name.clone(),
         source: "custom_gateway".to_string(),
@@ -732,6 +736,7 @@ pub(super) fn server_view_from_virtual_server(
     }
 
     ServerView {
+        notification_incidents: Default::default(),
         id: record.id.clone(),
         name: service.clone(),
         source: "in_process".to_string(),
@@ -839,11 +844,8 @@ pub(super) async fn runtime_view(
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
     let header_recovery = pool.header_recovery_metrics(name);
-    let tool_health = pool.upstream_tool_health(name).await;
-    let connected = last_error.is_none()
-        && tool_health
-            .map(|health| health.is_routable())
-            .unwrap_or(false);
+    let runtime = pool.upstream_runtime_metadata(name).await;
+    let connected = has_live_transport(runtime.as_ref());
 
     GatewayRuntimeView {
         name: name.to_string(),
@@ -979,6 +981,10 @@ mod tests {
     fn lazy_healthy_empty_catalog_is_explicitly_warming() {
         let summary = UpstreamCachedSummary::default();
 
+        assert!(
+            !has_live_transport(None),
+            "a seeded lazy catalog has no live transport"
+        );
         assert!(catalog_is_warming(
             &summary,
             Some(UpstreamHealth::Healthy),
@@ -993,6 +999,43 @@ mod tests {
             !catalog_is_warming(&summary, Some(UpstreamHealth::Healthy), false, true),
             "an error must be surfaced as an error rather than warmup"
         );
+    }
+
+    #[test]
+    fn cached_capabilities_without_a_runtime_are_not_connected() {
+        let summary = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            exposed_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
+
+        assert!(summary_has_capabilities(&summary));
+        assert!(!has_live_transport(None));
+    }
+
+    #[test]
+    fn live_runtime_with_an_empty_catalog_is_connected() {
+        let summary = UpstreamCachedSummary::default();
+        let runtime = UpstreamRuntimeMetadata::default();
+
+        assert!(!summary_has_capabilities(&summary));
+        assert!(has_live_transport(Some(&runtime)));
+        assert!(!catalog_is_warming(
+            &summary,
+            Some(UpstreamHealth::Healthy),
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn routable_failure_without_a_runtime_is_not_connected() {
+        let health = UpstreamHealth::Unhealthy {
+            consecutive_failures: 1,
+        };
+
+        assert!(health.is_routable());
+        assert!(!has_live_transport(None));
     }
 
     #[test]

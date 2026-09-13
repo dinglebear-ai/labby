@@ -391,7 +391,11 @@ async fn prepare_authority_action(
                 base,
                 "/v1/agents",
                 "agents.run",
-                serde_json::json!({"agent_id":params["agent_id"]}),
+                serde_json::json!({
+                    "agent_id": params["agent_id"],
+                    "input": "Inspect the isolated Agent fixture",
+                    "idempotency_key": format!("status-prerequisite-{action_id}"),
+                }),
                 true,
             )
             .await;

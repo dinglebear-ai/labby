@@ -45,7 +45,7 @@ test('project, agent, and task requests carry the active workspace and are bound
   await listProjects()
   await listAgents()
   await listTasks()
-  assert.deepEqual(requests.map(request => new URL(request.url).pathname), ['/v1/projects/', '/v1/agents/', '/v1/tasks/'])
+  assert.deepEqual(requests.map(request => new URL(request.url).pathname), ['/v1/projects/', '/v1/agents', '/v1/tasks'])
   for (const request of requests) {
     assert.equal(request.credentials, 'include')
     assert.equal(new URL(request.url).search, '', 'workspace selection must not be carried in the URL')

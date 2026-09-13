@@ -1,16 +1,41 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
-import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
-import { installTestDom as installModuleDom } from '@/lib/testing/dom-install'
+import { installTestDom } from '@/lib/testing/dom-install'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { __setBrowserSessionStateForTests, getBrowserSessionContextIdentity } from '@/lib/auth/session-store'
 
 // Radix resolves its layout-effect shim when its modules are first evaluated, so a
 // document must exist before the composer (and its portal-based menus) is imported;
 // otherwise the actions menu reports open but never mounts its content.
-installModuleDom()
+installTestDom()
 let ArtifactComposer: typeof import('./artifact-composer').ArtifactComposer
-test.before(async () => { ({ ArtifactComposer } = await import('./artifact-composer')) })
+let createArtifactDownload: typeof import('./artifact-composer').createArtifactDownload
+let createDraftStorageKey: typeof import('./artifact-composer').createDraftStorageKey
+let draftMayContainCredential: typeof import('./artifact-composer').draftMayContainCredential
+let renderClient: typeof import('@/lib/testing/dom-test-utils').renderClient
+test.before(async () => {
+  ;({ renderClient } = await import('@/lib/testing/dom-test-utils'))
+  ;({ ArtifactComposer, createArtifactDownload, createDraftStorageKey, draftMayContainCredential } = await import('./artifact-composer'))
+})
+
+const authority = {
+  schemaVersion: 1 as const, compatibilityGeneration: 1 as const, principalId: 'principal-a', organizationId: 'org',
+  activeOwner: { kind: 'project' as const, id: 'project-a' }, activeTeamId: 'team-a', activeProjectId: 'project-a',
+  teams: [{ id: 'team-a', role: 'member', membershipEpoch: 1, policyEpoch: 1 }],
+  projects: [{ id: 'project-a', role: 'manager' }], capabilities: ['scope.read', 'scope.create'], generation: 1,
+}
+
+function authenticate(sub = 'operator-a', project = 'project-a') {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId: project, authority: { ...authority, principalId: sub, activeOwner: { kind: 'project', id: project }, activeProjectId: project, projects: [{ id: project, role: 'manager' }] } })
+}
+
+const waitForAutosave = () => new Promise(resolve => setTimeout(resolve, 180))
+function setControlValue(window: ReturnType<typeof installTestDom>, control: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = control.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(control, value)
+  control.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+}
 
 test('artifact title is editable inline without enabling publishing', () => {
   const html = renderToStaticMarkup(<ArtifactComposer />)
@@ -22,7 +47,7 @@ test('artifact title is editable inline without enabling publishing', () => {
   assert.match(name, /border-bottom-style:dotted/)
   assert.match(name, /focus:border-aurora-accent-primary/)
   assert.match(name, /value="repo-triage"/)
-  assert.match(html, /<button[^>]*aria-label="Publish skill"[^>]*disabled=""[^>]*>Publish<\/button>/)
+  assert.match(html, /<button[^>]*aria-label="Publish skill"[^>]*disabled=""[^>]*bg-aurora-accent-pink[^>]*><svg[^>]*lucide-upload[^>]*>.*<\/svg>Publish<\/button>/)
   assert.match(html, /aria-label="Change artifact kind: Skill" data-visible-label="1"/)
   assert.doesNotMatch(html, /mx-auto mt-4 max-w-5xl/)
   assert.match(html, /grid items-start gap-3 lg:grid-cols/)
@@ -84,7 +109,7 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     const chrome = view.container.querySelector('[aria-label="Document controls"]')!
     assert.ok(chrome.querySelector('[aria-label="Change artifact kind: Skill"]'))
     assert.ok(chrome.querySelector('[aria-label="Document view"]'))
-    assert.match(chrome.textContent!, /Unsaved draft/)
+    assert.match(chrome.textContent!, /authenticated workspace required/)
     assert.equal(chrome.parentElement, editor.closest('section'))
     const draft = editor.value
     const gutter = editor.parentElement!.querySelector<HTMLElement>('[aria-hidden="true"] > div')!
@@ -119,8 +144,117 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     await act(async () => workspaceButtons[1].dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
     assert.equal(workspaceButtons[1].getAttribute('aria-pressed'), 'true')
     assert.equal(view.container.querySelector('[aria-label="Artifact content"]'), null)
+    assert.match(view.container.querySelector('[aria-label="Bundle draft"]')?.textContent ?? '', /Local bundle draft/)
+    assert.match(view.container.querySelector('[aria-label="Draft save status"]')?.textContent ?? '', /authenticated workspace required/)
+    assert.doesNotMatch(view.container.querySelector('[aria-label="Bundle draft"]')?.textContent ?? '', /rust-reviewer|pre-commit-guard|changelog-writer/)
+    assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Skill bundle references"]')?.value, '')
+    assert.equal(view.container.querySelector<HTMLButtonElement>('[aria-label="Publish skill"]')?.disabled, true)
     await act(async () => workspaceButtons[0].dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
     assert.equal(workspaceButtons[0].getAttribute('aria-pressed'), 'true')
     assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!.value, draft)
   } finally { await view.unmount(); globalThis.fetch = priorFetch }
+})
+
+test('draft storage is authority scoped and refuses credential values', () => {
+  assert.notEqual(createDraftStorageKey('authenticated:operator-a:project-a'), createDraftStorageKey('authenticated:operator-b:project-a'))
+  assert.equal(draftMayContainCredential('TOKEN=${DEPOT_TOKEN}'), false)
+  assert.equal(draftMayContainCredential('{"env":{"API_TOKEN":"real-secret-value"}}'), true)
+  assert.equal(draftMayContainCredential('Authorization: Bearer actual-token-value'), true)
+})
+
+test('download data contains the complete authored source with a usable filename', () => {
+  assert.deepEqual(createArtifactDownload('artifact', 'Skill', 'repo-triage', '---\nname: repo-triage\n---\n\n# Body', {}), {
+    filename: 'repo-triage-SKILL.md',
+    type: 'text/markdown;charset=utf-8',
+    content: '---\nname: repo-triage\n---\n\n# Body',
+  })
+  assert.deepEqual(createArtifactDownload('bundle', 'Skill', 'ops-kit', '', { Skill: 'team/repo-triage\nteam/reviewer' }), {
+    filename: 'ops-kit-bundle.json',
+    type: 'application/json;charset=utf-8',
+    content: '{\n  "name": "ops-kit",\n  "artifacts": {\n    "Skill": [\n      "team/repo-triage",\n      "team/reviewer"\n    ]\n  }\n}',
+  })
+})
+
+test('clean drafts restore only inside the same authority workspace and secret drafts are removed', async () => {
+  const window = installTestDom()
+  Object.defineProperty(globalThis, 'self', { value: window, configurable: true })
+  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: window.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} } })
+  const priorFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ available: false, reason: 'fixture_read_only' }))
+  window.localStorage.clear()
+  authenticate()
+  const key = createDraftStorageKey(getBrowserSessionContextIdentity())
+  let view = await renderClient(<ArtifactComposer />)
+  try {
+    const name = view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')!
+    await act(async () => { setControlValue(window, name, 'workspace-a-draft'); await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => { await waitForAutosave() })
+    assert.match(view.container.querySelector('[aria-label="Draft save status"]')?.textContent ?? '', /Saved locally/)
+    assert.ok(window.localStorage.getItem(key)?.includes('workspace-a-draft'))
+    await view.unmount()
+
+    view = await renderClient(<ArtifactComposer />)
+    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')?.value, 'workspace-a-draft')
+    await view.unmount()
+
+    authenticate('operator-b', 'project-b')
+    view = await renderClient(<ArtifactComposer />)
+    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')?.value, 'repo-triage')
+    await view.unmount()
+
+    authenticate()
+    view = await renderClient(<ArtifactComposer />)
+    const content = view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!
+    await act(async () => { setControlValue(window, content, 'TOKEN=real-secret-value'); await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => { await waitForAutosave() })
+    assert.equal(window.localStorage.getItem(key), null)
+    assert.match(view.container.querySelector('[aria-label="Draft save status"]')?.textContent ?? '', /credential/)
+  } finally {
+    await view.unmount()
+    window.localStorage.clear()
+    globalThis.fetch = priorFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('draft controls support tag keyboard editing, editor indentation, and truthful storage failures', async () => {
+  const window = installTestDom()
+  Object.defineProperty(globalThis, 'self', { value: window, configurable: true })
+  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: window.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} } })
+  const priorFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ available: false, reason: 'fixture_read_only' }))
+  window.localStorage.clear()
+  authenticate()
+  const view = await renderClient(<ArtifactComposer />)
+  const storage = window.localStorage
+  const originalSetItem = storage.setItem.bind(storage)
+  try {
+    const tags = view.container.querySelector<HTMLInputElement>('[aria-label="Add a tag"]')!
+    await act(async () => { setControlValue(window, tags, 'operations'); await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => tags.dispatchEvent(new window.KeyboardEvent('keydown', { key: ' ', bubbles: true }) as unknown as Event))
+    assert.match(tags.parentElement?.textContent ?? '', /#operations/)
+    await act(async () => tags.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }) as unknown as Event))
+    assert.doesNotMatch(tags.parentElement?.textContent ?? '', /#operations/)
+
+    const content = view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!
+    content.setSelectionRange(0, 0)
+    await act(async () => {
+      content.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }) as unknown as Event)
+      await new Promise(resolve => requestAnimationFrame(resolve))
+    })
+    assert.ok(content.value.startsWith('  ## When to use'))
+    assert.equal(content.selectionStart, 2)
+
+    Object.defineProperty(storage, 'setItem', { configurable: true, value: () => { throw new DOMException('quota', 'QuotaExceededError') } })
+    const name = view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')!
+    await act(async () => { setControlValue(window, name, 'quota-failure'); await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => { await waitForAutosave() })
+    assert.match(view.container.querySelector('[aria-label="Draft save status"]')?.textContent ?? '', /could not be saved/)
+  } finally {
+    Object.defineProperty(storage, 'setItem', { configurable: true, value: originalSetItem })
+    await view.unmount()
+    window.localStorage.clear()
+    globalThis.fetch = priorFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
 })

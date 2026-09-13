@@ -1,6 +1,6 @@
 import type { FederatedArtifact } from '@/lib/api/depot-client'
 
-export type DiscoverySort = 'catalog' | 'newest' | 'name'
+export type DiscoverySort = 'catalog' | 'newest' | 'name' | 'installs' | 'forks' | 'verified'
 
 export function artifactKind(artifact: FederatedArtifact): string {
   return artifact.kind ?? artifact.descriptor?.kind ?? 'artifact'
@@ -32,6 +32,8 @@ export function selectDiscoveryResults(
   const selected = [...artifacts]
   if (sort === 'name') selected.sort((a, b) => artifactTitle(a).localeCompare(artifactTitle(b)))
   if (sort === 'newest') selected.sort((a, b) => revisionTime(b) - revisionTime(a))
+  if (sort === 'installs' || sort === 'forks') selected.sort((a, b) => (b.metrics?.[sort] ?? -1) - (a.metrics?.[sort] ?? -1))
+  if (sort === 'verified') selected.sort((a, b) => Number(b.publisherVerified === true) - Number(a.publisherVerified === true))
   return selected
 }
 

@@ -117,7 +117,7 @@ export type DepotArtifact = {
   }
   publication?: { state?: string; visibility?: string; distribution?: string }
   license?: { redistribution?: string; reviewState?: string; takedownState?: string }
-  lineage?: { following?: boolean; upstreamArtifactId?: string }
+  lineage?: { following?: boolean; upstreamArtifactId?: string; forkedFromArtifactId?: string | null }
 }
 
 const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
@@ -129,7 +129,7 @@ const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object
   currentRevision: z.object({ id: z.string().optional(), contentDigest: z.string().optional(), createdAt: optionalCatalogText, components: z.array(z.object({ id: z.string().optional(), kind: z.string().optional(), path: z.string().optional(), mediaType: z.string().optional(), size: z.number().nonnegative().optional() }).passthrough()).optional() }).passthrough().optional(),
   publication: z.object({ state: z.string().optional(), visibility: z.string().optional(), distribution: z.string().optional() }).passthrough().optional(),
   license: z.object({ redistribution: z.string().optional(), reviewState: z.string().optional(), takedownState: z.string().optional() }).passthrough().optional(),
-  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText }).passthrough().optional(),
+  lineage: z.object({ following: z.boolean().optional(), upstreamArtifactId: optionalCatalogText, forkedFromArtifactId: optionalCatalogText.nullable() }).passthrough().optional(),
 }).passthrough().refine((artifact) => Boolean(artifact.id?.trim() || artifact.descriptor?.id?.trim()), { message: 'artifact identity is missing' })
 
 const listSchema = contractSchema.extend({ result: z.object({ artifacts: z.array(artifactSchema), nextCursor: z.string().optional(), total: z.number().int().nonnegative().optional() }).passthrough() })
