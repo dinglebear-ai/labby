@@ -336,7 +336,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     needs: changes
-    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    # Retained for explicit Windows qualification without spending hosted
+    # Windows capacity on routine pull-request, push, or scheduled runs.
+    if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true') }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1229,9 +1231,9 @@ jobs:
     name: Test (Windows)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # Windows filesystem and process-containment behavior is platform-specific;
-    # Rust changes must prove it natively before the shared gate can pass.
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # Native Windows qualification is opt-in. WSL users exercise the Linux
+    # product path through the regular Linux jobs.
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1523,9 +1525,8 @@ jobs:
     name: Labby desktop Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
-    # only. Native Rust test-windows is separately required on pull requests.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.desktop == 'true' }}
+    # Advisory and explicitly dispatched only; excluded from ci-gate.
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.desktop == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
