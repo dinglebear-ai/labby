@@ -27,7 +27,9 @@ const CAPTURE_BYTES: usize = 16 * 1024;
 const PREVIOUS_HOST_RELEASE_DIR: &str = "/var/lib/labby/host-service-previous";
 const HOST_SERVICE_TRANSACTION_LOCK: &str = "/var/lib/labby/host-service.transaction.lock";
 
-struct HostServiceTransactionLock(std::fs::File);
+struct HostServiceTransactionLock {
+    _file: std::fs::File,
+}
 
 fn acquire_host_service_transaction_lock() -> Result<HostServiceTransactionLock, ToolError> {
     acquire_host_service_transaction_lock_at(Path::new(HOST_SERVICE_TRANSACTION_LOCK))
@@ -46,7 +48,7 @@ fn acquire_host_service_transaction_lock_at(
         .open(path)
         .map_err(io_error)?;
     file.lock().map_err(io_error)?;
-    Ok(HostServiceTransactionLock(file))
+    Ok(HostServiceTransactionLock { _file: file })
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
