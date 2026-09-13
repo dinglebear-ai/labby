@@ -66,8 +66,6 @@ use redirect::{host_pattern_matches, wildcard_matches};
 
 const AUTH_REQUEST_TTL_SECS: i64 = 300;
 const NATIVE_START_MEDIA_TYPE: &str = "application/vnd.labby.native-oauth-start+json";
-const NATIVE_SUCCESS_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Signed in to Labby</h2><p>You can close this tab and return to the app.</p></body></html>"#;
-const NATIVE_CALLBACK_EXPIRED_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Sign-in link expired</h2><p>Return to the app and start sign-in again.</p></body></html>"#;
 
 /// Extract the `IpAddr` from a `SocketAddr`, normalizing IPv4-mapped IPv6
 /// addresses (`::ffff:a.b.c.d`) back to plain IPv4 so per-IP rate-limiting
@@ -285,23 +283,11 @@ pub async fn authorize(
             .ok()
             .and_then(|url| url.host_str().map(str::to_string))
             .unwrap_or_else(|| "local application".to_string());
-        let provider_url = escape_html_attribute(location.as_str());
-        let html = format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Authorize client</title></head><body><main><h1>Authorize client</h1><p>After authorization, Labby will redirect you to <strong>{redirect_host}</strong>.</p><p><a rel="noreferrer" href="{provider_url}">Continue</a></p></main></body></html>"#
-        );
-        let mut response = (StatusCode::OK, html).into_response();
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/html; charset=utf-8"),
-        );
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        response.headers_mut().insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"),
-        );
-        Ok(response)
+        Ok(crate::pages::consent(
+            "Authorize Client",
+            &format!("After authorization, Labby will redirect you to {redirect_host}."),
+            &location,
+        ))
     } else {
         Ok((
             StatusCode::FOUND,
@@ -309,14 +295,6 @@ pub async fn authorize(
         )
             .into_response())
     }
-}
-
-fn escape_html_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn sanitized_authorization_endpoint(location: &url::Url) -> String {
@@ -913,7 +891,12 @@ async fn finish_local_authorization(
                 provider_binding,
             )
             .await?;
-        let mut response = axum::response::Html(NATIVE_SUCCESS_PAGE).into_response();
+        let mut response = crate::pages::response(
+            StatusCode::OK,
+            crate::pages::OAuthPage::Success,
+            "Signed In to Labby",
+            "You can close this tab and return to the app.",
+        );
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -965,11 +948,12 @@ pub async fn native_callback(
             "missing `state` parameter".to_string(),
         ));
     }
-    let mut response = (
+    let mut response = crate::pages::response(
         StatusCode::GONE,
-        axum::response::Html(NATIVE_CALLBACK_EXPIRED_PAGE),
-    )
-        .into_response();
+        crate::pages::OAuthPage::Expired,
+        "Sign-In Link Expired",
+        "Return to the app and start sign-in again.",
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1407,7 +1391,7 @@ pub mod tests {
             .await
             .unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("redirect you to <strong>localhost</strong>"));
+        assert!(html.contains("redirect you to localhost."));
         assert!(html.contains("Continue"));
         assert!(!html.contains("secret-client-state"));
     }
@@ -1645,7 +1629,7 @@ pub mod tests {
             .await
             .unwrap();
         let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("Signed in"));
+        assert!(body.contains("Signed In to Labby"));
 
         let attacker_poll = app
             .clone()

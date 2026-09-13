@@ -322,6 +322,7 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     };
 
     let mut routes = vec![
+        crate::api::cli_oauth::descriptor(),
         RouteDescriptor::new("GET", "/health", "health", "health", RouteAuth::Public),
         RouteDescriptor::new("GET", "/ready", "ready", "health", RouteAuth::Public),
         RouteDescriptor::new(

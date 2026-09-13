@@ -2,7 +2,7 @@ use axum::{
     Json,
     extract::{Extension, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect},
+    response::{IntoResponse, Redirect},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -297,15 +297,6 @@ fn append_public_path(base: &url::Url, path: &str) -> Result<url::Url, ToolError
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
-}
-
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 async fn probe(
@@ -788,16 +779,27 @@ async fn callback(
     Redirect::to(redirect_url.as_str()).into_response()
 }
 
-async fn result_page(Query(query): Query<ResultQuery>) -> Html<String> {
-    let upstream = html_escape(&query.upstream);
-    let status = if query.status == "ok" {
-        "successful"
+async fn result_page(Query(query): Query<ResultQuery>) -> axum::response::Response {
+    let (page, title, message) = if query.status == "ok" {
+        (
+            labby_auth::pages::OAuthPage::Success,
+            "Authorization Complete",
+            format!(
+                "Authorization for {} completed. You can close this tab and return to the app.",
+                query.upstream
+            ),
+        )
     } else {
-        "failed"
+        (
+            labby_auth::pages::OAuthPage::Error,
+            "Authorization Failed",
+            format!(
+                "Authorization for {} failed. Return to the app and start sign-in again.",
+                query.upstream
+            ),
+        )
     };
-    Html(format!(
-        "<html><body><h2>Authorization {status}</h2><p>Upstream <strong>{upstream}</strong> has been processed. You may close this tab.</p></body></html>"
-    ))
+    labby_auth::pages::response(StatusCode::OK, page, title, &message)
 }
 
 #[cfg(test)]

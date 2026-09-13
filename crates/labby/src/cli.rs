@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod incus;
 #[cfg(feature = "gateway")]
 pub mod internal;
+pub mod login;
 pub mod logs;
 pub mod oauth;
 pub mod params;
@@ -98,6 +99,8 @@ fn parse_team_id(value: &str) -> Result<String, String> {
 /// plans as each service comes online.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Sign in to an explicit remote Labby server with your operator account.
+    Login(login::LoginArgs),
     /// Start the MCP server (stdio or HTTP transport).
     Serve(serve::ServeArgs),
     /// Start the MCP server over stdio.
@@ -153,6 +156,7 @@ impl Command {
             Self::Doctor(_) => "doctor",
             Self::Docs(_) => "docs",
             Self::Health => "health",
+            Self::Login(_) => "login",
             Self::Logs(_) => "logs",
             Self::Setup(_) => "setup",
             Self::Incus(_) => "incus",
@@ -191,6 +195,7 @@ pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<Exit
             Command::Docs(args) => docs::run(args, format),
             Command::Health => health::run(format).await,
             Command::Logs(args) => logs::run(args).await,
+            Command::Login(args) => login::run(args, format).await,
             Command::Setup(args) => setup::run(args, format).await,
             Command::Incus(args) => incus::run(args, format).await,
             Command::Update(args) => update::run(args, format).await,
@@ -217,6 +222,48 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn cli_accepts_operator_login_for_an_explicit_server() {
+        assert!(Cli::try_parse_from(["labby", "login", "--server", "https://lab.example"]).is_ok());
+    }
+
+    #[test]
+    fn cli_login_accepts_each_registration_method_and_rejects_ambiguity() {
+        for flags in [
+            vec!["--dynamic-registration"],
+            vec![
+                "--client-metadata-url",
+                "https://client.example/metadata.json",
+            ],
+            vec!["--client-id", "registered-cli"],
+            vec![
+                "--client-id",
+                "registered-cli",
+                "--client-secret-env",
+                "CLI_SECRET",
+            ],
+        ] {
+            assert!(Cli::try_parse_from([vec!["labby", "login"], flags].concat()).is_ok());
+        }
+        for flags in [
+            vec!["--client-secret-env", "CLI_SECRET"],
+            vec!["--dynamic-registration", "--client-id", "registered-cli"],
+            vec![
+                "--dynamic-registration",
+                "--client-metadata-url",
+                "https://client.example/id",
+            ],
+            vec![
+                "--client-id",
+                "registered-cli",
+                "--client-metadata-url",
+                "https://client.example/id",
+            ],
+        ] {
+            assert!(Cli::try_parse_from([vec!["labby", "login"], flags].concat()).is_err());
+        }
+    }
 
     #[test]
     fn cli_parses_global_color_flag() {

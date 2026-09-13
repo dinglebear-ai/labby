@@ -36,7 +36,10 @@ probe failed, they could create a local gateway view and read another
   public-URL probes followed by standalone local fallback.
 - Bind credentials to the target authority: the plugin target uses only
   `CLAUDE_PLUGIN_OPTION_API_TOKEN`, while `LABBY_SERVER_URL` and opportunistic
-  discovery use `LABBY_MCP_HTTP_TOKEN`. Never let an invocation-scoped target
+  discovery use `LABBY_MCP_HTTP_TOKEN`. When the explicit operator target has
+  no token override, it may use the OAuth session created by `labby login` for
+  that exact HTTPS origin. Saved sessions never choose a target and are not
+  available to opportunistic or plugin-selected targets. Never let an invocation-scoped target
   inherit the ambient product token, and never send either token to a
   different origin after a redirect.
   The shared remote client must use `reqwest::redirect::Policy::none()` for
