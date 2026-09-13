@@ -5,6 +5,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use labby_primitives::access::{Capability, CapabilitySchemaVersion, RoleTemplate};
 use serde_json::Value;
 use support::action_matrix::{
     CatalogAction, EXPECTED_ACTIONS, EXPECTED_API_ACTIONS, EXPECTED_CLI_ACTIONS,
@@ -183,7 +184,18 @@ fn every_registered_action_has_an_authority_classification() {
         // a Team member gets read/operate over the Team, and management
         // of their own personal credentials regardless of Team membership.
         if let Some(allowed) = team_member_allowed.get(&action.key()) {
-            let member_class = classification.owners == [OwnerKind::Personal]
+            let personal_owner_allowed = classification.owners == [OwnerKind::Personal]
+                && action.required_capability.as_deref().is_some_and(|name| {
+                    Capability::from_wire(CapabilitySchemaVersion::V1, name).is_some_and(
+                        |capability| {
+                            RoleTemplate::PersonalUser
+                                .capabilities(CapabilitySchemaVersion::V1)
+                                .expect("v1 schema supported")
+                                .contains(&capability)
+                        },
+                    )
+                });
+            let member_class = personal_owner_allowed
                 || matches!(
                     classification.operation,
                     OperationClass::Discover | OperationClass::Read | OperationClass::Operate

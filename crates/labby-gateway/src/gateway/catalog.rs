@@ -1265,7 +1265,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.oauth.authorize",
-        description: "Authorize an upstream for the authenticated non-admin caller. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
+        description: "Authorize an upstream for the authenticated caller using a non-admin transport scope. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
         destructive: false,
         requires_admin: false,
         returns: "BeginAuthorization",

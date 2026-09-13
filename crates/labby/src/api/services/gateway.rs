@@ -540,7 +540,10 @@ mod tests {
     /// which set `needs_auth=false` and, before the fix, mounted gateway routes without
     /// any authentication gate.  Now gateway routes are only mounted when auth IS
     /// configured.  Tests that exercise gateway actions must use an authenticated app.
-    async fn authorized_test_state(manager: Arc<GatewayManager>) -> AppState {
+    async fn authorized_test_state_for_identity(
+        manager: Arc<GatewayManager>,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AppState {
         let directory = tempfile::Builder::new()
             .prefix("labby-gateway-access-test-")
             .tempdir_in(std::env::current_dir().expect("test working directory"))
@@ -554,11 +557,6 @@ mod tests {
         let directory = directory.keep();
         let runtime =
             Arc::new(crate::access::AccessRuntime::initialize(directory.join("access.db")).await);
-        let identity = labby_auth::VerifiedIdentity::local_credential(
-            labby_auth::Authenticator::StaticBearer,
-            "static-bearer:primary",
-        )
-        .expect("static bearer identity");
         runtime
             .bootstrap_owner(
                 crate::access::BootstrapOwnerInput::new(identity, "Local", "Default")
@@ -569,6 +567,15 @@ mod tests {
         AppState::from_registry(build_default_registry())
             .with_gateway_manager(manager)
             .with_access_runtime(runtime)
+    }
+
+    async fn authorized_test_state(manager: Arc<GatewayManager>) -> AppState {
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .expect("static bearer identity");
+        authorized_test_state_for_identity(manager, identity).await
     }
 
     async fn test_app_with_manager(manager: Arc<GatewayManager>) -> Router {
@@ -597,12 +604,32 @@ mod tests {
         manager: Arc<GatewayManager>,
         auth: AuthContext,
     ) -> Router {
-        let state = authorized_test_state(manager).await;
+        gateway_routes_with_auth_context_and_platform_role(manager, auth, true).await
+    }
+
+    async fn gateway_routes_with_auth_context_and_platform_role(
+        manager: Arc<GatewayManager>,
+        auth: AuthContext,
+        platform_administrator: bool,
+    ) -> Router {
         let identity = labby_auth::VerifiedIdentity::local_credential(
             labby_auth::Authenticator::StaticBearer,
-            "static-bearer:primary",
+            &auth.sub,
         )
         .expect("static bearer identity");
+        let state = authorized_test_state_for_identity(manager, identity.clone()).await;
+        if !platform_administrator {
+            state
+                .access_runtime
+                .store()
+                .await
+                .expect("access store")
+                .execute_test_statement(
+                    "UPDATE platform_administrators SET status='revoked', revoked_at=11",
+                )
+                .await
+                .expect("revoke platform administrator");
+        }
         super::routes(state.clone())
             .router
             .layer(Extension(auth))
@@ -645,6 +672,18 @@ mod tests {
             via_session: false,
             csrf_token: None,
             email: Some("reader@example.com".to_string()),
+        }
+    }
+
+    fn manage_auth_context(subject: &str) -> AuthContext {
+        AuthContext {
+            sub: subject.to_string(),
+            actor_key: None,
+            scopes: vec!["lab".to_string()],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: Some("personal@example.com".to_string()),
         }
     }
 
@@ -710,6 +749,149 @@ mod tests {
             http_oauth_subject(Some(&reader), Some("read-only-user")).as_deref(),
             Some("read-only-user")
         );
+    }
+
+    #[tokio::test]
+    async fn personal_oauth_authorize_enforces_api_scope_and_caller_subject() {
+        use labby_auth::upstream::encryption::load_key;
+        use labby_auth::upstream::manager::UpstreamOauthManager;
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+        let directory = tempfile::tempdir().expect("oauth tempdir");
+        let store = labby_auth::sqlite::SqliteStore::open(directory.path().join("auth.db"))
+            .await
+            .expect("oauth store");
+        let provider = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": format!("{}/mcp", provider.uri()),
+                "authorization_endpoint": format!("{}/authorize", provider.uri()),
+                "token_endpoint": format!("{}/token", provider.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&provider)
+            .await;
+        let config: UpstreamConfig = serde_json::from_value(json!({
+            "name": "personal",
+            "enabled": true,
+            "url": format!("{}/mcp", provider.uri()),
+            "oauth": {
+                "mode": "authorization_code_pkce",
+                "registration": {"strategy": "preregistered", "client_id": "fixture"}
+            }
+        }))
+        .expect("oauth upstream config");
+        let key = load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").expect("oauth key");
+        let oauth = UpstreamOauthManager::new(
+            store.clone(),
+            key.clone(),
+            config.clone(),
+            "https://lab.example/auth/upstream/callback".into(),
+        );
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert("personal".into(), oauth);
+        let manager = Arc::new(
+            test_gateway_manager(
+                directory.path().join("gateway.toml"),
+                GatewayRuntimeHandle::default(),
+            )
+            .with_oauth_resources(
+                store.clone(),
+                key,
+                "https://lab.example/auth/upstream/callback".into(),
+            )
+            .with_upstream_oauth_managers(managers),
+        );
+        manager.replace_config_for_tests(vec![config]).await;
+        let request = || {
+            json!({
+                "action": "gateway.oauth.authorize",
+                "params": {"upstream": "personal"}
+            })
+        };
+
+        let read_only = gateway_routes_with_auth_context_and_platform_role(
+            Arc::clone(&manager),
+            read_only_auth_context(),
+            false,
+        )
+        .await;
+        let denied = post_gateway_routes(read_only, request()).await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert!(provider.received_requests().await.unwrap().is_empty());
+
+        let forged = gateway_routes_with_auth_context_and_platform_role(
+            Arc::clone(&manager),
+            manage_auth_context("personal-user"),
+            false,
+        )
+        .await;
+        let rejected = post_gateway_routes(
+            forged,
+            json!({
+                "action": "gateway.oauth.authorize",
+                "params": {"upstream": "personal", "subject": "forged-subject"}
+            }),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(provider.received_requests().await.unwrap().is_empty());
+
+        let admin =
+            gateway_routes_with_auth_context(Arc::clone(&manager), admin_auth_context()).await;
+        let shared = post_gateway_routes(admin, request()).await;
+        assert_eq!(shared.status(), StatusCode::FORBIDDEN);
+        assert!(provider.received_requests().await.unwrap().is_empty());
+
+        // An ordinary caller with a manage transport scope authorizes only its
+        // own personal credential.
+        let personal = gateway_routes_with_auth_context_and_platform_role(
+            Arc::clone(&manager),
+            manage_auth_context("personal-user"),
+            false,
+        )
+        .await;
+        let allowed = post_gateway_routes(personal, request()).await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(allowed.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let authorization = url::Url::parse(
+            payload["authorization_url"]
+                .as_str()
+                .expect("authorization url"),
+        )
+        .expect("authorization url parses");
+        let state = authorization
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .expect("state parameter")
+            .1
+            .into_owned();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_owner(&state, now)
+                .await
+                .expect("state owner"),
+            Some(("personal".into(), "personal-user".into()))
+        );
+        assert!(!provider.received_requests().await.unwrap().is_empty());
+
+        // Durable platform role and transport scope are independent axes. A
+        // platform administrator using `lab` remains caller-scoped here.
+        let platform = gateway_routes_with_auth_context_and_platform_role(
+            Arc::clone(&manager),
+            manage_auth_context("platform-user"),
+            true,
+        )
+        .await;
+        let platform_allowed = post_gateway_routes(platform, request()).await;
+        assert_eq!(platform_allowed.status(), StatusCode::OK);
     }
 
     // ── Request helpers ──────────────────────────────────────────────────────
