@@ -68,19 +68,28 @@ export function ConsoleTopbar() {
       >
         <Menu size={19} strokeWidth={1.8} />
       </button>
+      {/*
+        The search pill sits in flow between two equal-basis rails. Equal rails
+        keep it centred; because a rail never shrinks below its content, a wide
+        status/action cluster pushes the pill aside instead of sliding under it.
+      */}
       <div
-        ref={setCrumbSlot}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 3,
-          fontSize: 12.5,
-          lineHeight: 'normal',
-          minWidth: 0,
-          flexShrink: 0,
-        }}
-      />
-      <div style={{ flex: 1 }} />
+        data-topbar-rail="left"
+        style={{ flex: '1 1 0', display: 'flex', alignItems: 'center' }}
+      >
+        <div
+          ref={setCrumbSlot}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            fontSize: 12.5,
+            lineHeight: 'normal',
+            minWidth: 0,
+            flexShrink: 0,
+          }}
+        />
+      </div>
 
       <button
         type="button"
@@ -92,9 +101,6 @@ export function ConsoleTopbar() {
         style={{
           flex: '0 1 auto',
           maxWidth: 340,
-          position: 'absolute',
-          left: '50%',
-          transform: 'translateX(-50%)',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -102,7 +108,8 @@ export function ConsoleTopbar() {
           width: searchHovered ? SEARCH_WIDTH_HOVER : SEARCH_WIDTH_IDLE,
           transition:
             'width 200ms ease-out, border-color 200ms, box-shadow 250ms, color 200ms',
-          minWidth: 0,
+          // Keep a usable pill when the rails claim the row; mobile CSS overrides.
+          minWidth: 120,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           padding: '0 11px',
@@ -172,19 +179,30 @@ export function ConsoleTopbar() {
       </button>
 
       <div
-        ref={setActionSlot}
-        data-actioncluster="1"
-        className="empty:!hidden"
+        data-topbar-rail="right"
         style={{
-          flexShrink: 0,
+          flex: '1 1 0',
           display: 'flex',
           alignItems: 'center',
-          gap: 5,
+          justifyContent: 'flex-end',
+          gap: 12,
         }}
-      />
-      <ConsoleStatusStrip state={status} />
-      <ConsoleNotifications state={status} />
-      <AccountMenu placement="topbar" />
+      >
+        <div
+          ref={setActionSlot}
+          data-actioncluster="1"
+          className="empty:!hidden"
+          style={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+          }}
+        />
+        <ConsoleStatusStrip state={status} />
+        <ConsoleNotifications state={status} />
+        <AccountMenu placement="topbar" />
+      </div>
     </header>
   )
 }
