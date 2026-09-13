@@ -116,31 +116,40 @@ fn acquire_installer_transaction_lock_with_writer(
                 "another installation is starting",
             ));
         };
-        match probe_owner(owner) {
-            #[cfg(any(unix, test))]
-            InstallerOwnerProbe::Dead => {}
-            #[cfg(any(unix, test))]
-            InstallerOwnerProbe::Alive => {
-                return Err(installer_lock_busy(
-                    path,
-                    &format!("live owner pid {owner}"),
-                ));
-            }
-            InstallerOwnerProbe::Unknown => {
-                return Err(installer_lock_busy(
-                    path,
-                    &format!("owner pid {owner} could not be safely probed"),
-                ));
-            }
+        #[cfg(not(any(unix, test)))]
+        {
+            let _owner_state = probe_owner(owner);
+            return Err(installer_lock_busy(
+                path,
+                &format!("owner pid {owner} could not be safely probed"),
+            ));
         }
-        let stale = PathBuf::from(format!("{}.stale.{}", path.display(), std::process::id()));
-        std::fs::rename(path, &stale)
-            .map_err(|_| installer_lock_busy(path, "stale-lock takeover lost a race"))?;
-        sync_parent_directory(parent).map_err(io_error)?;
-        remove_directory_if_present(&stale)?;
-        std::fs::create_dir(path).map_err(|_| {
-            installer_lock_busy(path, "another installation won stale-lock recovery")
-        })?;
+        #[cfg(any(unix, test))]
+        {
+            match probe_owner(owner) {
+                InstallerOwnerProbe::Dead => {}
+                InstallerOwnerProbe::Alive => {
+                    return Err(installer_lock_busy(
+                        path,
+                        &format!("live owner pid {owner}"),
+                    ));
+                }
+                InstallerOwnerProbe::Unknown => {
+                    return Err(installer_lock_busy(
+                        path,
+                        &format!("owner pid {owner} could not be safely probed"),
+                    ));
+                }
+            }
+            let stale = PathBuf::from(format!("{}.stale.{}", path.display(), std::process::id()));
+            std::fs::rename(path, &stale)
+                .map_err(|_| installer_lock_busy(path, "stale-lock takeover lost a race"))?;
+            sync_parent_directory(parent).map_err(io_error)?;
+            remove_directory_if_present(&stale)?;
+            std::fs::create_dir(path).map_err(|_| {
+                installer_lock_busy(path, "another installation won stale-lock recovery")
+            })?;
+        }
     }
     let guard = InstallerTransactionLock {
         path: path.to_path_buf(),
