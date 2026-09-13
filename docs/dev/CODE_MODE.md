@@ -537,16 +537,30 @@ is ever stringified-and-reparsed beyond the marker itself:
 - **Envelope budget (always on, default path):** when the response exceeds
   `max_response_bytes`/`max_response_tokens`, the final `result` is replaced
   with an **object** marker carrying `truncated: true`, `original_size`,
-  `original_tokens`, a bounded `preview`, `artifacts`, and `next_action`.
+  `original_tokens`, a bounded `preview`, `artifacts`, `next_action`, and an executable `resource_read_example`.
   Structured `calls[]` metadata survives verbatim. Logs are trimmed
   oldest-first after result truncation if needed.
 - **Shaping policy `truncate` (opt-in, non-`Off` policy only):** the final
   result becomes a single marker **string** prefixed
-  `[code mode result truncated]` with a pretty-printed preview.
+  `[code mode result truncated]` with a pretty-printed preview and a pointer
+  to `result_shaping.warning`, which carries the same recovery guidance and
+  resource-read example.
 
 Truncation happens only at the outer sandbox→MCP boundary. Values seen by
 sandbox code through `callTool()` / `codemode.<upstream>.<tool>()` are never
 truncated or reshaped.
+
+For an oversized resource, substitute its discovered URI in the marker's
+`resource_read_example`. Return one chunk per execution, then set `offset` to
+`next_offset` until `done` is true. Concatenate the decoded `chunk` strings in
+order and JSON-parse the complete string to recover the resource envelope.
+Offsets count JavaScript UTF-16 code units, not bytes. Each execution reads the
+resource again; use a stable version and restart the read if it changes. Reduce
+`length` if a chunk still exceeds the configured envelope budget.
+
+The marker does not cache omitted output. Execution already happened, so never
+rerun mutations merely to obtain smaller output. Prefer existing artifact
+receipts or a separate read-only query for an operation's recorded result.
 
 ## MCP Apps (mcp-ui) widgets
 

@@ -192,6 +192,19 @@ fn estimated_tokens(byte_len: usize, divisor: u32) -> usize {
     byte_len.div_ceil(divisor.max(1) as usize).max(1)
 }
 
+pub(crate) const TRUNCATION_RECOVERY: &str = "Only the returned output was truncated; execution has already run. Do not replay mutations to retrieve output. Use existing artifact receipts or a read-only query returning fewer fields. For a resource, use resource_read_example with the exact URI from codemode.listResources(upstream), then repeat with offset = next_offset until done. Offsets count JavaScript UTF-16 code units, not bytes. Each call re-reads the resource; keep its version stable. Reduce length if a chunk still exceeds your response budget. The omitted output is not cached by this marker.";
+
+// Serializing the resource envelope preserves every content block, including
+// binary metadata. A small slice leaves room for JSON escaping and call metadata.
+pub(crate) const RESOURCE_READ_EXAMPLE: &str = r#"async () => {
+  const uri = "REPLACE_WITH_DISCOVERED_RESOURCE_URI";
+  const offset = 0, length = 1000;
+  const serialized = JSON.stringify(await codemode.readResource(uri));
+  const chunk = serialized.slice(offset, offset + length);
+  const next_offset = offset + chunk.length;
+  return {chunk, next_offset, total: serialized.length, done: next_offset >= serialized.length};
+}"#;
+
 fn truncation_marker(
     value: &Value,
     token_estimate_divisor: u32,
@@ -205,7 +218,8 @@ fn truncation_marker(
         "original_tokens": estimated_tokens(serialized.len(), token_estimate_divisor),
         "preview": preview,
         "artifacts": artifacts,
-        "next_action": "Use a narrower query, request fewer fields, or split the work across multiple codemode calls."
+        "next_action": TRUNCATION_RECOVERY,
+        "resource_read_example": RESOURCE_READ_EXAMPLE
     })
 }
 
@@ -347,6 +361,14 @@ mod tests {
             "marker carries agent guidance"
         );
         assert!(
+            marker["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("Do not replay mutations")
+        );
+        assert_eq!(marker["resource_read_example"], RESOURCE_READ_EXAMPLE);
+        assert!(response_within_budget(&truncated, 4096, usize::MAX, 4));
+        assert!(
             marker["preview"].as_str().is_some_and(|s| s.len() <= 1024),
             "preview is bounded"
         );
@@ -436,3 +458,7 @@ mod tests {
         assert_eq!(untouched, response);
     }
 }
+
+#[cfg(test)]
+#[path = "truncate/resource_recovery_tests.rs"]
+mod resource_recovery_tests;
