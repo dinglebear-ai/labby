@@ -114,3 +114,20 @@ test("treats a non-boolean hint as unset rather than truthy", async () => {
     assert.deepEqual(observed.annotations, {read_only_hint: false, untrusted_content_hint: false, consequential_hint: false});
   });
 });
+
+
+test("a never-settling catalog times out without accumulating page calls", async () => {
+  let calls = 0;
+  let release;
+  await withModelContext({getTools: () => { calls++; return new Promise(resolve => { release = resolve; }); }}, async () => {
+    const started = Date.now();
+    assert.deepEqual(await probeWebMcp(), {supported: false, tools: []});
+    assert.ok(Date.now() - started < 3000);
+    assert.deepEqual(await probeWebMcp(), {supported: false, tools: []});
+    assert.equal(calls, 1);
+    release([]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    document.modelContext.getTools = async () => [tool({})];
+    assert.equal((await probeWebMcp()).supported, true);
+  });
+});

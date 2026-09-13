@@ -2,7 +2,7 @@
 //!
 //! Exposes built-in `help` / `schema` and the `fs.list` action. All I/O
 //! happens inside a `spawn_blocking` to keep the async executor responsive
-//! under pressure from the synchronous `walkdir` walker.
+//! under pressure from synchronous filesystem enumeration.
 
 use std::path::{Path, PathBuf};
 
@@ -18,8 +18,9 @@ use super::client::{MAX_PREVIEW_BYTES, deny_globset, require_workspace_root, saf
 #[cfg(feature = "fs")]
 use super::params::{parse_list, parse_preview};
 
-/// Maximum number of entries returned in a single `fs.list` response.
-/// Extra entries are suppressed and `truncated: true` is set.
+/// Maximum entries inspected in a single `fs.list` response, including denied
+/// names. Results are sorted within this bounded batch; extra entries set
+/// `truncated: true`.
 #[cfg(feature = "fs")]
 pub const LIST_CAP: usize = 10_000;
 
@@ -254,19 +255,28 @@ fn list_directory(target: &Path, rel_prefix: &str) -> Result<ListResponse, ToolE
     let mut entries: Vec<Entry> = Vec::new();
     let mut truncated = false;
 
-    // walkdir with min_depth=1 + max_depth=1 = children only. follow_links
-    // defaults to false.
-    let walker = walkdir::WalkDir::new(target)
-        .min_depth(1)
-        .max_depth(1)
-        .follow_links(false)
-        .sort_by_file_name();
-
-    for dent in walker.into_iter() {
-        let Ok(dent) = dent else {
-            // Skip unreadable entries silently — a directory listing should
-            // not fail because one child is inaccessible.
-            continue;
+    // Bound enumeration itself, including denied and unrepresentable names.
+    // Sorting happens only after collecting the bounded result.
+    let directory = std::fs::read_dir(target).map_err(|error| ToolError::Sdk {
+        sdk_kind: if error.kind() == std::io::ErrorKind::PermissionDenied {
+            "permission_denied"
+        } else {
+            "internal_error"
+        }
+        .into(),
+        message: format!("failed to enumerate requested directory: {error}"),
+    })?;
+    for (scanned, dent) in directory.enumerate() {
+        if scanned >= LIST_CAP {
+            truncated = true;
+            break;
+        }
+        let dent = match dent {
+            Ok(dent) => dent,
+            Err(_) => {
+                truncated = true;
+                continue;
+            }
         };
 
         let name = match dent.file_name().to_str() {
@@ -299,12 +309,7 @@ fn list_directory(target: &Path, rel_prefix: &str) -> Result<ListResponse, ToolE
             break;
         }
 
-        // dent.metadata() reuses walkdir's stat instead of issuing a
-        // second lstat on dent.path(). With follow_links=false (set
-        // above), this returns the link's own metadata — same semantics
-        // as std::fs::symlink_metadata. Saves ~10k syscalls for a full
-        // LIST_CAP listing (~5-15ms warm, 30-80ms cold).
-        let meta = dent.metadata();
+        let meta = std::fs::symlink_metadata(dent.path());
         let (kind, size, accessible, modified) = match meta {
             Ok(m) => {
                 let file_type = m.file_type();
@@ -346,6 +351,7 @@ fn list_directory(target: &Path, rel_prefix: &str) -> Result<ListResponse, ToolE
         });
     }
 
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(ListResponse { entries, truncated })
 }
 
@@ -463,9 +469,8 @@ pub async fn open_for_preview(root: &Path, params: Value) -> Result<Preview, Too
 /// - On Linux, uses `rustix::fs::openat2` with `RESOLVE_BENEATH |
 ///   RESOLVE_NO_SYMLINKS` so the kernel enforces containment atomically
 ///   (closes the TOCTOU window between validate and open).
-/// - On non-Linux, falls back to canonicalize + `starts_with` + final
-///   `symlink_metadata` refusal. The fallback is documented as weaker but
-///   still rejects the common escape patterns.
+/// - On other Unix platforms, uses descriptor-relative no-follow traversal.
+/// - On Windows, pins ancestors and verifies the final no-reparse handle.
 #[cfg(all(feature = "fs", target_os = "linux"))]
 fn open_no_follow(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
     use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
@@ -478,7 +483,7 @@ fn open_no_follow(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
     let fd_result = openat2(
         &root_file,
         rel,
-        OFlags::RDONLY | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
     );
@@ -533,9 +538,7 @@ fn open_no_follow(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
 ///   be defeated by swapping a regular file for an in-root symlink between
 ///   the two calls.
 ///
-/// On non-Unix targets (Windows) the old `canonicalize + starts_with +
-/// symlink_metadata` chain is retained as a best-effort guard; the Windows
-/// gap is tracked separately and does not worsen the existing posture.
+/// Windows uses pinned ancestors and a verified no-reparse file handle.
 ///
 /// Callers on Linux 5.6+ never reach this function — they take the
 /// `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` path in `open_no_follow`.
@@ -622,7 +625,7 @@ fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolErr
     let file_result = openat(
         current_dir.as_fd(),
         file_name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     );
 
@@ -684,81 +687,29 @@ fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolErr
     }
 }
 
-/// Best-effort fallback for non-Unix targets (Windows).
-///
-/// Uses `canonicalize + starts_with + symlink_metadata` — the same chain
-/// that was previously used everywhere. The TOCTOU window on Windows is
-/// tracked separately (see lab-f1t2 follow-up for Windows NtCreateFile).
-#[cfg(all(feature = "fs", not(unix)))]
+/// Pin every Windows ancestor and open the final handle without following
+/// reparse points. No pathname is reopened after the verified handle is obtained.
+#[cfg(all(feature = "fs", windows))]
 fn open_no_follow_windows_fallback(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
-    let mut check = root.to_path_buf();
-    for component in rel.components() {
-        check.push(component);
-        let m = std::fs::symlink_metadata(&check).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => ToolError::Sdk {
-                sdk_kind: "not_found".into(),
-                message: format!("path not found: `{}`", rel.display()),
-            },
-            std::io::ErrorKind::PermissionDenied => ToolError::Sdk {
-                sdk_kind: "permission_denied".into(),
-                message: "permission denied".into(),
-            },
-            _ => ToolError::Sdk {
-                sdk_kind: "internal_error".into(),
-                message: e.to_string(),
-            },
-        })?;
-        if m.file_type().is_symlink() {
-            return Err(ToolError::Sdk {
-                sdk_kind: "permission_denied".into(),
-                message: "symlinks are not followed for previews".into(),
-            });
+    let path = root.join(rel);
+    let map_error = |error: std::io::Error| ToolError::Sdk {
+        sdk_kind: if error.kind() == std::io::ErrorKind::NotFound {
+            "not_found"
+        } else {
+            "permission_denied"
         }
-    }
+        .into(),
+        message: "workspace file could not be opened without following reparse points".into(),
+    };
+    let _ancestors = labby_winjob::fs::AncestorGuard::for_file(&path).map_err(map_error)?;
+    labby_winjob::fs::open_read(&path, false).map_err(map_error)
+}
 
-    let joined = root.join(rel);
-    let canonical = std::fs::canonicalize(&joined).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ToolError::Sdk {
-            sdk_kind: "not_found".into(),
-            message: format!("path not found: `{}`", rel.display()),
-        },
-        std::io::ErrorKind::PermissionDenied => ToolError::Sdk {
-            sdk_kind: "permission_denied".into(),
-            message: "permission denied".into(),
-        },
-        _ => ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message: e.to_string(),
-        },
-    })?;
-    if !canonical.starts_with(root) {
-        return Err(ToolError::Sdk {
-            sdk_kind: "permission_denied".into(),
-            message: "path escapes workspace root".into(),
-        });
-    }
-    if let Ok(canonical_rel) = canonical.strip_prefix(root) {
-        let canonical_rel_str = canonical_rel.to_string_lossy();
-        if deny_globset().is_match(canonical_rel_str.as_ref()) {
-            return Err(ToolError::Sdk {
-                sdk_kind: "not_found".into(),
-                message: format!("path not found: `{}`", rel.display()),
-            });
-        }
-    }
-    let meta = std::fs::symlink_metadata(&canonical).map_err(|e| ToolError::Sdk {
-        sdk_kind: "internal_error".into(),
-        message: e.to_string(),
-    })?;
-    if meta.file_type().is_symlink() {
-        return Err(ToolError::Sdk {
-            sdk_kind: "permission_denied".into(),
-            message: "symlinks are not followed for previews".into(),
-        });
-    }
-    std::fs::File::open(&canonical).map_err(|e| ToolError::Sdk {
-        sdk_kind: "internal_error".into(),
-        message: e.to_string(),
+#[cfg(all(feature = "fs", not(any(unix, windows))))]
+fn open_no_follow_windows_fallback(_root: &Path, _rel: &Path) -> Result<std::fs::File, ToolError> {
+    Err(ToolError::Sdk {
+        sdk_kind: "unsupported".into(),
+        message: "secure filesystem previews are unavailable on this platform".into(),
     })
 }
 
@@ -786,6 +737,34 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(all(test, feature = "fs"))]
 #[allow(clippy::panic)]
 mod tests {
+
+    #[test]
+    fn missing_requested_directory_is_not_an_empty_success() {
+        let dir = tempdir().unwrap();
+        assert!(list_directory(&dir.path().join("missing"), "").is_err());
+        assert!(list_directory(dir.path(), "").unwrap().entries.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_preview_open_never_waits_for_a_writer() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pipe");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let start = std::time::Instant::now();
+        let result = open_no_follow(dir.path(), Path::new("pipe"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        if let Ok(file) = result {
+            assert!(!file.metadata().unwrap().is_file());
+        }
+    }
+
     use super::*;
     use serde_json::json;
     // Unix-only: the symlink-behavior tests below are `#[cfg(unix)]`; the import
