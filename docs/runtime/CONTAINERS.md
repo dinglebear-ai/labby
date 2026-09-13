@@ -84,8 +84,9 @@ isolated source tree is removed automatically.
 
 The image health helper records only timestamps, counters, delays, and recovery
 events in the persistent Labby state volume. On the third failure it asks PID 1
-to terminate; Compose is the sole restart owner. Repeated requests back off at
-1, 2, then 3 seconds and stop after nine failed probes, leaving the container
+to terminate; Compose is the sole restart owner. Scheduled health checks space
+repeated requests; the helper does not sleep within a probe (`delay=0`). Recovery
+requests stop after nine failed probes, leaving the container
 unhealthy instead of looping forever. Docker's bounded `json-file` rotation
 retains at most five 10 MiB files. Preserve the recovery log, Compose event
 stream, and recent bounded logs in the qualification bundle before promotion.
