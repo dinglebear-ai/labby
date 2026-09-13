@@ -59,7 +59,9 @@ fn acquire_installer_transaction_lock_at(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InstallerOwnerProbe {
+    #[cfg(any(unix, test))]
     Alive,
+    #[cfg(any(unix, test))]
     Dead,
     Unknown,
 }
@@ -115,7 +117,9 @@ fn acquire_installer_transaction_lock_with_writer(
             ));
         };
         match probe_owner(owner) {
+            #[cfg(any(unix, test))]
             InstallerOwnerProbe::Dead => {}
+            #[cfg(any(unix, test))]
             InstallerOwnerProbe::Alive => {
                 return Err(installer_lock_busy(
                     path,
