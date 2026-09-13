@@ -909,6 +909,7 @@ mod tests {
     fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture".to_string(),
             url: url.map(str::to_string),

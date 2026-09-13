@@ -204,6 +204,7 @@ mod tests {
     fn minimal_config() -> UpstreamConfig {
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "upstream".to_string(),
             url: None,
@@ -324,6 +325,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "acme-corp".to_string(),
                 ..minimal_config()
             },
@@ -346,6 +348,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -373,6 +376,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -398,6 +402,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -436,6 +441,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "gh".into(),
                 ..minimal_config()
             },
@@ -453,6 +459,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "gh".into(),
                 ..minimal_config()
             },

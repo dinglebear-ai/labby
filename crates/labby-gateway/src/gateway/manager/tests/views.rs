@@ -81,6 +81,7 @@ async fn manager_get_preserves_bearer_token_env_reference() {
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -121,6 +122,7 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-stdio".to_string(),
             url: None,
@@ -167,6 +169,7 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
 async fn server_view_redacts_sensitive_target_url_components() {
     let upstream = UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-http".to_string(),
         url: Some("http://user:pass@127.0.0.1:9001/callback?token=secret&mode=1".to_string()),
@@ -202,6 +205,7 @@ async fn server_view_redacts_sensitive_target_url_components() {
 async fn server_view_redacts_invalid_target_urls() {
     let upstream = UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-http".to_string(),
         url: Some("http://user:pass@[::1".to_string()),
@@ -237,6 +241,7 @@ async fn server_view_redacts_invalid_target_urls() {
 async fn server_view_redacts_stdio_env_targets() {
     let upstream = UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-stdio".to_string(),
         url: None,

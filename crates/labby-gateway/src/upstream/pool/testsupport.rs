@@ -34,6 +34,7 @@ use super::{UpstreamConnection, UpstreamPool};
 pub(super) fn test_upstream_config() -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "test".into(),
         url: None,
@@ -61,6 +62,7 @@ pub(super) fn test_upstream_config() -> UpstreamConfig {
 pub(super) fn named_test_upstream_config(name: &str) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         name: name.to_string(),
         command: Some("true".to_string()),
         ..test_upstream_config()
@@ -70,6 +72,7 @@ pub(super) fn named_test_upstream_config(name: &str) -> UpstreamConfig {
 pub(super) fn named_disabled_test_upstream_config(name: &str) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: false,
         ..named_test_upstream_config(name)
     }

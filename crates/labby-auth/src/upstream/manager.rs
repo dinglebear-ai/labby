@@ -1825,6 +1825,7 @@ mod url_tests {
             key,
             UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "transport-parity".to_string(),
                 url: Some(format!("{}/mcp", server.uri())),

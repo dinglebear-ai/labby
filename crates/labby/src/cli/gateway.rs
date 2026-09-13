@@ -791,6 +791,7 @@ mod tests {
         let config = LabConfig {
             upstream: vec![UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 name: "axon".to_string(),
                 enabled: true,
                 priority: 1.0,

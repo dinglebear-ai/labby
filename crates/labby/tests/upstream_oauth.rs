@@ -246,6 +246,7 @@ impl Harness {
     fn upstream_cfg(&self, registration: UpstreamOauthRegistration) -> UpstreamConfig {
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: Some(self.upstream_url()),

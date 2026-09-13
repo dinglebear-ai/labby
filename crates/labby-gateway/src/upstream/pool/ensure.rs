@@ -788,6 +788,7 @@ mod tests {
         let pool = UpstreamPool::new();
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
@@ -818,6 +819,7 @@ mod tests {
         let pool = UpstreamPool::new();
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             url: Some("http://127.0.0.1:9/mcp".to_string()),
             command: None,
             ..named_test_upstream_config("broken")

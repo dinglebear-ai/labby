@@ -455,6 +455,19 @@ pub enum UpstreamTransport {
     UnixSocket,
 }
 
+/// Which MCP lifecycle Labby opens an upstream connection with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamLifecycle {
+    /// Try `server/discover` first and fall back to `initialize` only when the
+    /// peer proves it is legacy.
+    #[default]
+    Auto,
+    /// Always open with `initialize`. For legacy servers that terminate on an
+    /// unknown first request, which leaves no rejection to classify.
+    Initialize,
+}
+
 /// Configuration for a single upstream MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
@@ -465,6 +478,9 @@ pub struct UpstreamConfig {
     /// routing, tool naming, auth, or exposure, so it may be any short text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Handshake override. Omitted means [`UpstreamLifecycle::Auto`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<UpstreamLifecycle>,
     /// Whether this upstream is enabled for discovery and proxying. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,

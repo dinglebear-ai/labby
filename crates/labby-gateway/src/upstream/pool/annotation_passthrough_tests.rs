@@ -56,6 +56,7 @@ async fn subject_listing(tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool
     move_connection_to_subject_cache_with_tools(&pool, upstream, subject, tools).await;
     let config = labby_runtime::gateway_config::UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         oauth: Some(labby_runtime::gateway_config::UpstreamOauthConfig {
             mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
             registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Dynamic,

@@ -657,6 +657,7 @@ mod tests {
     fn fingerprint_is_stable_and_config_sensitive() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "alpha".to_string(),
             url: None,

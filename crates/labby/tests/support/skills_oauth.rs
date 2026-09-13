@@ -117,6 +117,7 @@ async fn oauth_roundtrip() {
     let key = load_key(&base64::engine::general_purpose::STANDARD.encode([0u8; 32])).unwrap();
     let upstream = UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         name: "skills-oauth".into(),
         url: Some(endpoint.clone()),
         enabled: true,

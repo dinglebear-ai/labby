@@ -123,6 +123,7 @@ mod tests {
     fn validate_rejects_empty_name() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: String::new(),
             url: Some("http://localhost:8080".into()),
@@ -152,6 +153,7 @@ mod tests {
     fn validate_rejects_non_http_scheme() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: Some("ftp://example.com".into()),
@@ -182,6 +184,7 @@ mod tests {
         for url in &["http://0.0.0.0:8080", "http://[::]/mcp", "http://[::]:8080"] {
             let config = UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -215,6 +218,7 @@ mod tests {
     fn validate_accepts_valid_http_url() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080/mcp".into()),
@@ -245,6 +249,7 @@ mod tests {
         for url in ["ws://localhost:8080/mcp", "wss://example.com/socket"] {
             let config = UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some(url.into()),
@@ -278,6 +283,7 @@ mod tests {
     fn validate_accepts_stdio_command() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: None,
@@ -307,6 +313,7 @@ mod tests {
     fn validate_rejects_both_url_and_command() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080".into()),
@@ -336,6 +343,7 @@ mod tests {
     fn validate_rejects_no_url_or_command() {
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "test".into(),
             url: None,
@@ -377,6 +385,7 @@ mod tests {
         for url in &["http://0.0.0.0:8080/mcp", "http://[::]/mcp"] {
             let config = UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -417,6 +426,7 @@ mod tests {
         ] {
             let config = UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -466,6 +476,7 @@ mod tests {
         // to assert a failure.
         let config = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "rebind-risk-documented".into(),
             url: Some("http://mcp.example.com/mcp".into()),

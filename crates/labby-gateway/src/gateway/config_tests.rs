@@ -53,6 +53,7 @@ fn sample_config() -> GatewayConfig {
         upstream: vec![
             UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "a".to_string(),
                 url: Some("http://127.0.0.1:9001".to_string()),
@@ -77,6 +78,7 @@ fn sample_config() -> GatewayConfig {
             },
             UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "b".to_string(),
                 url: None,
@@ -305,6 +307,7 @@ url = "https://old.example.com/mcp"
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: false,
             name: "new".to_string(),
             url: Some("https://new.example.com/mcp".to_string()),
@@ -345,6 +348,7 @@ fn insert_upstream_adds_new_gateway_entry() {
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -944,6 +948,7 @@ fn insert_upstream_clears_matching_import_tombstone() {
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -994,6 +999,7 @@ fn insert_upstream_clears_import_tombstone_by_source_identity_after_rename() {
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -1035,6 +1041,7 @@ fn insert_upstream_keeps_same_name_tombstone_from_different_source() {
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -1188,6 +1195,7 @@ fn insert_upstream_rejects_duplicate_names() {
         &mut cfg,
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "a".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -1223,6 +1231,7 @@ fn write_gateway_config_rejects_both_url_and_command() {
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "bad".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -1259,6 +1268,7 @@ fn write_gateway_config_rejects_missing_transport_selector() {
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "bad".to_string(),
             url: None,
@@ -1296,6 +1306,7 @@ fn write_gateway_config_reports_socket_path_for_invalid_unix_transport() {
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "bad-unix".to_string(),
             url: Some("http://localhost/mcp".to_string()),
@@ -1337,6 +1348,7 @@ fn write_gateway_config_reports_headers_for_invalid_authorization_header() {
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "bad-header".to_string(),
             url: Some("http://localhost/mcp".to_string()),
@@ -1375,6 +1387,7 @@ fn insert_upstream_rejects_non_http_scheme() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "ftp".to_string(),
             url: Some("ftp://example.com".to_string()),
@@ -1409,6 +1422,7 @@ fn insert_upstream_rejects_bind_all_address() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "bind-all".to_string(),
             url: Some("http://0.0.0.0:8790".to_string()),
@@ -1443,6 +1457,7 @@ fn insert_upstream_rejects_raw_bearer_token_values_in_bearer_token_env() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "github".to_string(),
             url: Some("https://api.githubcopilot.com/mcp/".to_string()),
@@ -1478,6 +1493,7 @@ fn insert_upstream_rejects_name_over_128_chars() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: long_name,
             url: Some("https://example.com/mcp".to_string()),
@@ -1512,6 +1528,7 @@ fn insert_upstream_rejects_invalid_chars_in_name() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "evil\x1bgateway".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -1547,6 +1564,7 @@ fn insert_upstream_rejects_bidi_override_in_name() {
         &mut GatewayConfig::default(),
         UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "safe\u{202e}gateway".to_string(),
             url: Some("https://example.com/mcp".to_string()),
@@ -1590,6 +1608,7 @@ fn insert_upstream_accepts_valid_names() {
             &mut cfg,
             UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: name.to_string(),
                 url: Some("https://example.com/mcp".to_string()),
@@ -1694,6 +1713,7 @@ fn stdio_upstream(command: &str, args: &[&str], env_pairs: &[(&str, &str)]) -> U
     }
     UpstreamConfig {
         display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "test".to_string(),
         url: None,

@@ -103,6 +103,7 @@ impl Harness {
             .seed_config(GatewayConfig {
                 upstream: vec![UpstreamConfig {
                     display_name: None,
+                    lifecycle: None,
                     enabled: true,
                     name: "shared-google".to_string(),
                     url: Some("https://google.example/mcp".to_string()),

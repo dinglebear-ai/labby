@@ -385,6 +385,7 @@ mod tests {
         GatewayConfig {
             upstream: vec![UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "alpha".into(),
                 url: None,

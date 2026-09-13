@@ -130,6 +130,7 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
         .add(
             UpstreamConfig {
                 display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "github".to_string(),
                 url: Some("https://api.githubcopilot.com/mcp/".to_string()),

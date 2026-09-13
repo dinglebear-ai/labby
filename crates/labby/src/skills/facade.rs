@@ -1393,6 +1393,7 @@ mod tests {
 
         let upstream = UpstreamConfig {
             display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "up".to_string(),
             url: None,
