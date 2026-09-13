@@ -54,19 +54,35 @@ impl Drop for InstallerTransactionLock {
 fn acquire_installer_transaction_lock_at(
     path: &Path,
 ) -> Result<InstallerTransactionLock, ToolError> {
-    acquire_installer_transaction_lock_with(path, installer_owner_is_alive)
+    acquire_installer_transaction_lock_with(path, probe_installer_owner)
 }
 
-fn installer_owner_is_alive(pid: i32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .is_ok_and(|status| status.success())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallerOwnerProbe {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+fn probe_installer_owner(pid: i32) -> InstallerOwnerProbe {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) => InstallerOwnerProbe::Alive,
+        Err(nix::errno::Errno::ESRCH) => InstallerOwnerProbe::Dead,
+        Err(_) => InstallerOwnerProbe::Unknown,
+    }
 }
 
 fn acquire_installer_transaction_lock_with(
     path: &Path,
-    owner_is_alive: impl Fn(i32) -> bool,
+    probe_owner: impl Fn(i32) -> InstallerOwnerProbe,
+) -> Result<InstallerTransactionLock, ToolError> {
+    acquire_installer_transaction_lock_with_writer(path, probe_owner, atomic_write)
+}
+
+fn acquire_installer_transaction_lock_with_writer(
+    path: &Path,
+    probe_owner: impl Fn(i32) -> InstallerOwnerProbe,
+    write_pid: impl FnOnce(&Path, &[u8]) -> Result<(), ToolError>,
 ) -> Result<InstallerTransactionLock, ToolError> {
     let parent = path.parent().ok_or_else(|| ToolError::Sdk {
         sdk_kind: "host_service_transaction_lock_unsafe".into(),
@@ -90,11 +106,20 @@ fn acquire_installer_transaction_lock_with(
                 "another installation is starting",
             ));
         };
-        if owner_is_alive(owner) {
-            return Err(installer_lock_busy(
-                path,
-                &format!("live owner pid {owner}"),
-            ));
+        match probe_owner(owner) {
+            InstallerOwnerProbe::Dead => {}
+            InstallerOwnerProbe::Alive => {
+                return Err(installer_lock_busy(
+                    path,
+                    &format!("live owner pid {owner}"),
+                ));
+            }
+            InstallerOwnerProbe::Unknown => {
+                return Err(installer_lock_busy(
+                    path,
+                    &format!("owner pid {owner} could not be safely probed"),
+                ));
+            }
         }
         let stale = PathBuf::from(format!("{}.stale.{}", path.display(), std::process::id()));
         std::fs::rename(path, &stale)
@@ -105,14 +130,13 @@ fn acquire_installer_transaction_lock_with(
             installer_lock_busy(path, "another installation won stale-lock recovery")
         })?;
     }
-    if let Err(error) = std::fs::write(path.join("pid"), format!("{}\n", std::process::id())) {
-        drop(std::fs::remove_dir(path));
-        return Err(io_error(error));
-    }
     let guard = InstallerTransactionLock {
         path: path.to_path_buf(),
     };
-    sync_parent_directory(path).map_err(io_error)?;
+    write_pid(
+        &path.join("pid"),
+        format!("{}\n", std::process::id()).as_bytes(),
+    )?;
     sync_parent_directory(parent).map_err(io_error)?;
     Ok(guard)
 }
@@ -2976,13 +3000,14 @@ mod tests {
         let lock = dir.path().join(".labby-install/transaction-lock");
         std::fs::create_dir_all(&lock).unwrap();
         assert_eq!(
-            acquire_installer_transaction_lock_with(&lock, |_| false)
+            acquire_installer_transaction_lock_with(&lock, |_| InstallerOwnerProbe::Dead)
                 .unwrap_err()
                 .kind(),
             "host_service_installer_transaction_busy"
         );
         std::fs::write(lock.join("pid"), "12345\n").unwrap();
-        let guard = acquire_installer_transaction_lock_with(&lock, |_| false).unwrap();
+        let guard =
+            acquire_installer_transaction_lock_with(&lock, |_| InstallerOwnerProbe::Dead).unwrap();
         assert_eq!(
             std::fs::read_to_string(lock.join("pid")).unwrap(),
             format!("{}\n", std::process::id())
@@ -2995,12 +3020,43 @@ mod tests {
         std::fs::create_dir_all(&stale).unwrap();
         std::fs::write(stale.join("contender"), b"owned").unwrap();
         assert_eq!(
-            acquire_installer_transaction_lock_with(&lock, |_| false)
+            acquire_installer_transaction_lock_with(&lock, |_| InstallerOwnerProbe::Dead)
                 .unwrap_err()
                 .kind(),
             "host_service_installer_transaction_busy"
         );
         assert!(lock.exists());
+    }
+
+    #[test]
+    fn installer_owner_probe_reclaims_only_confirmed_dead_processes() {
+        for probe in [InstallerOwnerProbe::Alive, InstallerOwnerProbe::Unknown] {
+            let dir = tempfile::tempdir().unwrap();
+            let lock = dir.path().join("transaction-lock");
+            std::fs::create_dir(&lock).unwrap();
+            std::fs::write(lock.join("pid"), "12345\n").unwrap();
+            assert_eq!(
+                acquire_installer_transaction_lock_with(&lock, |_| probe)
+                    .unwrap_err()
+                    .kind(),
+                "host_service_installer_transaction_busy"
+            );
+            assert!(lock.exists());
+        }
+    }
+
+    #[test]
+    fn installer_pid_write_failure_does_not_publish_acquisition() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("transaction-lock");
+        let error = acquire_installer_transaction_lock_with_writer(
+            &lock,
+            |_| InstallerOwnerProbe::Dead,
+            |_, _| Err(io_error(std::io::Error::other("injected PID sync failure"))),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("injected PID sync failure"));
+        assert!(!lock.exists());
     }
 
     #[test]
