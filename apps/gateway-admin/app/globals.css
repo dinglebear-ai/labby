@@ -504,6 +504,15 @@
 }
 
 @layer utilities {
+  /* Phoenix owns its viewport position in both floating and docked modes. Radix
+     normally translates this wrapper to the launcher, which would make the
+     panel's fixed offsets relative to that transformed wrapper. */
+  [data-radix-popper-content-wrapper]:has([data-phoenix-panel]) {
+    inset: 0 auto auto 0 !important;
+    min-width: 0 !important;
+    transform: none !important;
+  }
+
   /* Gateway table row tones. */
   .gateway-row-tone-a {
     background: color-mix(
