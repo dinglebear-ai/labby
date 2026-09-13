@@ -1218,6 +1218,7 @@ fn skills_config(
     expose: Option<Vec<&str>>,
 ) -> labby_runtime::gateway_config::UpstreamConfig {
     labby_runtime::gateway_config::UpstreamConfig {
+        display_name: None,
         proxy_skills: true,
         expose_skills: expose.map(|p| p.into_iter().map(str::to_string).collect()),
         ..named_test_upstream_config(name)
@@ -1249,6 +1250,7 @@ async fn skills_are_not_fetched_at_all_unless_the_upstream_opts_in() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let config = labby_runtime::gateway_config::UpstreamConfig {
+        display_name: None,
         proxy_skills: false,
         ..named_test_upstream_config("up")
     };

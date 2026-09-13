@@ -811,6 +811,7 @@ async fn http_upstream_does_not_downgrade_generic_server_failures() {
 
 fn oauth_http_config() -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         enabled: true,
         name: "oauth-upstream".into(),
         url: Some("http://127.0.0.1:8080/mcp".into()),

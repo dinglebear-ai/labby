@@ -1049,6 +1049,7 @@ mod tests {
 
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: name.to_string(),
             url: Some("http://127.0.0.1:1/mcp".to_string()),

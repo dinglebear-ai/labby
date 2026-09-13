@@ -1345,6 +1345,7 @@ fn test_manager() -> GatewayManager {
 
 fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         enabled,
         name: name.to_string(),
         url: Some("http://127.0.0.1:1/mcp".to_string()),
@@ -1661,6 +1662,7 @@ async fn gateway_list_returns_array() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -1706,6 +1708,7 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "fixture-http".to_string(),
                 url: Some("http://127.0.0.1:9001/mcp".to_string()),
@@ -1729,6 +1732,7 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "fixture-stdio".to_string(),
                 url: None,
@@ -2458,6 +2462,7 @@ async fn gateway_server_get_returns_custom_gateway_row() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -2505,6 +2510,7 @@ async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "dashboard-http".to_string(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2607,6 +2613,7 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "dashboard-http".to_string(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2831,6 +2838,7 @@ async fn fleet_catalog_refresh_continues_after_response_timeout() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "slow-http".into(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2892,6 +2900,7 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "noxa".to_string(),
             url: None,
@@ -3438,6 +3447,7 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "fixture-http".to_string(),
                 url: Some("http://127.0.0.1:9001".to_string()),
@@ -3461,6 +3471,7 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "configured-stdio".to_string(),
                 url: None,
@@ -3736,6 +3747,7 @@ async fn only_reload_promises_to_pick_up_changed_bearer_token_env_vars() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -3799,6 +3811,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let runtime_arg = "cleanup-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -3882,6 +3895,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let runtime_arg = "disable-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -3988,6 +4002,7 @@ async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
     let runtime_arg = "restart-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -4091,6 +4106,7 @@ fn make_discovered_http(name: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            display_name: None,
             name: name.to_string(),
             enabled: false,
             url: Some("http://127.0.0.1:9000".to_string()),
@@ -4123,6 +4139,7 @@ fn make_discovered_stdio(name: &str, command: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            display_name: None,
             name: name.to_string(),
             enabled: false,
             url: None,
@@ -4341,6 +4358,7 @@ async fn gateway_dispatch_schema_missing_param_without_manager() {
 }
 fn upstream_fixture(name: &str, url: Option<String>, command: Option<String>) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         name: name.to_string(),
         enabled: false,
         url,

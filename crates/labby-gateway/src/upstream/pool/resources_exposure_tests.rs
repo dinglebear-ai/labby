@@ -30,6 +30,7 @@ fn gateway_uri(upstream: &str, bare_uri: &str) -> String {
 
 fn oauth_upstream_config(name: &str, expose_resources: Option<Vec<&str>>) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         proxy_resources: true,
         expose_resources: expose_resources
             .map(|patterns| patterns.into_iter().map(str::to_string).collect()),

@@ -570,6 +570,7 @@ fn stdio_upstream(
     env: BTreeMap<String, String>,
 ) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         name: name.to_string(),
         enabled: true,
         priority: 1.0,
@@ -596,6 +597,7 @@ fn stdio_upstream(
 
 fn http_upstream(name: &str, url: String, bearer_token_env: &str) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         name: name.to_string(),
         enabled: true,
         priority: 1.0,

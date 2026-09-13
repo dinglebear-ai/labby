@@ -790,6 +790,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = LabConfig {
             upstream: vec![UpstreamConfig {
+                display_name: None,
                 name: "axon".to_string(),
                 enabled: true,
                 priority: 1.0,

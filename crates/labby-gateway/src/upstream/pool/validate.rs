@@ -122,6 +122,7 @@ mod tests {
     #[test]
     fn validate_rejects_empty_name() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: String::new(),
             url: Some("http://localhost:8080".into()),
@@ -150,6 +151,7 @@ mod tests {
     #[test]
     fn validate_rejects_non_http_scheme() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: Some("ftp://example.com".into()),
@@ -179,6 +181,7 @@ mod tests {
     fn validate_rejects_bind_all_addresses() {
         for url in &["http://0.0.0.0:8080", "http://[::]/mcp", "http://[::]:8080"] {
             let config = UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -211,6 +214,7 @@ mod tests {
     #[test]
     fn validate_accepts_valid_http_url() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080/mcp".into()),
@@ -240,6 +244,7 @@ mod tests {
     fn validate_accepts_valid_websocket_urls() {
         for url in ["ws://localhost:8080/mcp", "wss://example.com/socket"] {
             let config = UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some(url.into()),
@@ -272,6 +277,7 @@ mod tests {
     #[test]
     fn validate_accepts_stdio_command() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: None,
@@ -300,6 +306,7 @@ mod tests {
     #[test]
     fn validate_rejects_both_url_and_command() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080".into()),
@@ -328,6 +335,7 @@ mod tests {
     #[test]
     fn validate_rejects_no_url_or_command() {
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: None,
@@ -368,6 +376,7 @@ mod tests {
         // Bind-all must always be rejected.
         for url in &["http://0.0.0.0:8080/mcp", "http://[::]/mcp"] {
             let config = UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -407,6 +416,7 @@ mod tests {
             "http://172.16.0.5/mcp",
         ] {
             let config = UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
@@ -455,6 +465,7 @@ mod tests {
         // homelab trust model — the test exists to document the residual, not
         // to assert a failure.
         let config = UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "rebind-risk-documented".into(),
             url: Some("http://mcp.example.com/mcp".into()),

@@ -406,6 +406,7 @@ async fn fixture_oauth_resources(dir: &tempfile::TempDir) -> (SqliteStore, Encry
 
 fn fixture_stdio_upstream(name: &str) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         enabled: true,
         name: name.to_string(),
         url: None,
@@ -432,6 +433,7 @@ fn fixture_stdio_upstream(name: &str) -> UpstreamConfig {
 
 fn fixture_http_upstream(name: &str) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
         enabled: true,
         name: name.to_string(),
         url: Some("http://127.0.0.1:9/mcp".to_string()),

@@ -864,6 +864,7 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("address");
         let upstream = crate::config::UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "cold-oauth-contract".to_string(),
             url: Some(format!("http://{address}/mcp")),

@@ -634,6 +634,7 @@ pub(super) async fn server_view_from_upstream(
     ServerView {
         id: upstream.name.clone(),
         name: upstream.name.clone(),
+        display_name: upstream.display_name.clone(),
         source: "custom_gateway".to_string(),
         configured: true,
         enabled,
@@ -737,6 +738,7 @@ pub(super) fn server_view_from_virtual_server(
     ServerView {
         id: record.id.clone(),
         name: service.clone(),
+        display_name: None,
         source: "in_process".to_string(),
         configured: true,
         enabled: record.enabled,
@@ -906,6 +908,7 @@ mod tests {
 
     fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "fixture".to_string(),
             url: url.map(str::to_string),

@@ -787,6 +787,7 @@ mod tests {
     async fn subject_scoped_oauth_ensure_never_publishes_tools_globally() {
         let pool = UpstreamPool::new();
         let config = UpstreamConfig {
+            display_name: None,
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration: UpstreamOauthRegistration::Dynamic,
@@ -816,6 +817,7 @@ mod tests {
     async fn ensure_tools_for_upstream_records_lazy_connect_failures() {
         let pool = UpstreamPool::new();
         let config = UpstreamConfig {
+            display_name: None,
             url: Some("http://127.0.0.1:9/mcp".to_string()),
             command: None,
             ..named_test_upstream_config("broken")

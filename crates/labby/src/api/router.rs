@@ -4090,6 +4090,7 @@ mod tests {
         );
         let config = crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                display_name: None,
                 name: "axon".to_string(),
                 enabled: true,
                 url: Some(format!("{}/mcp", backend.uri())),
@@ -5365,6 +5366,7 @@ mod tests {
     fn protected_named_upstream_config(backend_url: &str) -> crate::config::LabConfig {
         crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                display_name: None,
                 name: "restricted".to_string(),
                 enabled: true,
                 url: Some(format!("{}/mcp", backend_url.trim_end_matches('/'))),

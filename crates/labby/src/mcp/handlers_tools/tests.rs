@@ -522,6 +522,7 @@ async fn code_mode_manager_with_pool_and_upstreams(
 
 fn fixture_upstream_config(name: &str) -> crate::config::UpstreamConfig {
     crate::config::UpstreamConfig {
+        display_name: None,
         enabled: true,
         name: name.to_string(),
         url: Some("http://127.0.0.1:9/mcp".to_string()),

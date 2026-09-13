@@ -616,6 +616,7 @@ mod tests {
 
     fn test_upstream_config() -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
             enabled: true,
             name: "test".into(),
             url: None,

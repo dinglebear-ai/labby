@@ -1824,6 +1824,7 @@ mod url_tests {
             sqlite,
             key,
             UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "transport-parity".to_string(),
                 url: Some(format!("{}/mcp", server.uri())),

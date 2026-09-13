@@ -1421,6 +1421,7 @@ mod tests {
         let manager = test_manager();
         manager
             .replace_config_for_tests(vec![UpstreamConfig {
+                display_name: None,
                 enabled: true,
                 name: "fixture-http".to_string(),
                 url: Some("https://fixture.example.com/mcp".to_string()),
