@@ -331,7 +331,7 @@ capture_owned_state() {
         *) fail "cannot transactionally capture labby.service ActiveState=$labby_active" ;;
     esac
     if incus exec "$NAME" -- test -e /home/labby/.labby; then
-        incus exec "$NAME" -- sh -c "rm -rf $(quote "$state_backup"); cp -a /home/labby/.labby $(quote "$state_backup")"
+        incus exec "$NAME" -- sh -c "mkdir -p -m 0700 /var/lib/labby && rm -rf $(quote "$state_backup") && cp -a /home/labby/.labby $(quote "$state_backup")"
         if [ "$labby_active" = active ]; then
             record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "systemctl stop labby.service; rm -rf /home/labby/.labby; cp -a $state_backup /home/labby/.labby; rm -rf $state_backup; systemctl start labby.service")"
         else
@@ -767,7 +767,7 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
     fi
     if [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -e /home/labby/.labby/web-assets; then
         WEB_ASSETS_BACKUP="/var/lib/labby/.bootstrap-web-$$"
-        incus exec "$NAME" -- sh -c "rm -rf /var/lib/labby/.bootstrap-web-$$; cp -a /home/labby/.labby/web-assets /var/lib/labby/.bootstrap-web-$$"
+        incus exec "$NAME" -- sh -c "mkdir -p -m 0700 /var/lib/labby && rm -rf /var/lib/labby/.bootstrap-web-$$ && cp -a /home/labby/.labby/web-assets /var/lib/labby/.bootstrap-web-$$"
         record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "rm -rf /home/labby/.labby/web-assets; cp -a /var/lib/labby/.bootstrap-web-$$ /home/labby/.labby/web-assets; rm -rf /var/lib/labby/.bootstrap-web-$$")"
     else
         record_rollback "incus exec $(quote "$NAME") -- rm -rf /home/labby/.labby/web-assets"

@@ -21,6 +21,38 @@ class IncusContract(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
+    def test_bootstrap_copies_backups_when_private_parent_is_initially_absent(self):
+        bootstrap = self.text("scripts/incus-bootstrap.sh")
+        commands = [line.strip() for line in bootstrap.splitlines()
+                    if line.strip().startswith('incus exec "$NAME" -- sh -c ')
+                    and "cp -a /home/labby/.labby" in line]
+        self.assertEqual(len(commands), 2, "exercise both owned-state and web-assets captures")
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                source = root / "source"
+                (source / "web-assets").mkdir(parents=True)
+                (source / ".env").write_text("private fixture\n")
+                (source / ".env").chmod(0o600)
+                (source / "web-assets/index.html").write_text("previous web assets\n")
+                parent = root / "backup-parent"
+                mapped = command.replace("/home/labby/.labby", str(source)).replace("/var/lib/labby", str(parent))
+                harness = ("set -eu\nNAME=fixture\n"
+                           + f"state_backup='{parent}/.bootstrap-state-fixture'\n"
+                           + "quote() { printf \"'%s'\" \"$1\"; }\n"
+                           + 'incus() { shift 3; "$@"; }\n' + mapped)
+                result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+                backups = list(parent.iterdir())
+                self.assertEqual(len(backups), 1)
+                if "bootstrap-web" in command:
+                    self.assertEqual((backups[0] / "index.html").read_text(), "previous web assets\n")
+                else:
+                    self.assertEqual((backups[0] / ".env").read_text(), "private fixture\n")
+                    self.assertEqual(stat.S_IMODE((backups[0] / ".env").stat().st_mode), 0o600)
+                self.assertTrue((source / "web-assets/index.html").is_file())
+
     def test_incus_sources_are_https(self):
         text = self.text("config/incus/labby-image.yaml")
         self.assertNotIn("url: http://", text)
