@@ -89,9 +89,9 @@ fn pair_read_holds_the_config_lock_while_waiting_for_the_environment_lock() {
     let environment = HostConfigLock::acquire(&environment_path).unwrap();
 
     let reader = std::thread::spawn(move || store.read_pair());
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        match HostConfigLock::acquire_with_timeout(&config_path, Duration::from_millis(5)) {
+        match HostConfigLock::acquire_with_timeout(&config_path, Duration::from_millis(10)) {
             Err(_) => break,
             Ok(lock) => drop(lock),
         }
@@ -99,7 +99,9 @@ fn pair_read_holds_the_config_lock_while_waiting_for_the_environment_lock() {
             std::time::Instant::now() < deadline,
             "pair reader never acquired its first lock"
         );
-        std::thread::yield_now();
+        // Leave a scheduling window for the reader instead of immediately
+        // reacquiring the lock and starving it on Windows under CI load.
+        std::thread::sleep(Duration::from_millis(10));
     }
     drop(environment);
     assert_eq!(
