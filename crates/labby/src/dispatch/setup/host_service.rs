@@ -44,12 +44,29 @@ struct InstallerTransactionLock {
 
 impl Drop for InstallerTransactionLock {
     fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.path));
+        drop(release_installer_transaction_lock_at(
+            &self.path,
+            sync_parent_directory,
+        ));
     }
 }
 
 fn acquire_installer_transaction_lock_at(
     path: &Path,
+) -> Result<InstallerTransactionLock, ToolError> {
+    acquire_installer_transaction_lock_with(path, installer_owner_is_alive)
+}
+
+fn installer_owner_is_alive(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn acquire_installer_transaction_lock_with(
+    path: &Path,
+    owner_is_alive: impl Fn(i32) -> bool,
 ) -> Result<InstallerTransactionLock, ToolError> {
     let parent = path.parent().ok_or_else(|| ToolError::Sdk {
         sdk_kind: "host_service_transaction_lock_unsafe".into(),
@@ -59,13 +76,35 @@ fn acquire_installer_transaction_lock_at(
         ),
     })?;
     std::fs::create_dir_all(parent).map_err(io_error)?;
-    std::fs::create_dir(path).map_err(|error| ToolError::Sdk {
-        sdk_kind: "host_service_installer_transaction_busy".into(),
-        message: format!(
-            "another Labby installation owns `{}`: {error}",
-            path.display()
-        ),
-    })?;
+    if let Err(error) = std::fs::create_dir(path) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(io_error(error));
+        }
+        let owner = std::fs::read_to_string(path.join("pid"))
+            .ok()
+            .and_then(|value| value.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 0);
+        let Some(owner) = owner else {
+            return Err(installer_lock_busy(
+                path,
+                "another installation is starting",
+            ));
+        };
+        if owner_is_alive(owner) {
+            return Err(installer_lock_busy(
+                path,
+                &format!("live owner pid {owner}"),
+            ));
+        }
+        let stale = PathBuf::from(format!("{}.stale.{}", path.display(), std::process::id()));
+        std::fs::rename(path, &stale)
+            .map_err(|_| installer_lock_busy(path, "stale-lock takeover lost a race"))?;
+        sync_parent_directory(parent).map_err(io_error)?;
+        remove_directory_if_present(&stale)?;
+        std::fs::create_dir(path).map_err(|_| {
+            installer_lock_busy(path, "another installation won stale-lock recovery")
+        })?;
+    }
     if let Err(error) = std::fs::write(path.join("pid"), format!("{}\n", std::process::id())) {
         drop(std::fs::remove_dir(path));
         return Err(io_error(error));
@@ -76,6 +115,27 @@ fn acquire_installer_transaction_lock_at(
     sync_parent_directory(path).map_err(io_error)?;
     sync_parent_directory(parent).map_err(io_error)?;
     Ok(guard)
+}
+
+fn installer_lock_busy(path: &Path, detail: &str) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "host_service_installer_transaction_busy".into(),
+        message: format!(
+            "another Labby installation owns `{}`: {detail}",
+            path.display()
+        ),
+    }
+}
+
+fn release_installer_transaction_lock_at(
+    path: &Path,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), ToolError> {
+    remove_directory_if_present(path)?;
+    if let Some(parent) = path.parent() {
+        sync_parent(parent).map_err(io_error)?;
+    }
+    Ok(())
 }
 
 fn acquire_binary_transaction_locks()
@@ -2889,7 +2949,11 @@ mod tests {
         let installer_lock = install_dir.join(".labby-install/transaction-lock");
         let host_lock = dir.path().join("host-service.lock");
         std::fs::create_dir_all(&installer_lock).unwrap();
-        std::fs::write(installer_lock.join("pid"), "4242\n").unwrap();
+        std::fs::write(
+            installer_lock.join("pid"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
 
         let error = acquire_binary_transaction_locks_at(&installer_lock, &host_lock).unwrap_err();
         assert_eq!(error.kind(), "host_service_installer_transaction_busy");
@@ -2904,6 +2968,64 @@ mod tests {
         assert!(host_lock.exists());
         drop(guards);
         assert!(!installer_lock.exists());
+    }
+
+    #[test]
+    fn installer_lock_stale_owner_protocol_matches_the_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join(".labby-install/transaction-lock");
+        std::fs::create_dir_all(&lock).unwrap();
+        assert_eq!(
+            acquire_installer_transaction_lock_with(&lock, |_| false)
+                .unwrap_err()
+                .kind(),
+            "host_service_installer_transaction_busy"
+        );
+        std::fs::write(lock.join("pid"), "12345\n").unwrap();
+        let guard = acquire_installer_transaction_lock_with(&lock, |_| false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(lock.join("pid")).unwrap(),
+            format!("{}\n", std::process::id())
+        );
+        drop(guard);
+
+        std::fs::create_dir_all(&lock).unwrap();
+        std::fs::write(lock.join("pid"), "12345\n").unwrap();
+        let stale = PathBuf::from(format!("{}.stale.{}", lock.display(), std::process::id()));
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("contender"), b"owned").unwrap();
+        assert_eq!(
+            acquire_installer_transaction_lock_with(&lock, |_| false)
+                .unwrap_err()
+                .kind(),
+            "host_service_installer_transaction_busy"
+        );
+        assert!(lock.exists());
+    }
+
+    #[test]
+    fn installer_guard_is_cleaned_if_host_lock_acquisition_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let installer = dir.path().join("installer/transaction-lock");
+        let host = dir.path().join("host-lock");
+        std::fs::create_dir(&host).unwrap();
+        assert!(acquire_binary_transaction_locks_at(&installer, &host).is_err());
+        assert!(!installer.exists());
+    }
+
+    #[test]
+    fn installer_lock_release_syncs_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("transaction-lock");
+        std::fs::create_dir(&lock).unwrap();
+        let mut synced = false;
+        release_installer_transaction_lock_at(&lock, |parent| {
+            assert_eq!(parent, dir.path());
+            synced = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(synced && !lock.exists());
     }
 
     #[cfg(unix)]
