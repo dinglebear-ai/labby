@@ -157,7 +157,7 @@ jobs when their changed-path category is enabled:
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Incus source contract | `docker` | validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
+| Incus source contract | `docker` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the

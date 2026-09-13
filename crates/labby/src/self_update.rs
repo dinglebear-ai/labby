@@ -585,7 +585,27 @@ wait
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
             Err(nix::errno::Errno::ESRCH)
         );
-        let _next_owner = acquire_update_lock(dir.path()).unwrap();
+        // Reaping the shell does not wait for its descendants to finish
+        // exiting after SIGKILL. Their inherited descriptors must keep the
+        // lock held until kernel cleanup completes.
+        let _next_owner = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match acquire_update_lock(dir.path()) {
+                    Ok(lock) => break lock,
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<fs::TryLockError>(),
+                            Some(fs::TryLockError::WouldBlock)
+                        ) =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("cannot reacquire update lock: {error:#}"),
+                }
+            }
+        })
+        .await
+        .expect("cancelled installer descendants must release the update lock");
         assert_eq!(
             fs::read_to_string(dir.path().join(".labby-install/activation-journal/state")).unwrap(),
             "staged"

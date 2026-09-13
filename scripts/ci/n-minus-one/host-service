@@ -12,15 +12,23 @@ read_current_token() { sudo sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$LABBY_HOME/.e
 # `status` takes no -y (v1.13.3 rejects it); the mutating subcommands need it.
 service() { if [[ "$1" == status ]]; then sudo /usr/local/bin/labby setup host-service status; else sudo /usr/local/bin/labby setup host-service "$1" -y; fi; }
 version() { /usr/local/bin/labby --version | grep -Fq "${1#v}"; }
+# Service-manager start/restart completion does not imply HTTP readiness.
+wait_ready() {
+  curl -fsS --connect-timeout 2 --max-time 5 \
+    --retry 30 --retry-connrefused --retry-delay 1 --retry-max-time 30 \
+    http://127.0.0.1:8765/ready >/dev/null
+}
 authenticated_action() {
   local token
   token=$(retained_token) || return
+  wait_ready || return
   curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
     --data '{"action":"help","params":{}}' http://127.0.0.1:8765/v1/gateway >/dev/null
 }
 call() {
   local token
   token=$(retained_token) || return
+  wait_ready || return
   curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:8765/v1/$1"
 }
 customized_state() { sudo python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$LABBY_HOME"; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -Fq 'preserved-state'; }

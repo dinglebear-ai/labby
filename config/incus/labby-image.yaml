@@ -23,7 +23,8 @@ packages:
   # java deps that only the claude-in-mobile MCP server needs. It installs via
   # the LABBY_PROVISION_ACTION: android-sdk block when LABBY_ENABLE_ANDROID_SDK=1.
   repositories:
-    - name: ubuntu
+    # Replace debootstrap's base entry so snapshot expiry options cannot conflict.
+    - name: sources.list
       url: |-
         deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z {{ image.release }} main restricted universe multiverse
         deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z {{ image.release }}-updates main restricted universe multiverse
@@ -223,7 +224,7 @@ actions:
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/mise-install.sh"
-      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://mise.run
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://github.com/jdx/mise/releases/download/v2026.9.1/install.sh
       echo "3731dfec59ffb0bc23df96ae19b4b51470db939c875c2fdf01cf6c25b1b1e039  $installer" | sha256sum --check --strict
       env MISE_VERSION=2026.9.1 MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh "$installer"
       '
@@ -262,7 +263,7 @@ actions:
       installer="$tmp/crgx-install.sh"
       curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://crgx.dev/install.sh
       echo "232ca80d014043bfac12afd7a48e75d7cd98d35e6d0e7384062093535e3eb998  $installer" | sha256sum --check --strict
-      sed -i 's|VERSION=$(curl .*|VERSION=0.1.0|' "$installer"
+      sed -i '\''s|VERSION=$(curl .*|VERSION=0.1.0|'\'' "$installer"
       sh "$installer"
       '
 
@@ -296,7 +297,7 @@ actions:
         trap 'rm -rf "$tmp"' EXIT
         curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/install.sh" https://tailscale.com/install.sh
         echo "805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e  $tmp/install.sh" | sha256sum --check --strict
-        sh "$tmp/install.sh"
+        TAILSCALE_VERSION=1.102.3 sh "$tmp/install.sh"
         tailscale version | grep -F '1.102.3'
       fi
       rm -f /var/lib/tailscale/*.state /run/labby-ts-authkey
