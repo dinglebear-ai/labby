@@ -244,9 +244,19 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(git rev-parse HEAD)"
-          observed="$(gh pr view "${{ steps.pr.outputs.number }}" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          observed=""
+          for attempt in {1..12}; do
+            observed="$(gh pr view "${{ steps.pr.outputs.number }}" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+            if [[ "$observed" == "$expected" ]]; then
+              break
+            fi
+            echo "release PR head verification $attempt/12: expected $expected, observed $observed"
+            if [[ "$attempt" != 12 ]]; then
+              sleep 5
+            fi
+          done
           if [[ "$observed" != "$expected" ]]; then
-            echo "release PR head changed after metadata sync: expected $expected, observed $observed" >&2
+            echo "release PR head did not converge after metadata sync: expected $expected, observed $observed" >&2
             exit 1
           fi
           # A failed generator may have mutated the branch only partially. The
