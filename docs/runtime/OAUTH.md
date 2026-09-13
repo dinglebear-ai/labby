@@ -1153,6 +1153,33 @@ policy denial cannot fall through to a global connection. Other upstream churn
 remains discoverable inside `codemode.search(...)` / `codemode.describe(...)`
 without expanding the host Tool JSON.
 
+## Browser authorization and MCP caller scope
+
+The gateway browser OAuth controls manage the shared upstream grant. A successful
+browser callback confirms that flow completed; it does not prove that a particular
+MCP connector can use the grant. Admin callers (`lab:admin`) use the shared gateway
+identity. Authenticated non-admin callers use their own subject and cannot borrow
+that shared grant. Repeating the browser authorization does not populate their
+personal credential entry.
+
+When an upstream reports missing personal credentials, call the native Gateway
+service action `gateway.oauth.authorize` with `{ "upstream": "<name>" }` from
+a connector with `lab` scope. Creating a personal grant requires `scope.manage`;
+a `lab:read`-only connector cannot initiate authorization. Use a `lab`-scoped
+connector for the same account to establish the grant, then retry from the
+read-only connector. Open the returned `authorization_url` in a browser signed into the same
+Labby account, approve the upstream authorization, then retry the upstream call.
+The action obtains the credential subject from the verified transport context,
+rejects subject overrides and route-hidden upstreams, and cannot replace central
+Google-provider or shared operator credentials. The callback requires the matching
+browser account and consumes the expiring PKCE state once. No admin scope is added.
+
+Check the connector's account and granted scopes. For an operator connector intended to have admin
+access, explicitly request and approve `lab:admin` through the connector's login
+flow. Do not automatically elevate restricted connectors or copy shared credentials
+into a personal entry. Reconnect if the client retains an older session, then
+verify an actual upstream tool call; discovery alone is not sufficient proof.
+
 ## Auth Precedence
 
 When both static bearer and OAuth are configured, auth is checked in this order:

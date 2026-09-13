@@ -5233,6 +5233,36 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.oauth.authorize",
+    "description": "Authorize an upstream for the authenticated non-admin caller. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "gateway",
+    "params": [
+      {
+        "name": "upstream",
+        "ty": "string",
+        "required": true,
+        "description": "Configured upstream name"
+      }
+    ],
+    "returns": "BeginAuthorization",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "requires authenticated personal identity and scope.manage; rejects shared credentials and subject overrides",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.oauth.clear",
     "description": "Clear stored upstream OAuth credentials for the shared gateway credential",
     "destructive": false,

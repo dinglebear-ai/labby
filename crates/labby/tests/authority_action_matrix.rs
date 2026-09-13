@@ -4,7 +4,8 @@
 //! `service:action` for every catalog action of the capability-evaluated
 //! services (`access`, `agents`, `tasks`, `dev_containers`, `gateway`,
 //! `stash`, `projects`), giving an allow/deny decision for six principals
-//! relative to one Team-owned resource:
+//! relative to one Team-owned resource (personal authorization instead targets
+//! each caller's own personal resource):
 //!
 //! * `team_member`, `team_admin`, `team_owner` — hold that role in the owning
 //!   Team;
@@ -187,26 +188,36 @@ fn every_row_is_consistent_with_the_production_authority_vocabulary() {
             failures.push(format!("{key}: builtin probe must not demand a capability"));
         }
 
+        // Personal authorization never targets the selected Team. Each caller
+        // exercises the PersonalUser role over their own credential resource.
+        let personal = key == "gateway:gateway.oauth.authorize";
+        let effective_role = |role| {
+            if personal {
+                RoleTemplate::PersonalUser
+            } else {
+                role
+            }
+        };
         let checks = [
             (
                 "team_member",
                 row.team_member,
-                vocabulary_decision(RoleTemplate::TeamMember, capability),
+                vocabulary_decision(effective_role(RoleTemplate::TeamMember), capability),
             ),
             (
                 "team_admin",
                 row.team_admin,
-                vocabulary_decision(RoleTemplate::TeamAdmin, capability),
+                vocabulary_decision(effective_role(RoleTemplate::TeamAdmin), capability),
             ),
             (
                 "team_owner",
                 row.team_owner,
-                vocabulary_decision(RoleTemplate::TeamOwner, capability),
+                vocabulary_decision(effective_role(RoleTemplate::TeamOwner), capability),
             ),
             (
                 "platform_admin",
                 row.platform_admin,
-                vocabulary_decision(RoleTemplate::PlatformAdmin, capability),
+                vocabulary_decision(effective_role(RoleTemplate::PlatformAdmin), capability),
             ),
         ];
         for (principal, expected, derived) in checks {
@@ -220,8 +231,11 @@ fn every_row_is_consistent_with_the_production_authority_vocabulary() {
 
         // Principals with no role in the owning Team hold no capability over
         // it: any capability-gated action must be denied, and only
-        // capability-free probes/projections may be allowed.
-        let no_membership = if capability.is_some() {
+        // capability-free probes/projections may be allowed. Personal
+        // authorization instead evaluates the caller's own resource.
+        let no_membership = if personal {
+            vocabulary_decision(RoleTemplate::PersonalUser, capability)
+        } else if capability.is_some() {
             Decision::Deny
         } else {
             Decision::Allow
