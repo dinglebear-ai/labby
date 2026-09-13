@@ -370,7 +370,7 @@ fn read_attribution(
     start: usize,
 ) -> rusqlite::Result<Option<labby_runtime::usage_actor::UsageAttribution>> {
     let value = labby_runtime::usage_actor::UsageAttribution {
-        inbound_actor: row.get(start + 0)?,
+        inbound_actor: row.get(start)?,
         actor_kind: row.get(start + 1)?,
         surface: row.get(start + 2)?,
         client_name: row.get(start + 3)?,

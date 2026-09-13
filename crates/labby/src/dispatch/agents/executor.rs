@@ -22,7 +22,7 @@ const REVOCATION_POLL: Duration = Duration::from_secs(1);
 const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
 pub(crate) enum AgentExecutorBackend {
-    Process(ProcessAgentExecutor),
+    Process(Box<ProcessAgentExecutor>),
     #[cfg(feature = "proxy-testkit")]
     Deterministic,
 }
@@ -67,6 +67,7 @@ pub(crate) fn resolve_executor(
         .into_iter()
         .find(|harness| harness.matches_definition(definition))
         .map(ProcessAgentExecutor::new)
+        .map(Box::new)
         .map(AgentExecutorBackend::Process)
         .ok_or(AgentRuntimeError::ExecutorUnavailable)
 }

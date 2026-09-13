@@ -3,7 +3,7 @@
 //! Every effect method submits at most one external effect and returns its
 //! operation identifier without waiting. Product code must persist authorized
 //! intent before submission, then attach the returned identifier before calling
-//! [`ContainerImageRuntime::wait`]. A restart can therefore distinguish a
+//! [`ContainerImageRuntime::wait`](crate::dev_container_image_runtime::ContainerImageRuntime::wait). A restart can therefore distinguish a
 //! prepared effect with an uncertain submission from an observed engine
 //! operation and reconcile either state without repeating it blindly.
 

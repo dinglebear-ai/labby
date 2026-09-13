@@ -335,24 +335,24 @@ pub fn verified_identity_from_access_claims(
 mod tests {
     #[test]
     fn durable_delegation_preserves_custom_provider_and_transport_facts() {
-        let link = super::PrincipalLink::External {
+        let link = PrincipalLink::External {
             issuer: "https://identity.example/tenant".into(),
             subject: "subject".into(),
         };
-        let identity = super::VerifiedIdentity::for_durable_delegation(
-            super::Authenticator::OauthBearer,
+        let identity = VerifiedIdentity::for_durable_delegation(
+            Authenticator::OauthBearer,
             "custom-transport",
             link.clone(),
         )
         .unwrap();
         assert_eq!(identity.principal_link(), &link);
         assert_eq!(identity.transport_credential_issuer(), "custom-transport");
-        assert_eq!(identity.authenticator(), super::Authenticator::OauthBearer);
+        assert_eq!(identity.authenticator(), Authenticator::OauthBearer);
         assert!(
-            super::VerifiedIdentity::for_durable_delegation(
-                super::Authenticator::OauthBearer,
+            VerifiedIdentity::for_durable_delegation(
+                Authenticator::OauthBearer,
                 "transport",
-                super::PrincipalLink::External {
+                PrincipalLink::External {
                     issuer: "http://identity.example".into(),
                     subject: "subject".into()
                 }

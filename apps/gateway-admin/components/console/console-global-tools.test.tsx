@@ -54,6 +54,16 @@ test('Phoenix sends a real turn through the container-local service and renders 
   try {
     await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const panel = document.querySelector('[aria-label="Phoenix session"]'); assert.ok(panel)
+    assert.match(panel.textContent ?? '', /CodexApp ServerRead only/)
+    assert.match(panel.textContent ?? '', /Attached to the container-local session/)
+    assert.equal(panel.querySelectorAll('button').length >= 5, true)
+    const dockRight = panel.querySelector<HTMLButtonElement>('button[aria-label="Dock Phoenix right"]'); assert.ok(dockRight)
+    await act(async () => dockRight.click())
+    assert.equal(panel.getAttribute('data-dock'), 'right')
+    const floatPanel = panel.querySelector<HTMLButtonElement>('button[aria-label="Float Phoenix panel"]'); assert.ok(floatPanel)
+    await act(async () => floatPanel.click())
+    assert.equal(panel.getAttribute('data-dock'), 'float')
     const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')
     assert.ok(input)
     await act(async () => {
@@ -64,7 +74,11 @@ test('Phoenix sends a real turn through the container-local service and renders 
     await act(async () => input.form!.requestSubmit())
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
     assert.deepEqual(actions, ['phoenix.status', 'phoenix.session.start', 'phoenix.turn.send'])
-    assert.match(document.querySelector('[aria-label="Phoenix session"]')?.textContent ?? '', /The gateway is healthy/)
+    assert.match(panel.textContent ?? '', /The gateway is healthy/)
+    assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 2)
+    assert.ok(panel.querySelector('button[aria-label="Edit message"]'))
+    assert.ok(panel.querySelector('button[aria-label="Regenerate"]'))
+    assert.ok(panel.querySelector('button[aria-label="Copy answer"]'))
     assert.equal(document.querySelector('[aria-label="Close Phoenix panel"]')?.classList.contains('size-11'), true)
   } finally {
     globalThis.fetch = originalFetch

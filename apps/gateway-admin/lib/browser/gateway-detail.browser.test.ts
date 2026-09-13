@@ -1101,17 +1101,19 @@ test('Overview drag handles reorder both directions across columns and persist a
   const order = (lane: string) => page.locator(`[data-overview-lane="${lane}"] > [data-overview-card]`).evaluateAll(elements => elements.map(element => element.getAttribute('data-overview-card')))
   const defaultTelemetry = ['Call volume', 'Top targets', 'Call outcomes', 'Least used', 'Code Mode fan-out', 'Latency', 'Failures by kind', 'By surface', 'Tokens by tool', 'Throughput', 'Activity by hour']
   const assertCompact = async () => {
-    const interiorGaps = await page.locator('[data-overview-lane="telemetry"]').evaluate(lane => {
-      const laneBounds = lane.getBoundingClientRect()
-      const columnCenters = [laneBounds.left + laneBounds.width * 0.25, laneBounds.left + laneBounds.width * 0.75]
-      const cards = [...lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')].map(card => card.getBoundingClientRect())
-      return columnCenters.flatMap(center => {
+    const geometry = await page.locator('[data-overview-columns]').evaluate(columns => {
+      const bounds = columns.getBoundingClientRect()
+      const columnCenters = [1 / 6, 1 / 2, 5 / 6].map(ratio => bounds.left + bounds.width * ratio)
+      const cards = [...columns.querySelectorAll<HTMLElement>('[data-overview-card]')].map(card => card.getBoundingClientRect())
+      const stacks = columnCenters.map(center => {
         const stack = cards.filter(card => card.left <= center && card.right >= center).sort((a, b) => a.top - b.top)
-        return stack.slice(1).map((card, index) => Math.round(card.top - stack[index].bottom))
+        return { count: stack.length, gaps: stack.slice(1).map((card, index) => Math.round(card.top - stack[index].bottom)) }
       })
+      return { counts: stacks.map(stack => stack.count), gaps: stacks.flatMap(stack => stack.gaps) }
     })
-    assert.ok(interiorGaps.length > 0)
-    assert.ok(interiorGaps.every(gap => gap >= 0 && gap <= 14), `Overview retained interior gaps or overlaps: ${interiorGaps.join(', ')}`)
+    assert.ok(geometry.counts.every(count => count >= 2), `Overview left a desktop column underfilled: ${geometry.counts.join(', ')}`)
+    assert.ok(geometry.gaps.length > 0)
+    assert.ok(geometry.gaps.every(gap => gap >= 0 && gap <= 14), `Overview retained interior gaps or overlaps: ${geometry.gaps.join(', ')}`)
   }
   const drag = async (source: string, target: string, edge: 'before' | 'after') => {
     const handle = page.getByRole('button', { name: `Drag ${source}`, exact: true })
@@ -1126,6 +1128,10 @@ test('Overview drag handles reorder both directions across columns and persist a
     await page.mouse.up()
   }
   assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await assertCompact()
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await assertCompact()
+  await page.setViewportSize({ width: 1512, height: 1800 })
   await assertCompact()
   const gapSource = page.getByRole('button', { name: 'Drag Call outcomes', exact: true })
   const gapFrom = await gapSource.boundingBox()

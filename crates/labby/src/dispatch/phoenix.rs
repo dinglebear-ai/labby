@@ -12,7 +12,7 @@ use tokio::{
 
 use crate::{config::PhoenixPreferences, dispatch::error::ToolError};
 
-const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+const TURN_TIMEOUT: Duration = Duration::from_mins(5);
 const MAX_INPUT_BYTES: usize = 32 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
@@ -306,7 +306,6 @@ async fn run_codex_turn(
             "cwd": workspace_root,
             "approvalPolicy": "never",
             "sandbox": "read-only",
-            "excludeTurns": true,
         })
     } else {
         let mut params = json!({
@@ -622,6 +621,15 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-contain
             .await
             .unwrap();
         assert_eq!(completed["messages"][1]["text"], "hello from container");
+        let resumed = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.turn.send",
+                json!({"session_id":session_id,"input":"again"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed["messages"][3]["text"], "hello from container");
         assert_eq!(
             runtime
                 .dispatch(
@@ -640,5 +648,7 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-contain
         assert!(requests.contains("\"sandbox\":\"read-only\""));
         assert!(requests.contains(&format!("\"cwd\":\"{}\"", root.path().display())));
         assert!(requests.contains("\"method\":\"turn/start\""));
+        assert!(requests.contains("\"method\":\"thread/resume\""));
+        assert!(!requests.contains("excludeTurns"));
     }
 }

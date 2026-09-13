@@ -1443,9 +1443,9 @@ mod tests {
         tokio::sync::OwnedMutexGuard<()>,
     ) {
         let config_guard = crate::config::dev_container_config_test_guard().await;
-        let mut config = crate::config::LabConfig::default();
-        config.dev_containers = toml::from_str(
-            r#"
+        let config = crate::config::LabConfig {
+            dev_containers: toml::from_str(
+                r#"
 catalog_generation = "image-tests-v1"
 
 [[builder_profiles]]
@@ -1458,8 +1458,10 @@ content_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 name = "labby-runtime-isolated"
 content_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 "#,
-        )
-        .unwrap();
+            )
+            .unwrap(),
+            ..Default::default()
+        };
         crate::config::install_resolved_preferences(&config);
         let directory = crate::access::test_support::secure_tempdir();
         let path = directory.path().join("access.db");

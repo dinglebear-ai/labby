@@ -1684,7 +1684,7 @@ CREATE TABLE agent_task_schedule_attempts (
 CREATE INDEX agent_task_schedule_attempts_due ON agent_task_schedule_attempts(state,next_attempt_at,claim_expires_at);
 "#;
 
-pub(super) const CONTAINER_IMAGE_SCHEMA: &str = r#"
+pub(super) const CONTAINER_IMAGE_SCHEMA: &str = r"
 CREATE TABLE dev_container_template_drafts (
     template_id TEXT PRIMARY KEY CHECK(length(trim(template_id)) BETWEEN 1 AND 256),
     owner_kind TEXT NOT NULL CHECK(owner_kind IN ('installation','team','project','personal')),
@@ -1800,7 +1800,7 @@ ALTER TABLE dev_container_instances ADD COLUMN launch_manifest_digest TEXT
     REFERENCES dev_container_launch_manifests(manifest_digest) ON DELETE RESTRICT;
 CREATE INDEX dev_container_instances_launch_manifest_idx
     ON dev_container_instances(launch_manifest_digest);
-"#;
+";
 
 fn install_v8_expansion(connection: &Connection) -> AccessStoreResult<()> {
     connection

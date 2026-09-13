@@ -36,7 +36,7 @@ pub(crate) struct AgentSessionRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AgentSessionAdmission {
     Created,
-    Replay(AgentSessionRecord),
+    Replay(Box<AgentSessionRecord>),
     Conflict { existing_session_id: String },
 }
 
@@ -557,7 +557,7 @@ fn find_session_request(
             decode_session,
         )
         .map_err(super::store::map_sqlite_error)?;
-    Ok(Some(AgentSessionAdmission::Replay(session)))
+    Ok(Some(AgentSessionAdmission::Replay(Box::new(session))))
 }
 
 pub(super) fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> {
@@ -899,8 +899,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             replay,
-            Some(AgentSessionAdmission::Replay(AgentSessionRecord { session_id, .. }))
-                if session_id == "session-original"
+            Some(AgentSessionAdmission::Replay(session))
+                if session.session_id == "session-original"
         ));
         assert!(matches!(
             store
@@ -918,8 +918,8 @@ mod tests {
                     3,
                 )
                 .unwrap(),
-            AgentSessionAdmission::Replay(AgentSessionRecord { session_id, .. })
-                if session_id == "session-original"
+            AgentSessionAdmission::Replay(session)
+                if session.session_id == "session-original"
         ));
         let changed_input = "changed input";
         assert_eq!(

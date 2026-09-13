@@ -113,15 +113,20 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   }, [layout])
 
   useLayoutEffect(() => {
-    const lane = root.current?.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')
-    if (!lane) return
+    const columns = root.current?.querySelector<HTMLElement>('[data-overview-columns]')
+    const telemetry = root.current?.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')
+    if (!columns || !telemetry) return
     let frame: number | null = null
     const pack = () => {
       frame = null
-      const styles = getComputedStyle(lane)
+      const unified = getComputedStyle(telemetry).display === 'contents'
+      const packingGrid = unified ? columns : telemetry
+      const styles = getComputedStyle(packingGrid)
       const rowHeight = Number.parseFloat(styles.gridAutoRows) || MASONRY_ROW_HEIGHT
       const gap = Number.parseFloat(styles.rowGap) || 12
-      for (const card of lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')) {
+      for (const card of columns.querySelectorAll<HTMLElement>('[data-overview-card]')) card.style.gridRowEnd = 'auto'
+      const selector = unified ? '[data-overview-card]' : '[data-overview-lane="telemetry"] > [data-overview-card]'
+      for (const card of columns.querySelectorAll<HTMLElement>(selector)) {
         card.style.gridRowEnd = 'auto'
         card.style.gridRowEnd = `span ${overviewMasonrySpan(card.getBoundingClientRect().height, rowHeight, gap)}`
       }
@@ -131,8 +136,9 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
       frame = requestAnimationFrame(pack)
     }
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
-    observer?.observe(lane)
-    for (const card of lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')) observer?.observe(card)
+    observer?.observe(columns)
+    observer?.observe(telemetry)
+    for (const card of columns.querySelectorAll<HTMLElement>('[data-overview-card]')) observer?.observe(card)
     schedule()
     return () => {
       observer?.disconnect()
@@ -238,18 +244,17 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   return <section ref={root} aria-label="Customizable overview cards" onKeyDown={event => { if (event.key === 'Escape' && pending.current) { clearDrag(); setAnnouncement('Card move cancelled.') } }}>
     <p className={storageWarning ? 'mb-2 text-[10px] text-aurora-text-muted' : 'sr-only'}>{storageWarning ? 'Layout changes work for this session, but this device could not read or save them.' : 'Use a card’s drag handle to arrange your overview. Arrow buttons move within a column; the column button moves between columns. Layout is saved on this device.'}</p>
     <span role="status" aria-live="polite" className="sr-only">{announcement}</span>
-    <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
+    <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-3 min-[1100px]:gap-y-1.5 min-[1100px]:[grid-auto-flow:row_dense] min-[1100px]:[grid-auto-rows:1px]">
       {(['telemetry', 'insights'] as const).map(lane => {
         const laneIds = layout.order.filter(id => laneOf(id) === lane)
         return <div
           key={lane}
           data-overview-lane={lane}
           className={cn(
-            'grid min-h-16 min-w-0 content-start items-start self-stretch rounded-aurora-2',
-            lane === 'telemetry' ? 'gap-x-3 gap-y-1.5 min-[700px]:grid-cols-2' : 'gap-3',
+            'grid min-h-16 min-w-0 content-start items-start self-stretch rounded-aurora-2 min-[1100px]:contents',
+            lane === 'telemetry' ? 'gap-x-3 gap-y-1.5 min-[700px]:grid-cols-2 [grid-auto-flow:row_dense] [grid-auto-rows:1px]' : 'gap-3',
             drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary',
           )}
-          style={lane === 'telemetry' ? { gridAutoFlow: 'row dense', gridAutoRows: `${MASONRY_ROW_HEIGHT}px` } : undefined}
         >
           {laneIds.map((id, index) => {
             const card = cards.find(item => item.id === id)

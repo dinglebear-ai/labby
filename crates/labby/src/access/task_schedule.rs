@@ -320,7 +320,7 @@ mod tests {
             .unwrap()
             .unwrap();
         store
-            .task_schedule_enqueue(row, "due:1:100".into(), 100, Some(900000), 100)
+            .task_schedule_enqueue(row, "due:1:100".into(), 100, Some(900_000), 100)
             .await
             .unwrap();
         let first = store.task_schedule_claim(100).await.unwrap().unwrap();
@@ -340,35 +340,43 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .next_retry_at,
-            Some(300200)
+            Some(300_200)
         );
-        assert!(store.task_schedule_claim(300199).await.unwrap().is_none());
+        assert!(store.task_schedule_claim(300_199).await.unwrap().is_none());
         drop(store);
         // This store-only fixture deliberately has no installation bootstrap.
         // Reopen through the same constructor to prove persisted retry state.
         let reopened = AccessStore::open(directory.path().join("access.db"))
             .await
             .unwrap();
-        let retry = reopened.task_schedule_claim(300200).await.unwrap().unwrap();
+        let retry = reopened
+            .task_schedule_claim(300_200)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(retry.attempt_number, 1);
         assert_ne!(retry.task_id, first.task_id);
         assert_eq!(retry.original_task_id, first.task_id);
         settle_fixture(&reopened, &retry, "failed", Some("execution_failed")).await;
         reopened
-            .task_schedule_observe_settlements(300300)
+            .task_schedule_observe_settlements(300_300)
             .await
             .unwrap();
-        let final_retry = reopened.task_schedule_claim(600300).await.unwrap().unwrap();
+        let final_retry = reopened
+            .task_schedule_claim(600_300)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(final_retry.attempt_number, 2);
         assert_ne!(final_retry.task_id, retry.task_id);
         settle_fixture(&reopened, &final_retry, "failed", Some("execution_failed")).await;
         reopened
-            .task_schedule_observe_settlements(600400)
+            .task_schedule_observe_settlements(600_400)
             .await
             .unwrap();
         assert!(
             reopened
-                .task_schedule_claim(999999)
+                .task_schedule_claim(999_999)
                 .await
                 .unwrap()
                 .is_none()
@@ -412,7 +420,7 @@ mod tests {
             settle_fixture(&store, &first, state, error).await;
             store.task_schedule_observe_settlements(200).await.unwrap();
             assert!(
-                store.task_schedule_claim(900000).await.unwrap().is_none(),
+                store.task_schedule_claim(900_000).await.unwrap().is_none(),
                 "{state} {error:?}"
             );
         }
@@ -436,7 +444,7 @@ mod tests {
         let original = store.task_schedule_claim(100).await.unwrap().unwrap();
         settle_fixture(&store, &original, "failed", Some("execution_failed")).await;
         store.task_schedule_observe_settlements(200).await.unwrap();
-        let retry = store.task_schedule_claim(300200).await.unwrap().unwrap();
+        let retry = store.task_schedule_claim(300_200).await.unwrap().unwrap();
         assert_eq!(retry.attempt_number, 1);
         // Pause/edit change the same schedule revision checked atomically at admission.
         store
@@ -453,11 +461,11 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .task_schedule_validate_claim(retry, 300201)
+                .task_schedule_validate_claim(retry, 300_201)
                 .await
                 .is_err()
         );
-        assert!(store.task_schedule_claim(400000).await.unwrap().is_none());
+        assert!(store.task_schedule_claim(400_000).await.unwrap().is_none());
     }
 
     #[test]
@@ -466,7 +474,7 @@ mod tests {
         assert!(
             RetryPolicy {
                 max_retries: 2,
-                backoff_ms: 300000
+                backoff_ms: 300_000
             }
             .validate()
             .is_ok()
@@ -474,7 +482,7 @@ mod tests {
         assert!(
             RetryPolicy {
                 max_retries: 11,
-                backoff_ms: 300000
+                backoff_ms: 300_000
             }
             .validate()
             .is_err()

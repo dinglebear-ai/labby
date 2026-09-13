@@ -45,16 +45,19 @@ test('width control changes only the selected main card and survives a remount',
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 
-test('telemetry lane uses dense measured packing while the insights rail stays a normal stack', async () => {
+test('desktop classes unify both logical lanes into one dense three-column packing grid', async () => {
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
     const telemetry = document.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')!
     const insights = document.querySelector<HTMLElement>('[data-overview-lane="insights"]')!
-    assert.equal(telemetry.style.gridAutoFlow, 'row dense')
-    assert.equal(telemetry.style.gridAutoRows, '1px')
-    assert.equal(insights.style.gridAutoFlow, '')
-    assert.equal(insights.style.gridAutoRows, '')
+    const columns = document.querySelector<HTMLElement>('[data-overview-columns]')!
+    assert.ok(columns.className.includes('min-[1100px]:grid-cols-3'))
+    assert.ok(columns.className.includes('min-[1100px]:[grid-auto-flow:row_dense]'))
+    assert.ok(telemetry.className.includes('min-[1100px]:contents'))
+    assert.ok(insights.className.includes('min-[1100px]:contents'))
+    assert.ok(telemetry.className.includes('[grid-auto-flow:row_dense]'))
+    assert.ok(telemetry.className.includes('[grid-auto-rows:1px]'))
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 
