@@ -404,12 +404,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release = self.text(".github/workflows/release.yml")
         candidate = release.index('npm publish --access public --tag "candidate-$version"')
         promote = release.index("scripts/ci/promote-release.sh")
-        stable = release.index('npm dist-tag add "$package_name@$version" latest')
+        stable = release.index("scripts/ci/promote-npm-pointer.py promote")
         self.assertLess(candidate, promote)
         self.assertLess(promote, stable)
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn("[.tag_name, .draft] | @tsv", reminder)
         self.assertIn("draft release is missing release-manifest.json", reminder)
+
+    def test_stable_promotion_is_serialized_and_restored_before_redraft(self):
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        job = release["jobs"]["release"]
+        self.assertEqual(job["concurrency"]["group"], "labby-stable-release-promotion")
+        self.assertEqual(job["concurrency"]["cancel-in-progress"], "false")
+        rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
+        self.assertLess(rollback.index("promote-npm-pointer.py rollback"), rollback.index('gh release edit "$RELEASE_TAG" --draft=true'))
+        self.assertIn('if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]', rollback)
+        self.assertIn('refusing to replace a newer Incus stable generation', self.text("scripts/ci/promote-incus-pointer.sh"))
 
     def test_n_minus_one_uses_real_runtime_schema_not_probe_tables(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")
@@ -446,6 +456,81 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("PSScriptAnalyzer", workflow)
         self.assertIn("Invoke-ScriptAnalyzer", workflow)
 
+class PromotionDurabilityTests(unittest.TestCase):
+    def npm_helper(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("npm_pointer", ROOT / "scripts/ci/promote-npm-pointer.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_npm_verification_tolerates_delay_and_transient_errors(self):
+        from unittest.mock import patch
+        helper = self.npm_helper()
+        with patch.object(helper, "latest", side_effect=["1.0.0", subprocess.CalledProcessError(1, "npm"), "1.1.0"]) as read, patch.object(helper.time, "sleep") as sleep:
+            helper.verify_latest("@example/pkg", "1.1.0")
+        self.assertEqual(3, read.call_count)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_npm_verification_exhausts_and_supports_removed_pointer(self):
+        from unittest.mock import patch
+        helper = self.npm_helper()
+        with patch.object(helper, "latest", return_value="1.0.0") as read, patch.object(helper.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                helper.verify_latest("@example/pkg", "1.1.0")
+        self.assertEqual(20, read.call_count)
+        self.assertEqual(19, sleep.call_count)
+        with patch.object(helper, "latest", side_effect=["1.1.0", None]), patch.object(helper.time, "sleep"):
+            helper.verify_latest("@example/pkg", None)
+
+    def test_incus_rollback_preserves_object_in_shallow_checkout(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "source"
+            remote = work / "remote.git"
+            checkout = work / "checkout"
+            def git(*args, cwd=source):
+                return subprocess.check_output(["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+            source.mkdir()
+            git("init", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.0.0"\n')
+            git("add", ".")
+            git("commit", "-m", "previous")
+            git("tag", "-a", "labby-incus-latest", "-m", "previous annotated target")
+            previous = git("rev-parse", "refs/tags/labby-incus-latest")
+            (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.1.0"\n')
+            git("commit", "-am", "candidate")
+            candidate = git("rev-parse", "HEAD")
+            git("clone", "--bare", str(source), str(remote))
+            git("clone", "--depth=1", "--no-tags", remote.as_uri(), str(checkout))
+            missing = subprocess.run(["git", "cat-file", "-e", previous], cwd=checkout, capture_output=True)
+            self.assertNotEqual(0, missing.returncode)
+            # Rewrite the script's authenticated URL only inside this disposable
+            # checkout. No production Git endpoint is contacted by this test.
+            git("config", f"url.{remote.as_uri()}.insteadOf", "https://x-access-token:test@github.com/example/repo.git", cwd=checkout)
+            assets = work / "assets"
+            assets.mkdir()
+            (assets / "image.tar.xz").write_bytes(b"qualified image")
+            manifest = {"subjects": [], "distributions": {"incus": {"asset": "image.tar.xz", "sha256": hashlib.sha256(b"qualified image").hexdigest()}}}
+            (assets / "release-manifest.json").write_text(json.dumps(manifest))
+            gh = work / "gh"
+            gh.write_text('#!/bin/sh\ncase "$*" in *--pattern*) exit 1;; esac\nif [ "$2" = download ]; then cp "$ASSETS/"* "$5/"; fi\n')
+            gh.chmod(0o755)
+            receipt = work / "receipt"
+            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG="v1.1.0", INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            command = ["bash", str(ROOT / "scripts/ci/promote-incus-pointer.sh")]
+            subprocess.run(command + ["promote"], cwd=checkout, env=env, check=True, capture_output=True)
+            self.assertEqual(candidate, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+            # Overwrite FETCH_HEAD; the durable local recovery ref must survive.
+            git("fetch", "origin", "main", cwd=checkout)
+            subprocess.run(command + ["rollback"], cwd=checkout, env=env, check=True, capture_output=True)
+            self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+            self.assertEqual("rolled-back", (receipt / "state").read_text().strip())
+
+
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
@@ -478,6 +563,31 @@ class ReleaseHelperTests(unittest.TestCase):
             command[command.index("--github-rc") + 1] = "0"
             self.assertEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
             self.assertNotIn("image_registry", json.loads(output.read_text()))
+
+    def test_early_release_failure_retains_published_candidate_inventory(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        job = release["jobs"]["release"]
+        self.assertIn("npm-candidate", job["needs"])
+        rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            output = work / "rollback.json"
+            # No local release steps have completed, so no receipts exist.
+            # Block external commands even if a future workflow edit calls one.
+            for name in ("gh", "npm", "node"):
+                stub = work / name
+                stub.write_text("#!/bin/sh\nexit 88\n")
+                stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", rollback.replace("/tmp/", "${TEST_RECEIPT_ROOT}/")],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{work}:{os.environ['PATH']}",
+                     "TEST_RECEIPT_ROOT": str(work), "ROLLBACK_STATUS_FILE": str(output)},
+            )
+            self.assertNotEqual(0, result.returncode)
+            receipt = json.loads(output.read_text())
+            self.assertEqual("manual_reconciliation_required", receipt["npm_candidate"]["status"])
+            self.assertEqual("manual_reconciliation_required", receipt["mcp_version"]["status"])
 
     def test_compound_rollback_never_hides_irreversible_registry_identity(self) -> None:
         helper = ROOT / "scripts/ci/compound-release-rollback.py"
@@ -706,6 +816,31 @@ class ReleaseHelperTests(unittest.TestCase):
             adapter = path.read_text()
             self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE", adapter, name)
             self.assertIn("verify-provenance", adapter, name)
+
+    def test_host_service_resets_start_budget_only_after_rollback_proof(self) -> None:
+        text = self.text("scripts/ci/n-minus-one/host-service")
+        helper = text[text.index("begin_candidate_phase() {"):text.index("require_fixture() {")]
+        for failure in ("", "version", "state", "auth", "reset"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                harness = r'''set -eu
+LABBY_PREVIOUS_VERSION=v1.13.3
+record() { printf '%s\n' "$1" >>"$CALLS"; test "$FAILURE" != "$1"; }
+version() { test "$1" = v1.13.3; record version; }
+customized_state() { record state; }
+authenticated_action() { record auth; }
+sudo() { test "$*" = 'systemctl reset-failed labby.service'; record reset; }
+'''
+                result = subprocess.run(["bash", "-c", harness + helper + "begin_candidate_phase"],
+                                        env={**os.environ, "CALLS": str(calls), "FAILURE": failure},
+                                        capture_output=True, text=True, timeout=10)
+                expected = ["version", "state", "auth", "reset"]
+                if failure:
+                    expected = expected[:expected.index(failure) + 1]
+                self.assertEqual(calls.read_text().splitlines(), expected)
+                self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
+        upgrade = next(line for line in text.splitlines() if line.startswith("  upgrade)"))
+        self.assertIn('fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh"', upgrade)
 
     def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
         for adapter in ("host-service", "incus"):

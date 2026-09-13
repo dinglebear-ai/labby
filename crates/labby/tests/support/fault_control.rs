@@ -97,11 +97,3 @@ impl FaultControl {
         Ok(())
     }
 }
-
-pub(crate) fn detected(fault: Fault, detector: &str, detail: &str) -> String {
-    format!(
-        "qualification fault={} detector={} detail={detail}",
-        fault.name(),
-        detector
-    )
-}

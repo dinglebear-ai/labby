@@ -59,6 +59,11 @@ struct UpdateOutcome {
 }
 
 pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
+    if cfg!(windows) {
+        anyhow::bail!(
+            "labby update is not supported on Windows; close Labby and rerun the verified PowerShell installer described at https://github.com/dinglebear-ai/labby#quick-start to update labby.exe"
+        );
+    }
     if let Some(action) = &args.auto_update {
         let outcome = crate::self_update::schedule(action, args.dry_run)?;
         print(&outcome, format)?;

@@ -162,8 +162,8 @@ impl ArtifactStore {
     pub fn list_records(&self) -> Result<Vec<ArtifactRecord>, ArtifactError> {
         let artifacts = self.root.join("artifacts");
         let mut records = Vec::new();
-        for entry in std::fs::read_dir(&artifacts)? {
-            if records.len() >= MAX_ARTIFACT_LIST_RECORDS {
+        for (entry_count, entry) in std::fs::read_dir(&artifacts)?.enumerate() {
+            if entry_count >= MAX_ARTIFACT_LIST_RECORDS {
                 return Err(ArtifactError::LimitExceeded {
                     what: "artifact_count",
                     limit: MAX_ARTIFACT_LIST_RECORDS as u64,
@@ -178,6 +178,16 @@ impl ArtifactStore {
                 return Err(ArtifactError::UnsafePath("stored_entry"));
             }
             let path = entry.path().join("artifact.json");
+            // The atomically written head is the publication marker. A first
+            // import creates revision/workspace directories before publishing it;
+            // a pending or interrupted import is not yet a catalog record. Keep
+            // that recoverable tree for retry, without hiding corrupt committed
+            // records or dangling symlinks. Count all entries against the budget.
+            match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
             reject_symlink(&path).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
             let record: ArtifactRecord = read_json(&path, MAX_RECORD_JSON_BYTES)?;
             record.validate()?;
@@ -791,6 +801,73 @@ mod tests {
                 .iter()
                 .any(|record| record.descriptor.kind == "agent")
         );
+    }
+
+    #[test]
+    fn interrupted_first_revision_does_not_poison_catalog_after_reopen() {
+        let data = tempdir().unwrap();
+        let root = data.path().join("store");
+        let store = ArtifactStore::new(&root).unwrap();
+        let source = data.path().join("source.txt");
+        std::fs::write(&source, "content").unwrap();
+        let record = store
+            .import_local(
+                ArtifactImportRequest::new("prompt", "test", "published"),
+                &source,
+            )
+            .unwrap();
+        let revision = store
+            .revision(&record.descriptor.id, &record.current_revision_id)
+            .unwrap();
+        let error = store
+            .persist_revision_with_faults(&revision, "art_interrupted", &[], &mut |_| {
+                // Observe the catalog while the first import is still pending.
+                assert_eq!(store.list_records().unwrap(), vec![record.clone()]);
+                Err(ArtifactError::Io(std::io::Error::other(
+                    "injected first import failure",
+                )))
+            })
+            .unwrap_err();
+        assert!(matches!(error, ArtifactError::Io(_)));
+        assert!(
+            store
+                .artifact_dir("art_interrupted")
+                .unwrap()
+                .join("revisions")
+                .is_dir()
+        );
+        // A concurrent reader sees only the published head. Restart has the same view.
+        assert_eq!(store.list_records().unwrap(), vec![record.clone()]);
+        drop(store);
+        let reopened = ArtifactStore::new(&root).unwrap();
+        assert_eq!(reopened.list_records().unwrap(), vec![record.clone()]);
+        std::fs::write(
+            reopened
+                .artifact_dir(&record.descriptor.id)
+                .unwrap()
+                .join("artifact.json"),
+            "broken",
+        )
+        .unwrap();
+        assert!(
+            reopened.list_records().is_err(),
+            "corrupt published heads must fail closed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unpublished_head_symlink_is_not_treated_as_missing() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let artifact = store.artifact_dir("art_pending").unwrap();
+        ensure_private_dir(&artifact).unwrap();
+        std::os::unix::fs::symlink(data.path().join("absent"), artifact.join("artifact.json"))
+            .unwrap();
+        assert!(matches!(
+            store.list_records(),
+            Err(ArtifactError::UnsafePath("stored_symlink"))
+        ));
     }
 
     #[cfg(unix)]
