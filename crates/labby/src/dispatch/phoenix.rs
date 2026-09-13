@@ -558,6 +558,7 @@ impl PhoenixRuntime {
         let result = match result {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                drop(runtime.interrupt(&thread_id, &turn_id).await);
                 let mut state = session.lock().await;
                 state.turn_in_progress = false;
                 state.active_turn_id = None;
@@ -699,6 +700,7 @@ impl PhoenixRuntime {
         let result = match result {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                drop(runtime.interrupt(&thread_id, &turn_id).await);
                 let mut state = session.lock().await;
                 state.turn_in_progress = false;
                 state.active_turn_id = None;

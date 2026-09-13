@@ -585,12 +585,7 @@ pub(super) async fn server_view_from_upstream(
         Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
         None => None,
     };
-    let exposing_capabilities = summary.exposed_tool_count > 0
-        || summary.exposed_resource_count > 0
-        || summary.exposed_prompt_count > 0
-        || summary.exposed_skill_count > 0;
-    let health_ok = health.is_some_and(UpstreamHealth::is_routable);
-    let connected = last_error.is_none() && (exposing_capabilities || health_ok);
+    let connected = last_error.is_none() && runtime.is_some();
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     let catalog_warming =
         catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
@@ -838,8 +833,8 @@ pub(super) async fn runtime_view(
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
     let header_recovery = pool.header_recovery_metrics(name);
-    let tool_health = pool.upstream_tool_health(name).await;
-    let connected = last_error.is_none() && tool_health.is_some_and(UpstreamHealth::is_routable);
+    let runtime_present = pool.upstream_runtime_metadata(name).await.is_some();
+    let connected = last_error.is_none() && runtime_present;
 
     GatewayRuntimeView {
         name: name.to_string(),

@@ -394,6 +394,7 @@ export function PhoenixAvailability() {
 
   const commitTitle = async () => {
     const nextTitle = title.trim() || 'Phoenix'
+    const priorTitle = threadHistory.find((thread) => thread.session_id === sessionId)?.title || 'Phoenix'
     setTitle(nextTitle)
     setEditingTitle(false)
     if (!sessionId) return
@@ -401,6 +402,7 @@ export function PhoenixAvailability() {
       const renamed = await phoenixApi.rename(sessionId, nextTitle)
       setThreadHistory((current) => current.map((thread) => thread.session_id === sessionId ? renamed : thread))
     } catch (reason) {
+      setTitle(priorTitle)
       setError(reason instanceof Error ? reason.message : 'Phoenix could not rename that thread')
     }
   }

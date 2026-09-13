@@ -18,7 +18,7 @@ use std::{
 
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{Mutex, broadcast, oneshot},
     task::JoinHandle,
@@ -82,13 +82,28 @@ impl AppServerRuntime {
         let reader_events = events.clone();
         let reader_stdin = stdin.clone();
         let reader = tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
+            let mut output = BufReader::new(stdout);
             loop {
-                let line = match lines.next_line().await {
-                    Ok(Some(line)) if line.len() <= MAX_PROTOCOL_LINE_BYTES => line,
-                    _ => break,
+                let mut frame = Vec::new();
+                let read = match (&mut output)
+                    .take((MAX_PROTOCOL_LINE_BYTES + 2) as u64)
+                    .read_until(b'\n', &mut frame)
+                    .await
+                {
+                    Ok(read) => read,
+                    Err(_) => break,
                 };
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                if read == 0 {
+                    break;
+                }
+                if frame.last() != Some(&b'\n') || frame.len() > MAX_PROTOCOL_LINE_BYTES + 1 {
+                    break;
+                }
+                frame.pop();
+                if frame.last() == Some(&b'\r') {
+                    frame.pop();
+                }
+                let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
                     break;
                 };
                 if let Some(id) = value.get("id").and_then(Value::as_u64)
@@ -337,6 +352,37 @@ done
         request.abort();
         tokio::time::sleep(REQUEST_TIMEOUT + Duration::from_millis(50)).await;
 
+        assert!(runtime.pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_protocol_output_without_a_newline_is_rejected_at_the_frame_limit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("fixture");
+        fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' x\nsleep 5\n",
+                MAX_PROTOCOL_LINE_BYTES + 2
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = AppServerRuntime::launch(LaunchSpec {
+            command,
+            args: vec![],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let error = runtime.request("oversized", json!({})).await.unwrap_err();
+        assert!(
+            matches!(error, ToolError::Sdk { ref sdk_kind, .. } if sdk_kind == "executor_unavailable")
+        );
         assert!(runtime.pending.lock().await.is_empty());
     }
 }
