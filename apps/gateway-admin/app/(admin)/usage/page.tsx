@@ -246,7 +246,7 @@ function UsageExplorer() {
       icon: <Wrench size={11} strokeWidth={1.8} />,
     },
     {
-      label: 'Agents',
+      label: 'Callers',
       tone: 'var(--aurora-accent-pink)',
       value: data ? data.facets.agents.length : '—',
       icon: <Users size={11} strokeWidth={1.8} />,
@@ -427,7 +427,7 @@ function UsageExplorer() {
                   <Select value={capability} onValueChange={(value) => { setCapability(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Capability" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All capabilities</SelectItem>{capabilityOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
                   <Select value={operation} onValueChange={(value) => { setOperation(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Operation" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All operations</SelectItem>{operationOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
                   <Select value={subjectScope} onValueChange={(value) => { setSubjectScope(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Scope" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All scopes</SelectItem><SelectItem value="shared">Shared</SelectItem><SelectItem value="subject">OAuth subject</SelectItem></SelectContent></Select>
-                  <Select value={agent} onValueChange={(value) => { setAgent(value); setClientName(''); setClientVersion(''); setAgentId(''); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); setClientName(''); setClientVersion(''); setAgentId(''); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Caller" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All callers</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>
                   <Select value={errorKind} onValueChange={(value) => { setErrorKind(value); if (value !== ALL) setOutcome('failed'); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Failure kind" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All failure kinds</SelectItem>{errorOptions.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}</SelectContent></Select>
                   {showIps ? <Select value={ip} onValueChange={(value) => { setIp(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="IP" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All IPs</SelectItem>{ipOptions.map((addr) => <SelectItem key={addr} value={addr}>{addr}</SelectItem>)}</SelectContent></Select> : null}
                 </div>
@@ -454,7 +454,7 @@ function UsageExplorer() {
                 >
                   <TableHead className="w-[96px]">Time</TableHead>
                   <TableHead>Target · operation</TableHead>
-                  <TableHead>Agent</TableHead>
+                  <TableHead>Scope</TableHead>
                   {showSurfaces ? <TableHead className="w-[70px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
@@ -527,8 +527,8 @@ function UsageExplorer() {
                         ) : null}
                       </TableCell>
                       <TableCell>
-                        <div className="truncate text-aurora-text-primary" title={call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}>
-                          {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
+                        <div className="truncate text-aurora-text-primary" title={call.subject_scoped ? 'OAuth subject-scoped upstream connection' : 'Shared upstream connection'}>
+                          {call.subject_scoped ? 'OAuth subject' : 'Shared'}
                         </div>
                         {showIps ? (
                           <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
