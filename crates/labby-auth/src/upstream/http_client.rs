@@ -299,6 +299,50 @@ impl TrustedOriginOAuthHttpClient {
     }
 }
 
+/// Fetch a published client document without redirects or unbounded responses.
+///
+/// Only an absent document (404 or 410) permits registration fallback. Invalid
+/// documents, rejected requests, and transport failures remain explicit errors.
+pub async fn fetch_client_metadata_document(
+    resource_url: &str,
+    client_id: &str,
+) -> Result<Option<serde_json::Value>, OauthError> {
+    let client = TrustedOriginOAuthHttpClient::new(resource_url)?;
+    let url = parse_oauth_url(client_id)
+        .map_err(|error| error.into_oauth_error("invalid client metadata URL"))?;
+    let response = client.get(url).await?;
+    if matches!(response.status().as_u16(), 404 | 410) {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(OauthError::Egress {
+            kind: OAuthEgressKind::UpstreamError,
+            message: format!(
+                "client metadata returned HTTP {}",
+                response.status().as_u16()
+            ),
+        });
+    }
+    let document: serde_json::Value =
+        serde_json::from_slice(response.body()).map_err(|_| OauthError::Egress {
+            kind: OAuthEgressKind::ValidationFailed,
+            message: "client metadata is not valid JSON".to_owned(),
+        })?;
+    if !document.is_object()
+        || document
+            .get("client_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(client_id)
+    {
+        return Err(OauthError::Egress {
+            kind: OAuthEgressKind::ValidationFailed,
+            message: "client metadata must be an object with the exact requested client_id"
+                .to_owned(),
+        });
+    }
+    Ok(Some(document))
+}
+
 fn configure_oauth_client_builder(
     builder: reqwest::ClientBuilder,
     timeout: Duration,
@@ -458,8 +502,18 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn serve_once(status: &str, headers: &[(&str, String)], body: Vec<u8>) -> Url {
+        serve_once_with_body(status, headers, |_| body).await
+    }
+
+    async fn serve_once_with_body(
+        status: &str,
+        headers: &[(&str, String)],
+        body: impl FnOnce(&Url) -> Vec<u8>,
+    ) -> Url {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let url = Url::parse(&format!("http://{address}/metadata")).unwrap();
+        let body = body(&url);
         let status = status.to_string();
         let headers: Vec<(String, String)> = headers
             .iter()
@@ -477,7 +531,97 @@ mod tests {
             stream.write_all(response.as_bytes()).await.unwrap();
             stream.write_all(&body).await.unwrap();
         });
-        Url::parse(&format!("http://{address}/metadata")).unwrap()
+        url
+    }
+
+    #[tokio::test]
+    async fn client_document_fetch_accepts_exact_identity() {
+        let url = serve_once_with_body("200 OK", &[], |url| {
+            serde_json::to_vec(&serde_json::json!({"client_id": url.as_str()})).unwrap()
+        })
+        .await;
+        let document = fetch_client_metadata_document(url.as_str(), url.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(document, serde_json::json!({"client_id": url.as_str()}));
+    }
+
+    #[tokio::test]
+    async fn client_document_fallback_is_only_for_absent_documents() {
+        for status in ["404 Not Found", "410 Gone"] {
+            let url = serve_once(status, &[], b"not JSON".to_vec()).await;
+            assert!(
+                fetch_client_metadata_document(url.as_str(), url.as_str())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for status in [
+            "302 Found",
+            "401 Unauthorized",
+            "403 Forbidden",
+            "500 Internal Server Error",
+        ] {
+            let url = serve_once(
+                status,
+                &[("Location", "http://127.0.0.1:1/redirect".into())],
+                Vec::new(),
+            )
+            .await;
+            assert!(matches!(
+                fetch_client_metadata_document(url.as_str(), url.as_str()).await,
+                Err(OauthError::Egress {
+                    kind: OAuthEgressKind::UpstreamError,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn client_document_rejects_malformed_or_mismatched_identity() {
+        for body in [
+            "not JSON",
+            "[]",
+            "{}",
+            r#"{"client_id":"https://other.example/client"}"#,
+        ] {
+            let url = serve_once("200 OK", &[], body.as_bytes().to_vec()).await;
+            assert!(matches!(
+                fetch_client_metadata_document(url.as_str(), url.as_str()).await,
+                Err(OauthError::Egress {
+                    kind: OAuthEgressKind::ValidationFailed,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn client_document_preserves_egress_and_size_limits() {
+        assert!(matches!(
+            fetch_client_metadata_document("https://example.com/mcp", "http://127.0.0.1:1/client")
+                .await,
+            Err(OauthError::Egress {
+                kind: OAuthEgressKind::SsrfBlocked,
+                ..
+            })
+        ));
+        let url = serve_once(
+            "200 OK",
+            &[],
+            vec![b'x'; MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES + 1],
+        )
+        .await;
+        assert!(matches!(
+            fetch_client_metadata_document(url.as_str(), url.as_str()).await,
+            Err(OauthError::Egress {
+                kind: OAuthEgressKind::ResponseTooLarge,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

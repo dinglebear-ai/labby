@@ -211,6 +211,7 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_ACCESS_TOKEN_TTL_SECS", false, false, "3600", "Labby access-token lifetime in seconds"),
         auth_env("LABBY_AUTH_REFRESH_TOKEN_TTL_SECS", false, false, "2592000", "Labby refresh-token lifetime in seconds"),
         auth_env("LABBY_AUTH_CODE_TTL_SECS", false, false, "300", "Authorization-code lifetime in seconds"),
+        auth_env("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION", false, false, "true", "Enable RFC 7591 client registration; set false to require CIMD or preregistered clients"),
         auth_env("LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE", false, false, "20", "Per-IP dynamic-client-registration rate limit"),
         auth_env("LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE", false, false, "60", "Per-IP authorization and browser-login rate limit"),
         auth_env("LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE", false, false, "120", "Per-IP token and revocation endpoint rate limit"),

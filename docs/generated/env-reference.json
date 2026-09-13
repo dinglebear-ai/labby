@@ -118,6 +118,15 @@
   },
   {
     "service": "auth",
+    "env_var": "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION",
+    "required": false,
+    "secret": false,
+    "description": "Enable RFC 7591 client registration; set false to require CIMD or preregistered clients",
+    "example": "true",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
     "required": false,
     "secret": true,

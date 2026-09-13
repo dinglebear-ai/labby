@@ -53,7 +53,7 @@ test('AuthBootstrap renders the auth_error login screen instead of the generic e
   assert.match(markup, /Authentication Error/)
   assert.match(markup, /auth store unavailable/)
   assert.match(markup, /Request ID: req-auth-123/)
-  assert.match(markup, /Sign in again/)
+  assert.match(markup, /Sign In Again/)
 })
 
 test('AuthBootstrap does not bypass hosted auth when NEXT_PUBLIC_API_TOKEN is set', () => {
