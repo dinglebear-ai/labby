@@ -173,6 +173,7 @@ pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionA
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
+    OwnerBootstrapOffer,
 };
 pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
 #[allow(unused_imports)]
@@ -188,7 +189,9 @@ pub(crate) use team::{
 };
 pub(crate) use team_provision::TeamMemberProvisionOutcome;
 #[allow(unused_imports)]
-pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
+pub(crate) use workflow::{
+    OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,
+};
 
 #[cfg(test)]
 mod facade_tests {

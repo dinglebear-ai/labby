@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { SWRConfig } from 'swr'
-import { getBrowserSessionContextIdentity } from '../../lib/auth/session-store.ts'
+import { getBrowserSessionContextIdentity, ownerBootstrapOffered } from '../../lib/auth/session-store.ts'
 
 import { LoginScreen } from './login-screen.tsx'
 import { OwnerSetupScreen } from './owner-setup-screen.tsx'
@@ -58,7 +58,7 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     return (
       <OwnerSetupScreen
         authorityState={session.authorityState}
-        bootstrapAvailable={session.authorityState === 'transport' && session.ownerBootstrapAvailable === true}
+        bootstrapAvailable={ownerBootstrapOffered(session)}
         email={session.user.email}
         remediation={session.remediation}
       />

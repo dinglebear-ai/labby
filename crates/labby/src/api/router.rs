@@ -3189,6 +3189,197 @@ mod tests {
         assert_eq!(loopback.status(), StatusCode::NOT_FOUND);
     }
 
+    /// TST-H4 / AR-H2: `/auth/session` offers owner bootstrap exactly when
+    /// `POST /v1/access/bootstrap-owner` would create the owner, for every
+    /// runtime state and persona. A non-admin allowlisted colleague is always
+    /// refused with 403 and never creates the store.
+    #[tokio::test]
+    async fn bootstrap_session_offer_matches_endpoint_outcome_in_every_runtime_state() {
+        #[derive(Clone, Copy, Debug)]
+        enum Fixture {
+            Missing,
+            Uninitialized,
+            PreparedProof,
+            Ready,
+            Corrupt,
+            NotWired,
+        }
+        const ADMIN: &str = "browser@example.com";
+        const COLLEAGUE: &str = "colleague@example.com";
+
+        async fn runtime_for(
+            fixture: Fixture,
+            path: &std::path::Path,
+        ) -> crate::access::AccessRuntime {
+            match fixture {
+                Fixture::Missing => {}
+                Fixture::Uninitialized => {
+                    crate::access::AccessStore::open(path.to_path_buf())
+                        .await
+                        .unwrap();
+                }
+                Fixture::PreparedProof => {
+                    crate::access::AccessStore::open(path.to_path_buf())
+                        .await
+                        .unwrap()
+                        .activate_bootstrap_proof(crate::access::ActivateProofInput {
+                            proof_id: "proof".into(),
+                            prepare_id: "prepare".into(),
+                            installation_id: "installation".into(),
+                            installation_generation: 1,
+                            proof_digest: [1; 32],
+                            manifest_digest: [2; 32],
+                            request_digest: [3; 32],
+                            idempotency_digest: [4; 32],
+                            credential_id: "credential".into(),
+                            credential_digest: [5; 32],
+                            proof_generation: 1,
+                            created_at: 10,
+                            expires_at: i64::MAX,
+                        })
+                        .await
+                        .unwrap();
+                }
+                Fixture::Ready => {
+                    let owner = labby_auth::VerifiedIdentity::local_credential(
+                        labby_auth::Authenticator::StaticBearer,
+                        "static-bearer:primary",
+                    )
+                    .unwrap();
+                    crate::access::AccessStore::open(path.to_path_buf())
+                        .await
+                        .unwrap()
+                        .bootstrap_owner(
+                            crate::access::BootstrapOwnerInput::new(owner, "Local", "Default")
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                Fixture::Corrupt => {
+                    fs::write(path, b"not sqlite").unwrap();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+                    }
+                }
+                Fixture::NotWired => return crate::access::AccessRuntime::blocked_unavailable(),
+            }
+            crate::access::AccessRuntime::initialize(path.to_path_buf()).await
+        }
+
+        for fixture in [
+            Fixture::Missing,
+            Fixture::Uninitialized,
+            Fixture::PreparedProof,
+            Fixture::Ready,
+            Fixture::Corrupt,
+            Fixture::NotWired,
+        ] {
+            for email in [ADMIN, COLLEAGUE] {
+                let directory = tempfile::tempdir().unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+                let path = directory.path().canonicalize().unwrap().join("access.db");
+                let runtime = runtime_for(fixture, &path).await;
+                let store_existed = path.exists();
+
+                let auth_state = test_lab_auth_state().await;
+                auth_state
+                    .store
+                    .add_allowed_user(COLLEAGUE, ADMIN, 1)
+                    .await
+                    .unwrap();
+                let session = labby_auth::types::BrowserSessionRow {
+                    session_id: "sess-table".to_string(),
+                    subject: format!("subject-{email}"),
+                    email: Some(email.to_string()),
+                    csrf_token: "csrf-table".to_string(),
+                    created_at: 1,
+                    expires_at: i64::MAX,
+                    project_binding: None,
+                };
+                auth_state
+                    .store
+                    .upsert_browser_session(session.clone())
+                    .await
+                    .unwrap();
+                let config = labby_auth::config::AuthConfig {
+                    admin_email: ADMIN.into(),
+                    ..Default::default()
+                };
+                let app = build_router(
+                    AppState::new()
+                        .with_auth_config(config)
+                        .with_access_runtime(Arc::new(runtime)),
+                    None,
+                    Some(auth_state),
+                    None,
+                    &[],
+                );
+                let cookie = format!(
+                    "{}={}",
+                    labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                    session.session_id
+                );
+
+                let session_response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/auth/session")
+                            .header(header::COOKIE, &cookie)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let session_body = axum::body::to_bytes(session_response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let session_json: serde_json::Value =
+                    serde_json::from_slice(&session_body).unwrap();
+                let offered = session_json["owner_bootstrap_available"] == true;
+
+                let status = app
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/access/bootstrap-owner")
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .header(header::COOKIE, &cookie)
+                            .header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, "csrf-table")
+                            .body(Body::from(
+                                r#"{"organization_name":"Local","project_name":"Default"}"#,
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status();
+
+                assert_eq!(
+                    offered,
+                    status == StatusCode::CREATED,
+                    "{fixture:?}/{email}: offered={offered} status={status} session={session_json}"
+                );
+                if email == COLLEAGUE {
+                    assert_eq!(status, StatusCode::FORBIDDEN, "{fixture:?}/{email}");
+                    assert_eq!(
+                        path.exists(),
+                        store_existed,
+                        "{fixture:?}: a refused caller must not create the store"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn access_owner_bootstrap_is_absent_without_oauth_before_body_validation() {
         let response = build_router(AppState::new(), None, None, None, &[])

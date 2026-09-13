@@ -719,16 +719,15 @@ async fn authenticate(
                 // Allowlisted identities other than the configured admin are
                 // admitted, but an allowlist entry is not an administrative
                 // grant: products elevate them only from durable authority.
-                let is_configured_admin = session.email.as_deref().is_some_and(|email| {
-                    email.eq_ignore_ascii_case(&auth_state.config.admin_email)
-                });
-                let browser_scopes = if !authorized {
-                    vec!["lab:read".into()]
-                } else if is_configured_admin {
-                    layer.static_token_scopes.clone()
-                } else {
-                    without_admin_scopes(&layer.static_token_scopes)
-                };
+                let is_configured_admin = is_configured_admin_email(
+                    &auth_state.config.admin_email,
+                    session.email.as_deref(),
+                );
+                let browser_scopes = browser_session_scopes(
+                    &layer.static_token_scopes,
+                    authorized,
+                    is_configured_admin,
+                );
                 let browser_authority = if matches!(
                     auth_state.inbound_provider.kind(),
                     crate::config::InboundProviderKind::Google
@@ -1054,6 +1053,32 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
         }
     }
     Some(response)
+}
+
+/// Whether a browser session email is the configured admin (ASCII
+/// case-insensitive). The configured admin is always an authorized browser
+/// identity.
+pub fn is_configured_admin_email(admin_email: &str, email: Option<&str>) -> bool {
+    email.is_some_and(|email| email.eq_ignore_ascii_case(admin_email))
+}
+
+/// Scopes granted to an OAuth browser-session identity.
+///
+/// Unauthorized (domain-only) admission gets `lab:read`; the configured admin
+/// inherits the static-token scopes; every other authorized identity gets the
+/// static-token scopes with each `<prefix>:admin` lowered to `<prefix>`.
+pub fn browser_session_scopes(
+    static_token_scopes: &[String],
+    authorized: bool,
+    is_configured_admin: bool,
+) -> Vec<String> {
+    if !authorized {
+        vec!["lab:read".into()]
+    } else if is_configured_admin {
+        static_token_scopes.to_vec()
+    } else {
+        without_admin_scopes(static_token_scopes)
+    }
 }
 
 /// Lower every `<prefix>:admin` scope to its `<prefix>` write scope, keeping
