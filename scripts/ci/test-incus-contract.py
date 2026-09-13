@@ -28,6 +28,18 @@ class IncusContract(unittest.TestCase):
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
 
+    def test_image_preflight_lint_runs_before_release(self):
+        command = "shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh"
+        ci = self.text(".github/workflows/ci.yml")
+        incus_job = ci.split("  incus-contract:", 1)[1].split("\n  desktop-web:", 1)[0]
+        self.assertIn(command, incus_job)
+        self.assertIn(command, self.text(".github/workflows/build-incus-image.yml"))
+
+    def test_mise_installer_uses_versioned_release(self):
+        image = self.text("config/incus/labby-image.yaml")
+        self.assertNotIn("https://mise.run", image)
+        self.assertIn("https://github.com/jdx/mise/releases/download/v2026.9.1/install.sh", image)
+
     def test_operator_install_guidance_never_executes_mutable_urls(self):
         paths = ["README.md", "docs/PLUGINS.md", "docs/runtime/INCUS.md", "scripts/install.sh"]
         for path in paths:
