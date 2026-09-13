@@ -25,8 +25,10 @@ const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const CAPTURE_BYTES: usize = 16 * 1024;
 const PREVIOUS_HOST_RELEASE_DIR: &str = "/var/lib/labby/host-service-previous";
+const HOST_SERVICE_ROLLBACK_JOURNAL: &str = "/var/lib/labby/host-service-rollback-journal";
 const HOST_SERVICE_TRANSACTION_LOCK: &str = "/var/lib/labby/host-service.transaction.lock";
 
+#[derive(Debug)]
 struct HostServiceTransactionLock {
     _file: std::fs::File,
 }
@@ -41,12 +43,29 @@ fn acquire_host_service_transaction_lock_at(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(io_error)?;
     }
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && metadata.file_type().is_symlink()
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_transaction_lock_unsafe".into(),
+            message: format!(
+                "host-service transaction lock is a symlink: {}",
+                path.display()
+            ),
+        });
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
         .open(path)
         .map_err(io_error)?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_transaction_lock_unsafe".into(),
+            message: "host-service transaction lock is not a regular file".into(),
+        });
+    }
     file.lock().map_err(io_error)?;
     Ok(HostServiceTransactionLock { _file: file })
 }
@@ -148,6 +167,7 @@ pub(crate) async fn unit() -> Result<String, ToolError> {
 
 pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
+    recover_interrupted_host_service_rollback().await?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -270,6 +290,7 @@ fn persist_previous_host_release_with_checkpoint(
 
 pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
+    recover_interrupted_host_service_rollback().await?;
     let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
     let retained = load_previous_host_release_at(root)?;
     let prior = retained.binary;
@@ -279,12 +300,32 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     let current = read_optional(destination)?;
     let unit_path = unit_path();
     let current_service = HostServiceSnapshot::capture(&unit_path).await?;
+    let current_state = current_service
+        .unit
+        .as_ref()
+        .map(|_| (current_service.active, current_service.enabled));
+    persist_previous_host_release_at(
+        Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
+        current.as_deref(),
+        current_state,
+        current_service.unit.as_deref(),
+        &current_service.dropins,
+    )?;
     let prior_unit = retained.unit;
     let prior_dropins = retained.dropins;
-    restore_executable(destination, Some(&prior))?;
     let activation = async {
-        atomic_write(&unit_path, &prior_unit)?;
-        prior_dropins.restore(Path::new("/etc/systemd/system/labby.service.d"))?;
+        restore_retained_generation_files_at(
+            &RetainedHostRelease {
+                binary: prior,
+                unit: prior_unit,
+                dropins: prior_dropins,
+                active: desired_active,
+                enabled: desired_enabled,
+            },
+            destination,
+            &unit_path,
+            Path::new("/etc/systemd/system/labby.service.d"),
+        )?;
         run_systemctl(&["daemon-reload"]).await?;
         restore_captured_unit_file_state(SERVICE_NAME, desired_enabled).await?;
         restore_captured_active_state(SERVICE_NAME, desired_active).await
@@ -293,6 +334,9 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     if let Err(primary) = activation {
         let binary_restore = restore_executable(destination, current.as_deref());
         let service_restore = current_service.rollback(&unit_path).await;
+        if binary_restore.is_ok() && service_restore.is_ok() {
+            drop(std::fs::remove_dir_all(HOST_SERVICE_ROLLBACK_JOURNAL));
+        }
         return Err(ToolError::Sdk {
             sdk_kind: "host_service_release_rollback_failed".into(),
             message: format!(
@@ -301,6 +345,7 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
         });
     }
     std::fs::remove_dir_all(root).map_err(io_error)?;
+    std::fs::remove_dir_all(HOST_SERVICE_ROLLBACK_JOURNAL).map_err(io_error)?;
     Ok(HostServiceOutcome {
         ok: true,
         changed: true,
@@ -412,10 +457,40 @@ fn dropins_sha256(snapshot: &DirectorySnapshot) -> Result<String, ToolError> {
     Ok(hex::encode(digest.finalize()))
 }
 
+fn restore_retained_generation_files_at(
+    retained: &RetainedHostRelease,
+    binary_path: &Path,
+    unit_path: &Path,
+    dropins_path: &Path,
+) -> Result<(), ToolError> {
+    restore_executable(binary_path, Some(&retained.binary))?;
+    atomic_write(unit_path, &retained.unit)?;
+    retained.dropins.restore(dropins_path)
+}
+
+async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
+    let journal = Path::new(HOST_SERVICE_ROLLBACK_JOURNAL);
+    if !journal.exists() {
+        return Ok(());
+    }
+    let retained = load_previous_host_release_at(journal)?;
+    restore_retained_generation_files_at(
+        &retained,
+        Path::new("/usr/local/bin/labby"),
+        &unit_path(),
+        Path::new("/etc/systemd/system/labby.service.d"),
+    )?;
+    run_systemctl(&["daemon-reload"]).await?;
+    restore_captured_unit_file_state(SERVICE_NAME, retained.enabled).await?;
+    restore_captured_active_state(SERVICE_NAME, retained.active).await?;
+    std::fs::remove_dir_all(journal).map_err(io_error)
+}
+
 pub(crate) async fn install_self_transaction(
     source: &Path,
 ) -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
+    recover_interrupted_host_service_rollback().await?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -1228,6 +1303,8 @@ pub(crate) async fn installed_and_ready() -> Result<bool, ToolError> {
 }
 
 pub(crate) async fn restart() -> Result<HostServiceOutcome, ToolError> {
+    let _transaction = acquire_host_service_transaction_lock()?;
+    recover_interrupted_host_service_rollback().await?;
     let port = preflight_port_available("restart").await?;
     let path = unit_path();
     provision_oauth_encryption_key_before_restart().await?;
@@ -1276,6 +1353,8 @@ async fn provision_oauth_encryption_key_before_restart() -> Result<(), ToolError
 }
 
 pub(crate) async fn uninstall() -> Result<HostServiceOutcome, ToolError> {
+    let _transaction = acquire_host_service_transaction_lock()?;
+    recover_interrupted_host_service_rollback().await?;
     let path = unit_path();
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -2190,6 +2269,86 @@ mod tests {
         drop(first);
         acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         second.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_service_transaction_lock_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let lock = dir.path().join("lock");
+        std::fs::write(&target, b"do not lock through this path").unwrap();
+        symlink(&target, &lock).unwrap();
+        let error = acquire_host_service_transaction_lock_at(&lock).unwrap_err();
+        assert_eq!(error.kind(), "host_service_transaction_lock_unsafe");
+    }
+
+    #[test]
+    fn interrupted_live_apply_is_restored_before_activation() {
+        for completed_phases in 0..=3 {
+            let dir = tempfile::tempdir().unwrap();
+            let journal = dir.path().join("journal");
+            let binary = dir.path().join("live-labby");
+            let unit = dir.path().join("live.service");
+            let dropins = dir.path().join("live.service.d");
+            let candidate_dropins = DirectorySnapshot {
+                existed: true,
+                files: vec![("candidate.conf".into(), b"candidate drop-in".to_vec())],
+            };
+            persist_previous_host_release_at(
+                &journal,
+                Some(b"candidate binary"),
+                Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+                Some(b"candidate unit"),
+                &candidate_dropins,
+            )
+            .unwrap();
+            restore_executable(&binary, Some(b"candidate binary")).unwrap();
+            atomic_write(&unit, b"candidate unit").unwrap();
+            candidate_dropins.restore(&dropins).unwrap();
+
+            if completed_phases >= 1 {
+                restore_executable(&binary, Some(b"previous binary")).unwrap();
+            }
+            if completed_phases >= 2 {
+                atomic_write(&unit, b"previous unit").unwrap();
+            }
+            if completed_phases >= 3 {
+                DirectorySnapshot {
+                    existed: true,
+                    files: vec![("previous.conf".into(), b"previous drop-in".to_vec())],
+                }
+                .restore(&dropins)
+                .unwrap();
+            }
+
+            let recovery = load_previous_host_release_at(&journal).unwrap();
+            restore_retained_generation_files_at(&recovery, &binary, &unit, &dropins).unwrap();
+            assert_eq!(std::fs::read(&binary).unwrap(), b"candidate binary");
+            assert_eq!(std::fs::read(&unit).unwrap(), b"candidate unit");
+            assert_eq!(
+                std::fs::read(dropins.join("candidate.conf")).unwrap(),
+                b"candidate drop-in"
+            );
+            assert!(!dropins.join("previous.conf").exists());
+        }
+    }
+
+    #[test]
+    fn restart_and_uninstall_join_the_host_service_transaction_boundary() {
+        let source = include_str!("host_service.rs");
+        for function in [
+            "pub(crate) async fn restart()",
+            "pub(crate) async fn uninstall()",
+        ] {
+            let body = &source[source.find(function).unwrap()..];
+            let boundary = body.find("\n}").unwrap();
+            let body = &body[..boundary];
+            assert!(body.contains("acquire_host_service_transaction_lock()?"));
+            assert!(body.contains("recover_interrupted_host_service_rollback().await?"));
+        }
     }
 
     #[tokio::test]
