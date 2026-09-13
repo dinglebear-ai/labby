@@ -196,6 +196,57 @@ fn persist_previous_host_release_at(
     persist_previous_host_release_with_checkpoint(root, binary, state, unit, dropins, || Ok(()))
 }
 
+fn persist_full_recovery_journal(
+    root: &Path,
+    binary: Option<&[u8]>,
+    snapshot: &HostServiceSnapshot,
+) -> Result<(), ToolError> {
+    let state = snapshot
+        .unit
+        .as_ref()
+        .map(|_| (snapshot.active, snapshot.enabled));
+    persist_previous_host_release_at(
+        root,
+        binary,
+        state,
+        snapshot.unit.as_deref(),
+        &snapshot.dropins,
+    )?;
+    for (name, bytes) in [
+        ("watchdog.service", snapshot.watchdog_service.as_deref()),
+        ("watchdog.timer", snapshot.watchdog_timer.as_deref()),
+        (
+            "watchdog-escalation.service",
+            snapshot.watchdog_escalation.as_deref(),
+        ),
+        ("service.env", snapshot.service_env.as_deref()),
+    ] {
+        restore_optional(&root.join(name), bytes)?;
+    }
+    let backups = snapshot
+        .env_backups
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let backups = serde_json::to_vec(&backups).map_err(|error| ToolError::Sdk {
+        sdk_kind: "host_service_state_capture_failed".into(),
+        message: format!("failed to encode service environment backups: {error}"),
+    })?;
+    atomic_write(&root.join("env-backups.json"), &backups)?;
+    let optional_hash = |bytes: Option<&[u8]>| bytes.map(sha256).unwrap_or_default();
+    atomic_write(
+        &root.join("full-manifest"),
+        format!(
+            "watchdog_service_present={}\nwatchdog_service_sha256={}\nwatchdog_timer_present={}\nwatchdog_timer_sha256={}\nwatchdog_escalation_present={}\nwatchdog_escalation_sha256={}\nwatchdog_active={}\nwatchdog_enabled={}\nservice_env_present={}\nservice_env_sha256={}\nenv_backups_sha256={}\n",
+            snapshot.watchdog_service.is_some(), optional_hash(snapshot.watchdog_service.as_deref()),
+            snapshot.watchdog_timer.is_some(), optional_hash(snapshot.watchdog_timer.as_deref()),
+            snapshot.watchdog_escalation.is_some(), optional_hash(snapshot.watchdog_escalation.as_deref()),
+            snapshot.watchdog_active.as_str(), snapshot.watchdog_enabled.as_str(),
+            snapshot.service_env.is_some(), optional_hash(snapshot.service_env.as_deref()), sha256(&backups),
+        ).as_bytes(),
+    )
+}
+
 fn persist_previous_host_release_with_checkpoint(
     root: &Path,
     binary: Option<&[u8]>,
@@ -284,7 +335,13 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     let _transaction = acquire_host_service_transaction_lock()?;
     prepare_host_service_mutation().await?;
     let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
-    let retained = load_previous_host_release_at(root)?;
+    let full_retained = root.join("full-manifest").exists();
+    let (retained, retained_snapshot) = if full_retained {
+        let (retained, snapshot) = load_full_recovery_snapshot_at(root)?;
+        (retained, Some(snapshot))
+    } else {
+        (load_previous_host_release_at(root)?, None)
+    };
     let prior = retained.binary;
     let desired_active = retained.active;
     let desired_enabled = retained.enabled;
@@ -292,35 +349,34 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     let current = read_optional(destination)?;
     let unit_path = unit_path();
     let current_service = HostServiceSnapshot::capture(&unit_path).await?;
-    let current_state = current_service
-        .unit
-        .as_ref()
-        .map(|_| (current_service.active, current_service.enabled));
-    persist_previous_host_release_at(
+    persist_full_recovery_journal(
         Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
         current.as_deref(),
-        current_state,
-        current_service.unit.as_deref(),
-        &current_service.dropins,
+        &current_service,
     )?;
     let prior_unit = retained.unit;
     let prior_dropins = retained.dropins;
     let activation = async {
-        restore_retained_generation_files_at(
-            &RetainedHostRelease {
-                binary: prior,
-                unit: prior_unit,
-                dropins: prior_dropins,
-                active: desired_active,
-                enabled: desired_enabled,
-            },
-            destination,
-            &unit_path,
-            Path::new("/etc/systemd/system/labby.service.d"),
-        )?;
-        run_systemctl(&["daemon-reload"]).await?;
-        restore_captured_unit_file_state(SERVICE_NAME, desired_enabled).await?;
-        restore_captured_active_state(SERVICE_NAME, desired_active).await
+        if let Some(snapshot) = retained_snapshot {
+            restore_executable(destination, prior.as_deref())?;
+            snapshot.rollback(&unit_path).await
+        } else {
+            restore_retained_generation_files_at(
+                &RetainedHostRelease {
+                    binary: prior,
+                    unit: prior_unit,
+                    dropins: prior_dropins,
+                    active: desired_active,
+                    enabled: desired_enabled,
+                },
+                destination,
+                &unit_path,
+                Path::new("/etc/systemd/system/labby.service.d"),
+            )?;
+            run_systemctl(&["daemon-reload"]).await?;
+            restore_captured_unit_file_state(SERVICE_NAME, desired_enabled).await?;
+            restore_captured_active_state(SERVICE_NAME, desired_active).await
+        }
     }
     .await;
     if let Err(primary) = activation {
@@ -460,6 +516,99 @@ fn load_previous_host_release_at(root: &Path) -> Result<RetainedHostRelease, Too
     })
 }
 
+fn load_full_recovery_snapshot_at(
+    root: &Path,
+) -> Result<(RetainedHostRelease, HostServiceSnapshot), ToolError> {
+    let retained = load_previous_host_release_at(root)?;
+    let text =
+        std::fs::read_to_string(root.join("full-manifest")).map_err(|error| ToolError::Sdk {
+            sdk_kind: "host_service_previous_generation_invalid".into(),
+            message: format!("full recovery manifest is unavailable: {error}"),
+        })?;
+    let props = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect::<BTreeMap<_, _>>();
+    let optional =
+        |name: &str, present_key: &str, hash_key: &str| -> Result<Option<Vec<u8>>, ToolError> {
+            let present = props
+                .get(present_key)
+                .copied()
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "host_service_previous_generation_invalid".into(),
+                    message: format!("full recovery manifest is missing {present_key}"),
+                })?;
+            let path = root.join(name);
+            match present {
+                "false" if path.exists() => Err(ToolError::Sdk {
+                    sdk_kind: "host_service_previous_generation_invalid".into(),
+                    message: format!("{name} exists despite absent marker"),
+                }),
+                "false" => Ok(None),
+                "true" => {
+                    let bytes = std::fs::read(&path).map_err(io_error)?;
+                    let expected = props.get(hash_key).copied().unwrap_or("");
+                    if sha256(&bytes) != expected {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: "host_service_previous_generation_invalid".into(),
+                            message: format!("{name} integrity mismatch"),
+                        });
+                    }
+                    Ok(Some(bytes))
+                }
+                value => Err(ToolError::Sdk {
+                    sdk_kind: "host_service_previous_generation_invalid".into(),
+                    message: format!("invalid {present_key} `{value}`"),
+                }),
+            }
+        };
+    let backup_bytes = std::fs::read(root.join("env-backups.json")).map_err(io_error)?;
+    if props.get("env_backups_sha256").copied().unwrap_or("") != sha256(&backup_bytes) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_previous_generation_invalid".into(),
+            message: "environment backup set integrity mismatch".into(),
+        });
+    }
+    let backups: Vec<String> =
+        serde_json::from_slice(&backup_bytes).map_err(|error| ToolError::Sdk {
+            sdk_kind: "host_service_previous_generation_invalid".into(),
+            message: format!("invalid environment backup set: {error}"),
+        })?;
+    let snapshot = HostServiceSnapshot {
+        unit: retained.unit.clone(),
+        watchdog_service: optional(
+            "watchdog.service",
+            "watchdog_service_present",
+            "watchdog_service_sha256",
+        )?,
+        watchdog_timer: optional(
+            "watchdog.timer",
+            "watchdog_timer_present",
+            "watchdog_timer_sha256",
+        )?,
+        watchdog_escalation: optional(
+            "watchdog-escalation.service",
+            "watchdog_escalation_present",
+            "watchdog_escalation_sha256",
+        )?,
+        active: retained.active,
+        enabled: retained.enabled,
+        watchdog_active: CapturedActiveState::parse(
+            props.get("watchdog_active").copied().unwrap_or(""),
+        )?,
+        watchdog_enabled: CapturedUnitFileState::parse(
+            props.get("watchdog_enabled").copied().unwrap_or(""),
+        )?,
+        service_env: optional("service.env", "service_env_present", "service_env_sha256")?,
+        env_backups: backups.into_iter().map(PathBuf::from).collect(),
+        dropins: DirectorySnapshot {
+            existed: retained.dropins.existed,
+            files: retained.dropins.files.clone(),
+        },
+    };
+    Ok((retained, snapshot))
+}
+
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -515,31 +664,13 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
     if journal.join(UPGRADE_ACTIVATED_MARKER).exists() {
         return commit_upgrade_journal_as_previous();
     }
-    let retained = load_previous_host_release_at(journal)?;
+    let (retained, snapshot) = load_full_recovery_snapshot_at(journal)?;
     let live_unit_path = unit_path();
     restore_executable(
         Path::new("/usr/local/bin/labby"),
         retained.binary.as_deref(),
     )?;
-    retained
-        .dropins
-        .restore(Path::new("/etc/systemd/system/labby.service.d"))?;
-    if retained.unit.is_none() {
-        return recover_absent_retained_unit_with(
-            &live_unit_path,
-            journal,
-            Path::new(HOST_SERVICE_RESTORED_GARBAGE),
-            |args| async move {
-                let args: Vec<_> = args.iter().map(String::as_str).collect();
-                run_systemctl(&args).await.map(|output| output.stdout)
-            },
-        )
-        .await;
-    }
-    restore_optional(&live_unit_path, retained.unit.as_deref())?;
-    run_systemctl(&["daemon-reload"]).await?;
-    restore_captured_unit_file_state(SERVICE_NAME, retained.enabled).await?;
-    restore_captured_active_state(SERVICE_NAME, retained.active).await?;
+    snapshot.rollback(&live_unit_path).await?;
     retire_recovery_journal()
 }
 
@@ -688,17 +819,11 @@ pub(crate) async fn install_self_transaction(
     let snapshot = HostServiceSnapshot::capture(&path).await?;
     let destination = Path::new("/usr/local/bin/labby");
     let prior_binary = read_optional(destination)?;
-    let prior_state = snapshot
-        .unit
-        .as_ref()
-        .map(|_| (snapshot.active, snapshot.enabled));
     let changed = snapshot.unit.as_deref() != Some(text.as_bytes());
-    persist_previous_host_release_at(
+    persist_full_recovery_journal(
         Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
         prior_binary.as_deref(),
-        prior_state,
-        snapshot.unit.as_deref(),
-        &snapshot.dropins,
+        &snapshot,
     )?;
     let result = run_self_install_transaction(
         destination,
@@ -2495,6 +2620,39 @@ mod tests {
             assert_eq!(retained.unit.as_deref(), unit);
             assert_eq!(retained.active, CapturedActiveState::Inactive);
             assert_eq!(retained.enabled, CapturedUnitFileState::Disabled);
+        }
+    }
+
+    #[test]
+    fn first_install_journal_covers_watchdog_and_environment_crash_phases() {
+        for phase in ["watchdog-units", "watchdog-enable", "credential-provision"] {
+            let dir = tempfile::tempdir().unwrap();
+            let journal = dir.path().join("journal");
+            let snapshot = HostServiceSnapshot {
+                unit: None,
+                watchdog_service: None,
+                watchdog_timer: None,
+                watchdog_escalation: None,
+                active: CapturedActiveState::Inactive,
+                enabled: CapturedUnitFileState::Disabled,
+                watchdog_active: CapturedActiveState::Inactive,
+                watchdog_enabled: CapturedUnitFileState::Disabled,
+                service_env: None,
+                env_backups: BTreeSet::new(),
+                dropins: DirectorySnapshot {
+                    existed: false,
+                    files: Vec::new(),
+                },
+            };
+            persist_full_recovery_journal(&journal, None, &snapshot).unwrap();
+            std::fs::write(dir.path().join(phase), b"candidate mutation").unwrap();
+            let (retained, recovery) = load_full_recovery_snapshot_at(&journal).unwrap();
+            assert!(retained.binary.is_none() && recovery.unit.is_none());
+            assert!(recovery.watchdog_service.is_none());
+            assert!(recovery.watchdog_timer.is_none());
+            assert!(recovery.watchdog_escalation.is_none());
+            assert!(recovery.service_env.is_none());
+            assert!(recovery.env_backups.is_empty());
         }
     }
 
