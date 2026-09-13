@@ -37,14 +37,46 @@ async fn cli(server: &live_labby::LiveLabbyGuard, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("public CLI JSON")
 }
 
-async fn advances(counter: &AtomicUsize, previous: usize, label: &str) {
+fn failure_diagnostics(server: &mut live_labby::LiveLabbyGuard, label: &str) -> String {
+    use std::io::Read as _;
+
+    // Only fixture-owned configuration/runtime files are captured. Log tails
+    // use the harness sanitizer and stay bounded; credentials are never read.
+    let snapshots: Vec<_> = ["config.toml", "config.runtime.json"]
+        .into_iter()
+        .map(|name| {
+            let path = server.root().join("labby-home").join(name);
+            let mut bytes = Vec::new();
+            let result = std::fs::File::open(path)
+                .and_then(|file| file.take(16 * 1024).read_to_end(&mut bytes));
+            json!({"file": name, "content": evidence::sanitize(&String::from_utf8_lossy(&bytes)), "read_error": result.err().map(|error| error.to_string())})
+        })
+        .collect();
+    let report =
+        json!({"phase":label, "server":server.diagnostics(Some(label)), "snapshots":snapshots});
+    // stderr is retained by the test runner even after the owned server root
+    // is cleaned up, so failures carry their attempt-matched evidence.
+    evidence::sanitize(&report.to_string())
+}
+
+async fn advances(
+    server: &mut live_labby::LiveLabbyGuard,
+    counter: &AtomicUsize,
+    previous: usize,
+    label: &str,
+) {
     tokio::time::timeout(Duration::from_secs(100), async {
         while counter.load(Ordering::SeqCst) <= previous {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("background {label} did not advance from {previous}"));
+    .unwrap_or_else(|_| {
+        panic!(
+            "background {label} did not advance from {previous}: {}",
+            failure_diagnostics(server, label)
+        )
+    });
 }
 
 fn assert_recovered(state: &Value, name: &str, tool_count: usize) {
@@ -138,7 +170,7 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
             };
             ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
         }).mount(&upstream).await;
-    let server = live_labby::LiveLabbyBuilder::new()
+    let mut server = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
         .config(format!("[gateway]\nauto_reconnect = true\n[code_mode]\nenabled = true\n[[upstream]]\nname = \"owned-recovery\"\nenabled = true\nurl = \"{}/mcp\"\n", upstream.uri()))
         .start().await.expect("isolated gateway starts");
@@ -146,18 +178,23 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
         .bind_team_gateway_credential("owned-recovery")
         .await
         .expect("owned team binding");
-    cli(&server, &["gateway", "reload"]).await;
-    assert!(
-        catalogs.load(Ordering::SeqCst) > 0,
-        "initial catalog loaded"
-    );
+    // Startup seeds the catalog lazily; observe background discovery before
+    // inducing a failure so this starts from a confirmed healthy transport.
+    advances(&mut server, &catalogs, 0, "initial background catalog").await;
+    published_recovery(&server, "owned-recovery", 1).await;
     let before_failure = failed_requests.load(Ordering::SeqCst);
     online.store(false, Ordering::SeqCst);
     // Only fixture counters are inspected here: no request to Labby can trigger recovery.
-    advances(&failed_requests, before_failure, "offline probe").await;
+    advances(
+        &mut server,
+        &failed_requests,
+        before_failure,
+        "offline probe",
+    )
+    .await;
     let before_recovery = catalogs.load(Ordering::SeqCst);
     online.store(true, Ordering::SeqCst);
-    advances(&catalogs, before_recovery, "recovered catalog").await;
+    advances(&mut server, &catalogs, before_recovery, "recovered catalog").await;
     published_recovery(&server, "owned-recovery", 1).await;
     call_recovered_tool(&server, &calls, "after-offline-recovery").await;
     // Linux cleanup intentionally scans host-wide local MCP processes, which
@@ -168,7 +205,13 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
     {
         cli(&server, &["gateway", "mcp", "cleanup", "owned-recovery"]).await;
         let after_cleanup = catalogs.load(Ordering::SeqCst);
-        advances(&catalogs, after_cleanup, "catalog after cleanup").await;
+        advances(
+            &mut server,
+            &catalogs,
+            after_cleanup,
+            "catalog after cleanup",
+        )
+        .await;
         published_recovery(&server, "owned-recovery", 1).await;
         call_recovered_tool(&server, &calls, "after-cleanup-recovery").await;
     }
@@ -188,7 +231,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
         serde_json::to_string(command).unwrap(),
         serde_json::to_string(&pid_file).unwrap(),
     );
-    let server = live_labby::LiveLabbyBuilder::new()
+    let mut server = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
         .config(config)
         .start()
@@ -198,13 +241,28 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
         .bind_team_gateway_credential("owned-stdio")
         .await
         .expect("owned stdio team binding");
-    cli(&server, &["gateway", "reload"]).await;
+    // Initial lazy discovery can wait for the periodic probe. Observe the
+    // child directly before checking the cached gateway publication.
+    let original = tokio::time::timeout(Duration::from_secs(100), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .filter(|pid| *pid > 0)
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "initial background discovery must start the owned stdio child: {}",
+            failure_diagnostics(&mut server, "initial stdio discovery")
+        )
+    });
     let initial = published_recovery(&server, "owned-stdio", 9).await;
-    let original: i32 = std::fs::read_to_string(&pid_file)
-        .expect("fixture published its own PID")
-        .trim()
-        .parse()
-        .expect("fixture PID");
     let row = initial
         .as_array()
         .unwrap()
@@ -235,7 +293,12 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
         }
     })
     .await
-    .expect("periodic recovery must replace the dead stdio child");
+    .unwrap_or_else(|_| {
+        panic!(
+            "periodic recovery must replace the dead stdio child: {}",
+            failure_diagnostics(&mut server, "stdio replacement")
+        )
+    });
     let recovered = published_recovery(&server, "owned-stdio", 9).await;
     let row = recovered
         .as_array()

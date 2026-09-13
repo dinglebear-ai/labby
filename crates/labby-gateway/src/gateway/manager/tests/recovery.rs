@@ -274,3 +274,43 @@ async fn recurring_recovery_excludes_disabled_and_subject_oauth_upstreams() {
     }
     pool.drain_for_swap("test.excluded_recovery").await;
 }
+
+#[tokio::test]
+async fn committed_seed_arms_the_existing_startup_pool() {
+    let name = "seeded-startup-recovery";
+    UpstreamPool::reset_probe_task_schedule_count_for_tests(name);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let pool = Arc::new(UpstreamPool::new());
+    let cfg = recovery_config(name);
+    pool.seed_lazy_upstreams(&cfg.upstream).await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    manager.try_seed_config(cfg.clone()).await.unwrap();
+    let scheduled = UpstreamPool::probe_task_schedule_count_for_tests(name);
+    assert!(Arc::ptr_eq(&manager.current_pool().await.unwrap(), &pool));
+    pool.drain_for_swap("test.startup_seed").await;
+    assert_eq!(
+        scheduled, 1,
+        "committed startup policy must arm the published pool"
+    );
+}
+
+#[tokio::test]
+async fn invalid_seed_never_arms_the_existing_startup_pool() {
+    let name = "invalid-startup-recovery";
+    UpstreamPool::reset_probe_task_schedule_count_for_tests(name);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let pool = Arc::new(UpstreamPool::new());
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let mut cfg = recovery_config(name);
+    cfg.upstream[0].command = Some("forbidden-command".to_string());
+    manager
+        .try_seed_config(cfg)
+        .await
+        .expect_err("invalid configuration must not publish");
+    assert_eq!(UpstreamPool::probe_task_schedule_count_for_tests(name), 0);
+    pool.drain_for_swap("test.invalid_startup_seed").await;
+}
