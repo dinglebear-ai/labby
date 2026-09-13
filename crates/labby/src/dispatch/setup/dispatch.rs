@@ -48,6 +48,7 @@ use crate::registry::{
     built_in_upstream_api_services, service_meta,
 };
 
+use super::caller::SetupCaller;
 use super::catalog::ACTIONS;
 use super::claude_plugins;
 use super::client::{cached_env_var_index, cached_registry, draft_path, env_path};
@@ -56,17 +57,35 @@ use super::params::{parse_bool, parse_entries, parse_force, parse_service, parse
 use super::secret_mask;
 use super::state;
 
-/// Top-level action dispatch.
+/// Top-level action dispatch for callers that report no operator evidence.
+///
+/// Fails closed: the caller is [`SetupCaller::Delegated`], so authentication
+/// environment keys cannot be staged or committed through this entry point.
+/// Surfaces that can prove operator authority use [`dispatch_for_caller`].
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+    dispatch_for_caller(SetupCaller::Delegated, action, params).await
+}
+
+/// Top-level action dispatch with the caller authority classified by
+/// [`SetupCaller::classify`].
+pub async fn dispatch_for_caller(
+    caller: SetupCaller,
+    action: &str,
+    params: Value,
+) -> Result<Value, ToolError> {
     let start = std::time::Instant::now();
-    let result = dispatch_inner(action, &params).await;
+    let result = dispatch_inner(caller, action, &params).await;
     let elapsed_ms = start.elapsed().as_millis();
     let log_params = !REDACTED_LOG_ACTIONS.contains(&action);
     log_outcome(action, log_params, &params, elapsed_ms, &result);
     result
 }
 
-async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError> {
+async fn dispatch_inner(
+    caller: SetupCaller,
+    action: &str,
+    params: &Value,
+) -> Result<Value, ToolError> {
     match action {
         "help" => Ok(help_payload("setup", ACTIONS)),
         "schema" => {
@@ -82,10 +101,10 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "draft.get" => run_blocking_setup("draft.get", draft_get_action).await,
         "draft.set" => {
             let params = params.clone();
-            run_blocking_setup("draft.set", move || draft_set_action(&params)).await
+            run_blocking_setup("draft.set", move || draft_set_action(caller, &params)).await
         }
         "draft.discard" => run_blocking_setup("draft.discard", draft_discard_action).await,
-        "draft.commit" => draft_commit_action(params).await,
+        "draft.commit" => draft_commit_action(caller, params).await,
         "settings.schema" => to_json(super::settings::schema_response()),
         "settings.state" => blocking_params("settings.state", params, settings_state_action).await,
         "settings.update" => {
@@ -141,7 +160,7 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "services.status" | "services_status" => services_status_action().await,
         "plugin.install" | "install_plugin" => install_plugin_action(params).await,
         "plugin.uninstall" | "uninstall_plugin" => uninstall_plugin_action(params).await,
-        "finalize" => draft_commit_action(params).await,
+        "finalize" => draft_commit_action(caller, params).await,
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `setup`"),
             valid: ACTIONS.iter().map(|s| s.name.to_string()).collect(),
@@ -673,13 +692,14 @@ fn draft_get_action() -> Result<Value, ToolError> {
     Ok(json!({ "entries": masked }))
 }
 
-fn draft_set_action(params: &Value) -> Result<Value, ToolError> {
+fn draft_set_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
     let entries = parse_entries(params)?;
     let force = parse_force(params);
 
     // Server-side defense-in-depth validation against the UiSchema. The
     // frontend has already validated, but never trust it.
     validate_against_registry(&entries)?;
+    caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
 
     let path = draft_path();
     let outcome = draft::merge_entries(&path, entries, force).map_err(map_merge_err)?;
@@ -743,7 +763,7 @@ fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
     Ok(())
 }
 
-async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
+async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
     let force = parse_force(params);
     let env = env_path();
     let draft = draft_path();
@@ -769,6 +789,15 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
         draft::read_snapshot(&draft_for_snapshot).map_err(ToolError::from)
     })
     .await?;
+    // A delegated caller may not commit authentication keys, including ones
+    // staged earlier by the operator. Refuse before the audit and before the
+    // draft is claimed, so both files stay exactly as they were.
+    caller.ensure_may_write(
+        draft_snapshot
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_str()),
+    )?;
 
     // Snapshot mtime before the audit so an interleaved writer is detected.
     let snapshot_path = env.clone();
@@ -989,6 +1018,70 @@ mod tests {
                 action.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn delegated_callers_cannot_stage_or_commit_auth_keys() {
+        let temp = tempfile::tempdir().expect("short TMPDIR lab home");
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        let env = lab_dir.join(".env");
+        let draft = lab_dir.join(".env.draft");
+        std::fs::write(&env, "LABBY_MCP_HTTP_TOKEN=sentinel-operator-token\n")
+            .expect("sentinel env");
+
+        for key in [
+            "LABBY_MCP_HTTP_TOKEN",
+            "LABBY_AUTH_ADMIN_EMAIL",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+        ] {
+            let params = json!({"entries": [{"key": key, "value": "attacker"}]});
+            for caller_dispatch in [
+                dispatch("draft.set", params.clone()).await,
+                dispatch_for_caller(SetupCaller::Delegated, "draft.set", params.clone()).await,
+            ] {
+                let error = caller_dispatch.expect_err(key);
+                assert_eq!(error.kind(), "forbidden", "{key}");
+            }
+            assert!(
+                !draft.exists(),
+                "{key}: refused draft.set must not stage anything"
+            );
+        }
+
+        // The operator stages an auth key; a delegated caller must not be able
+        // to commit it on the operator's behalf.
+        dispatch_for_caller(
+            SetupCaller::Operator,
+            "draft.set",
+            json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": "owner@example.com"}]}),
+        )
+        .await
+        .expect("operator may stage auth keys");
+        let env_before = std::fs::read(&env).expect("read env");
+        let draft_before = std::fs::read(&draft).expect("read draft");
+        for action in ["draft.commit", "finalize"] {
+            let error = dispatch_for_caller(SetupCaller::Delegated, action, json!({}))
+                .await
+                .expect_err(action);
+            assert_eq!(error.kind(), "forbidden", "{action}");
+            assert_eq!(std::fs::read(&env).unwrap(), env_before, "{action}: .env");
+            assert_eq!(
+                std::fs::read(&draft).unwrap(),
+                draft_before,
+                "{action}: draft"
+            );
+        }
+
+        // Non-auth keys stay writable by delegated admins.
+        dispatch_for_caller(
+            SetupCaller::Delegated,
+            "draft.set",
+            json!({"entries": [{"key": "LABBY_LOG", "value": "labby=debug"}]}),
+        )
+        .await
+        .expect("delegated admins may stage non-auth keys");
     }
 
     #[test]

@@ -42,6 +42,132 @@ async fn fixture(email: &str, verified: bool) -> (Arc<AuthState>, BrowserSession
     (state, session)
 }
 
+async fn handler_observed_scopes(
+    state: Arc<AuthState>,
+    session: &BrowserSessionRow,
+) -> (StatusCode, Vec<String>) {
+    let cookie = format!(
+        "{}={}",
+        state.config.session_cookie_name, session.session_id
+    );
+    let app = Router::new()
+        .route(
+            "/probe",
+            get(
+                |axum::Extension(context): axum::Extension<crate::AuthContext>| async move {
+                    context.scopes.join(" ")
+                },
+            ),
+        )
+        .layer(AuthLayer::from_state(state).with_allow_session_cookie(true));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let scopes = if status == StatusCode::OK {
+        String::from_utf8(body.to_vec())
+            .unwrap()
+            .split_whitespace()
+            .map(ToOwned::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (status, scopes)
+}
+
+/// The scope a handler observes is the only thing product admin gates read,
+/// so pin it through the real AuthLayer for every session persona.
+#[tokio::test]
+async fn handler_observes_admin_scope_only_for_the_configured_admin_session() {
+    let mut config = test_auth_config();
+    assert_eq!(config.admin_email, "user@example.com");
+    config.viewer_email_domains = vec!["lime-technology.com".into()];
+    let state = Arc::new(test_auth_state_with_config(config).await);
+    state
+        .store
+        .add_allowed_user(
+            "colleague@example.com",
+            "user@example.com",
+            crate::util::now_unix(),
+        )
+        .await
+        .unwrap();
+    let session = |subject: &'static str, email: Option<&'static str>| {
+        let state = Arc::clone(&state);
+        async move {
+            crate::session::create_bound_browser_session(
+                &state,
+                subject.into(),
+                email.map(Into::into),
+                state.inbound_provider_binding(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    for (subject, email) in [
+        ("admin-exact", "user@example.com"),
+        ("admin-upper", "USER@EXAMPLE.COM"),
+    ] {
+        let admin = session(subject, Some(email)).await;
+        let (status, scopes) = handler_observed_scopes(Arc::clone(&state), &admin).await;
+        assert_eq!(status, StatusCode::OK, "{email}");
+        assert!(
+            scopes.iter().any(|scope| scope == "lab:admin"),
+            "{email}: configured admin keeps lab:admin, got {scopes:?}"
+        );
+    }
+
+    let colleague = session("colleague", Some("colleague@example.com")).await;
+    let (status, scopes) = handler_observed_scopes(Arc::clone(&state), &colleague).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(scopes.iter().any(|scope| scope == "lab"), "{scopes:?}");
+    assert!(
+        !scopes.iter().any(|scope| scope.ends_with(":admin")),
+        "allowlisted non-admin must not observe any admin scope: {scopes:?}"
+    );
+
+    let viewer = session("viewer", Some("member@lime-technology.com")).await;
+    state
+        .store
+        .upsert_bound_verified_inbound_identity(
+            &viewer.subject,
+            "member@lime-technology.com",
+            crate::util::now_unix(),
+            state.inbound_provider_binding(),
+        )
+        .await
+        .unwrap();
+    let (status, scopes) = handler_observed_scopes(Arc::clone(&state), &viewer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        scopes,
+        vec!["lab:read"],
+        "domain-only viewers are read-only"
+    );
+
+    let anonymous = session("no-email", None).await;
+    let (status, scopes) = handler_observed_scopes(Arc::clone(&state), &anonymous).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a session without an email is never the configured admin"
+    );
+    assert!(scopes.is_empty());
+}
+
 #[test]
 fn viewer_policy_is_default_off_and_exact_verified_email_only() {
     let mut config = test_auth_config();

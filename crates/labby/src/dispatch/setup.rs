@@ -8,6 +8,7 @@
 
 pub(crate) mod access_bootstrap;
 mod bootstrap;
+mod caller;
 mod catalog;
 pub(crate) mod claude_plugins;
 mod client;
@@ -33,8 +34,9 @@ pub use access_bootstrap::{
     recover_prepare, revoke_prepare, status_prepare,
 };
 pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
+pub use caller::{SetupCaller, SetupCallerEvidence};
 pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
-pub use dispatch::dispatch;
+pub use dispatch::{dispatch, dispatch_for_caller};
 pub use types::{
     AccessBootstrapManifest, AccessBootstrapPrepare, AccessBootstrapPrepareOutcome, CommitOutcome,
     DraftEntry, PrepareJournal, PrepareJournalState, SECRET_SENTINEL, SetupClient, SetupSnapshot,
