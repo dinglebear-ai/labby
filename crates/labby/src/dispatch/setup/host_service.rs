@@ -204,9 +204,10 @@ fn persist_previous_host_release_with_checkpoint(
     dropins: &DirectorySnapshot,
     after_binary_write: impl FnOnce() -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
-    let (Some(binary), Some((active, enabled)), Some(unit)) = (binary, state, unit) else {
-        return Ok(());
-    };
+    let (active, enabled) = state.unwrap_or((
+        CapturedActiveState::Inactive,
+        CapturedUnitFileState::Disabled,
+    ));
     let binary_path = root.join("labby");
     let manifest_path = root.join("manifest");
     let previous_binary = read_optional(&binary_path)?;
@@ -222,18 +223,20 @@ fn persist_previous_host_release_with_checkpoint(
         std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(io_error)?;
     }
     let publication = (|| {
-        restore_executable(&binary_path, Some(binary))?;
-        atomic_write(&unit_path, unit)?;
+        restore_executable(&binary_path, binary)?;
+        restore_optional(&unit_path, unit)?;
         dropins.restore(&dropins_path)?;
         after_binary_write()?;
         atomic_write(
             &manifest_path,
             format!(
-                "active={}\nenabled={}\nbinary_sha256={}\nunit_sha256={}\ndropins_sha256={}\n",
+                "active={}\nenabled={}\nbinary_present={}\nunit_present={}\nbinary_sha256={}\nunit_sha256={}\ndropins_sha256={}\n",
                 active.as_str(),
                 enabled.as_str(),
-                sha256(binary),
-                sha256(unit),
+                binary.is_some(),
+                unit.is_some(),
+                binary.map(sha256).unwrap_or_default(),
+                unit.map(sha256).unwrap_or_default(),
                 dropins_sha256(dropins)?
             )
             .as_bytes(),
@@ -365,8 +368,8 @@ fn parse_previous_host_manifest(
 
 #[derive(Debug)]
 struct RetainedHostRelease {
-    binary: Vec<u8>,
-    unit: Vec<u8>,
+    binary: Option<Vec<u8>>,
+    unit: Option<Vec<u8>>,
     dropins: DirectorySnapshot,
     active: CapturedActiveState,
     enabled: CapturedUnitFileState,
@@ -387,20 +390,56 @@ fn load_previous_host_release_at(root: &Path) -> Result<RetainedHostRelease, Too
         .filter_map(|line| line.split_once('='))
         .collect::<BTreeMap<_, _>>();
     let (active, enabled) = parse_previous_host_manifest(&manifest)?;
-    let binary = std::fs::read(root.join("labby")).map_err(|error| {
-        integrity_error(format!(
-            "retained host-service binary is unavailable: {error}"
-        ))
-    })?;
-    let unit = std::fs::read(root.join("labby.service")).map_err(|error| {
-        integrity_error(format!(
-            "retained host-service unit is unavailable: {error}"
-        ))
-    })?;
+    let presence = |label: &str| -> Result<bool, ToolError> {
+        match props.get(label).copied() {
+            Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            None => Ok(true),
+            Some(value) => Err(integrity_error(format!(
+                "invalid retained {label} `{value}`"
+            ))),
+        }
+    };
+    let binary_present = presence("binary_present")?;
+    let binary = if binary_present {
+        Some(std::fs::read(root.join("labby")).map_err(|error| {
+            integrity_error(format!(
+                "retained host-service binary is unavailable: {error}"
+            ))
+        })?)
+    } else {
+        if root.join("labby").exists() {
+            return Err(integrity_error(
+                "retained host-service binary exists despite absent marker".into(),
+            ));
+        }
+        None
+    };
+    let unit_present = presence("unit_present")?;
+    let unit = if unit_present {
+        Some(std::fs::read(root.join("labby.service")).map_err(|error| {
+            integrity_error(format!(
+                "retained host-service unit is unavailable: {error}"
+            ))
+        })?)
+    } else {
+        if root.join("labby.service").exists() {
+            return Err(integrity_error(
+                "retained host-service unit exists despite absent marker".into(),
+            ));
+        }
+        None
+    };
     let dropins = DirectorySnapshot::capture(&root.join("labby.service.d"))?;
     for (label, actual) in [
-        ("binary_sha256", sha256(&binary)),
-        ("unit_sha256", sha256(&unit)),
+        (
+            "binary_sha256",
+            binary.as_deref().map(sha256).unwrap_or_default(),
+        ),
+        (
+            "unit_sha256",
+            unit.as_deref().map(sha256).unwrap_or_default(),
+        ),
         ("dropins_sha256", dropins_sha256(&dropins)?),
     ] {
         let expected = props.get(label).copied().ok_or_else(|| {
@@ -457,8 +496,8 @@ fn restore_retained_generation_files_at(
     unit_path: &Path,
     dropins_path: &Path,
 ) -> Result<(), ToolError> {
-    restore_executable(binary_path, Some(&retained.binary))?;
-    atomic_write(unit_path, &retained.unit)?;
+    restore_executable(binary_path, retained.binary.as_deref())?;
+    restore_optional(unit_path, retained.unit.as_deref())?;
     retained.dropins.restore(dropins_path)
 }
 
@@ -512,13 +551,41 @@ fn retire_recovery_journal_at(journal: &Path, garbage: &Path) -> Result<(), Tool
             message: format!("recovery garbage still exists: {}", garbage.display()),
         });
     }
-    std::fs::rename(journal, garbage).map_err(io_error)?;
+    rename_and_sync_parent(journal, garbage)?;
     remove_directory_if_present(garbage)
+}
+
+fn rename_and_sync_parent(from: &Path, to: &Path) -> Result<(), ToolError> {
+    rename_and_sync_parent_with(from, to, sync_parent_directory)
+}
+
+fn rename_and_sync_parent_with(
+    from: &Path,
+    to: &Path,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), ToolError> {
+    std::fs::rename(from, to).map_err(io_error)?;
+    let parent = to.parent().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "host_service_parent_sync_failed".into(),
+        message: format!("path has no parent directory: {}", to.display()),
+    })?;
+    sync_parent(parent).map_err(|error| ToolError::Sdk {
+        sdk_kind: "host_service_parent_sync_failed".into(),
+        message: format!(
+            "failed to sync `{}` after rename: {error}",
+            parent.display()
+        ),
+    })
 }
 
 fn remove_directory_if_present(path: &Path) -> Result<(), ToolError> {
     match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                sync_parent_directory(parent).map_err(io_error)?;
+            }
+            Ok(())
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(error)),
     }
@@ -528,13 +595,17 @@ fn finish_committed_host_service_rollback_at(
     journal: &Path,
     previous: &Path,
 ) -> Result<(), ToolError> {
-    match std::fs::remove_dir_all(previous) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(error)),
-    }
-    let garbage = journal.with_extension("restored-garbage");
+    remove_directory_if_present(previous)?;
+    let garbage = recovery_garbage_path(journal);
     retire_recovery_journal_at(journal, &garbage)
+}
+
+fn recovery_garbage_path(journal: &Path) -> PathBuf {
+    if journal == Path::new(HOST_SERVICE_ROLLBACK_JOURNAL) {
+        PathBuf::from(HOST_SERVICE_RESTORED_GARBAGE)
+    } else {
+        journal.with_extension("restored-garbage")
+    }
 }
 
 fn commit_upgrade_journal_as_previous() -> Result<(), ToolError> {
@@ -563,13 +634,13 @@ fn commit_upgrade_journal_as_previous_at(
                 ),
             });
         }
-        std::fs::rename(previous, garbage).map_err(io_error)?;
+        rename_and_sync_parent(previous, garbage)?;
     }
-    if let Err(error) = std::fs::rename(journal, previous) {
+    if let Err(error) = rename_and_sync_parent(journal, previous) {
         if garbage.exists() {
-            drop(std::fs::rename(garbage, previous));
+            drop(rename_and_sync_parent(garbage, previous));
         }
-        return Err(io_error(error));
+        return Err(error);
     }
     remove_directory_if_present(garbage)
 }
@@ -2328,8 +2399,72 @@ mod tests {
             b"[Service]\nEnvironment=OLD=1\n"
         );
         let retained = load_previous_host_release_at(&root).unwrap();
-        assert_eq!(retained.binary, b"prior binary");
-        assert_eq!(retained.unit, b"prior unit");
+        assert_eq!(retained.binary.as_deref(), Some(b"prior binary".as_slice()));
+        assert_eq!(retained.unit.as_deref(), Some(b"prior unit".as_slice()));
+    }
+
+    #[test]
+    fn first_install_journal_restores_absent_components_after_each_phase() {
+        for completed_phases in 0..=3 {
+            let dir = tempfile::tempdir().unwrap();
+            let journal = dir.path().join("journal");
+            let binary = dir.path().join("live-labby");
+            let unit = dir.path().join("live.service");
+            let dropins = dir.path().join("live.service.d");
+            let absent_dropins = DirectorySnapshot {
+                existed: false,
+                files: Vec::new(),
+            };
+            persist_previous_host_release_at(&journal, None, None, None, &absent_dropins).unwrap();
+            if completed_phases >= 1 {
+                restore_executable(&binary, Some(b"candidate")).unwrap();
+            }
+            if completed_phases >= 2 {
+                atomic_write(&unit, b"candidate unit").unwrap();
+            }
+            if completed_phases >= 3 {
+                DirectorySnapshot {
+                    existed: true,
+                    files: vec![("candidate.conf".into(), b"new".to_vec())],
+                }
+                .restore(&dropins)
+                .unwrap();
+            }
+            let recovery = load_previous_host_release_at(&journal).unwrap();
+            restore_retained_generation_files_at(&recovery, &binary, &unit, &dropins).unwrap();
+            assert!(!binary.exists());
+            assert!(!unit.exists());
+            assert!(!dropins.exists());
+            assert_eq!(recovery.active, CapturedActiveState::Inactive);
+            assert_eq!(recovery.enabled, CapturedUnitFileState::Disabled);
+        }
+    }
+
+    #[test]
+    fn journal_preserves_partial_preexisting_component_presence() {
+        for (binary, unit) in [
+            (Some(b"old binary".as_slice()), None),
+            (None, Some(b"old unit".as_slice())),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let journal = dir.path().join("journal");
+            persist_previous_host_release_at(
+                &journal,
+                binary,
+                None,
+                unit,
+                &DirectorySnapshot {
+                    existed: false,
+                    files: Vec::new(),
+                },
+            )
+            .unwrap();
+            let retained = load_previous_host_release_at(&journal).unwrap();
+            assert_eq!(retained.binary.as_deref(), binary);
+            assert_eq!(retained.unit.as_deref(), unit);
+            assert_eq!(retained.active, CapturedActiveState::Inactive);
+            assert_eq!(retained.enabled, CapturedUnitFileState::Disabled);
+        }
     }
 
     #[test]
@@ -2463,6 +2598,30 @@ mod tests {
         retire_recovery_journal_at(&journal, &garbage).unwrap();
         assert!(!journal.exists());
         assert!(!garbage.exists());
+    }
+
+    #[test]
+    fn phase_rename_sync_failure_keeps_a_recoverable_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let garbage = dir.path().join("garbage");
+        std::fs::create_dir(&journal).unwrap();
+        std::fs::write(journal.join("manifest"), b"recovery marker").unwrap();
+        let error = rename_and_sync_parent_with(&journal, &garbage, |_| {
+            Err(std::io::Error::other("injected sync failure"))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), "host_service_parent_sync_failed");
+        assert!(!journal.exists());
+        assert!(garbage.join("manifest").exists());
+    }
+
+    #[test]
+    fn committed_rollback_uses_the_prepare_cleanup_path() {
+        assert_eq!(
+            recovery_garbage_path(Path::new(HOST_SERVICE_ROLLBACK_JOURNAL)),
+            Path::new(HOST_SERVICE_RESTORED_GARBAGE)
+        );
     }
 
     #[test]
