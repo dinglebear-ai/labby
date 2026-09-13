@@ -77,7 +77,70 @@ case "$*" in
   *) exit 64 ;;
 esac
 EOF
-    chmod 755 "$bin/uname" "$bin/curl" "$bin/gh"
+    cat >"$bin/sync" <<'EOF'
+#!/bin/sh
+if [ -n "${LABBY_TEST_SYNC_LOG:-}" ]; then printf 'sync\n' >>"$LABBY_TEST_SYNC_LOG"; fi
+if [ -n "${LABBY_TEST_SYNC_HOLD:-}" ] && [ ! -e "$LABBY_TEST_SYNC_HOLD.release" ]; then
+    : >"$LABBY_TEST_SYNC_HOLD.ready"
+    while [ ! -e "$LABBY_TEST_SYNC_HOLD.release" ]; do sleep 0.02; done
+fi
+[ -z "${LABBY_TEST_SYNC_FAIL:-}" ]
+EOF
+    chmod 755 "$bin/uname" "$bin/curl" "$bin/gh" "$bin/sync"
+}
+
+test_installers_share_a_process_level_transaction_lock() {
+    local case_root="$test_root/transaction-lock" fixtures="$test_root/transaction-lock/fixtures"
+    local fake_bin="$test_root/transaction-lock/fake-bin" home="$test_root/transaction-lock/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    mkdir -p "$home/bin/.labby-install/transaction-lock"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        >"$case_root/starting.out" 2>"$case_root/starting.err"; then
+        fail "installer reclaimed a transaction lock before its owner was published"
+    fi
+    assert_contains "$case_root/starting.err" "another Labby installation is starting"
+    rm -rf "$home/bin/.labby-install/transaction-lock"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        LABBY_TEST_SYNC_HOLD="$case_root/hold" >"$case_root/first.out" 2>"$case_root/first.err" &
+    first=$!
+    for _ in $(seq 1 200); do [ -e "$case_root/hold.ready" ] && break; sleep 0.02; done
+    [ -e "$case_root/hold.ready" ] || fail "first installer never acquired the transaction lock"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        >"$case_root/second.out" 2>"$case_root/second.err"; then
+        fail "concurrent installer entered the shared transaction"
+    fi
+    assert_contains "$case_root/second.err" "another Labby installation is running"
+    : >"$case_root/hold.release"
+    wait "$first"
+    [ "$($home/bin/labby)" = release-v1 ] || fail "lock owner did not complete normally"
+}
+
+test_artifact_retention_keeps_only_current_and_rollback() {
+    local case_root="$test_root/artifact-retention" fixtures="$test_root/artifact-retention/fixtures"
+    local fake_bin="$test_root/artifact-retention/fake-bin" home="$test_root/artifact-retention/home"
+    mkdir -p "$fixtures" "$home"
+    for version in 1 2 3 4; do make_release "$fixtures" "v$version.0.0" "release-v$version"; done
+    make_fake_tools "$fake_bin" "$fixtures"
+    for version in 1 2 3 4; do run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION="v$version.0.0" >/dev/null 2>&1; done
+    [ "$(find "$home/bin/.labby-install/artifacts" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2 ] || fail "artifact history is not bounded to current plus rollback"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_ROLLBACK=1 >/dev/null 2>&1
+    [ "$($home/bin/labby)" = release-v3 ] || fail "bounded retention broke offline rollback"
+}
+
+test_durability_barrier_failure_prevents_activation() {
+    local case_root="$test_root/durability" fixtures="$test_root/durability/fixtures"
+    local fake_bin="$test_root/durability/fake-bin" home="$test_root/durability/home"
+    mkdir -p "$fixtures" "$home/bin"
+    make_release "$fixtures" v2.0.0 release-v2
+    make_fake_tools "$fake_bin" "$fixtures"
+    printf '#!/bin/sh\necho sentinel\n' >"$home/bin/labby"; chmod 755 "$home/bin/labby"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 LABBY_TEST_SYNC_FAIL=1 >"$case_root/out" 2>"$case_root/err"; then
+        fail "installer ignored a failed durability barrier"
+    fi
+    [ "$($home/bin/labby)" = sentinel ] || fail "durability failure changed the live binary"
+    assert_contains "$case_root/err" "cannot durably flush installer transaction"
 }
 
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
@@ -764,6 +827,23 @@ EOF
     if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=invalid >"$case_root/out" 2>"$case_root/err"; then
         fail "accepted invalid auto-update mode"
     fi
+
+    local rollback_root="$test_root/launchd-auto-update-rollback"
+    fake_bin="$rollback_root/fake-bin"; home="$rollback_root/home"
+    mkdir -p "$home/.local/bin"
+    cat >"$home/.local/bin/labby" <<'EOF'
+#!/bin/sh
+if [ "$*" = "update --auto-update disable" ]; then exit 23; fi
+exit 0
+EOF
+    chmod 755 "$home/.local/bin/labby"
+    make_fake_launchd_tools "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' >"$fake_bin/gh"; chmod 755 "$fake_bin/gh"
+    if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=1 >"$rollback_root/out" 2>"$rollback_root/err"; then
+        fail "scheduler handoff failure left the combined service installed"
+    fi
+    [ ! -e "$home/Library/LaunchAgents/ai.dinglebear.labby.plist" ] || fail "scheduler handoff failure retained the combined plist"
+    [ ! -e "$home/launchctl.state" ] || fail "scheduler handoff failure retained the combined launchd job"
 }
 
 test_failed_journal_retirement_preserves_backups() {
@@ -799,6 +879,9 @@ SH
 }
 
 test_failed_journal_retirement_preserves_backups
+test_installers_share_a_process_level_transaction_lock
+test_artifact_retention_keeps_only_current_and_rollback
+test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
 test_latest_api_failure_never_uses_mutable_latest_download

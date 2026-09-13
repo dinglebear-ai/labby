@@ -365,7 +365,7 @@ async fn installer_failure_propagates_without_reporting_success() {
 }
 
 #[test]
-fn installer_pins_release_and_disables_source_fallback() {
+fn every_host_update_entry_point_pins_and_sanitizes_installer_control() {
     let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
     let env: std::collections::HashMap<_, _> = command.get_envs().collect();
     assert_eq!(
@@ -376,4 +376,11 @@ fn installer_pins_release_and_disables_source_fallback() {
         env[std::ffi::OsStr::new("LABBY_ALLOW_SOURCE_FALLBACK")],
         Some(std::ffi::OsStr::new("0"))
     );
+    for key in INSTALL_CONTROL_VARIABLES {
+        assert_eq!(
+            env[std::ffi::OsStr::new(key)],
+            None,
+            "ambient {key} must not alter an operator-requested update"
+        );
+    }
 }

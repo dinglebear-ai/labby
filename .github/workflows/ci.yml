@@ -353,13 +353,19 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     needs: changes
-    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' || needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Run installer contracts on macOS
         run: scripts/tests/installers.sh
+      - name: Run macOS updater and recovery lifecycle tests
+        run: |
+          cargo test -p labby --all-features --locked self_update::tests
+          cargo test -p labby --all-features --locked --test gateway_auto_reconnect
 
   frontend-assets:
     name: Frontend assets
