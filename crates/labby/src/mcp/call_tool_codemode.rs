@@ -445,7 +445,10 @@ pub(crate) fn code_mode_description_with_suffix(
     const SEPARATOR: &str = "\n\n";
     const TRUNCATION_NOTE: &str =
         "\n\n[description truncated; use codemode.search for live details]";
-    const SUFFIX_PREFIX_MAX_BYTES: usize = 512;
+    // Preserve enough of the suffix to identify its contract while leaving
+    // room for at least the first configured upstream name. Agents need that
+    // name to rediscover details after the description is capped.
+    const SUFFIX_PREFIX_MAX_BYTES: usize = 256;
 
     let body = dynamic_code_mode_description(upstreams);
     let body = body.as_str();
