@@ -1070,6 +1070,32 @@ if authenticated_action; then exit 93; fi
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn('workflows: ["Release", "release-please"]', reminder)
 
+    def test_existing_auto_merge_is_paused_before_release_please_refreshes(self) -> None:
+        workflow = self.text(".github/workflows/release-please.yml")
+        pause = workflow.index("stabilize-release-pr:")
+        release = workflow.index("  release-please:", pause)
+        self.assertLess(pause, release)
+        self.assertIn("needs: stabilize-release-pr", workflow[release:])
+        self.assertIn("--disable-auto", workflow[pause:release])
+        self.assertIn("auto_merge_pr", workflow[pause:release])
+
+    def test_release_metadata_sync_repairs_partial_release_please_failure(self) -> None:
+        workflow = self.text(".github/workflows/release-please.yml")
+        sync = workflow[workflow.index("  sync-release-version:") :]
+        self.assertIn("if: ${{ always() && !cancelled()", sync)
+        self.assertNotIn("needs.release-please.outputs.prs_created == 'true'", sync)
+        self.assertIn("gh pr list", sync)
+        self.assertIn("Patch release metadata and regenerate Cargo.lock", sync)
+
+    def test_release_auto_merge_is_restored_only_for_verified_remote_head(self) -> None:
+        workflow = self.text(".github/workflows/release-please.yml")
+        sync = workflow[workflow.index("  sync-release-version:") :]
+        verification = sync.index("Verify the remote release head and restore auto-merge")
+        self.assertLess(sync.index("git push origin"), verification)
+        self.assertIn("headRefOid", sync[verification:])
+        self.assertIn('--match-head-commit "$observed"', sync[verification:])
+        self.assertIn('"$RELEASE_PLEASE_RESULT" == success', sync[verification:])
+
 
 if __name__ == "__main__":
     unittest.main()
