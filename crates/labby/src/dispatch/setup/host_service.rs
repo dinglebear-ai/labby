@@ -26,6 +26,9 @@ const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const CAPTURE_BYTES: usize = 16 * 1024;
 const PREVIOUS_HOST_RELEASE_DIR: &str = "/var/lib/labby/host-service-previous";
 const HOST_SERVICE_ROLLBACK_JOURNAL: &str = "/var/lib/labby/host-service-rollback-journal";
+const HOST_SERVICE_RESTORED_GARBAGE: &str = "/var/lib/labby/host-service-restored-garbage";
+const HOST_SERVICE_PREVIOUS_GARBAGE: &str = "/var/lib/labby/host-service-previous-garbage";
+const UPGRADE_ACTIVATED_MARKER: &str = "upgrade-activated";
 const HOST_SERVICE_TRANSACTION_LOCK: &str = "/var/lib/labby/host-service.transaction.lock";
 
 #[derive(Debug)]
@@ -167,7 +170,7 @@ pub(crate) async fn unit() -> Result<String, ToolError> {
 
 pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
-    recover_interrupted_host_service_rollback().await?;
+    prepare_host_service_mutation().await?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -181,20 +184,6 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
             Err(rollback) => Err(host_transaction_failure(&primary, Some(&rollback))),
         },
     }
-}
-
-fn persist_previous_host_release(
-    binary: Option<&[u8]>,
-    state: Option<(CapturedActiveState, CapturedUnitFileState)>,
-    service: &HostServiceSnapshot,
-) -> Result<(), ToolError> {
-    persist_previous_host_release_at(
-        Path::new(PREVIOUS_HOST_RELEASE_DIR),
-        binary,
-        state,
-        service.unit.as_deref(),
-        &service.dropins,
-    )
 }
 
 fn persist_previous_host_release_at(
@@ -290,7 +279,7 @@ fn persist_previous_host_release_with_checkpoint(
 
 pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
-    recover_interrupted_host_service_rollback().await?;
+    prepare_host_service_mutation().await?;
     let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
     let retained = load_previous_host_release_at(root)?;
     let prior = retained.binary;
@@ -334,13 +323,15 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     if let Err(primary) = activation {
         let binary_restore = restore_executable(destination, current.as_deref());
         let service_restore = current_service.rollback(&unit_path).await;
-        if binary_restore.is_ok() && service_restore.is_ok() {
-            drop(std::fs::remove_dir_all(HOST_SERVICE_ROLLBACK_JOURNAL));
-        }
+        let journal_cleanup = if binary_restore.is_ok() && service_restore.is_ok() {
+            retire_recovery_journal()
+        } else {
+            Ok(())
+        };
         return Err(ToolError::Sdk {
             sdk_kind: "host_service_release_rollback_failed".into(),
             message: format!(
-                "previous host release activation failed: {primary}; candidate restoration: binary={binary_restore:?}, service={service_restore:?}"
+                "previous host release activation failed: {primary}; candidate restoration: binary={binary_restore:?}, service={service_restore:?}, journal={journal_cleanup:?}"
             ),
         });
     }
@@ -482,6 +473,9 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
             Path::new(PREVIOUS_HOST_RELEASE_DIR),
         );
     }
+    if journal.join(UPGRADE_ACTIVATED_MARKER).exists() {
+        return commit_upgrade_journal_as_previous();
+    }
     let retained = load_previous_host_release_at(journal)?;
     restore_retained_generation_files_at(
         &retained,
@@ -492,7 +486,42 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
     run_systemctl(&["daemon-reload"]).await?;
     restore_captured_unit_file_state(SERVICE_NAME, retained.enabled).await?;
     restore_captured_active_state(SERVICE_NAME, retained.active).await?;
-    std::fs::remove_dir_all(journal).map_err(io_error)
+    retire_recovery_journal()
+}
+
+async fn prepare_host_service_mutation() -> Result<(), ToolError> {
+    remove_directory_if_present(Path::new(HOST_SERVICE_RESTORED_GARBAGE))?;
+    recover_interrupted_host_service_rollback().await?;
+    remove_directory_if_present(Path::new(HOST_SERVICE_PREVIOUS_GARBAGE))
+}
+
+fn retire_recovery_journal() -> Result<(), ToolError> {
+    retire_recovery_journal_at(
+        Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
+        Path::new(HOST_SERVICE_RESTORED_GARBAGE),
+    )
+}
+
+fn retire_recovery_journal_at(journal: &Path, garbage: &Path) -> Result<(), ToolError> {
+    if !journal.exists() {
+        return Ok(());
+    }
+    if garbage.exists() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_journal_cleanup_failed".into(),
+            message: format!("recovery garbage still exists: {}", garbage.display()),
+        });
+    }
+    std::fs::rename(journal, garbage).map_err(io_error)?;
+    remove_directory_if_present(garbage)
+}
+
+fn remove_directory_if_present(path: &Path) -> Result<(), ToolError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 fn finish_committed_host_service_rollback_at(
@@ -504,14 +533,52 @@ fn finish_committed_host_service_rollback_at(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(error)),
     }
-    std::fs::remove_dir_all(journal).map_err(io_error)
+    let garbage = journal.with_extension("restored-garbage");
+    retire_recovery_journal_at(journal, &garbage)
+}
+
+fn commit_upgrade_journal_as_previous() -> Result<(), ToolError> {
+    commit_upgrade_journal_as_previous_at(
+        Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
+        Path::new(PREVIOUS_HOST_RELEASE_DIR),
+        Path::new(HOST_SERVICE_PREVIOUS_GARBAGE),
+    )
+}
+
+fn commit_upgrade_journal_as_previous_at(
+    journal: &Path,
+    previous: &Path,
+    garbage: &Path,
+) -> Result<(), ToolError> {
+    if !journal.exists() {
+        return Ok(());
+    }
+    if previous.exists() {
+        if garbage.exists() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "host_service_previous_cleanup_failed".into(),
+                message: format!(
+                    "previous-generation garbage still exists: {}",
+                    garbage.display()
+                ),
+            });
+        }
+        std::fs::rename(previous, garbage).map_err(io_error)?;
+    }
+    if let Err(error) = std::fs::rename(journal, previous) {
+        if garbage.exists() {
+            drop(std::fs::rename(garbage, previous));
+        }
+        return Err(io_error(error));
+    }
+    remove_directory_if_present(garbage)
 }
 
 pub(crate) async fn install_self_transaction(
     source: &Path,
 ) -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
-    recover_interrupted_host_service_rollback().await?;
+    prepare_host_service_mutation().await?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -524,18 +591,41 @@ pub(crate) async fn install_self_transaction(
         .as_ref()
         .map(|_| (snapshot.active, snapshot.enabled));
     let changed = snapshot.unit.as_deref() != Some(text.as_bytes());
-    run_self_install_transaction(
+    persist_previous_host_release_at(
+        Path::new(HOST_SERVICE_ROLLBACK_JOURNAL),
+        prior_binary.as_deref(),
+        prior_state,
+        snapshot.unit.as_deref(),
+        &snapshot.dropins,
+    )?;
+    let result = run_self_install_transaction(
         destination,
         prior_binary.as_deref(),
         async {
             install_executable(source, destination)?;
             let outcome = install_commit(port, path.clone(), text, changed).await?;
-            persist_previous_host_release(prior_binary.as_deref(), prior_state, &snapshot)?;
             Ok(outcome)
         },
         || snapshot.rollback(&path),
     )
-    .await
+    .await;
+    match result {
+        Ok(outcome) => {
+            if Path::new(HOST_SERVICE_ROLLBACK_JOURNAL).exists() {
+                atomic_write(
+                    &Path::new(HOST_SERVICE_ROLLBACK_JOURNAL).join(UPGRADE_ACTIVATED_MARKER),
+                    b"candidate-generation-active\n",
+                )?;
+                commit_upgrade_journal_as_previous()?;
+            }
+            Ok(outcome)
+        }
+        Err(error) if error.kind() == "host_service_upgrade_rolled_back" => {
+            retire_recovery_journal()?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Binary replacement, activation, and recovery retention share one rollback
@@ -1325,7 +1415,7 @@ pub(crate) async fn installed_and_ready() -> Result<bool, ToolError> {
 
 pub(crate) async fn restart() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
-    recover_interrupted_host_service_rollback().await?;
+    prepare_host_service_mutation().await?;
     let port = preflight_port_available("restart").await?;
     let path = unit_path();
     provision_oauth_encryption_key_before_restart().await?;
@@ -1375,7 +1465,7 @@ async fn provision_oauth_encryption_key_before_restart() -> Result<(), ToolError
 
 pub(crate) async fn uninstall() -> Result<HostServiceOutcome, ToolError> {
     let _transaction = acquire_host_service_transaction_lock()?;
-    recover_interrupted_host_service_rollback().await?;
+    prepare_host_service_mutation().await?;
     let path = unit_path();
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -2308,7 +2398,9 @@ mod tests {
 
     #[test]
     fn interrupted_live_apply_is_restored_before_activation() {
-        for completed_phases in 0..=3 {
+        // Phases 4 and 5 model interruption after daemon-reload and activation;
+        // neither may retire the journal before the operation commits.
+        for completed_phases in 0..=5 {
             let dir = tempfile::tempdir().unwrap();
             let journal = dir.path().join("journal");
             let binary = dir.path().join("live-labby");
@@ -2358,6 +2450,50 @@ mod tests {
     }
 
     #[test]
+    fn failed_abort_cleanup_preserves_a_retryable_recovery_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let garbage = dir.path().join("garbage");
+        std::fs::create_dir(&journal).unwrap();
+        std::fs::write(journal.join("manifest"), b"recovery marker").unwrap();
+        std::fs::create_dir(&garbage).unwrap();
+        assert!(retire_recovery_journal_at(&journal, &garbage).is_err());
+        assert!(journal.join("manifest").exists());
+        std::fs::remove_dir(&garbage).unwrap();
+        retire_recovery_journal_at(&journal, &garbage).unwrap();
+        assert!(!journal.exists());
+        assert!(!garbage.exists());
+    }
+
+    #[test]
+    fn activated_upgrade_publication_resumes_between_directory_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let previous = dir.path().join("previous");
+        let garbage = dir.path().join("previous-garbage");
+        std::fs::create_dir(&journal).unwrap();
+        std::fs::write(journal.join("manifest"), b"immediate prior generation").unwrap();
+        atomic_write(
+            &journal.join(UPGRADE_ACTIVATED_MARKER),
+            b"candidate-generation-active\n",
+        )
+        .unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        std::fs::write(previous.join("manifest"), b"older retained generation").unwrap();
+
+        // Simulate interruption after moving the old retained generation aside.
+        std::fs::rename(&previous, &garbage).unwrap();
+        commit_upgrade_journal_as_previous_at(&journal, &previous, &garbage).unwrap();
+
+        assert_eq!(
+            std::fs::read(previous.join("manifest")).unwrap(),
+            b"immediate prior generation"
+        );
+        assert!(!journal.exists());
+        assert!(!garbage.exists());
+    }
+
+    #[test]
     fn committed_rollback_cleanup_resumes_between_deletions() {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
@@ -2396,7 +2532,7 @@ mod tests {
             let boundary = body.find("\n}").unwrap();
             let body = &body[..boundary];
             assert!(body.contains("acquire_host_service_transaction_lock()?"));
-            assert!(body.contains("recover_interrupted_host_service_rollback().await?"));
+            assert!(body.contains("prepare_host_service_mutation().await?"));
         }
     }
 
