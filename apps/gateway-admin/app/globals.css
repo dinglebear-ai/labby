@@ -508,9 +508,16 @@
      normally translates this wrapper to the launcher, which would make the
      panel's fixed offsets relative to that transformed wrapper. */
   [data-radix-popper-content-wrapper]:has([data-phoenix-panel]) {
-    inset: 0 auto auto 0 !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
     min-width: 0 !important;
+    pointer-events: none !important;
     transform: none !important;
+  }
+
+  [data-phoenix-panel] {
+    pointer-events: auto;
   }
 
   /* Gateway table row tones. */
