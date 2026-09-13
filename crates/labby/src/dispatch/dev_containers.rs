@@ -135,21 +135,6 @@ const fn action(
     }
 }
 
-const fn admin_action(
-    name: &'static str,
-    description: &'static str,
-    params: &'static [ParamSpec],
-) -> ActionSpec {
-    ActionSpec {
-        name,
-        description,
-        destructive: false,
-        requires_admin: true,
-        params,
-        returns: "object",
-    }
-}
-
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     action(
         "dev_containers.templates.list",
@@ -187,15 +172,17 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         &[TEMPLATE_ID, EXPECTED_REVISION, ENVIRONMENT],
         false,
     ),
-    admin_action(
+    action(
         "dev_containers.build",
         "Build and publish a new immutable image revision",
         &[TEMPLATE_ID, EXPECTED_REVISION, REQUEST_ID],
+        false,
     ),
-    admin_action(
+    action(
         "dev_containers.rebuild",
         "Rebuild and publish a new immutable image revision",
         &[TEMPLATE_ID, EXPECTED_REVISION, REQUEST_ID],
+        false,
     ),
     action(
         "dev_containers.build.get",

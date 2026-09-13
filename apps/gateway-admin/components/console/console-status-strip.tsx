@@ -103,7 +103,7 @@ function Metric({
       href={href}
       data-menurow="1"
       title={title}
-      aria-label={title}
+      aria-label={title ?? `${value} ${label}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -120,9 +120,8 @@ function Metric({
         whiteSpace: 'nowrap',
       }}
     >
-      <Icon size={13} strokeWidth={1.8} />
+      <span aria-hidden="true" style={{ color }}><Icon size={13} strokeWidth={1.8} /></span>
       <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-      <span>{label}</span>
     </Link>
   )
 }

@@ -3583,10 +3583,8 @@
     "action": "dev_containers.build",
     "description": "Build and publish a new immutable image revision",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
     "authorization_boundary": "resource_capability",
     "required_capability": "scope.operate",
     "resource_family": "dev_container",
@@ -3618,7 +3616,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3945,10 +3943,8 @@
     "action": "dev_containers.rebuild",
     "description": "Rebuild and publish a new immutable image revision",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
+    "requires_admin": false,
+    "required_scopes": [],
     "authorization_boundary": "resource_capability",
     "required_capability": "scope.operate",
     "resource_family": "dev_container",
@@ -3980,7 +3976,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

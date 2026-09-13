@@ -13,6 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use serde_json::{Value, json};
@@ -27,6 +28,10 @@ use crate::dispatch::error::ToolError;
 
 const EVENT_CAPACITY: usize = 256;
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+#[cfg(not(test))]
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Operator-owned process launch configuration. Secret values are passed only
 /// through the child environment and never serialized into protocol events.
@@ -149,6 +154,14 @@ impl AppServerRuntime {
     }
 
     pub(crate) async fn request(&self, method: &str, params: Value) -> Result<Value, ToolError> {
+        let runtime = self.clone();
+        let method = method.to_owned();
+        tokio::spawn(async move { runtime.request_owned(&method, params).await })
+            .await
+            .map_err(|_| unavailable("Container-local Codex App Server request task stopped"))?
+    }
+
+    async fn request_owned(&self, method: &str, params: Value) -> Result<Value, ToolError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id, sender);
@@ -159,9 +172,16 @@ impl AppServerRuntime {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
-        receiver
-            .await
-            .map_err(|_| unavailable("Container-local Codex App Server stopped"))?
+        match tokio::time::timeout(REQUEST_TIMEOUT, receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(unavailable("Container-local Codex App Server stopped")),
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                Err(unavailable(
+                    "Container-local Codex App Server request exceeded its 30 second limit",
+                ))
+            }
+        }
     }
 
     pub(crate) async fn interrupt(
@@ -288,5 +308,35 @@ done
         let requests = fs::read_to_string(capture).unwrap();
         assert_eq!(requests.matches("turn/start").count(), 1);
         assert_eq!(requests.matches("turn/interrupt").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_requests_time_out_and_release_pending_capacity() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("fixture");
+        fs::write(&command, "#!/bin/sh\nwhile read request; do :; done\n").unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = AppServerRuntime::launch(LaunchSpec {
+            command,
+            args: vec![],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let request = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.request("never/responds", json!({})).await }
+        });
+        while runtime.pending.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        request.abort();
+        tokio::time::sleep(REQUEST_TIMEOUT + Duration::from_millis(50)).await;
+
+        assert!(runtime.pending.lock().await.is_empty());
     }
 }

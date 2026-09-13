@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn dedicated_contract_requires_the_exact_action_reason_and_error_kind() {
-        let mut accepted = event("action::Mcp::gateway:gateway.clients.list", false, false);
+        let mut accepted = event("action::Api::gateway:gateway.clients.list", false, false);
         accepted.outcome_kind =
             "dedicated_contract:catalog_dispatch_mismatch:unknown_action".into();
         assert!(is_accepted_dedicated_contract(

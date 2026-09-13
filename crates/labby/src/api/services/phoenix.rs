@@ -84,6 +84,7 @@ mod tests {
         assert!(csrf_exempt("phoenix.session.list"));
         assert!(csrf_exempt("phoenix.session.read"));
         assert!(!csrf_exempt("phoenix.session.start"));
+        assert!(!csrf_exempt("phoenix.session.rename"));
         assert!(!csrf_exempt("phoenix.session.close"));
     }
 }

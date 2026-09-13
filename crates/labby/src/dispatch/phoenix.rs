@@ -5,7 +5,7 @@ use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 use base64::Engine as _;
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     config::PhoenixPreferences,
@@ -72,6 +72,11 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         &[param("session_id", true)],
     ),
     action(
+        "phoenix.session.rename",
+        "Rename a caller-scoped Phoenix session",
+        &[param("session_id", true), param("title", true)],
+    ),
+    action(
         "phoenix.session.close",
         "Close a caller-scoped Phoenix session",
         &[param("session_id", true)],
@@ -122,23 +127,26 @@ struct Message {
     created_at_ms: u64,
 }
 
-#[derive(Clone)]
 struct Session {
     owner: String,
     thread_id: String,
     turn_in_progress: bool,
+    closing: bool,
     active_turn_id: Option<String>,
     runtime: AppServerRuntime,
     messages: Vec<Message>,
     events: Vec<Value>,
     model: Option<String>,
     effort: Option<String>,
+    title: Option<String>,
+    _capacity: OwnedSemaphorePermit,
 }
 
 #[derive(Clone)]
 pub(crate) struct PhoenixRuntime {
     config: PhoenixPreferences,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
+    capacity: Arc<Semaphore>,
 }
 
 impl PhoenixRuntime {
@@ -147,6 +155,7 @@ impl PhoenixRuntime {
         Self {
             config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
         }
     }
 
@@ -176,6 +185,14 @@ impl PhoenixRuntime {
                 .await
             }
             "phoenix.session.read" => self.read(owner, &required(&params, "session_id")?).await,
+            "phoenix.session.rename" => {
+                self.rename(
+                    owner,
+                    &required(&params, "session_id")?,
+                    &required(&params, "title")?,
+                )
+                .await
+            }
             "phoenix.session.close" => self.close(owner, &required(&params, "session_id")?).await,
             "phoenix.turn.send" => {
                 let session_id = required(&params, "session_id")?;
@@ -310,11 +327,11 @@ impl PhoenixRuntime {
         effort: Option<String>,
     ) -> Result<Value, ToolError> {
         self.require_available()?;
-        if self.sessions.lock().await.len() >= MAX_SESSIONS {
-            return Err(unavailable(
+        let capacity = Arc::clone(&self.capacity).try_acquire_owned().map_err(|_| {
+            unavailable(
                 "Phoenix has reached its 32-session limit; close a session before starting another",
-            ));
-        }
+            )
+        })?;
         validate_selection("model", model.as_deref())?;
         validate_selection("effort", effort.as_deref())?;
         let runtime = initialized_app_server(&self.config).await?;
@@ -347,12 +364,15 @@ impl PhoenixRuntime {
                 owner: owner.to_owned(),
                 thread_id,
                 turn_in_progress: false,
+                closing: false,
                 active_turn_id: None,
                 runtime,
                 messages: Vec::new(),
                 events: Vec::new(),
                 model,
                 effort,
+                title: None,
+                _capacity: capacity,
             })),
         );
         Ok(json!({"session_id":session_id,"status":"ready","messages":[]}))
@@ -388,21 +408,61 @@ impl PhoenixRuntime {
         Ok(render_session(session_id, &state))
     }
 
+    async fn rename(&self, owner: &str, session_id: &str, title: &str) -> Result<Value, ToolError> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > MAX_SESSION_TITLE_CHARS {
+            return Err(invalid("title", "title must contain 1-120 characters"));
+        }
+        let session = self.session(owner, session_id).await?;
+        let mut state = session.lock().await;
+        if state.closing {
+            return Err(unavailable("Phoenix session is closing"));
+        }
+        state.title = Some(title.to_owned());
+        Ok(render_session(session_id, &state))
+    }
+
     async fn close(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
         let session = self.session(owner, session_id).await?;
+        let sessions = Arc::clone(&self.sessions);
+        let session_id = session_id.to_owned();
+        tokio::spawn(async move { Self::run_close(sessions, session, session_id).await })
+            .await
+            .map_err(|_| unavailable("Phoenix close task stopped"))?
+    }
+
+    async fn run_close(
+        sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
+        session: Arc<Mutex<Session>>,
+        session_id: String,
+    ) -> Result<Value, ToolError> {
         let (runtime, thread_id) = {
-            let state = session.lock().await;
+            let mut state = session.lock().await;
             if state.turn_in_progress {
                 return Err(unavailable(
                     "Phoenix cannot close a session with an active turn",
                 ));
             }
+            if state.closing {
+                return Err(unavailable("Phoenix session is already closing"));
+            }
+            state.closing = true;
             (state.runtime.clone(), state.thread_id.clone())
         };
-        runtime
+        if let Err(error) = runtime
             .request("thread/close", json!({"threadId":thread_id}))
-            .await?;
-        self.sessions.lock().await.remove(session_id);
+            .await
+        {
+            session.lock().await.closing = false;
+            return Err(error);
+        }
+        let mut sessions = sessions.lock().await;
+        if sessions
+            .get(&session_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &session))
+        {
+            sessions.remove(&session_id);
+        }
         Ok(json!({"session_id":session_id,"status":"closed"}))
     }
 
@@ -417,19 +477,32 @@ impl PhoenixRuntime {
         if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
             return Err(invalid("input", "input must contain 1-32768 bytes"));
         }
-        let session = self.session(owner, session_id).await?;
         let protocol_inputs = turn_inputs(input, attachments)?;
+        let session = self.session(owner, session_id).await?;
+        let session_id = session_id.to_owned();
+        let input = input.to_owned();
+        tokio::spawn(
+            async move { Self::run_turn(session, session_id, input, protocol_inputs).await },
+        )
+        .await
+        .map_err(|_| unavailable("Phoenix turn task stopped"))?
+    }
+
+    async fn run_turn(
+        session: Arc<Mutex<Session>>,
+        session_id: String,
+        input: String,
+        protocol_inputs: Vec<Value>,
+    ) -> Result<Value, ToolError> {
         let (runtime, thread_id, model, effort) = {
             let mut state = session.lock().await;
+            if state.closing {
+                return Err(unavailable("Phoenix session is closing"));
+            }
             if state.turn_in_progress {
                 return Err(unavailable("Phoenix session already has an active turn"));
             }
             state.turn_in_progress = true;
-            state.messages.push(Message {
-                role: "user",
-                text: input.to_owned(),
-                created_at_ms: now_millis(),
-            });
             (
                 state.runtime.clone(),
                 state.thread_id.clone(),
@@ -468,7 +541,15 @@ impl PhoenixRuntime {
             session.lock().await.turn_in_progress = false;
             return Err(protocol_error());
         };
-        session.lock().await.active_turn_id = Some(turn_id.clone());
+        {
+            let mut state = session.lock().await;
+            state.active_turn_id = Some(turn_id.clone());
+            state.messages.push(Message {
+                role: "user",
+                text: input,
+                created_at_ms: now_millis(),
+            });
+        }
         let result = tokio::time::timeout(
             TURN_TIMEOUT,
             collect_turn(&mut events, &thread_id, &turn_id, &session),
@@ -504,7 +585,7 @@ impl PhoenixRuntime {
             let excess = state.messages.len() - MAX_MESSAGES;
             state.messages.drain(..excess);
         }
-        Ok(render_session(session_id, &state))
+        Ok(render_session(&session_id, &state))
     }
 
     async fn interrupt(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
@@ -557,14 +638,6 @@ impl PhoenixRuntime {
         target_type: &str,
         target: Option<String>,
     ) -> Result<Value, ToolError> {
-        let session = self.session(owner, session_id).await?;
-        let (runtime, thread_id) = {
-            let state = session.lock().await;
-            if state.turn_in_progress {
-                return Err(unavailable("Phoenix session already has an active turn"));
-            }
-            (state.runtime.clone(), state.thread_id.clone())
-        };
         let review_target = match target_type {
             "uncommitted_changes" | "uncommittedChanges" => json!({"type":"uncommittedChanges"}),
             "base_branch" => json!({"type":"baseBranch","branch":required_target(target)?}),
@@ -572,13 +645,92 @@ impl PhoenixRuntime {
             "custom" => json!({"type":"custom","instructions":required_target(target)?}),
             _ => return Err(invalid("target_type", "unsupported review target")),
         };
+        let session = self.session(owner, session_id).await?;
+        let session_id = session_id.to_owned();
+        tokio::spawn(async move { Self::run_review(session, session_id, review_target).await })
+            .await
+            .map_err(|_| unavailable("Phoenix review task stopped"))?
+    }
+
+    async fn run_review(
+        session: Arc<Mutex<Session>>,
+        session_id: String,
+        review_target: Value,
+    ) -> Result<Value, ToolError> {
+        let (runtime, thread_id) = {
+            let mut state = session.lock().await;
+            if state.closing {
+                return Err(unavailable("Phoenix session is closing"));
+            }
+            if state.turn_in_progress {
+                return Err(unavailable("Phoenix session already has an active turn"));
+            }
+            state.turn_in_progress = true;
+            (state.runtime.clone(), state.thread_id.clone())
+        };
+        let mut events = runtime.subscribe();
         let response = runtime
             .request(
                 "review/start",
                 json!({"threadId":thread_id,"target":review_target,"delivery":"inline"}),
             )
-            .await?;
-        Ok(json!({"session_id":session_id,"status":"reviewing","review":safe_value(&response)}))
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                session.lock().await.turn_in_progress = false;
+                return Err(error);
+            }
+        };
+        let Some(turn_id) = response
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            session.lock().await.turn_in_progress = false;
+            return Err(protocol_error());
+        };
+        session.lock().await.active_turn_id = Some(turn_id.clone());
+        let result = tokio::time::timeout(
+            TURN_TIMEOUT,
+            collect_turn(&mut events, &thread_id, &turn_id, &session),
+        )
+        .await;
+        let result = match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                let mut state = session.lock().await;
+                state.turn_in_progress = false;
+                state.active_turn_id = None;
+                return Err(error);
+            }
+            Err(_) => {
+                drop(runtime.interrupt(&thread_id, &turn_id).await);
+                let mut state = session.lock().await;
+                state.turn_in_progress = false;
+                state.active_turn_id = None;
+                return Err(unavailable(
+                    "Phoenix review exceeded the five minute runtime limit",
+                ));
+            }
+        };
+        let mut state = session.lock().await;
+        state.turn_in_progress = false;
+        state.active_turn_id = None;
+        if !result.output.is_empty() {
+            state.messages.push(Message {
+                role: "assistant",
+                text: result.output,
+                created_at_ms: now_millis(),
+            });
+        }
+        if state.messages.len() > MAX_MESSAGES {
+            let excess = state.messages.len() - MAX_MESSAGES;
+            state.messages.drain(..excess);
+        }
+        let mut rendered = render_session(&session_id, &state);
+        rendered["review"] = safe_value(&response);
+        Ok(rendered)
     }
 
     async fn diagnostics(&self) -> Result<Value, ToolError> {
@@ -664,6 +816,8 @@ fn render_session(session_id: &str, session: &Session) -> Value {
         "events": session.events,
         "model": session.model,
         "effort": session.effort,
+        "title": session_title(session),
+        "turn_status": if session.turn_in_progress { "in_progress" } else if session.closing { "closing" } else { "ready" },
     })
 }
 
@@ -676,14 +830,7 @@ fn now_millis() -> u64 {
 }
 
 fn render_session_summary(session_id: &str, session: &Session) -> Value {
-    let title = session
-        .messages
-        .iter()
-        .find(|message| message.role == "user")
-        .map_or_else(
-            || "New Phoenix session".to_owned(),
-            |message| display_text(&message.text, MAX_SESSION_TITLE_CHARS),
-        );
+    let title = session_title(session);
     let preview = session.messages.last().map_or_else(
         || "No messages yet".to_owned(),
         |message| display_text(&message.text, MAX_SESSION_PREVIEW_CHARS),
@@ -695,7 +842,20 @@ fn render_session_summary(session_id: &str, session: &Session) -> Value {
         "model": session.model,
         "effort": session.effort,
         "message_count": session.messages.len(),
-        "turn_status": if session.turn_in_progress { "in_progress" } else { "ready" },
+        "turn_status": if session.turn_in_progress { "in_progress" } else if session.closing { "closing" } else { "ready" },
+    })
+}
+
+fn session_title(session: &Session) -> String {
+    session.title.clone().unwrap_or_else(|| {
+        session
+            .messages
+            .iter()
+            .find(|message| message.role == "user")
+            .map_or_else(
+                || "New Phoenix session".to_owned(),
+                |message| display_text(&message.text, MAX_SESSION_TITLE_CHARS),
+            )
     })
 }
 
@@ -1230,6 +1390,32 @@ done
             .await
             .unwrap();
         assert_eq!(resumed["messages"][3]["text"], "hello from container");
+        let renamed = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.session.rename",
+                json!({"session_id":session_id,"title":"Gateway investigation"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed["title"], "Gateway investigation");
+        assert_eq!(
+            runtime
+                .dispatch("principal-a", "phoenix.session.list", json!({}))
+                .await
+                .unwrap()["sessions"][0]["title"],
+            "Gateway investigation"
+        );
+        let reviewed = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.review.start",
+                json!({"session_id":session_id,"target_type":"uncommitted_changes"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reviewed["turn_status"], "ready");
+        assert_eq!(reviewed["messages"][4]["role"], "assistant");
         assert_eq!(
             runtime
                 .dispatch(
@@ -1248,8 +1434,194 @@ done
         assert!(requests.contains("\"sandbox\":\"read-only\""));
         assert!(requests.contains(&format!("\"cwd\":\"{}\"", root.path().display())));
         assert!(requests.contains("\"method\":\"turn/start\""));
+        assert!(requests.contains("\"method\":\"review/start\""));
         assert!(!requests.contains("excludeTurns"));
         assert!(requests.contains("\"experimentalApi\":true"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_turn_admission_does_not_create_a_phantom_message() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("codex-fixture");
+        fs::write(
+            &command,
+            r#"#!/bin/sh
+read initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"fixture"}}'
+read initialized
+read thread
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-container"}}}'
+read turn
+id=$(printf '%s' "$turn" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+printf '{"id":%s,"error":{"code":-32000,"message":"rejected"}}\n' "$id"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PhoenixRuntime::new(PhoenixPreferences {
+            enabled: true,
+            command: Some(command),
+            codex_home: Some(root.path().to_path_buf()),
+            workspace_root: Some(root.path().to_path_buf()),
+            model: None,
+        });
+        let started = runtime
+            .dispatch("principal-a", "phoenix.session.start", json!({}))
+            .await
+            .unwrap();
+        let session_id = started["session_id"].as_str().unwrap();
+
+        assert!(
+            runtime
+                .dispatch(
+                    "principal-a",
+                    "phoenix.turn.send",
+                    json!({"session_id":session_id,"input":"not admitted"}),
+                )
+                .await
+                .is_err()
+        );
+        let state = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.session.read",
+                json!({"session_id":session_id}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["messages"], json!([]));
+        assert_eq!(state["turn_status"], "ready");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn abandoned_send_finishes_cleanup_and_session_can_be_closed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("codex-fixture");
+        fs::write(
+            &command,
+            r#"#!/bin/sh
+read initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"fixture"}}'
+read initialized
+read thread
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-container"}}}'
+while read request; do
+  id=$(printf '%s' "$request" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$request" in
+    *turn/start*)
+      printf '{"id":%s,"result":{"turn":{"id":"turn-abandoned"}}}\n' "$id"
+      sleep 0.05
+      printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-container","turnId":"turn-abandoned","delta":"completed after caller left"}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-container","turn":{"id":"turn-abandoned","status":"completed"}}}' ;;
+    *) printf '{"id":%s,"result":{}}\n' "$id" ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PhoenixRuntime::new(PhoenixPreferences {
+            enabled: true,
+            command: Some(command),
+            codex_home: Some(root.path().to_path_buf()),
+            workspace_root: Some(root.path().to_path_buf()),
+            model: None,
+        });
+        let started = runtime
+            .dispatch("principal-a", "phoenix.session.start", json!({}))
+            .await
+            .unwrap();
+        let session_id = started["session_id"].as_str().unwrap().to_owned();
+        let abandoned = tokio::spawn({
+            let runtime = runtime.clone();
+            let session_id = session_id.clone();
+            async move {
+                runtime
+                    .dispatch(
+                        "principal-a",
+                        "phoenix.turn.send",
+                        json!({"session_id":session_id,"input":"keep cleaning up"}),
+                    )
+                    .await
+            }
+        });
+        loop {
+            let state = runtime
+                .dispatch(
+                    "principal-a",
+                    "phoenix.session.read",
+                    json!({"session_id":session_id}),
+                )
+                .await
+                .unwrap();
+            if state["turn_status"] == "in_progress" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        abandoned.abort();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let recovered = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.session.read",
+                json!({"session_id":session_id}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered["turn_status"], "ready");
+        assert_eq!(
+            recovered["messages"][1]["text"],
+            "completed after caller left"
+        );
+        assert_eq!(
+            runtime
+                .dispatch(
+                    "principal-a",
+                    "phoenix.session.close",
+                    json!({"session_id":session_id}),
+                )
+                .await
+                .unwrap()["status"],
+            "closed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_capacity_is_reserved_before_process_launch() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("codex-fixture");
+        fs::write(&command, "#!/bin/sh\nexit 99\n").unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PhoenixRuntime::new(PhoenixPreferences {
+            enabled: true,
+            command: Some(command),
+            codex_home: Some(root.path().to_path_buf()),
+            workspace_root: Some(root.path().to_path_buf()),
+            model: None,
+        });
+        let mut reservations = Vec::new();
+        for _ in 0..MAX_SESSIONS {
+            reservations.push(Arc::clone(&runtime.capacity).try_acquire_owned().unwrap());
+        }
+
+        let error = runtime
+            .dispatch("principal-a", "phoenix.session.start", json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "executor_unavailable");
+        drop(reservations);
+        assert_eq!(runtime.capacity.available_permits(), MAX_SESSIONS);
     }
 
     #[test]

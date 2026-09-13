@@ -387,7 +387,7 @@ mod tests {
 
         assert_eq!(projected, expected);
         for route_fragment in [
-            "request(`/?${query}`",
+            "request(suffix",
             "request('/stats'",
             "method: 'PATCH'",
             "method: 'DELETE'",

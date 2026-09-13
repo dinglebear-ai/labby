@@ -74,7 +74,9 @@ const SHARED_NON_SERVICES: &[&str] = &[
 /// added service is forced through review (an unlisted service dir triggers a
 /// failure in `services_list_is_current`).
 const KNOWN_SERVICES: &[&str] = &[
+    "agents",
     "browser",
+    "dev_containers",
     "doctor",
     "fs",
     "gateway",
@@ -84,6 +86,7 @@ const KNOWN_SERVICES: &[&str] = &[
     "skill_library",
     "skills",
     "snippets",
+    "tasks",
 ];
 
 /// Allowed cross-service edges: `(consumer, permitted_sibling)`.

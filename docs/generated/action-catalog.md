@@ -98,7 +98,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `depot_publish` | `depot.publish_skill_archive` | false | false | false |  | `project_artifact_publish` | `-` | `artifact_library` | `filename*: string`<br>`archive_base64*: string`<br>`namespace: string` | `IngestJobReceipt` | mcp |
 | `depot_publish` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp |
 | `depot_publish` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp |
-| `dev_containers` | `dev_containers.build` | false | false | true | lab:admin | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.build` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.build.get` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `build_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.create` | false | false | false |  | `resource_capability` | `scope.create` | `dev_container` | `instance_id*: string`<br>`template_id*: string`<br>`owner_kind*: installation\|team\|project\|personal`<br>`owner_id*: string`<br>`secret_references: string[]` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.destroy` | false | true | false |  | `resource_capability` | `scope.delete` | `dev_container` | `instance_id*: string` | `object` | mcp, api |
@@ -107,7 +107,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `dev_containers` | `dev_containers.environment.replace` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`environment*: object[]` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.launch_reference` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `template_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.list` | false | false | false |  | `resource_capability` | `scope.read` | `dev_container` | `cursor: string`<br>`limit: string` | `object` | mcp, api |
-| `dev_containers` | `dev_containers.rebuild` | false | false | true | lab:admin | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
+| `dev_containers` | `dev_containers.rebuild` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `template_id*: string`<br>`expected_revision*: integer`<br>`request_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.reconcile` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `instance_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.start` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `instance_id*: string` | `object` | mcp, api |
 | `dev_containers` | `dev_containers.stop` | false | false | false |  | `resource_capability` | `scope.operate` | `dev_container` | `instance_id*: string` | `object` | mcp, api |

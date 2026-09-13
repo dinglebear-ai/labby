@@ -1861,5 +1861,858 @@
     "exclusion_reason": null,
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.harnesses",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_harnesses",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.get",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_get",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id",
+        "session_id": "$fixture.session_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.resume",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_resume",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id",
+        "session_id": "$fixture.session_id",
+        "idempotency_key": "$fixture.idempotency_key"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.stop",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_stop",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id",
+        "session_id": "$fixture.session_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.session.transcript",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_session_transcript",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id",
+        "session_id": "$fixture.session_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "agents",
+    "action": "agents.sessions.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_sessions_list",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_agents_workflow",
+      "parameters": {
+        "agent_id": "$fixture.agent_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.build",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_build",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id",
+        "expected_revision": "$fixture.expected_revision",
+        "request_id": "$fixture.request_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.build.get",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_build_get",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "build_id": "$fixture.build_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.draft.create",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_draft_create",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id",
+        "base_template_id": "$fixture.base_template_id",
+        "owner_kind": "$fixture.owner_kind",
+        "owner_id": "$fixture.owner_id",
+        "definition": "$fixture.definition"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.draft.update",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_draft_update",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id",
+        "expected_revision": "$fixture.expected_revision",
+        "definition": "$fixture.definition"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.environment.replace",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_environment_replace",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id",
+        "expected_revision": "$fixture.expected_revision",
+        "environment": "$fixture.environment"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.launch_reference",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_launch_reference",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.rebuild",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_rebuild",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id",
+        "expected_revision": "$fixture.expected_revision",
+        "request_id": "$fixture.request_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.templates.get",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_templates_get",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "template_id": "$fixture.template_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "dev_containers",
+    "action": "dev_containers.templates.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::dev_containers::dev_containers_templates_list",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_dev_containers_workflow",
+      "parameters": {
+        "owner_kind": "$fixture.owner_kind",
+        "owner_id": "$fixture.owner_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.host.metrics",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::gateway::gateway_host_metrics",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_gateway_workflow",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_arm",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_arm",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_create",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_create",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id",
+        "name": "$fixture.name",
+        "owner_kind": "$fixture.owner_kind",
+        "owner_id": "$fixture.owner_id",
+        "agent_id": "$fixture.agent_id",
+        "input": "$fixture.input",
+        "schedule": "$fixture.schedule"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_delete",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_delete",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_edit",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_edit",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_get",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_get",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_list",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_pause",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_pause",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "tasks",
+    "action": "tasks.schedule_run_now",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::tasks::tasks_schedule_run_now",
+    "minimum_evidence": "live_error_path",
+    "api_minimum": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_tasks_workflow",
+      "parameters": {
+        "schedule_id": "$fixture.schedule_id",
+        "idempotency_key": "$fixture.idempotency_key"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
   }
 ]

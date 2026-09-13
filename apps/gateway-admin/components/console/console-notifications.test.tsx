@@ -48,18 +48,21 @@ test('notification tooltip reports all clear when there is no unread attention',
 test('clear all removes notifications and shared badges until the disconnected incident recurs', async () => {
   const { ConsoleNotifications } = await import('./console-notifications')
   const { useGatewayNotifications } = await import('@/lib/notification-acknowledgements')
+  const { WarningsBanner } = await import('@/components/dashboard/warnings-banner')
   const { renderClient } = await import('@/lib/testing/dom-test-utils')
   function OtherSurface() { const { notifications } = useGatewayNotifications(); return <output data-other-surface>{notifications.length}</output> }
   const failed: ConsoleStatusState = { kind: 'ready', snapshot: { connected: 0, total: 1, tools: 7 }, attention: ['repeat-alpha'] }
   const healthy: ConsoleStatusState = { kind: 'ready', snapshot: { connected: 1, total: 1, tools: 7 }, attention: [] }
-  const content = (state: ConsoleStatusState) => <><ConsoleNotifications state={state}/><OtherSurface/></>
+  const content = (state: ConsoleStatusState) => <><ConsoleNotifications state={state}/><OtherSurface/><WarningsBanner count={1} signature="repeat-alpha" notificationKeys={['gateway:repeat-alpha:disconnected']}/></>
   const view = await renderClient(content(failed))
   try {
     await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Notifications"]')!.click())
     assert.equal(view.container.querySelector('output')?.textContent, '1')
+    assert.match(view.container.textContent ?? '', /1 warning across servers/)
     const clear = [...document.querySelectorAll('button')].find(button => button.textContent?.includes('Clear all'))!
     await act(async () => clear.click())
     assert.equal(view.container.querySelector('output')?.textContent, '0')
+    assert.doesNotMatch(view.container.textContent ?? '', /1 warning across servers/)
     assert.match(document.body.textContent ?? '', /No new notifications/)
     await view.rerender(content({ ...failed }))
     assert.equal(view.container.querySelector('output')?.textContent, '0')

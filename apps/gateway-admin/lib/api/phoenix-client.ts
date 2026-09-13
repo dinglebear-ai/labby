@@ -133,6 +133,8 @@ export const phoenixApi = {
   list: (signal?: AbortSignal) => action<PhoenixSessionList>('phoenix.session.list', {}, signal),
   start: (model?: string, effort?: string, signal?: AbortSignal) => action<PhoenixSession>('phoenix.session.start', { model, effort }, signal),
   read: (sessionId: string, signal?: AbortSignal) => action<PhoenixSession>('phoenix.session.read', { session_id: sessionId }, signal),
+  rename: (sessionId: string, title: string, signal?: AbortSignal) =>
+    action<PhoenixSessionSummary>('phoenix.session.rename', { session_id: sessionId, title }, signal),
   close: (sessionId: string, signal?: AbortSignal) => action<{ session_id: string; status: 'closed' }>('phoenix.session.close', { session_id: sessionId }, signal),
   send: (sessionId: string, input: string, attachments: PhoenixAttachment[] = [], signal?: AbortSignal) =>
     action<PhoenixSession>('phoenix.turn.send', { session_id: sessionId, input, attachments }, signal),

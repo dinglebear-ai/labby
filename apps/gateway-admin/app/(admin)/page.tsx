@@ -87,6 +87,9 @@ export default function OverviewPage() {
   const serverVolume = useServerVolume(metrics)
   const live = buildLiveFleetStats(gateways ?? [])
   const warningsSig = warningsSignature(gateways ?? [])
+  const warningNotificationKeys = (gateways ?? []).flatMap((gateway) =>
+    gateway.warnings.map((warning) => `gateway:${gateway.name}:warning:${warning.code}`),
+  )
   const discoveredSkills = gateways?.reduce((sum, gateway) => sum + (gateway.status.discovered_skill_count ?? 0), 0) ?? 0
   const metricsState = metricsLoadState(metrics, metricsError, isMetricsLoading)
   const metricsLoading = metricsState === 'loading'
@@ -133,7 +136,7 @@ export default function OverviewPage() {
             <Sparkles aria-hidden="true" className="size-3.5 text-aurora-accent-strong" />
             <span>{discoveredSkills} discovered skills</span>
           </Link>
-          {!gatewaysLoading ? <WarningsBanner count={live.warnings} signature={warningsSig} /> : null}
+          {!gatewaysLoading ? <WarningsBanner count={live.warnings} signature={warningsSig} notificationKeys={warningNotificationKeys} /> : null}
         </div>
 
         {/* Two-thirds telemetry canvas and one-third insights rail; each lane
