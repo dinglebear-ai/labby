@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "protocol_version": "2026-07-28",
+  "oracles": [
+    {
+      "id": "http-request-scoped-cancellation",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-019"
+      ],
+      "expected": "After two upstream calls are admitted, closing one literal HTTP response stream settles exactly that call within the deadline while the other remains active; cleanup is verified.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_apps_host_qualification",
+      "test": "q4_stateless_http_cancellation_reaches_admitted_upstream",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-invalid-origin",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-003"
+      ],
+      "expected": "Literal HTTP requests with disallowed, malformed, duplicate, non-UTF8, path, query, userinfo, and fragment Origin values return 403 before upstream effects; fixture cleanup is verified.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_wire_compliance",
+      "test": "mcp_spec_http_invalid_origin_is_403",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-protocol-header-mismatch",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-024"
+      ],
+      "expected": "Disagreement between literal body protocol metadata and its mirrored header returns HTTP 400 and JSON-RPC -32020 without upstream effects.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_wire_compliance",
+      "test": "mcp_spec_http_protocol_header_mismatch_is_400",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-unknown-method",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-026"
+      ],
+      "expected": "Unknown literal RPC method returns HTTP 404 and JSON-RPC -32601 without upstream effects, distinct from a missing HTTP route.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_wire_compliance",
+      "test": "mcp_spec_http_unknown_method_is_404_method_not_found",
+      "timeout_seconds": 900
+    },
+    {
+      "id": "http-unsupported-protocol-version",
+      "requirement_ids": [
+        "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-025"
+      ],
+      "expected": "An otherwise-valid effectful literal request succeeds exactly once; replacing header and body versions with an unknown version returns 400 and JSON-RPC -32022 with requested and supported versions, without another admitted effect.",
+      "evidence_level": "product_wire",
+      "scopes": [
+        {
+          "role": "server",
+          "transport": "http"
+        }
+      ],
+      "kind": "cargo_nextest",
+      "package": "labby",
+      "target": "test:mcp_spec_http_contracts",
+      "test": "mcp_spec_http_unsupported_protocol_version_is_bad_request",
+      "timeout_seconds": 900
+    }
+  ]
+}

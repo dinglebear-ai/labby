@@ -232,6 +232,23 @@ impl Store {
         .await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn audit_outcomes_for_tool_for_test(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let tool_name = tool_name.to_owned();
+        self.call(move |store| {
+            let connection = store.lock()?;
+            let mut statement = connection.prepare(
+                "SELECT outcome,error_kind FROM invocation_audits WHERE tool_name=?1 ORDER BY created_at,id",
+            )?;
+            let rows = statement.query_map([tool_name], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        })
+        .await
+    }
+
     async fn call<T>(
         &self,
         operation: impl FnOnce(&BlockingStore) -> Result<T> + Send + 'static,
@@ -376,17 +393,19 @@ impl Store {
     }
     pub(crate) async fn begin_invocation(
         &self,
+        id: &str,
         browser_id: &str,
         tab_id: i64,
         document_id: &str,
         tool_name: &str,
         revision: i64,
-    ) -> Result<String> {
+    ) -> Result<()> {
+        let id = id.to_owned();
         let browser_id = browser_id.to_owned();
         let document_id = document_id.to_owned();
         let tool_name = tool_name.to_owned();
         self.call(move |s| {
-            s.begin_invocation(&browser_id, tab_id, &document_id, &tool_name, revision)
+            s.begin_invocation(&id, &browser_id, tab_id, &document_id, &tool_name, revision)
         })
         .await
     }
@@ -406,10 +425,46 @@ impl Store {
         })
         .await
     }
-    pub(crate) async fn abandon_invocation(&self, id: &str, duration_ms: i64) -> Result<()> {
+
+    pub(crate) async fn finish_invocation_outcome(
+        &self,
+        id: &str,
+        outcome: &'static str,
+        error_kind: Option<String>,
+        duration_ms: i64,
+    ) -> Result<()> {
         let id = id.to_owned();
-        self.call(move |s| s.abandon_invocation(&id, duration_ms))
-            .await
+        self.call(move |s| {
+            s.finish_invocation_parts(&id, outcome, error_kind.as_deref(), duration_ms)
+        })
+        .await
+    }
+    pub(crate) async fn abandon_invocation(
+        &self,
+        id: &str,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+        tool_name: &str,
+        catalog_revision: i64,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let id = id.to_owned();
+        let browser_id = browser_id.to_owned();
+        let document_id = document_id.to_owned();
+        let tool_name = tool_name.to_owned();
+        self.call(move |s| {
+            s.abandon_invocation(
+                &id,
+                &browser_id,
+                tab_id,
+                &document_id,
+                &tool_name,
+                catalog_revision,
+                duration_ms,
+            )
+        })
+        .await
     }
 }
 
@@ -777,12 +832,13 @@ impl BlockingStore {
     /// Persist the redacted start of an accepted invocation.
     pub(crate) fn begin_invocation(
         &self,
+        id: &str,
         browser_id: &str,
         tab_id: i64,
         document_id: &str,
         tool_name: &str,
         catalog_revision: i64,
-    ) -> Result<String> {
+    ) -> Result<()> {
         let connection = self.lock()?;
         let session_id: Option<String> = connection
             .query_row(
@@ -791,12 +847,11 @@ impl BlockingStore {
                 |row| row.get(0),
             )
             .optional()?;
-        let id = Uuid::new_v4().to_string();
         connection.execute(
-            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO NOTHING",
             params![id, browser_id, session_id, tool_name, catalog_revision, "started", Option::<String>::None, 0, now_seconds()?],
         )?;
-        Ok(id)
+        Ok(())
     }
 
     /// Finish a previously accepted invocation without persisting arguments or results.
@@ -815,10 +870,27 @@ impl BlockingStore {
     }
 
     /// Mark a runtime-dropped invocation abandoned.
-    pub(crate) fn abandon_invocation(&self, id: &str, duration_ms: i64) -> Result<()> {
-        self.lock()?.execute(
-            "UPDATE invocation_audits SET outcome='abandoned',error_kind='caller_cancelled',duration_ms=?1 WHERE id=?2 AND outcome='started'",
-            params![duration_ms, id],
+    pub(crate) fn abandon_invocation(
+        &self,
+        id: &str,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+        tool_name: &str,
+        catalog_revision: i64,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let connection = self.lock()?;
+        let session_id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM document_sessions WHERE browser_id=?1 AND tab_id=?2 AND document_id=?3",
+                params![browser_id, tab_id, document_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        connection.execute(
+            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,'abandoned','caller_cancelled',?6,?7) ON CONFLICT(id) DO UPDATE SET outcome='abandoned',error_kind='caller_cancelled',duration_ms=excluded.duration_ms WHERE invocation_audits.outcome='started'",
+            params![id, browser_id, session_id, tool_name, catalog_revision, duration_ms, now_seconds()?],
         )?;
         Ok(())
     }
@@ -1158,6 +1230,29 @@ mod tests {
 
     fn extension_id() -> &'static str {
         "abcdefghijklmnopabcdefghijklmnop"
+    }
+
+    #[test]
+    fn abandoned_preallocated_audit_is_not_reopened_by_late_begin() {
+        let store = BlockingStore::memory().unwrap();
+        store
+            .abandon_invocation("audit", "browser", 1, "doc", "tool", 1, 7)
+            .unwrap();
+        store
+            .begin_invocation("audit", "browser", 1, "doc", "tool", 1)
+            .unwrap();
+        let connection = store.lock().unwrap();
+        let terminal: (String, Option<String>, i64) = connection
+            .query_row(
+                "SELECT outcome,error_kind,duration_ms FROM invocation_audits WHERE id='audit'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal,
+            ("abandoned".into(), Some("caller_cancelled".into()), 7)
+        );
     }
 
     #[test]

@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::wire::{
-    CACHE_SCOPE_PRIVATE, SKILLS_GET_METHOD, SkillsGetParams, SkillsGetResult, SkillsListResult,
+    CACHE_SCOPE_PRIVATE, SKILLS_GET_METHOD, SKILLS_LIST_METHOD, SkillsGetParams, SkillsGetResult,
+    SkillsListParams, SkillsListResult,
 };
 use rmcp::RoleServer;
 use rmcp::model::{CustomRequest, CustomResult, ErrorData};
@@ -36,6 +37,20 @@ fn optional_header_str<'a>(
             })
         })
         .transpose()
+}
+
+fn validate_skills_list_params(request: &CustomRequest) -> Result<(), ErrorData> {
+    let params = request
+        .params_as::<SkillsListParams>()
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+        .unwrap_or_default();
+    if params.cursor.is_some() {
+        return Err(ErrorData::invalid_params(
+            "skills/list cursor is invalid or stale",
+            None,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -423,6 +438,9 @@ impl LabMcpServer {
                 None,
             ));
         }
+        if request.method == SKILLS_LIST_METHOD {
+            validate_skills_list_params(request)?;
+        }
         if !self.route_scope.exposes_skills() {
             if request.method == SKILLS_GET_METHOD {
                 return Err(ErrorData::new(
@@ -492,6 +510,8 @@ async fn dispatch_native_with_registry(
             .map(CustomResult::new)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None));
     }
+
+    validate_skills_list_params(request)?;
 
     serde_json::to_value(list_visible_skills(registry).await)
         .map(CustomResult::new)
@@ -623,6 +643,17 @@ mod serve_tests {
             .find(|entry| entry.uri == "skill://labby/native-race/SKILL.md")
             .unwrap();
         assert_eq!(entry.frontmatter["description"], "old");
+
+        let invalid_cursor = dispatch_native_with_registry(
+            &CustomRequest::new(
+                SKILLS_LIST_METHOD,
+                Some(serde_json::json!({ "cursor": "not-issued-by-labby" })),
+            ),
+            &pinned,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid_cursor.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         let got = dispatch_native_with_registry(
             &CustomRequest::new(

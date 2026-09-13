@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::error::AuthError;
-use crate::util::fingerprint;
+use crate::util::{fingerprint, oauth_state_diagnostic_id};
 
 const GOOGLE_AUTHORIZE_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -106,7 +106,7 @@ pub struct GoogleProvider {
     pub scopes: Vec<String>,
     pub http: reqwest::Client,
     authorize_endpoint: Url,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     token_endpoint: Url,
     jwks_endpoint: Url,
     jwks_cache: Arc<RwLock<Option<CachedGoogleJwks>>>,
@@ -192,6 +192,66 @@ struct GoogleTokenResponse {
     scope: Option<String>,
     #[serde(default)]
     id_token: Option<String>,
+}
+
+/// Apply explicit loopback-only endpoints used by the real-daemon testkit.
+#[cfg(feature = "testkit")]
+pub fn apply_test_endpoint_overrides(
+    provider: GoogleProvider,
+    token_endpoint: Option<String>,
+    jwks_endpoint: Option<String>,
+) -> Result<GoogleProvider, AuthError> {
+    let (token_endpoint, jwks_endpoint) = match (token_endpoint, jwks_endpoint) {
+        (None, None) => return Ok(provider),
+        (Some(token), Some(jwks)) => (token, jwks),
+        _ => {
+            return Err(AuthError::Config(
+                "Labby Google test token and JWKS endpoints must be configured together".into(),
+            ));
+        }
+    };
+    let token_endpoint = parse_test_endpoint("token", &token_endpoint)?;
+    let jwks_endpoint = parse_test_endpoint("JWKS", &jwks_endpoint)?;
+    let mut provider = provider
+        .with_endpoints(
+            Url::parse(GOOGLE_AUTHORIZE_ENDPOINT).map_err(|error| {
+                AuthError::Config(format!(
+                    "parse fixed Google authorization endpoint: {error}"
+                ))
+            })?,
+            token_endpoint,
+        )
+        .with_jwks_endpoint(jwks_endpoint);
+    provider.http = reqwest::Client::builder()
+        .timeout(GOOGLE_HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| AuthError::Storage(format!("build Google test HTTP client: {error}")))?;
+    Ok(provider)
+}
+
+#[cfg(feature = "testkit")]
+fn parse_test_endpoint(kind: &str, value: &str) -> Result<Url, AuthError> {
+    let endpoint = Url::parse(value).map_err(|error| {
+        AuthError::Config(format!("invalid Google test {kind} endpoint: {error}"))
+    })?;
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(_)) | None => false,
+    };
+    if endpoint.scheme() != "http"
+        || !loopback
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(AuthError::Config(format!(
+            "Google test {kind} endpoint must be credential-free HTTP on a literal loopback IP"
+        )));
+    }
+    Ok(endpoint)
 }
 
 #[derive(Debug, Deserialize)]
@@ -476,7 +536,7 @@ impl GoogleProvider {
         let authorize_endpoint = Url::parse(GOOGLE_AUTHORIZE_ENDPOINT).map_err(|error| {
             AuthError::Config(format!("parse google authorize endpoint: {error}"))
         })?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testkit"))]
         let token_endpoint = Url::parse(GOOGLE_TOKEN_ENDPOINT)
             .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))?;
         let jwks_endpoint = Url::parse(GOOGLE_JWKS_ENDPOINT)
@@ -493,14 +553,14 @@ impl GoogleProvider {
             ],
             http,
             authorize_endpoint,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             token_endpoint,
             jwks_endpoint,
             jwks_cache: Arc::new(RwLock::new(None)),
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     pub fn with_endpoints(mut self, authorize_endpoint: Url, token_endpoint: Url) -> Self {
         self.authorize_endpoint = authorize_endpoint;
@@ -508,7 +568,7 @@ impl GoogleProvider {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     pub fn with_jwks_endpoint(mut self, jwks_endpoint: Url) -> Self {
         self.jwks_endpoint = jwks_endpoint;
@@ -516,11 +576,11 @@ impl GoogleProvider {
     }
 
     fn token_endpoint(&self) -> Result<Url, AuthError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testkit"))]
         {
             Ok(self.token_endpoint.clone())
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "testkit")))]
         {
             Url::parse(GOOGLE_TOKEN_ENDPOINT)
                 .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))
@@ -548,7 +608,7 @@ impl GoogleProvider {
         }
         debug!(
             provider = "google",
-            oauth_state_id = %fingerprint(&request.state),
+            oauth_state_id = %oauth_state_diagnostic_id(&request.state),
             scope_count = self.scopes.len(),
             scope_id = %fingerprint(&scope),
             redirect_uri_id = %fingerprint(self.redirect_uri.as_str()),
@@ -980,9 +1040,105 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity, GoogleJwk,
-        GoogleJwks, GoogleProvider, GoogleReauthRequest, merge_google_scopes,
+        AuthError, AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity,
+        GoogleJwk, GoogleJwks, GoogleProvider, GoogleReauthRequest, merge_google_scopes,
     };
+
+    #[cfg(feature = "testkit")]
+    #[test]
+    fn test_endpoint_overrides_require_a_complete_literal_loopback_pair() {
+        let accepted = super::apply_test_endpoint_overrides(
+            test_google_provider(),
+            Some("http://127.0.0.1:41001/token".into()),
+            Some("http://[::1]:41002/jwks".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.token_endpoint.as_str(),
+            "http://127.0.0.1:41001/token"
+        );
+        assert_eq!(accepted.jwks_endpoint.as_str(), "http://[::1]:41002/jwks");
+
+        for (token, jwks) in [
+            (Some("http://127.0.0.1/token"), None),
+            (None, Some("http://127.0.0.1/jwks")),
+            (
+                Some("http://localhost/token"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("http://192.0.2.1/token"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("https://127.0.0.1/token"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("http://user@127.0.0.1/token"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("http://127.0.0.1/token?secret=x"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("http://127.0.0.1/token#fragment"),
+                Some("http://127.0.0.1/jwks"),
+            ),
+            (
+                Some("http://127.0.0.1/token"),
+                Some("https://example.com/jwks"),
+            ),
+        ] {
+            let error = super::apply_test_endpoint_overrides(
+                test_google_provider(),
+                token.map(str::to_owned),
+                jwks.map(str::to_owned),
+            )
+            .expect_err("unsafe or incomplete endpoint override was accepted");
+            assert!(matches!(error, AuthError::Config(_)), "{error:?}");
+        }
+    }
+
+    #[cfg(feature = "testkit")]
+    #[tokio::test]
+    async fn test_endpoint_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/escaped", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/escaped"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "should-not-be-reached",
+                "id_token": "should-not-be-reached"
+            })))
+            .mount(&server)
+            .await;
+        let provider = super::apply_test_endpoint_overrides(
+            test_google_provider(),
+            Some(format!("{}/token", server.uri())),
+            Some(format!("{}/jwks", server.uri())),
+        )
+        .unwrap();
+
+        let error = provider
+            .exchange_code("fixture-code", "fixture-verifier")
+            .await
+            .expect_err("test token endpoint redirect was followed");
+        assert!(
+            matches!(error, AuthError::Server(_) | AuthError::Decode(_)),
+            "{error:?}"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "redirect target received a request");
+        assert_eq!(requests[0].url.path(), "/token");
+    }
 
     #[test]
     fn google_sensitive_debug_output_is_redacted() {

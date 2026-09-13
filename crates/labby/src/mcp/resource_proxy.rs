@@ -31,8 +31,28 @@ use crate::mcp::context::{
     oauth_upstream_subject_for_request, redacted_oauth_subject_label,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::resource_errors::render as resource_render_error;
+use crate::mcp::resource_errors::{
+    classify_fetch_failure as classify_resource_fetch_failure,
+    fetch_classified as resource_fetch_classified, render as resource_render_error,
+};
 use crate::mcp::server::LabMcpServer;
+
+fn classified_resource_fetch_error(
+    uri: &str,
+    message: &str,
+) -> (LoggingLevel, &'static str, &'static str, ErrorData) {
+    let (kind, summary) = classify_resource_fetch_failure(message);
+    let level = match kind {
+        "cancelled" | "response_too_large" => LoggingLevel::Warning,
+        _ => LoggingLevel::Error,
+    };
+    (
+        level,
+        kind,
+        summary,
+        resource_fetch_classified(uri, kind, summary),
+    )
+}
 
 impl LabMcpServer {
     /// Gateway-synthetic resource branch (`lab://gateway/...`). Returns
@@ -305,6 +325,7 @@ impl LabMcpServer {
             }
             Some(Err(message)) => {
                 let elapsed_ms = start.elapsed().as_millis();
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 let upstream = uri
                     .strip_prefix("lab://upstream/")
                     .and_then(|rest| rest.split('/').next())
@@ -316,8 +337,8 @@ impl LabMcpServer {
                     upstream,
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "internal_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "resource proxy failed"
                 );
                 self.emit_dispatch_notification(
@@ -326,12 +347,12 @@ impl LabMcpServer {
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Error,
-                        kind: "internal_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
                 )
                 .await;
-                Err(ErrorData::internal_error(message, None))
+                Err(error)
             }
             None => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -486,22 +507,23 @@ impl LabMcpServer {
                 (DispatchLogOutcome::Success, Ok(result.into()))
             }
             Some(Err(message)) => {
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 tracing::warn!(
                     surface = "mcp",
                     service = "labby",
                     action = "read_resource",
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "internal_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "ui resource proxy failed"
                 );
                 (
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Error,
-                        kind: "internal_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
-                    Err(ErrorData::internal_error(message, None)),
+                    Err(error),
                 )
             }
             None => {
@@ -600,6 +622,7 @@ impl LabMcpServer {
             }
             Err(message) => {
                 let elapsed_ms = start.elapsed().as_millis();
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 tracing::warn!(
                     surface = "mcp",
                     service = "labby",
@@ -607,8 +630,8 @@ impl LabMcpServer {
                     upstream = %config.name,
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "upstream_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "subject-scoped resource proxy failed"
                 );
                 self.emit_dispatch_notification(
@@ -617,12 +640,12 @@ impl LabMcpServer {
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Warning,
-                        kind: "upstream_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
                 )
                 .await;
-                Err(ErrorData::invalid_params(message, None))
+                Err(error)
             }
         }
     }

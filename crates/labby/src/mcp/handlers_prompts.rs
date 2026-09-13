@@ -86,6 +86,25 @@ fn prompt_error_context(
     context
 }
 
+#[cfg(feature = "gateway")]
+fn classify_prompt_fetch_failure(message: &str) -> (&'static str, &'static str) {
+    const CLASSIFY_PREFIX_BYTES: usize = 1024;
+    let mut end = message.len().min(CLASSIFY_PREFIX_BYTES);
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = message[..end].to_ascii_lowercase();
+    if prefix.contains("response too large") {
+        ("response_too_large", "response exceeded the gateway cap")
+    } else if prefix.contains("timed out") {
+        ("timeout", "fetch timed out")
+    } else if prefix.contains("cancelled") {
+        ("cancelled", "fetch was cancelled")
+    } else {
+        ("upstream_error", "upstream fetch failed")
+    }
+}
+
 impl LabMcpServer {
     pub(crate) async fn list_prompts_impl(
         &self,
@@ -683,6 +702,11 @@ impl LabMcpServer {
                 }
                 Some(Err(message)) => {
                     let elapsed_ms = start.elapsed().as_millis();
+                    let (kind, summary) = classify_prompt_fetch_failure(&message);
+                    let level = match kind {
+                        "cancelled" | "response_too_large" => LoggingLevel::Warning,
+                        _ => LoggingLevel::Error,
+                    };
                     tracing::warn!(
                         surface = "mcp",
                         service = "labby",
@@ -690,8 +714,8 @@ impl LabMcpServer {
                         prompt = %prompt_name,
                         upstream = %upstream_name,
                         elapsed_ms,
-                        kind = "internal_error",
-                        error = %message,
+                        kind,
+                        failure_summary = summary,
                         "prompt proxy failed"
                     );
                     self.emit_dispatch_notification(
@@ -700,15 +724,15 @@ impl LabMcpServer {
                         "get_prompt",
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
-                            level: LoggingLevel::Error,
-                            kind: "internal_error".into(),
+                            level,
+                            kind: kind.into(),
                         },
                     )
                     .await;
                     let error_context =
-                        prompt_error_context(&prompt_name, Some(&upstream_name), Some(&message));
+                        prompt_error_context(&prompt_name, Some(&upstream_name), Some(summary));
                     Err(internal_agent_error(
-                        "upstream_error",
+                        kind,
                         format!(
                             "Upstream `{upstream_name}` failed while fetching prompt `{prompt_name}`."
                         ),
@@ -831,6 +855,11 @@ impl LabMcpServer {
                     }
                     Err(message) => {
                         let elapsed_ms = start.elapsed().as_millis();
+                        let (kind, summary) = classify_prompt_fetch_failure(&message);
+                        let level = match kind {
+                            "cancelled" | "response_too_large" => LoggingLevel::Warning,
+                            _ => LoggingLevel::Error,
+                        };
                         tracing::warn!(
                             surface = "mcp",
                             service = "labby",
@@ -838,8 +867,8 @@ impl LabMcpServer {
                             prompt = %prompt_name,
                             upstream = %config.name,
                             elapsed_ms,
-                            kind = "upstream_error",
-                            error = %message,
+                            kind,
+                            failure_summary = summary,
                             "subject-scoped prompt proxy failed"
                         );
                         self.emit_dispatch_notification(
@@ -848,15 +877,15 @@ impl LabMcpServer {
                             "get_prompt",
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
-                                level: LoggingLevel::Warning,
-                                kind: "upstream_error".into(),
+                                level,
+                                kind: kind.into(),
                             },
                         )
                         .await;
                         let error_context =
-                            prompt_error_context(&prompt_name, Some(&config.name), Some(&message));
+                            prompt_error_context(&prompt_name, Some(&config.name), Some(summary));
                         Err(invalid_params_agent_error(
-                            "upstream_error",
+                            kind,
                             format!(
                                 "Upstream `{}` failed while fetching prompt `{prompt_name}`.",
                                 config.name
@@ -935,6 +964,29 @@ mod tests {
             }
             _ => panic!("unexpected prompt response variant"),
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn prompt_fetch_failure_classification_is_bounded() {
+        assert_eq!(
+            classify_prompt_fetch_failure("upstream response too large (11 bytes, max 10)").0,
+            "response_too_large"
+        );
+        assert_eq!(
+            classify_prompt_fetch_failure("upstream prompt get timed out after 25ms").0,
+            "timeout"
+        );
+        assert_eq!(
+            classify_prompt_fetch_failure("downstream request cancelled while queued").0,
+            "cancelled"
+        );
+        assert_eq!(
+            classify_prompt_fetch_failure("Mcp error: -32602: private detail").0,
+            "upstream_error"
+        );
+        let hostile = format!("opaque failure {}response too large", "x".repeat(2048));
+        assert_eq!(classify_prompt_fetch_failure(&hostile).0, "upstream_error");
     }
 
     fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {

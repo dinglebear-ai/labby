@@ -1,0 +1,17 @@
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+# Expand deliberately when a member starts consuming reviewed dependencies.
+allow = ["AGPL-3.0-only", "MIT", "Apache-2.0", "Unicode-3.0", "MIT-0", "Zlib"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

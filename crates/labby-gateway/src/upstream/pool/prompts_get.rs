@@ -29,8 +29,8 @@ use super::capability_call::{
 use super::catalog_pagination;
 use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
-    bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
-    upstream_transport,
+    bare_upstream_prompt_name, estimate_prompt_result_size, merge_upstream_prompts,
+    prefixed_upstream_prompt_name, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
@@ -472,7 +472,7 @@ impl UpstreamPool {
                 event,
                 start,
                 peer.get_prompt(params),
-                |_result: &GetPromptResult| 0, // prompts have no size cap
+                estimate_prompt_result_size,
                 None,
                 |e| format!("upstream prompt get failed: {e}"),
                 format!("upstream prompt get timed out after {timeout_ms}ms"),
@@ -548,7 +548,7 @@ impl UpstreamPool {
             event,
             start,
             peer.get_prompt(params),
-            |_result: &GetPromptResult| 0, // prompts have no size cap
+            estimate_prompt_result_size,
             Some(subject),
             |e| format!("upstream prompt get failed: {e}"),
             format!("upstream prompt get timed out after {timeout_ms}ms"),
@@ -641,6 +641,27 @@ mod tests {
         calls: Arc<AtomicUsize>,
         delay: Duration,
         started: Option<Arc<Notify>>,
+    }
+
+    #[test]
+    fn prompt_response_size_uses_the_serialized_wire_shape() {
+        let result = GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            "bounded prompt body",
+        )]);
+        assert_eq!(
+            super::super::helpers::estimate_prompt_result_size(&result),
+            serde_json::to_vec(&result).unwrap().len()
+        );
+
+        let oversized = GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            "x".repeat(super::super::helpers::max_response_bytes() + 1),
+        )]);
+        assert!(
+            super::super::helpers::estimate_prompt_result_size(&oversized)
+                > super::super::helpers::max_response_bytes()
+        );
     }
 
     impl ServerHandler for SlowCountingPromptServer {

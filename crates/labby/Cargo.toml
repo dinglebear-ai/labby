@@ -144,6 +144,12 @@ sd-notify = { version = "0.5", optional = true }
 labby-winjob = { path = "../labby-winjob" }
 
 [dev-dependencies]
+# Match the product auth provider; enabling rust_crypto here would activate
+# two providers in integration-test binaries and make implicit selection panic.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+rsa.workspace = true
+labby-model = { path = "../labby-model" }
+verify-core = { path = "../../verification/crates/verify-core", version = "=0.1.0" }
 ed25519-dalek.workspace = true
 jsonschema = { version = "0.37.4", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
@@ -200,6 +206,6 @@ lab-admin = []
 # not silently drag the whole gateway in.
 skills = ["labby-gateway?/skills"]
 systemd = ["dep:sd-notify"]
-proxy-testkit = ["labby-gateway/testkit"]
+proxy-testkit = ["labby-gateway/testkit", "labby-auth/testkit"]
 [lints]
 workspace = true

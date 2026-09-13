@@ -86,8 +86,9 @@ use super::entries::{
 };
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
-    estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
-    normalize_resource_result_uri, redact_resource_uri_for_logging, upstream_transport,
+    estimate_call_tool_response_size, estimate_prompt_response_size,
+    estimate_resource_response_size, max_response_bytes, normalize_resource_result_uri,
+    redact_resource_uri_for_logging, upstream_transport,
 };
 use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
@@ -1664,9 +1665,31 @@ impl UpstreamPool {
                         return Some(Err(message));
                     }
                 };
+                let response_size = estimate_prompt_response_size(&result);
+                let max_bytes = max_response_bytes();
+                if response_size > max_bytes {
+                    let message = format!(
+                        "upstream response too large ({response_size} bytes, max {max_bytes})"
+                    );
+                    self.record_success_for(&config.name, UpstreamCapability::Prompts)
+                        .await;
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "response_too_large",
+                        None,
+                        Some(response_size),
+                        Some(max_bytes),
+                    );
+                    return Some(Err(message));
+                }
                 self.record_success_for(&config.name, UpstreamCapability::Prompts)
                     .await;
-                log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
+                log_upstream_request_finish(
+                    event,
+                    started.elapsed().as_millis(),
+                    Some(response_size),
+                );
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {

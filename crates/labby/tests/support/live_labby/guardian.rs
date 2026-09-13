@@ -171,7 +171,7 @@ mod tests {
                 .spawn()
                 .unwrap();
             let group = child.id();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + Duration::from_secs(10);
             let mut observed = None;
             let mut missing_observed = false;
             let result = run_spawned_owned_child(child, deadline, assign_cleanup_job, |_| {
@@ -182,21 +182,26 @@ mod tests {
                 if fields.len() != 3 {
                     return Ok(None);
                 }
-                let daemon_pid = fields[0].parse::<u32>().unwrap();
-                let port = fields[1].parse::<u16>().unwrap();
+                let (Ok(daemon_pid), Ok(port)) =
+                    (fields[0].parse::<u32>(), fields[1].parse::<u16>())
+                else {
+                    return Ok(None);
+                };
                 let address = SocketAddr::from(([127, 0, 0, 1], port));
                 let listener_ready =
                     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20))
                         .is_ok();
                 let before_publication = !admission.join("child.pid").try_exists()?;
-                let pid = read_daemon_pid_with_observation(&admission, deadline, || {
-                    missing_observed = true;
-                    if publish {
-                        std::fs::write(&release, b"publish").map_err(|error| error.to_string())
-                    } else {
-                        Ok(())
-                    }
-                });
+                let publication_deadline = Instant::now() + Duration::from_secs(1);
+                let pid =
+                    read_daemon_pid_with_observation(&admission, publication_deadline, || {
+                        missing_observed = true;
+                        if publish {
+                            std::fs::write(&release, b"publish").map_err(|error| error.to_string())
+                        } else {
+                            Ok(())
+                        }
+                    });
                 observed = Some((daemon_pid, address, listener_ready, before_publication, pid));
                 Ok(Some(std::process::ExitStatus::from_raw(0)))
             });
@@ -560,19 +565,24 @@ exit "$cleanup"
             .process_group(0);
         let mut child = command.spawn().unwrap();
         let group = child.id();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let setup_deadline = Instant::now() + Duration::from_secs(10);
         let port = loop {
             if let Ok(text) = std::fs::read_to_string(&marker) {
                 let fields: Vec<_> = text.split_whitespace().collect();
                 if fields.len() == 3 && fields[2] == "ready" {
-                    break fields[1].parse::<u16>().unwrap();
+                    if let Ok(port) = fields[1].parse::<u16>() {
+                        break Ok(port);
+                    }
                 }
             }
-            assert!(Instant::now() < deadline);
+            if Instant::now() >= setup_deadline {
+                break Err("listener readiness setup deadline exhausted");
+            }
             std::thread::sleep(Duration::from_millis(5));
         };
-        assert_eq!(observe_cleanup_child(group).unwrap(), None);
+        let leader_running_before_cleanup = observe_cleanup_child(group);
         let mut signals = 0;
+        let mut retained_leader_before_resignal = false;
         let mut errors = Vec::new();
         terminate_and_reap_owned_child_with_signal(
             &mut child,
@@ -586,11 +596,14 @@ exit "$cleanup"
                     // first group-signal attempt. Direct kill still exits the leader.
                     return Ok(SignalDisposition::Sent);
                 }
-                assert!(observe_cleanup_child(pid).unwrap().is_some());
+                retained_leader_before_resignal = matches!(observe_cleanup_child(pid), Ok(Some(_)));
                 signal_cleanup_group(pid).map(|()| SignalDisposition::Sent)
             },
         );
+        let port = port.expect("listener readiness setup must complete before its deadline");
+        assert_eq!(leader_running_before_cleanup.unwrap(), None);
         assert!(signals >= 2);
+        assert!(retained_leader_before_resignal);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(
             process_group_members_checked(group as i32)

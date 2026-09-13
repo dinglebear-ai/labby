@@ -114,6 +114,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         caller: SkillLibraryCaller,
         project_id: &str,
         acquisition: labby_runtime::artifacts::ArtifactAcquisition,
+        import_request_digest: String,
         expected_library_version: u64,
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
@@ -138,12 +139,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let revision_id = materialized.interchange.revision.id.clone();
         let name = materialized.interchange.descriptor.name.clone();
         let search_metadata = descriptor_search_metadata(&materialized.interchange.descriptor);
-        let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
+        // Older receipts bound the acquired canonical artifact rather than its source selector.
+        // They can be reconciled only after acquisition verifies those exact bytes.
+        let legacy_request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
             "action":"artifacts.import", "artifact_id":target_id,
             "revision_id": revision_id,
             "expected_library_version":expected_library_version,
             "idempotency_key":idempotency_key
         }))?;
+        let request_digest = import_request_digest;
         let store = Arc::clone(&self.store);
         let projection = Arc::clone(&self.projection);
         let publication = Arc::clone(&self.publication);
@@ -174,6 +178,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let audit = audit.with_target(&CanonicalArtifactId::parse(target_id.clone())?);
                 let request_digest =
                     bind_idempotency_to_owner(&request_digest, &ownership, project_id)?;
+                let legacy_idempotency = LibraryIdempotency {
+                    key: idempotency_key.clone(),
+                    request_digest: bind_idempotency_to_owner(
+                        &legacy_request_digest,
+                        &ownership,
+                        project_id,
+                    )?,
+                    terminal_audit: None,
+                };
                 let audited_revision_id = revision_id.clone();
                 let mutation = LibraryMutation::Create {
                     record: SkillLibraryRecord {
@@ -210,6 +223,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 };
                 Ok(move || {
                     let result = (|| {
+                        for replay_key in [&idempotency, &legacy_idempotency] {
+                            if let Some(outcome) = store.replay_library_create(
+                                &authorization,
+                                &ownership,
+                                replay_key,
+                            )? {
+                                return Ok(outcome);
+                            }
+                        }
                         let snapshot = store.library_snapshot()?;
                         let generation = projection.prepare(&store, &snapshot, Some(&mutation))?;
                         publication.commit_library_outcome(
@@ -242,6 +264,91 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let response_target = outcome.receipt().artifact_id.clone();
         self.mutation_response(response_target, outcome, false)
             .await
+    }
+
+    /// Return a durable import receipt before repeating remote acquisition.
+    pub(super) async fn replay_import(
+        &self,
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        artifact_id: &str,
+        request_digest: String,
+        idempotency_key: &str,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<Option<Value>, SkillLibraryDispatchError> {
+        super::params::validate_idempotency_key(idempotency_key).map_err(|reason| {
+            ArtifactError::InvalidField {
+                field: "idempotency_key",
+                reason,
+            }
+        })?;
+        let target = CanonicalArtifactId::parse(artifact_id.to_owned())?;
+        let store = Arc::clone(&self.store);
+        let outcome = self
+            .blocking
+            .run_after_admission("skill_artifact_import_replay", || async move {
+                let decision = authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    SkillLibraryAction::Import,
+                    &target,
+                    SkillLibraryTarget::CreateForCaller,
+                    correlation_id,
+                )
+                .await
+                .map_err(SkillLibraryDispatchError::Authorization)?;
+                let request_digest =
+                    bind_idempotency_to_owner(&request_digest, &decision.ownership, project_id)?;
+                let idempotency = LibraryIdempotency {
+                    key: idempotency_key.to_owned(),
+                    request_digest,
+                    terminal_audit: None,
+                };
+                Ok(move || {
+                    let result = store
+                        .replay_library_create(
+                            &decision.authorization,
+                            &decision.ownership,
+                            &idempotency,
+                        )
+                        .map_err(SkillLibraryDispatchError::Artifact);
+                    match &result {
+                        Ok(Some(outcome)) => {
+                            let target =
+                                CanonicalArtifactId::parse(outcome.receipt().artifact_id.clone())?;
+                            record_terminal_result(
+                                &decision.audit.with_target(&target),
+                                None,
+                                &Ok(outcome.clone()),
+                            );
+                        }
+                        Err(_) => {
+                            let _recorded = record_terminal_mutation(
+                                &decision.audit,
+                                SkillLibraryTerminalAudit::new(
+                                    SkillLibraryTerminalOutcome::Failed,
+                                    SkillLibraryTerminalStage::Commit,
+                                ),
+                            );
+                        }
+                        Ok(None) => {}
+                    }
+                    result
+                })
+            })
+            .await
+            .map_err(map_dispatch_blocking)?;
+        match outcome {
+            Some(outcome) => {
+                let target = outcome.receipt().artifact_id.clone();
+                self.mutation_response(target, outcome, false)
+                    .await
+                    .map(Some)
+            }
+            None => Ok(None),
+        }
     }
 
     async fn mutation_response(

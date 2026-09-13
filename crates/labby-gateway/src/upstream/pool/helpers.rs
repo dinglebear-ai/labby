@@ -12,7 +12,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolResponse, CallToolResult, Prompt, ReadResourceResult, Resource, ResourceContents,
+    CallToolResponse, CallToolResult, GetPromptResponse, GetPromptResult, Prompt,
+    ReadResourceResult, Resource, ResourceContents,
 };
 use serde_json::Value;
 
@@ -170,6 +171,25 @@ pub(super) fn estimate_call_tool_response_size(result: &CallToolResponse) -> usi
 pub(super) fn estimate_resource_response_size(result: &ReadResourceResult) -> usize {
     let mut counter = ByteCounter(0);
     serde_json::to_writer(&mut counter, result).map_or(0, |()| counter.0)
+}
+
+/// Estimate the serialized size of a completed prompt result without
+/// allocating a second copy of its potentially large message bodies.
+pub(super) fn estimate_prompt_result_size(result: &GetPromptResult) -> usize {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.0)
+}
+
+/// Estimate the serialized payload size of any prompt response variant.
+pub(super) fn estimate_prompt_response_size(result: &GetPromptResponse) -> usize {
+    match result {
+        GetPromptResponse::Complete(result) => estimate_prompt_result_size(result),
+        GetPromptResponse::InputRequired(result) => {
+            let mut counter = ByteCounter(0);
+            serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.0)
+        }
+        _ => 0,
+    }
 }
 
 /// Estimate the serialized size of a `tasks/get` result.

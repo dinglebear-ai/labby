@@ -32,10 +32,15 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | pinned Git revision `0665dcac` |
-| rmcp conformance fixture | `3.1.0` |
-| rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
+| Labby rmcp dependency | fork `3.3.0`, Git revision `0e1184b47645d5eb64d1df3bb84067b1d4a53340` |
+| rmcp conformance fixture | stock upstream `3.3.0` |
+| rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
 | MCP conformance package | `0.2.0-alpha.10` |
+
+The stock upstream fixture and Labby's fork are intentionally distinct pins.
+The 3.3.0 fixture does not read `STATELESS`; its default legacy-session support
+is not evidence for Labby's stateless HTTP boundary. The real-product HTTP
+oracles separately exercise Labby's request-scoped cancellation and validation.
 
 Run the complete gate locally with:
 
@@ -302,5 +307,5 @@ Primary references:
 - <https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization>
 - <https://developers.openai.com/plugins/build/auth>
 - <https://developers.openai.com/plugins/reference>
-- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
+- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.3.0>
 - <https://github.com/modelcontextprotocol/conformance>
