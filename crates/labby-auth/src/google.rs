@@ -1039,9 +1039,11 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[cfg(feature = "testkit")]
+    use super::AuthError;
     use super::{
-        AuthError, AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity,
-        GoogleJwk, GoogleJwks, GoogleProvider, GoogleReauthRequest, merge_google_scopes,
+        AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity, GoogleJwk,
+        GoogleJwks, GoogleProvider, GoogleReauthRequest, merge_google_scopes,
     };
 
     #[cfg(feature = "testkit")]

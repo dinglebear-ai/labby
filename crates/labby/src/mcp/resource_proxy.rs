@@ -300,13 +300,17 @@ impl LabMcpServer {
                 )
                 .await
             }
-            _ => pool
+            _ => match pool
                 .read_upstream_resource_request_allowed_typed(
                     request,
                     self.route_scope.allowed_upstreams(),
                 )
                 .await
-                .map(|outcome| outcome.map(Into::into)),
+            {
+                Some(Ok(result)) => Some(Ok(result.into())),
+                Some(Err(error)) => Some(Err(error)),
+                None => None,
+            },
         };
         match result {
             Some(Ok(result)) => {
@@ -586,22 +590,24 @@ impl LabMcpServer {
         );
         let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
         let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-            pool.read_resource_relayed_typed(
-                config,
-                Some(oauth_subject),
-                request,
-                context.peer.clone(),
-                context.id.clone(),
-                context.ct.clone(),
-                self.relay_session_id,
-                capabilities,
-            )
-            .await
-            .unwrap_or_else(|| {
-                Err(CapabilityCallError::Other {
+            match pool
+                .read_resource_relayed_typed(
+                    config,
+                    Some(oauth_subject),
+                    request,
+                    context.peer.clone(),
+                    context.id.clone(),
+                    context.ct.clone(),
+                    self.relay_session_id,
+                    capabilities,
+                )
+                .await
+            {
+                Some(outcome) => outcome,
+                None => Err(CapabilityCallError::Other {
                     message: format!("relayed upstream `{}` connect failed", config.name),
-                })
-            })
+                }),
+            }
         } else {
             pool.subject_scoped_read_resource_request_typed(config, oauth_subject, request)
                 .await

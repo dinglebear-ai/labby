@@ -672,10 +672,11 @@ impl LabMcpServer {
                     )
                     .await
                 }
-                _ => pool
-                    .get_prompt_typed(&upstream_name, request)
-                    .await
-                    .map(|outcome| outcome.map(Into::into)),
+                _ => match pool.get_prompt_typed(&upstream_name, request).await {
+                    Some(Ok(result)) => Some(Ok(result.into())),
+                    Some(Err(error)) => Some(Err(error)),
+                    None => None,
+                },
             };
             let outcome = match upstream_outcome {
                 Some(Ok(result)) => {
@@ -810,22 +811,24 @@ impl LabMcpServer {
                 );
                 let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
                 let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-                    pool.get_prompt_relayed_typed(
-                        &config,
-                        Some(oauth_subject.as_ref()),
-                        request,
-                        context.peer.clone(),
-                        context.id.clone(),
-                        context.ct.clone(),
-                        self.relay_session_id,
-                        capabilities,
-                    )
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(CapabilityCallError::Other {
+                    match pool
+                        .get_prompt_relayed_typed(
+                            &config,
+                            Some(oauth_subject.as_ref()),
+                            request,
+                            context.peer.clone(),
+                            context.id.clone(),
+                            context.ct.clone(),
+                            self.relay_session_id,
+                            capabilities,
+                        )
+                        .await
+                    {
+                        Some(outcome) => outcome,
+                        None => Err(CapabilityCallError::Other {
                             message: format!("relayed upstream `{}` connect failed", config.name),
-                        })
-                    })
+                        }),
+                    }
                 } else {
                     pool.subject_scoped_get_prompt_typed(&config, oauth_subject.as_ref(), request)
                         .await

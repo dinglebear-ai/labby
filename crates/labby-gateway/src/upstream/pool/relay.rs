@@ -1141,7 +1141,7 @@ impl UpstreamPool {
             }));
         }
         if downstream_cancel.is_cancelled() {
-            return Some(Err(super::super::CapabilityCallError::Cancelled {
+            return Some(Err(super::CapabilityCallError::Cancelled {
                 message: downstream_cancelled("downstream request was already cancelled"),
             }));
         }
@@ -1168,7 +1168,7 @@ impl UpstreamPool {
             () = downstream_cancel.cancelled() => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, caller_subject, "connect_cancelled", started.elapsed().as_millis());
-                return Some(Err(super::super::CapabilityCallError::Cancelled {
+                return Some(Err(super::CapabilityCallError::Cancelled {
                     message: downstream_cancelled("downstream request cancelled while connecting"),
                 }));
             }
@@ -1254,7 +1254,7 @@ impl UpstreamPool {
                     "cancelled",
                     started.elapsed().as_millis(),
                 );
-                return Some(Err(super::super::CapabilityCallError::Cancelled {
+                return Some(Err(super::CapabilityCallError::Cancelled {
                     message: downstream_cancelled("downstream request cancelled while queued"),
                 }));
             }
@@ -1432,7 +1432,7 @@ impl UpstreamPool {
                     "cancelled",
                     started.elapsed().as_millis(),
                 );
-                Some(Err(super::super::CapabilityCallError::Cancelled {
+                Some(Err(super::CapabilityCallError::Cancelled {
                     message: error.to_string(),
                 }))
             }
