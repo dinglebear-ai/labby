@@ -172,6 +172,10 @@ labby incus sync --container labby --rollback
 The retained release is removed only after a successful rollback and is
 replaced by the next successful sync.
 
+Rollback does not cover configuration: `config.toml` and `.env` are not part
+of the retained release. To roll back a bad configuration, follow
+[Config rollback](./PRIVILEGE_EXPOSURE_RUNBOOK.md#config-rollback).
+
 When an export is synced, deployment is not considered successful until the
 restarted container serves an `index.html` whose SHA-256 matches the freshly
 built local export. This catches stale filesystem overrides, incomplete asset

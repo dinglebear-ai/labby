@@ -38,6 +38,17 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Changed
 
+- **auth/access (breaking for operators):** browser sessions for allowlisted
+  identities other than `LABBY_AUTH_ADMIN_EMAIL` no longer receive `lab:admin`;
+  they receive the static-token scopes with admin scopes lowered (default
+  `lab:read lab`). Allowlisted colleagues therefore lose `requires_admin`
+  actions (`setup`, `snippets`, `server_logs`, `doctor`, `fs`, `browser`). Grant
+  durable platform administration with `access.platform_admin.grant`; on `/v1`
+  such sessions are elevated to `lab:admin` from the access store.
+  `/auth/session` adds `owner_bootstrap_available`, and the owner-setup screen is
+  offered only when it is true. Product-credential rate limiting now charges only
+  failed verifications. See `docs/runtime/OAUTH.md` (browser session scopes) and
+  `docs/runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md`.
 - **skills/artifacts (breaking):** durable Skill Library lifecycle actions use the
   `artifacts.*` namespace and `/v1/artifacts`; legacy `skill_library.*` configuration
   and action names are not valid. Exact acquisition sources are configured under
