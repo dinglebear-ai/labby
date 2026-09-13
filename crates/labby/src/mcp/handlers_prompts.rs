@@ -24,6 +24,9 @@ use serde_json::Value;
 
 use labby_runtime::agent_error::{AgentErrorContext, AgentErrorOrigin, AgentSideEffectRisk};
 
+#[cfg(feature = "gateway")]
+use crate::dispatch::upstream::pool::CapabilityCallError;
+
 use crate::mcp::agent_error::{
     internal as internal_agent_error, invalid_params as invalid_params_agent_error,
 };
@@ -87,21 +90,18 @@ fn prompt_error_context(
 }
 
 #[cfg(feature = "gateway")]
-fn classify_prompt_fetch_failure(message: &str) -> (&'static str, &'static str) {
-    const CLASSIFY_PREFIX_BYTES: usize = 1024;
-    let mut end = message.len().min(CLASSIFY_PREFIX_BYTES);
-    while end > 0 && !message.is_char_boundary(end) {
-        end -= 1;
-    }
-    let prefix = message[..end].to_ascii_lowercase();
-    if prefix.contains("response too large") {
-        ("response_too_large", "response exceeded the gateway cap")
-    } else if prefix.contains("timed out") {
-        ("timeout", "fetch timed out")
-    } else if prefix.contains("cancelled") {
-        ("cancelled", "fetch was cancelled")
-    } else {
-        ("upstream_error", "upstream fetch failed")
+fn classify_prompt_fetch_failure(error: &CapabilityCallError) -> (&'static str, &'static str) {
+    match error {
+        CapabilityCallError::ResponseTooLarge { .. } => {
+            ("response_too_large", "response exceeded the gateway cap")
+        }
+        CapabilityCallError::QueueSaturated { .. } => (
+            "queue_saturated",
+            "could not be admitted to the gateway queue",
+        ),
+        CapabilityCallError::Timeout { .. } => ("timeout", "fetch timed out"),
+        CapabilityCallError::Cancelled { .. } => ("cancelled", "fetch was cancelled"),
+        _ => ("upstream_error", "upstream fetch failed"),
     }
 }
 
@@ -660,7 +660,7 @@ impl LabMcpServer {
             };
             let upstream_outcome = match (relay_config, relay_capabilities) {
                 (Some(config), Some(capabilities)) => {
-                    pool.get_prompt_relayed(
+                    pool.get_prompt_relayed_typed(
                         &config,
                         None,
                         request,
@@ -673,7 +673,7 @@ impl LabMcpServer {
                     .await
                 }
                 _ => pool
-                    .get_prompt(&upstream_name, request)
+                    .get_prompt_typed(&upstream_name, request)
                     .await
                     .map(|outcome| outcome.map(Into::into)),
             };
@@ -810,7 +810,7 @@ impl LabMcpServer {
                 );
                 let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
                 let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-                    pool.get_prompt_relayed(
+                    pool.get_prompt_relayed_typed(
                         &config,
                         Some(oauth_subject.as_ref()),
                         request,
@@ -822,10 +822,12 @@ impl LabMcpServer {
                     )
                     .await
                     .unwrap_or_else(|| {
-                        Err(format!("relayed upstream `{}` connect failed", config.name))
+                        Err(CapabilityCallError::Other {
+                            message: format!("relayed upstream `{}` connect failed", config.name),
+                        })
                     })
                 } else {
-                    pool.subject_scoped_get_prompt(&config, oauth_subject.as_ref(), request)
+                    pool.subject_scoped_get_prompt_typed(&config, oauth_subject.as_ref(), request)
                         .await
                         .map(Into::into)
                 };
@@ -968,25 +970,50 @@ mod tests {
 
     #[cfg(feature = "gateway")]
     #[test]
-    fn prompt_fetch_failure_classification_is_bounded() {
-        assert_eq!(
-            classify_prompt_fetch_failure("upstream response too large (11 bytes, max 10)").0,
-            "response_too_large"
-        );
-        assert_eq!(
-            classify_prompt_fetch_failure("upstream prompt get timed out after 25ms").0,
-            "timeout"
-        );
-        assert_eq!(
-            classify_prompt_fetch_failure("downstream request cancelled while queued").0,
-            "cancelled"
-        );
-        assert_eq!(
-            classify_prompt_fetch_failure("Mcp error: -32602: private detail").0,
-            "upstream_error"
-        );
-        let hostile = format!("opaque failure {}response too large", "x".repeat(2048));
-        assert_eq!(classify_prompt_fetch_failure(&hostile).0, "upstream_error");
+    fn prompt_fetch_failure_classification_uses_variants() {
+        for message in ["cancelled", "timed out", "response too large"] {
+            let error = CapabilityCallError::Mcp {
+                data: ErrorData::invalid_params(message, None),
+                message: format!("upstream prompt get failed: {message}"),
+            };
+            let (kind, summary) = classify_prompt_fetch_failure(&error);
+            assert_eq!(kind, "upstream_error");
+            assert!(!summary.contains(message));
+        }
+        for (error, expected_kind) in [
+            (
+                CapabilityCallError::ResponseTooLarge {
+                    message: "opaque".into(),
+                },
+                "response_too_large",
+            ),
+            (
+                CapabilityCallError::Timeout {
+                    message: "opaque".into(),
+                },
+                "timeout",
+            ),
+            (
+                CapabilityCallError::Cancelled {
+                    message: "opaque".into(),
+                },
+                "cancelled",
+            ),
+            (
+                CapabilityCallError::QueueSaturated {
+                    message: "opaque".into(),
+                },
+                "queue_saturated",
+            ),
+            (
+                CapabilityCallError::Other {
+                    message: "cancelled timed out response too large".into(),
+                },
+                "upstream_error",
+            ),
+        ] {
+            assert_eq!(classify_prompt_fetch_failure(&error).0, expected_kind);
+        }
     }
 
     fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {

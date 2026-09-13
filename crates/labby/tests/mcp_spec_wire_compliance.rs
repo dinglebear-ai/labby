@@ -8,7 +8,7 @@
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
-#[path = "support/mcp_tools_transport_qualification/mod.rs"]
+#[path = "support/mcp_tools_transport_qualification.rs"]
 mod transport;
 
 mod support {
@@ -70,9 +70,46 @@ fn request(method: &str, version: &str) -> Value {
     })
 }
 
+fn effectful_request() -> Value {
+    let mut body = request("tools/call", "2026-07-28");
+    body["params"]["name"] = json!("forge.safe");
+    body["params"]["arguments"] = json!({});
+    body
+}
+
+fn post(
+    client: &reqwest::Client,
+    runner: &TransportQualification,
+    body: &Value,
+    version_header: &str,
+    origin: Option<OriginCase>,
+) -> reqwest::RequestBuilder {
+    let endpoint = runner.http_endpoint().expect("HTTP endpoint");
+    let mut call = client
+        .post(&endpoint)
+        .bearer_auth(runner.http_token())
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", version_header)
+        .header(
+            "mcp-method",
+            body["method"].as_str().expect("literal method"),
+        )
+        .header("x-labby-project-id", "disposable")
+        .header("x-labby-team-id", "bootstrap-initial-team")
+        .json(body);
+    if let Some(name) = body["params"]["name"].as_str() {
+        call = call.header("mcp-name", name);
+    }
+    if let Some(origin) = origin {
+        for header in origin.headers(&endpoint) {
+            call = call.header("origin", header);
+        }
+    }
+    call
+}
+
 async fn rejected_request(
     body: Value,
-    method_header: &str,
     version_header: &str,
     origin: Option<OriginCase>,
     expected_status: u16,
@@ -85,27 +122,37 @@ async fn rejected_request(
         .call_raw("forge.safe", json!({}))
         .await
         .expect("initialize independent side-effect ledger");
-    let before = runner.effect_counts().expect("baseline side effects");
+    let baseline = runner.effect_counts().expect("baseline side effects");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("bounded independent HTTP client");
-    let endpoint = runner.http_endpoint().expect("HTTP endpoint");
-    let mut call = client
-        .post(&endpoint)
-        .bearer_auth(runner.http_token())
-        .header("accept", "application/json, text/event-stream")
-        .header("mcp-protocol-version", version_header)
-        .header("mcp-method", method_header)
-        .header("x-labby-project-id", "disposable")
-        .header("x-labby-team-id", "bootstrap-initial-team")
-        .json(&body);
-    if let Some(origin) = origin {
-        for header in origin.headers(&endpoint) {
-            call = call.header("origin", header);
-        }
-    }
+    let control = if body["method"] == "tools/call" {
+        // Prove this exact body can execute before changing only the rejected
+        // Origin or mirrored version header. A blanket call rejection must fail.
+        let response = post(
+            &client,
+            &runner,
+            &body,
+            "2026-07-28",
+            origin.map(|_| OriginCase::SameOrigin),
+        )
+        .send()
+        .await
+        .expect("effectful positive control response");
+        let status = response.status().as_u16();
+        let text = response.text().await.expect("positive control body");
+        Some((
+            status,
+            text,
+            runner.effect_counts().expect("control effects"),
+        ))
+    } else {
+        None
+    };
+    let before = runner.effect_counts().expect("pre-rejection side effects");
+    let call = post(&client, &runner, &body, version_header, origin);
     let response = call.send().await.expect("HTTP response");
     let status = response.status().as_u16();
     let response_body = response.text().await.expect("bounded response body");
@@ -116,6 +163,13 @@ async fn rejected_request(
         "unclean fixture: {:?}",
         cleanup.failures
     );
+    if let Some((status, text, effects)) = control {
+        assert_eq!(status, 200, "positive control failed: {text}");
+        let response: Value = serde_json::from_str(&text).expect("JSON positive control");
+        assert_eq!(response["id"], body["id"]);
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(effects, (baseline.0 + 1, baseline.1));
+    }
     assert_eq!(
         status, expected_status,
         "unexpected HTTP status for {origin:?}: {response_body}"
@@ -131,16 +185,6 @@ async fn rejected_request(
 #[tokio::test]
 async fn mcp_spec_http_invalid_origin_is_403() {
     // Streamable HTTP security: a present invalid Origin MUST receive 403.
-    // A positive control prevents a blanket Origin rejection from passing.
-    rejected_request(
-        request("tools/list", "2026-07-28"),
-        "tools/list",
-        "2026-07-28",
-        Some(OriginCase::SameOrigin),
-        200,
-        None,
-    )
-    .await;
     for origin in [
         OriginCase::Disallowed,
         OriginCase::Malformed,
@@ -151,37 +195,20 @@ async fn mcp_spec_http_invalid_origin_is_403() {
         OriginCase::Userinfo,
         OriginCase::Fragment,
     ] {
-        rejected_request(
-            request("tools/list", "2026-07-28"),
-            "tools/list",
-            "2026-07-28",
-            Some(origin),
-            403,
-            None,
-        )
-        .await;
+        rejected_request(effectful_request(), "2026-07-28", Some(origin), 403, None).await;
     }
 }
 
 #[tokio::test]
 async fn mcp_spec_http_protocol_header_mismatch_is_400() {
     // The body is authoritative; a mirrored protocol header cannot disagree.
-    rejected_request(
-        request("tools/list", "2026-07-28"),
-        "tools/list",
-        "2025-11-25",
-        None,
-        400,
-        Some(-32020),
-    )
-    .await;
+    rejected_request(effectful_request(), "2025-11-25", None, 400, Some(-32020)).await;
 }
 
 #[tokio::test]
 async fn mcp_spec_http_unknown_method_is_404_method_not_found() {
     rejected_request(
         request("unknown/compliance-oracle", "2026-07-28"),
-        "unknown/compliance-oracle",
         "2026-07-28",
         None,
         404,

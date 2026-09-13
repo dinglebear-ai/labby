@@ -8,7 +8,7 @@
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
-#[path = "support/mcp_tools_transport_qualification/mod.rs"]
+#[path = "support/mcp_tools_transport_qualification.rs"]
 mod transport;
 
 mod support {

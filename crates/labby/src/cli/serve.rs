@@ -3044,7 +3044,6 @@ mod tests {
         assert!(origins.contains(&"https://public.example".to_string()));
         assert!(!origins.contains(&"http://public.example".to_string()));
         assert!(!origins.contains(&"http://public.example:8765".to_string()));
-        assert!(!origins.contains(&"http://public.example:8765".to_string()));
     }
 
     #[tokio::test]

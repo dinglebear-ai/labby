@@ -24,7 +24,9 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
-use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
+use crate::dispatch::upstream::pool::{
+    CapabilityCallError, UpstreamPool, redact_resource_uri_for_logging,
+};
 use crate::mcp::context::{
     auth_context_from_extensions, forwardable_client_capabilities,
     oauth_upstream_subject_for_request, redacted_oauth_subject_label,
@@ -38,9 +40,9 @@ use crate::mcp::server::LabMcpServer;
 
 fn classified_resource_fetch_error(
     uri: &str,
-    message: &str,
+    error: &CapabilityCallError,
 ) -> (LoggingLevel, &'static str, &'static str, ErrorData) {
-    let (kind, summary) = classify_resource_fetch_failure(message);
+    let (kind, summary) = classify_resource_fetch_failure(error);
     let level = match kind {
         "cancelled" | "response_too_large" => LoggingLevel::Warning,
         _ => LoggingLevel::Error,
@@ -286,7 +288,7 @@ impl LabMcpServer {
         };
         let result = match (relay_config, relay_capabilities) {
             (Some(config), Some(capabilities)) => {
-                pool.read_resource_relayed(
+                pool.read_resource_relayed_typed(
                     &config,
                     None,
                     request,
@@ -299,7 +301,7 @@ impl LabMcpServer {
                 .await
             }
             _ => pool
-                .read_upstream_resource_request_allowed(
+                .read_upstream_resource_request_allowed_typed(
                     request,
                     self.route_scope.allowed_upstreams(),
                 )
@@ -495,7 +497,7 @@ impl LabMcpServer {
             "dispatch route selected"
         );
         let result = pool
-            .read_upstream_ui_resource_allowed(&uri, self.route_scope.allowed_upstreams())
+            .read_upstream_ui_resource_allowed_typed(&uri, self.route_scope.allowed_upstreams())
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
@@ -584,7 +586,7 @@ impl LabMcpServer {
         );
         let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
         let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-            pool.read_resource_relayed(
+            pool.read_resource_relayed_typed(
                 config,
                 Some(oauth_subject),
                 request,
@@ -595,9 +597,13 @@ impl LabMcpServer {
                 capabilities,
             )
             .await
-            .unwrap_or_else(|| Err(format!("relayed upstream `{}` connect failed", config.name)))
+            .unwrap_or_else(|| {
+                Err(CapabilityCallError::Other {
+                    message: format!("relayed upstream `{}` connect failed", config.name),
+                })
+            })
         } else {
-            pool.subject_scoped_read_resource_request(config, oauth_subject, request)
+            pool.subject_scoped_read_resource_request_typed(config, oauth_subject, request)
                 .await
                 .map(Into::into)
         };

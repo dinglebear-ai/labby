@@ -266,6 +266,7 @@ pub(crate) fn oauth_state_diagnostic_id(state: &str) -> String {
     truncated_fingerprint(&hasher.finalize())
 }
 
+#[cfg(any(feature = "http-axum", test))]
 pub(crate) fn oauth_provider_nonce(state: &str) -> String {
     fingerprint(state)
 }

@@ -15,7 +15,9 @@ from scripts.ci.extract_mcp_schema_requirements import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PINNED_SOURCE = Path("/tmp/labby-mcp-spec-2026-07-28")
+# The conformance workflow checks out the immutable source at this repository
+# path; tests must not depend on a developer's temporary checkout.
+PINNED_SOURCE = ROOT / "target/mcp-spec-source"
 
 
 class McpSchemaExtractionTests(unittest.TestCase):

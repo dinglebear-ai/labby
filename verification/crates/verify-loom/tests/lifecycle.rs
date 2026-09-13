@@ -154,7 +154,13 @@ fn loom_negative() {
     cancel.join().unwrap();
     if terminal_writes.load(Ordering::SeqCst) > 1 {
         let recorded = actions.lock().unwrap().clone();
-        raise_counterexample(counterexample(OriginKind::Loom, None, recorded));
+        // Both modeled threads have joined, so projection only reads an
+        // immutable trace. Validation and fingerprinting need an ordinary OS
+        // stack on Linux x86_64; no Loom primitives cross this thread boundary.
+        let scenario = std::thread::spawn(move || counterexample(OriginKind::Loom, None, recorded))
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+        raise_counterexample(scenario);
     }
 }
 
