@@ -237,6 +237,7 @@ fn configure_skill_library_imports(
 #[cfg(feature = "skills")]
 fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
+    health: &crate::runtime_health::SubsystemHealth,
     bootstrap: impl FnOnce() -> Result<T>,
 ) -> Option<T> {
     if !["artifacts", "bundles", "jobs", "sources", "uploads"]
@@ -253,11 +254,15 @@ fn bootstrap_selected_skill_library_with<T>(
             // point of view. A corrupt/truncated/forward-schema state file must not
             // take down the public MCP endpoint, gateway controls, or operator UI.
             // Keep the detailed cause in operator logs while transport surfaces see
-            // only the stable service_unavailable contract.
+            // only the stable service_unavailable contract. `Display` on an
+            // anyhow error is only the outermost context, so log and record the
+            // full cause chain; `/ready` and doctor project the recorded state.
+            let detail = crate::runtime_health::error_chain(error.as_ref());
+            health.record_degraded(crate::runtime_health::ARTIFACTS_UNAVAILABLE, detail.clone());
             tracing::error!(
                 subsystem = "startup",
                 phase = "artifacts.degraded",
-                error = %error,
+                error = %detail,
                 "Skill Library bootstrap failed; continuing with Artifact services unavailable"
             );
             None
@@ -470,8 +475,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     }
 
     #[cfg(feature = "skills")]
-    let skill_library_runtime =
-        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config));
+    let skill_library_runtime = bootstrap_selected_skill_library_with(
+        &registry,
+        &crate::runtime_health::SubsystemHealth::process(),
+        || bootstrap_skill_library(config),
+    );
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
@@ -770,7 +778,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             }
             Err(error) => {
                 tracing::warn!(
-                    error = %error,
+                    error = %crate::runtime_health::error_chain(error.as_ref()),
                     "actor_key derivation disabled because actor-key secret could not be loaded"
                 );
             }
@@ -2839,10 +2847,13 @@ mod tests {
     #[test]
     fn excluded_artifacts_service_does_not_run_skill_library_bootstrap() {
         let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
-        let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
-            panic!("excluded artifacts service must not touch Artifact Library storage")
-        });
+        let health = crate::runtime_health::SubsystemHealth::default();
+        let result =
+            bootstrap_selected_skill_library_with(&registry, &health, || -> anyhow::Result<()> {
+                panic!("excluded artifacts service must not touch Artifact Library storage")
+            });
         assert!(result.is_none());
+        assert!(health.degraded_codes().is_empty());
     }
 
     #[cfg(feature = "skills")]
@@ -2850,10 +2861,43 @@ mod tests {
     fn selected_artifact_service_degrades_when_skill_library_bootstrap_fails() {
         let registry =
             filter_registry(build_default_registry(), &["artifacts".to_owned()]).unwrap();
-        let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<u8> {
-            anyhow::bail!("corrupt persisted Skill Library fixture")
-        });
+        let health = crate::runtime_health::SubsystemHealth::default();
+        let result =
+            bootstrap_selected_skill_library_with(&registry, &health, || -> anyhow::Result<u8> {
+                anyhow::bail!("corrupt persisted Skill Library fixture")
+            });
         assert!(result.is_none());
+        assert_eq!(
+            health.degraded_codes(),
+            [crate::runtime_health::ARTIFACTS_UNAVAILABLE]
+        );
+    }
+
+    /// Regression: production logged only the outer anyhow context
+    /// ("configure Skill Library exact-source adapters") and hid the cause.
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_degradation_records_the_inner_cause() {
+        use anyhow::Context as _;
+
+        let registry =
+            filter_registry(build_default_registry(), &["artifacts".to_owned()]).unwrap();
+        let health = crate::runtime_health::SubsystemHealth::default();
+        let result =
+            bootstrap_selected_skill_library_with(&registry, &health, || -> anyhow::Result<u8> {
+                Err(anyhow::anyhow!(
+                    "Artifact authority pin must be a public address"
+                ))
+                .context("configure Skill Library exact-source adapters")
+            });
+        assert!(result.is_none());
+        let details = health.degraded_details();
+        assert_eq!(details.len(), 1);
+        assert_eq!(
+            details[0].1,
+            "configure Skill Library exact-source adapters: \
+             Artifact authority pin must be a public address"
+        );
     }
 
     #[cfg(feature = "skills")]
@@ -2862,7 +2906,8 @@ mod tests {
         for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             let registry =
                 filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
-            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8));
+            let health = crate::runtime_health::SubsystemHealth::default();
+            let result = bootstrap_selected_skill_library_with(&registry, &health, || Ok(41_u8));
             assert_eq!(
                 result,
                 Some(41),
