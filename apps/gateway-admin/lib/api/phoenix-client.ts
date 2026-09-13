@@ -42,6 +42,20 @@ export interface PhoenixSession {
   events?: PhoenixEvent[]
 }
 
+export interface PhoenixSessionSummary {
+  session_id: string
+  title: string
+  preview: string
+  model?: string | null
+  effort?: string | null
+  message_count: number
+  turn_status: 'ready' | 'in_progress'
+}
+
+export interface PhoenixSessionList {
+  sessions: PhoenixSessionSummary[]
+}
+
 export interface PhoenixModel {
   id: string
   model: string
@@ -114,6 +128,7 @@ function action<T>(name: string, params: object, signal?: AbortSignal) {
 export const phoenixApi = {
   status: (signal?: AbortSignal) => action<PhoenixStatus>('phoenix.status', {}, signal),
   models: (signal?: AbortSignal) => action<{ models: PhoenixModel[] }>('phoenix.models.list', {}, signal),
+  list: (signal?: AbortSignal) => action<PhoenixSessionList>('phoenix.session.list', {}, signal),
   start: (model?: string, effort?: string, signal?: AbortSignal) => action<PhoenixSession>('phoenix.session.start', { model, effort }, signal),
   read: (sessionId: string, signal?: AbortSignal) => action<PhoenixSession>('phoenix.session.read', { session_id: sessionId }, signal),
   close: (sessionId: string, signal?: AbortSignal) => action<{ session_id: string; status: 'closed' }>('phoenix.session.close', { session_id: sessionId }, signal),

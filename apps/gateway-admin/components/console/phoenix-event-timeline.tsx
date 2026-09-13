@@ -1,4 +1,7 @@
-import { AlertTriangle, Brain, Check, CircleEllipsis, FileDiff, Gauge, ListChecks, Plug, Wrench } from 'lucide-react'
+'use client'
+
+import { useState } from 'react'
+import { AlertTriangle, Brain, Check, ChevronDown, CircleEllipsis, FileDiff, Gauge, ListChecks, Plug, Search, Wrench } from 'lucide-react'
 import type { PhoenixEvent } from '@/lib/api/phoenix-client'
 
 type EventView = {
@@ -82,16 +85,21 @@ const styles = {
 } as const
 
 export function PhoenixEventTimeline({ events }: { events: PhoenixEvent[] }) {
+  const [expanded, setExpanded] = useState(true)
   const visible = events.map(summarize).filter((event): event is EventView => event !== undefined)
   if (visible.length === 0) return null
-  return <section aria-label="Phoenix activity" className="flex flex-col gap-1.5">
-    <h3 className="flex items-center gap-1.5 text-[9.5px] font-bold uppercase tracking-[.13em] text-aurora-text-muted"><CircleEllipsis size={12}/>Activity</h3>
+  const toolCount = visible.filter((event) => event.kind === 'tool').length
+  const reasoningCount = visible.filter((event) => event.kind === 'reasoning').length
+  const summary = [toolCount ? `${toolCount} tool ${toolCount === 1 ? 'call' : 'calls'}` : '', reasoningCount ? `${reasoningCount} reasoning ${reasoningCount === 1 ? 'step' : 'steps'}` : ''].filter(Boolean).join(' · ') || `${visible.length} updates`
+  return <section aria-label="Phoenix activity" className="overflow-hidden rounded-xl bg-[var(--gw0-0_40)]">
+    <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-2.5 px-3 py-3 text-left hover:bg-aurora-hover-bg"><span className="grid size-7 place-items-center rounded-lg border border-aurora-accent-pink/35 text-aurora-accent-primary"><Search size={14}/></span>{reasoningCount > 0 && <span className="grid size-7 place-items-center rounded-lg border border-aurora-accent-pink/35 text-aurora-status-success"><Brain size={14}/></span>}<strong className="text-[13px]">Activity</strong><span className="min-w-0 flex-1 truncate text-xs text-aurora-text-muted">{summary}</span><ChevronDown size={15} className={`transition-transform ${expanded ? 'rotate-180' : ''}`}/></button>
+    {expanded && <div className="mx-3 mb-3 border-l border-aurora-status-success/50 pl-4">
     {visible.map((event, index) => {
       const [color, Icon] = styles[event.kind]
-      return <div data-phoenix-event={event.kind} key={`${event.label}-${index}`} className="flex min-w-0 gap-2 rounded-[9px] border border-aurora-border-default/45 bg-[var(--gw0-0_40)] px-2.5 py-2">
-        <Icon aria-hidden size={13} className={`mt-0.5 shrink-0 ${color}`}/><div className="min-w-0"><p className="text-[11px] font-bold text-aurora-text-primary">{event.label}</p>{event.detail && <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[10.5px] leading-relaxed text-aurora-text-muted">{event.detail}</p>}</div>
+      return <div data-phoenix-event={event.kind} key={`${event.label}-${index}`} className="relative flex min-w-0 gap-2 py-2.5 before:absolute before:-left-[22px] before:top-4 before:size-2.5 before:rounded-full before:border before:border-aurora-status-success/70 before:bg-aurora-panel-strong">
+        <Icon aria-hidden size={14} className={`mt-0.5 shrink-0 ${color}`}/><div className="min-w-0 flex-1"><p className="text-[12.5px] font-bold text-aurora-text-primary">{event.label}</p>{event.detail && <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--gw0-0_65)] px-3 py-2 font-mono text-[11px] leading-relaxed text-aurora-text-muted">{event.detail}</pre>}</div>
       </div>
-    })}
+    })}</div>}
   </section>
 }
 

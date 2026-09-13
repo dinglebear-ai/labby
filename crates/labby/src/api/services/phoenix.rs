@@ -30,7 +30,7 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 fn csrf_exempt(action: &str) -> bool {
     matches!(
         action,
-        "help" | "schema" | "phoenix.status" | "phoenix.session.read"
+        "help" | "schema" | "phoenix.status" | "phoenix.session.list" | "phoenix.session.read"
     )
 }
 
@@ -72,5 +72,18 @@ fn denied() -> ToolError {
     ToolError::Forbidden {
         message: "Phoenix requires host-established identity".into(),
         required_scopes: vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_session_actions_are_csrf_exempt() {
+        assert!(csrf_exempt("phoenix.session.list"));
+        assert!(csrf_exempt("phoenix.session.read"));
+        assert!(!csrf_exempt("phoenix.session.start"));
+        assert!(!csrf_exempt("phoenix.session.close"));
     }
 }

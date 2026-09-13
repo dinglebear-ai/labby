@@ -23,6 +23,8 @@ const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
 const MAX_EVENTS: usize = 500;
 const MAX_SESSIONS: usize = 32;
+const MAX_SESSION_TITLE_CHARS: usize = 120;
+const MAX_SESSION_PREVIEW_CHARS: usize = 240;
 const APP_SERVER_PROTOCOL_SCHEMA: &str = "v2";
 const LOCAL_MCP_URL: &str = "http://127.0.0.1:8765/mcp";
 const LOCAL_MCP_TOKEN_ENV: &str = "LABBY_MCP_HTTP_TOKEN";
@@ -54,6 +56,11 @@ const fn action(
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     action("phoenix.status", "Read Phoenix availability", &[]),
     action("phoenix.models.list", "List selectable Codex models", &[]),
+    action(
+        "phoenix.session.list",
+        "List caller-scoped Phoenix sessions",
+        &[],
+    ),
     action(
         "phoenix.session.start",
         "Start a caller-scoped Phoenix session",
@@ -158,6 +165,7 @@ impl PhoenixRuntime {
         match name {
             "phoenix.status" => Ok(self.status()),
             "phoenix.models.list" => self.models().await,
+            "phoenix.session.list" => self.list(owner).await,
             "phoenix.session.start" => {
                 self.start(
                     owner,
@@ -245,7 +253,7 @@ impl PhoenixRuntime {
                 "configured": std::env::var_os(LOCAL_MCP_TOKEN_ENV).is_some(),
             },
             "capabilities": {
-                "session_lifecycle": ["start", "read", "close"],
+                "session_lifecycle": ["list", "start", "read", "close"],
                 "turn_lifecycle": ["start", "steer", "interrupt", "completed"],
                 "operations": ["review"],
                 "review": ["uncommitted_changes", "base_branch", "commit", "custom"],
@@ -347,6 +355,30 @@ impl PhoenixRuntime {
             })),
         );
         Ok(json!({"session_id":session_id,"status":"ready","messages":[]}))
+    }
+
+    async fn list(&self, owner: &str) -> Result<Value, ToolError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .map(|(session_id, session)| (session_id.clone(), Arc::clone(session)))
+            .collect::<Vec<_>>();
+        let mut summaries = Vec::with_capacity(sessions.len().min(MAX_SESSIONS));
+        for (session_id, session) in sessions {
+            let state = session.lock().await;
+            if state.owner == owner {
+                summaries.push(render_session_summary(&session_id, &state));
+            }
+        }
+        summaries.sort_by(|left, right| {
+            right["session_id"]
+                .as_str()
+                .cmp(&left["session_id"].as_str())
+        });
+        summaries.truncate(MAX_SESSIONS);
+        Ok(json!({"sessions": summaries}))
     }
 
     async fn read(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
@@ -629,6 +661,41 @@ fn render_session(session_id: &str, session: &Session) -> Value {
         "model": session.model,
         "effort": session.effort,
     })
+}
+
+fn render_session_summary(session_id: &str, session: &Session) -> Value {
+    let title = session
+        .messages
+        .iter()
+        .find(|message| message.role == "user")
+        .map_or_else(
+            || "New Phoenix session".to_owned(),
+            |message| display_text(&message.text, MAX_SESSION_TITLE_CHARS),
+        );
+    let preview = session.messages.last().map_or_else(
+        || "No messages yet".to_owned(),
+        |message| display_text(&message.text, MAX_SESSION_PREVIEW_CHARS),
+    );
+    json!({
+        "session_id": session_id,
+        "title": title,
+        "preview": preview,
+        "model": session.model,
+        "effort": session.effort,
+        "message_count": session.messages.len(),
+        "turn_status": if session.turn_in_progress { "in_progress" } else { "ready" },
+    })
+}
+
+fn display_text(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let text = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{text}…")
+    } else {
+        text
+    }
 }
 
 struct TurnResult {
@@ -1100,6 +1167,23 @@ done
             .await
             .unwrap();
         let session_id = started["session_id"].as_str().unwrap();
+        let initial_list = runtime
+            .dispatch("principal-a", "phoenix.session.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(initial_list["sessions"][0]["session_id"], session_id);
+        assert_eq!(initial_list["sessions"][0]["title"], "New Phoenix session");
+        assert_eq!(initial_list["sessions"][0]["preview"], "No messages yet");
+        assert_eq!(initial_list["sessions"][0]["message_count"], 0);
+        assert_eq!(initial_list["sessions"][0]["turn_status"], "ready");
+        assert!(initial_list.to_string().find("thread-container").is_none());
+        assert_eq!(
+            runtime
+                .dispatch("principal-b", "phoenix.session.list", json!({}))
+                .await
+                .unwrap()["sessions"],
+            json!([])
+        );
         let completed = runtime
             .dispatch(
                 "principal-a",
@@ -1115,6 +1199,16 @@ done
             "thread/tokenUsage/updated"
         );
         assert_eq!(completed["events"][2]["method"], "item/agentMessage/delta");
+        let completed_list = runtime
+            .dispatch("principal-a", "phoenix.session.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(completed_list["sessions"][0]["title"], "hello");
+        assert_eq!(
+            completed_list["sessions"][0]["preview"],
+            "hello from container"
+        );
+        assert_eq!(completed_list["sessions"][0]["message_count"], 2);
         let resumed = runtime
             .dispatch(
                 "principal-a",
@@ -1196,7 +1290,7 @@ done
         assert_eq!(status["capabilities"]["operations"], json!(["review"]));
         assert_eq!(
             status["capabilities"]["session_lifecycle"],
-            json!(["start", "read", "close"])
+            json!(["list", "start", "read", "close"])
         );
     }
 
@@ -1228,5 +1322,11 @@ done
         assert_eq!(required_target(Some("main".into())).unwrap(), "main");
         assert!(required_target(None).is_err());
         assert!(required_target(Some("".into())).is_err());
+    }
+
+    #[test]
+    fn session_summary_text_is_single_line_unicode_safe_and_bounded() {
+        assert_eq!(display_text("  one\n two\tthree ", 20), "one two three");
+        assert_eq!(display_text("🦀🦀🦀", 2), "🦀🦀…");
     }
 }

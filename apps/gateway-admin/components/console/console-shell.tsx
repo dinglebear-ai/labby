@@ -1,11 +1,16 @@
 'use client'
 
 import * as React from 'react'
+import dynamic from 'next/dynamic'
 
 import { ConsoleShellProvider, useConsoleShell } from '@/components/console/console-shell-context'
 import { ConsoleSidebar } from '@/components/console/console-sidebar'
-import { ConsoleGlobalTools } from '@/components/console/console-global-tools'
 import { ConsoleTopbar } from '@/components/console/console-topbar'
+
+const ConsoleGlobalTools = dynamic(
+  () => import('@/components/console/console-global-tools').then((module) => module.ConsoleGlobalTools),
+  { ssr: false },
+)
 
 /**
  * The Gateway Console frame: a full-viewport flex row of sidebar + main column,
