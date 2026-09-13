@@ -447,6 +447,9 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
         "gateway:gateway.oauth.google_revoke" => {
             Some(("requires_stored_google_grant", "not_found"))
         }
+        "gateway:gateway.oauth.authorize" => {
+            Some(("requires_personal_oauth_identity", "forbidden"))
+        }
         "gateway:gateway.oauth.clear"
         | "gateway:gateway.oauth.start"
         | "gateway:gateway.oauth.status"

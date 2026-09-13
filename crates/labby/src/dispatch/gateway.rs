@@ -123,11 +123,12 @@ mod team_scope_tests {
     use serde_json::json;
 
     #[test]
-    fn team_scoped_predicate_is_the_complement_of_platform_and_discovery() {
+    fn team_scoped_predicate_excludes_platform_personal_and_discovery() {
         assert!(team_scoped_gateway_action("gateway.loadout.list"));
         assert!(team_scoped_gateway_action("gateway.protected_route.add"));
         assert!(!team_scoped_gateway_action("gateway.add"));
         assert!(!team_scoped_gateway_action("gateway.oauth.clear"));
+        assert!(!team_scoped_gateway_action("gateway.oauth.authorize"));
         assert!(!team_scoped_gateway_action("help"));
         assert!(!team_scoped_gateway_action("gateway.schema"));
         assert!(!team_scoped_gateway_action("skills.list"));
@@ -141,7 +142,7 @@ mod team_scope_tests {
             }
             assert_eq!(
                 spec.requires_admin,
-                !team_scoped_gateway_action(spec.name),
+                !team_scoped_gateway_action(spec.name) && spec.name != "gateway.oauth.authorize",
                 "{}",
                 spec.name
             );

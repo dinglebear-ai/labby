@@ -993,23 +993,51 @@ mod tests {
             .unwrap()
             .1
             .into_owned();
+        let (_auth_dir, auth_state) = test_auth_state().await;
+        let session = labby_auth::types::BrowserSessionRow {
+            session_id: "personal-browser-session".into(),
+            subject: "personal-caller".into(),
+            email: Some("personal@example.com".into()),
+            csrf_token: "browser-csrf".into(),
+            created_at: now_seconds(),
+            expires_at: now_seconds() + 3600,
+            project_binding: None,
+        };
+        let binding = auth_state.inbound_provider_binding();
+        auth_state
+            .store
+            .upsert_bound_browser_session(session.clone(), binding.clone())
+            .await
+            .unwrap();
+        auth_state
+            .store
+            .upsert_bound_verified_inbound_identity(
+                &session.subject,
+                "personal@example.com",
+                now_seconds(),
+                binding,
+            )
+            .await
+            .unwrap();
+        let cookie = format!(
+            "{}={}",
+            auth_state.config.session_cookie_name, session.session_id
+        );
         let state = AppState::new()
-            .with_auth_config(AuthConfig {
-                public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
-                ..Default::default()
-            })
+            .with_auth_config((*auth_state.config).clone())
+            .with_oauth_state(auth_state)
             .with_gateway_manager(manager);
-        let mut auth = test_auth_context();
-        auth.sub = "personal-caller".into();
-        auth.scopes = vec!["lab".into()];
-        let app = browser_routes(state.clone())
-            .router
-            .with_state(state)
-            .layer(Extension(auth));
+        let app = browser_routes(state.clone()).router.with_state(state);
         let uri = format!("/auth/upstream/callback?state={csrf}&code=fixture-code");
         let response = app
             .clone()
-            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -1023,7 +1051,13 @@ mod tests {
         assert!(!oauth.has_credentials("other-caller").await.unwrap());
         assert!(!oauth.has_credentials("gateway").await.unwrap());
         let replay = app
-            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_ne!(replay.status(), StatusCode::SEE_OTHER);
@@ -1269,8 +1303,7 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
-    async fn test_auth_state() -> AuthState {
+    async fn test_auth_state() -> (tempfile::TempDir, AuthState) {
         let dir = tempfile::tempdir().unwrap();
         let config = AuthConfig {
             mode: AuthMode::OAuth,
@@ -1297,7 +1330,8 @@ mod tests {
             ),
             ..AuthConfig::default()
         };
-        AuthState::new(config).await.unwrap()
+        let state = AuthState::new(config).await.unwrap();
+        (dir, state)
     }
 
     fn now_seconds() -> i64 {
