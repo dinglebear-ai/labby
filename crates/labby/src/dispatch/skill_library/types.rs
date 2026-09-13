@@ -1,5 +1,3 @@
-#![allow(dead_code, reason = "consumed by the concurrent Wave 3 dispatcher")]
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]

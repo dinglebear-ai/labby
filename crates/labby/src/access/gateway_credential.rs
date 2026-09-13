@@ -4,7 +4,7 @@
 //! (`migrations::GATEWAY_CREDENTIAL_SCHEMA`); this module never creates it.
 
 use labby_runtime::gateway_authority::{TeamCredentialBinding, TeamCredentialStatus};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{AccessStoreError, error::AccessStoreResult, store::map_sqlite_error};
 
@@ -40,6 +40,43 @@ pub(crate) fn put(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
+    let binding = put_in_transaction(&tx, input, rotated_at_sql)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(binding)
+}
+
+pub(crate) fn put_authorized(
+    connection: &mut Connection,
+    request: super::AuthorityRequest,
+    input: &PutTeamCredentialBinding,
+) -> AccessStoreResult<TeamCredentialBinding> {
+    let candidate = TeamCredentialBinding {
+        binding_id: input.binding_id.clone(),
+        team_id: input.team_id.clone(),
+        upstream_name: input.upstream_name.clone(),
+        custodian_principal_id: input.custodian_principal_id.clone(),
+        generation: 1,
+        rotated_at_millis: input.rotated_at_millis,
+        status: TeamCredentialStatus::Active,
+    };
+    if !candidate.validate() {
+        return Err(AccessStoreError::MalformedVocabulary);
+    }
+    let rotated_at_sql = checked_i64(input.rotated_at_millis)?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let binding = put_in_transaction(&tx, input, rotated_at_sql)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(binding)
+}
+
+fn put_in_transaction(
+    tx: &Transaction<'_>,
+    input: &PutTeamCredentialBinding,
+    rotated_at_sql: i64,
+) -> AccessStoreResult<TeamCredentialBinding> {
     tx.execute(
         "INSERT INTO gateway_team_credential_bindings VALUES
              (?1,?2,?3,?4,1,?5,'active',NULL)
@@ -58,10 +95,8 @@ pub(crate) fn put(
         ],
     )
     .map_err(map_sqlite_error)?;
-    let binding = get_in(&tx, &input.team_id, &input.upstream_name)?
-        .ok_or_else(|| AccessStoreError::Unavailable("credential binding write vanished".into()))?;
-    tx.commit().map_err(map_sqlite_error)?;
-    Ok(binding)
+    get_in(tx, &input.team_id, &input.upstream_name)?
+        .ok_or_else(|| AccessStoreError::Unavailable("credential binding write vanished".into()))
 }
 
 pub(crate) fn get(
@@ -122,6 +157,34 @@ pub(crate) fn revoke(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
+    let binding = revoke_in_transaction(&tx, team_id, upstream_name, now_sql)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(binding)
+}
+
+pub(crate) fn revoke_authorized(
+    connection: &mut Connection,
+    request: super::AuthorityRequest,
+    team_id: &str,
+    upstream_name: &str,
+    now_millis: u64,
+) -> AccessStoreResult<TeamCredentialBinding> {
+    let now_sql = checked_i64(now_millis)?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let binding = revoke_in_transaction(&tx, team_id, upstream_name, now_sql)?;
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(binding)
+}
+
+fn revoke_in_transaction(
+    tx: &Transaction<'_>,
+    team_id: &str,
+    upstream_name: &str,
+    now_sql: i64,
+) -> AccessStoreResult<TeamCredentialBinding> {
     let changed = tx
         .execute(
             "UPDATE gateway_team_credential_bindings SET
@@ -134,10 +197,7 @@ pub(crate) fn revoke(
     if changed != 1 {
         return Err(AccessStoreError::TeamCredentialBindingUnavailable);
     }
-    let binding = get_in(&tx, team_id, upstream_name)?
-        .ok_or(AccessStoreError::TeamCredentialBindingUnavailable)?;
-    tx.commit().map_err(map_sqlite_error)?;
-    Ok(binding)
+    get_in(tx, team_id, upstream_name)?.ok_or(AccessStoreError::TeamCredentialBindingUnavailable)
 }
 
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamCredentialBinding> {

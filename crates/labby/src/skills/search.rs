@@ -4,7 +4,6 @@
 //! never connects an upstream, and never mutates the registry. Callers pass a
 //! canonical visible snapshot and receive ranked clones of matching entries.
 
-use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::SkillEntry;
 use serde::Serialize;
 use serde_json::Value;
@@ -22,8 +21,10 @@ pub(crate) struct SkillSearchHit {
     pub(crate) skill: SkillEntry,
 }
 
-struct RankedSkill {
-    hit: SkillSearchHit,
+struct RankedSkill<'a> {
+    score: u16,
+    match_fields: Vec<String>,
+    skill: &'a SkillEntry,
     origin: String,
     name: String,
 }
@@ -44,25 +45,39 @@ pub(crate) fn search_skill_entries(
         return Vec::new();
     }
 
-    let mut ranked = entries
-        .iter()
-        .filter_map(|entry| rank_entry(entry, &query))
-        .collect::<Vec<_>>();
-
-    ranked.sort_by(|left, right| {
-        right
-            .hit
-            .score
-            .cmp(&left.hit.score)
-            .then_with(|| left.origin.cmp(&right.origin))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.hit.skill.uri.cmp(&right.hit.skill.uri))
-    });
-    ranked.truncate(limit);
-    ranked.into_iter().map(|ranked| ranked.hit).collect()
+    // Keep only the bounded top-k metadata while scanning. Cloning complete Skill
+    // entries for every match before truncation makes a small compatibility search
+    // proportional to the entire aggregated manifest corpus.
+    let mut ranked = Vec::with_capacity(limit.min(entries.len()));
+    for candidate in entries.iter().filter_map(|entry| rank_entry(entry, &query)) {
+        let position = ranked.partition_point(|existing| {
+            ranked_order(existing, &candidate) != std::cmp::Ordering::Greater
+        });
+        ranked.insert(position, candidate);
+        if ranked.len() > limit {
+            ranked.pop();
+        }
+    }
+    ranked
+        .into_iter()
+        .map(|ranked| SkillSearchHit {
+            score: ranked.score,
+            match_fields: ranked.match_fields,
+            skill: ranked.skill.clone(),
+        })
+        .collect()
 }
 
-fn rank_entry(entry: &SkillEntry, query: &str) -> Option<RankedSkill> {
+fn ranked_order(left: &RankedSkill<'_>, right: &RankedSkill<'_>) -> std::cmp::Ordering {
+    right
+        .score
+        .cmp(&left.score)
+        .then_with(|| left.origin.cmp(&right.origin))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.skill.uri.cmp(&right.skill.uri))
+}
+
+fn rank_entry<'a>(entry: &'a SkillEntry, query: &str) -> Option<RankedSkill<'a>> {
     let name = frontmatter_string(entry, "name");
     let description = frontmatter_string(entry, "description");
     let normalized_name = name.to_lowercase();
@@ -93,26 +108,18 @@ fn rank_entry(entry: &SkillEntry, query: &str) -> Option<RankedSkill> {
         return None;
     }
 
-    let origin = parse_skill_uri(&entry.uri)
-        .map(|uri| uri.origin().to_string())
-        .unwrap_or_default();
+    let origin = entry.origin().unwrap_or_default();
     Some(RankedSkill {
-        hit: SkillSearchHit {
-            score,
-            match_fields,
-            skill: entry.clone(),
-        },
+        score,
+        match_fields,
+        skill: entry,
         origin,
         name: normalized_name,
     })
 }
 
 fn frontmatter_string<'a>(entry: &'a SkillEntry, key: &str) -> &'a str {
-    entry
-        .frontmatter
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+    entry.frontmatter_str(key).unwrap_or_default()
 }
 
 fn metadata_matches(entry: &SkillEntry, query: &str) -> bool {

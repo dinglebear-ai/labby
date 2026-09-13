@@ -13,9 +13,12 @@ two related surfaces:
   `resources/read`;
 - an authenticated MCP App and lifecycle actions under `artifacts.*`.
 
-There are no `skills.*` or `skill_library.*` management aliases. The native
-`skills/list` and `skills/get` names remain because they are the Agent Skills
-protocol, not a second Labby storage namespace.
+There is no `skill_library.*` management alias. Durable lifecycle operations live only
+under `artifacts.*`. Labby still ships the legacy compatibility service actions
+`skills.list`, `skills.search`, `skills.get`, and `skills.read` for existing CLI/API
+consumers; they are read-only projections over the same canonical registry and are not
+a second storage or management namespace. Native `skills/list` and `skills/get` remain
+the SEP-2640 protocol methods.
 
 The native extension contract is pinned and documented in
 [Skills extension](../contracts/skills-extension.md). This document owns the
@@ -86,6 +89,15 @@ categories, not principal identifiers, source URLs, repository names, paths,
 credentials, or file bodies. Their `allowed_actions` fields are authoritative
 for the current caller and record state.
 
+### Audit correlation
+
+Every Skill Library authorization decision receives a server-minted request correlation
+id. A client-supplied `x-request-id` is transport metadata/correlation context only; it
+is never trusted as the audit deduplication identity. Retained audit-ring entries may
+coalesce exact replay events, but every authorization decision is still emitted to the
+trace stream. Ring evictions are counted and surfaced in tracing so audit loss is
+operator-visible.
+
 ## Storage And Recovery
 
 Managed Skill Artifacts live beneath `$LABBY_HOME/artifacts`; operator-provided
@@ -96,6 +108,11 @@ candidate generation. On startup, Labby reconstructs the committed active
 generation before serving Skills.
 
 An interrupted or failed refresh leaves the last published generation readable.
+`artifacts.refresh` republishes the current durable Artifact active set through the
+single activation/publication composer; it does **not** rescan `$LABBY_HOME/skills`.
+Operator directory Skills are startup input, so changing them still requires a restart.
+The published generation is composed from bundled Skills, the startup directory snapshot,
+and active Artifact Skills, and only that composer writes the process generation cell.
 Idempotent receipt replay returns the terminal outcome without applying a second
 mutation. A configured but unavailable Depot or repository source cannot prevent
 local create, save, activate, restart recovery, list, get, or read.

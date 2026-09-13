@@ -244,6 +244,11 @@ const DIRECT_ROUTE_MANIFEST: ReadonlyArray<readonly [prefix: string, capability:
   ['/settings', 'platform.manage'],
 ]
 
+/** Project-bound browser sessions may enter Skills without a durable authority projection. */
+export function allowsProjectBoundSessionFallback(pathname: string): boolean {
+  return pathname === '/skills' || pathname.startsWith('/skills/')
+}
+
 /**
  * Server-projected capability a route requires. `null` means the route is
  * open to every authenticated principal; `undefined` means the route is not a

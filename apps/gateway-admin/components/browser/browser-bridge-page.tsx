@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { AURORA_CARD_TITLE, AURORA_DENSE_META, AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { browserApi } from '@/lib/api/browser-client'
@@ -23,9 +24,19 @@ type BrowserData = {
   browsers: BrowserIdentity[]
   pairings: BrowserPairing[]
   sessions: BrowserSession[]
+  sessionNextCursor: string | null
 }
 
 const POLL_INTERVAL_MS = 5_000
+const PAIRING_FINGERPRINT_LENGTH = 12
+
+function normalizePairingFingerprint(value: string): string {
+  return value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, PAIRING_FINGERPRINT_LENGTH)
+}
+
+function validPairingFingerprint(value: string): boolean {
+  return new RegExp(`^[0-9A-F]{${PAIRING_FINGERPRINT_LENGTH}}$`).test(value)
+}
 
 function browserName(browsers: BrowserIdentity[], id: string): string {
   return browsers.find((browser) => browser.id === id)?.display_name ?? 'Unknown browser'
@@ -36,11 +47,14 @@ function pageLabel(session: BrowserSession): string {
 }
 
 export function BrowserBridgePage() {
-  const [data, setData] = React.useState<BrowserData>({ browsers: [], pairings: [], sessions: [] })
+  const [data, setData] = React.useState<BrowserData>({ browsers: [], pairings: [], sessions: [], sessionNextCursor: null })
+  const [sessionCursors, setSessionCursors] = React.useState<Array<string | undefined>>([undefined])
+  const sessionCursor = sessionCursors.at(-1)
   const [loading, setLoading] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string>()
   const [busyKey, setBusyKey] = React.useState<string>()
+  const [pairingFingerprints, setPairingFingerprints] = React.useState<Record<string, string>>({})
   const [revokeTarget, setRevokeTarget] = React.useState<BrowserIdentity>()
   const loadGeneration = React.useRef(0)
   const mutationPending = React.useRef(false)
@@ -49,11 +63,11 @@ export function BrowserBridgePage() {
     const generation = ++loadGeneration.current
     if (announce) setRefreshing(true)
     try {
-      const [browsers, pairings, sessions] = await Promise.all([
-        browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal),
+      const [browsers, pairings, sessionPage] = await Promise.all([
+        browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal, sessionCursor),
       ])
       if (generation === loadGeneration.current) {
-        setData({ browsers, pairings, sessions })
+        setData({ browsers, pairings, sessions: sessionPage.sessions, sessionNextCursor: sessionPage.next_cursor })
         setError(undefined)
       }
       return true
@@ -67,7 +81,7 @@ export function BrowserBridgePage() {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [sessionCursor])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -99,6 +113,19 @@ export function BrowserBridgePage() {
     }
   }
 
+  function showPreviousSessionPage() {
+    if (sessionCursors.length <= 1) return
+    setLoading(true)
+    setSessionCursors((current) => current.slice(0, -1))
+  }
+
+  function showNextSessionPage() {
+    if (!data.sessionNextCursor) return
+    setLoading(true)
+    const cursor = data.sessionNextCursor
+    setSessionCursors((current) => [...current, cursor])
+  }
+
   const activeSessions = data.sessions.filter((session) => session.status === 'active')
   const connected = data.browsers.filter((browser) => browser.connected && !browser.revoked_at)
   const enabled = activeSessions.filter((session) => session.enabled)
@@ -114,8 +141,8 @@ export function BrowserBridgePage() {
         stats={[
           { label: 'Paired', value: data.browsers.filter((browser) => !browser.revoked_at).length, icon: <MonitorSmartphone size={14} /> },
           { label: 'Pending', value: data.pairings.length, icon: <ShieldCheck size={14} />, tone: data.pairings.length ? 'var(--aurora-warn)' : undefined },
-          { label: 'Pages', value: activeSessions.length, icon: <Globe2 size={14} /> },
-          { label: 'Enabled', value: enabled.length, icon: <Wrench size={14} />, tone: enabled.length ? 'var(--aurora-success)' : undefined },
+          { label: 'Pages shown', value: activeSessions.length, icon: <Globe2 size={14} /> },
+          { label: 'Enabled shown', value: enabled.length, icon: <Wrench size={14} />, tone: enabled.length ? 'var(--aurora-success)' : undefined },
         ]}
       />
 
@@ -125,22 +152,45 @@ export function BrowserBridgePage() {
         <Card variant="strong">
           <CardHeader className="border-b border-aurora-border-default/70">
             <CardTitle className={AURORA_CARD_TITLE}>Pending pairing requests</CardTitle>
-            <CardDescription>Approve only extension identities you initiated from a browser you control.</CardDescription>
+            <CardDescription>Enter the fingerprint shown by the requesting extension and approve only when it matches the browser you control.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 pb-6 md:grid-cols-2">
-            {data.pairings.map((pairing) => (
-              <div key={pairing.id} className="flex min-w-0 items-center gap-3 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/8 p-4">
-                <ShieldCheck className="size-5 shrink-0 text-aurora-warn" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-aurora-text-primary">{pairing.display_name}</div>
-                  <div className={cn(AURORA_DENSE_META, 'truncate font-mono text-aurora-text-muted')} title={pairing.extension_id}>{pairing.extension_id}</div>
-                  <div className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Expires {formatUiRelativeTime(pairing.expires_at * 1000)}</div>
+            {data.pairings.map((pairing) => {
+              const fingerprint = pairingFingerprints[pairing.id] ?? ''
+              const canApprove = validPairingFingerprint(fingerprint)
+              return (
+                <div key={pairing.id} className="grid min-w-0 gap-3 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/8 p-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+                  <ShieldCheck className="size-5 shrink-0 text-aurora-warn" />
+                  <div className="min-w-0">
+                    <div className="font-medium text-aurora-text-primary">{pairing.display_name}</div>
+                    <div className={cn(AURORA_DENSE_META, 'truncate font-mono text-aurora-text-muted')} title={pairing.extension_id}>{pairing.extension_id}</div>
+                    <div className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Expires {formatUiRelativeTime(pairing.expires_at * 1000)}</div>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <label className="min-w-0 flex-1 text-xs font-medium text-aurora-text-primary">
+                        <span>Fingerprint from extension</span>
+                        <Input
+                          aria-label={`Pairing fingerprint for ${pairing.display_name}`}
+                          autoComplete="off"
+                          className="mt-1 font-mono uppercase"
+                          inputMode="text"
+                          maxLength={PAIRING_FINGERPRINT_LENGTH}
+                          placeholder="A1B2C3D4E5F6"
+                          spellCheck={false}
+                          value={fingerprint}
+                          onChange={(event) => setPairingFingerprints((current) => ({
+                            ...current,
+                            [pairing.id]: normalizePairingFingerprint(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      <Button size="sm" onClick={() => void mutate(`pair:${pairing.id}`, () => browserApi.approvePairing(pairing.id, fingerprint), `${pairing.display_name} paired`)} disabled={Boolean(busyKey) || !canApprove}>
+                        {busyKey === `pair:${pairing.id}` ? <Loader2 className="animate-spin" /> : <Check />}Approve
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                <Button size="sm" onClick={() => void mutate(`pair:${pairing.id}`, () => browserApi.approvePairing(pairing.id), `${pairing.display_name} paired`)} disabled={Boolean(busyKey)}>
-                  {busyKey === `pair:${pairing.id}` ? <Loader2 className="animate-spin" /> : <Check />}Approve
-                </Button>
-              </div>
-            ))}
+              )
+            })}
           </CardContent>
         </Card>
       ) : null}
@@ -171,7 +221,7 @@ export function BrowserBridgePage() {
 
       <section aria-labelledby="browser-pages-heading">
         <div className="mb-3"><h2 id="browser-pages-heading" className="font-display text-[19px] leading-[1.12] font-bold text-aurora-text-primary">Observed pages and tools</h2><p className="mt-1 text-sm text-aurora-text-muted">Discovery is metadata-only. Execution remains disabled until you enable the exact active document below.</p></div>
-        {loading ? <LoadingPanel label="Loading observed browser pages" /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title="No WebMCP pages observed" description="Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan." /> : (
+        {loading ? <LoadingPanel label="Loading observed browser pages" /> : activeSessions.length === 0 ? <EmptyPanel icon={<Globe2 />} title={sessionCursors.length > 1 || data.sessionNextCursor ? "No active WebMCP pages on this session page" : "No WebMCP pages observed"} description={sessionCursors.length > 1 || data.sessionNextCursor ? "Use the session-page controls to review older or newer observed pages." : "Grant the extension access to a WebMCP-enabled page. Catalog metadata will appear after the next scan."} /> : (
           <div className="grid gap-3">
             {activeSessions.map((session) => (
               <Card key={session.id}>
@@ -189,6 +239,13 @@ export function BrowserBridgePage() {
             ))}
           </div>
         )}
+        {!loading && (sessionCursors.length > 1 || data.sessionNextCursor) ? (
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <Button variant="outline" size="sm" onClick={showPreviousSessionPage} disabled={sessionCursors.length <= 1 || Boolean(busyKey)}>Previous pages</Button>
+            <span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Session page {sessionCursors.length}</span>
+            <Button variant="outline" size="sm" onClick={showNextSessionPage} disabled={!data.sessionNextCursor || Boolean(busyKey)}>Next pages</Button>
+          </div>
+        ) : null}
       </section>
 
       <ActionConfirmationDialog open={Boolean(revokeTarget)} title="Revoke browser identity?" description={`This disconnects ${revokeTarget?.display_name ?? 'the browser'}, disables its active page sessions, and requires a new pairing before it can reconnect.`} confirmLabel="Revoke browser" busy={Boolean(busyKey)} onOpenChange={(open) => { if (!open) setRevokeTarget(undefined) }} onConfirm={() => { if (!revokeTarget) return; const target = revokeTarget; void mutate(`revoke:${target.id}`, () => browserApi.revoke(target.id), `${target.display_name} revoked`).then((succeeded) => { if (succeeded) setRevokeTarget(undefined) }) }} />

@@ -130,3 +130,69 @@ async fn fs_list_error_response_carries_security_headers() {
     assert_ne!(response.status(), StatusCode::OK);
     assert_security_headers(&response);
 }
+
+#[tokio::test]
+async fn workspace_routes_deny_project_readers_before_accessing_files() {
+    for scopes in [
+        vec![],
+        vec!["lab:read".to_string()],
+        vec!["lab".to_string()],
+    ] {
+        let auth = labby::api::oauth::AuthContext {
+            sub: "reader".into(),
+            actor_key: None,
+            scopes,
+            issuer: "test".into(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let app = fs_router().layer(axum::Extension(auth));
+        for path in ["/v1/fs/list", "/v1/fs/preview?path=anything.txt"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_security_headers(&response);
+        }
+    }
+}
+
+#[tokio::test]
+async fn installation_admin_can_preview_the_configured_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("note.txt"), "workspace text").unwrap();
+    let state =
+        labby::api::state::AppState::new().with_workspace_root(root.path().canonicalize().unwrap());
+    let auth = labby::api::oauth::AuthContext {
+        sub: "admin".into(),
+        actor_key: None,
+        scopes: vec!["lab:admin".into()],
+        issuer: "test".into(),
+        via_session: true,
+        csrf_token: None,
+        email: None,
+    };
+    let app = labby::api::services::fs::routes(state.clone())
+        .router
+        .layer(axum::Extension(auth))
+        .with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/preview?path=note.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_security_headers(&response);
+    use http_body_util::BodyExt;
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "workspace text"
+    );
+}

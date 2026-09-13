@@ -41,7 +41,7 @@ test('failed revocation preserves confirmation for retry; successful retry close
   const firstRevoke = new Promise<BrowserIdentity>((_resolve, reject) => { rejectFirst = reject })
   browserApi.list = async () => [identity]
   browserApi.pairings = async () => []
-  browserApi.sessions = async () => []
+  browserApi.sessions = async () => ({ sessions: [], next_cursor: null })
   browserApi.revoke = async () => {
     calls += 1
     if (calls === 1) return firstRevoke
@@ -66,6 +66,42 @@ test('failed revocation preserves confirmation for retry; successful retry close
     await act(async () => button('Revoke browser').click())
     assert.equal(calls, 2)
     assert.equal(document.querySelector('[data-slot="alert-dialog-content"]'), null)
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+    Object.assign(browserApi, original)
+    await window.happyDOM.close()
+  }
+})
+
+test('session pagination exposes older bounded pages instead of hiding them', async () => {
+  const window = installDom()
+  const { BrowserBridgePage } = await import('./browser-bridge-page')
+  const { createRoot } = await import('react-dom/client')
+  const original = { ...browserApi }
+  const cursors: Array<string | undefined> = []
+  browserApi.list = async () => []
+  browserApi.pairings = async () => []
+  browserApi.sessions = async (_signal, cursor) => {
+    cursors.push(cursor)
+    return cursor === 'older-page'
+      ? { sessions: [], next_cursor: null }
+      : { sessions: [], next_cursor: 'older-page' }
+  }
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<BrowserBridgePage />))
+    assert.deepEqual(cursors, [undefined])
+    assert.ok(document.body.textContent?.includes('Session page 1'))
+    await act(async () => button('Next pages').click())
+    assert.deepEqual(cursors, [undefined, 'older-page'])
+    assert.ok(document.body.textContent?.includes('Session page 2'))
+    assert.ok(document.body.textContent?.includes('No active WebMCP pages on this session page'))
+    await act(async () => button('Previous pages').click())
+    assert.deepEqual(cursors, [undefined, 'older-page', undefined])
+    assert.ok(document.body.textContent?.includes('Session page 1'))
   } finally {
     await act(async () => root.unmount())
     container.remove()

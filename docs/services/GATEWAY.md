@@ -54,7 +54,7 @@ The gateway validates that the `command` basename of any stdio upstream is in a
 built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
 `deno`, `pipx`, `dnx`, `ssh`) before writing the config. SSH can therefore be
 used directly as a stdio transport for MCP services that speak MCP over a
-remote command. Two `[gateway]` knobs in `config.toml` control this:
+remote command. `[gateway]` knobs in `config.toml` control this:
 
 ```toml
 [[upstream]]
@@ -74,6 +74,10 @@ extra_stdio_commands = ["myserver", "/opt/tools/pinned-server"]
 
 # Or disable the guard entirely (operator takes full responsibility).
 disable_spawn_guard = true
+
+# Periodically reconnect enabled upstreams whose MCP transport closes.
+# Recovery is opt-in because stdio recovery can restart child processes.
+auto_reconnect = true
 ```
 
 The guard applies only to stdio upstreams. HTTP upstreams are never checked.

@@ -94,6 +94,7 @@ test('context invalidation aborts old requests but preserves the current generat
   const current = beginAuthorityRequest(snapshot, 11)
   invalidateAuthorityRequests(11)
   assert.equal(old.signal.aborted, true)
+  assert.equal(old.signal.reason instanceof DOMException ? old.signal.reason.message : undefined, 'Authority or project context changed')
   assert.equal(current.signal.aborted, false)
   old.finish()
   current.finish()

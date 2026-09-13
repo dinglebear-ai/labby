@@ -51,18 +51,27 @@ pub fn workspace_root_for_home(config: &LabConfig, home: &Path) -> PathBuf {
 
 pub fn workspace_root_path(config: &LabConfig) -> Result<PathBuf> {
     if let Some(root) = config.workspace.root.as_deref() {
-        let home = home_dir().ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?;
-        return Ok(expand_home_path(root, &home));
+        return configured_root(root, home_dir().as_deref());
     }
     Ok(lab_home_dir()?.join("workspace"))
 }
 
 pub(crate) fn file_stash_root_path(config: &LabConfig) -> Result<PathBuf> {
     if let Some(root) = config.file_stash.root.as_deref() {
-        let home = home_dir().ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?;
-        return Ok(expand_home_path(root, &home));
+        return configured_root(root, home_dir().as_deref());
     }
     Ok(lab_home_dir()?.join("file-stash"))
+}
+
+fn configured_root(path: &Path, home: Option<&Path>) -> Result<PathBuf> {
+    let raw = path.as_os_str().to_string_lossy();
+    if raw == "~" || raw.starts_with("~/") {
+        return Ok(expand_home_path(
+            path,
+            home.ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?,
+        ));
+    }
+    Ok(path.to_path_buf())
 }
 
 fn expand_home_path(path: &Path, home: &Path) -> PathBuf {
@@ -169,6 +178,25 @@ pub(super) fn resolve_usage_telemetry_enabled(raw: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn explicit_roots_do_not_require_home() {
+        assert_eq!(
+            configured_root(Path::new("/srv/workspace"), None).unwrap(),
+            PathBuf::from("/srv/workspace")
+        );
+        assert_eq!(
+            configured_root(Path::new("/srv/stash"), None).unwrap(),
+            PathBuf::from("/srv/stash")
+        );
+        assert!(configured_root(Path::new("~/workspace"), None).is_err());
+        assert!(configured_root(Path::new("~"), None).is_err());
+        assert_eq!(
+            configured_root(Path::new("~/workspace"), Some(Path::new("/home/user"))).unwrap(),
+            PathBuf::from("/home/user/workspace")
+        );
+    }
+
     use super::*;
 
     #[test]

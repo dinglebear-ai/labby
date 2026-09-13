@@ -34,6 +34,8 @@ use labby_runtime::skills::{
     FIRST_PARTY_ORIGIN, ResourceDigest, limits, parse_skill_md_frontmatter,
 };
 
+use super::admission::{AdmissionLimits, AdmissionTotals};
+
 /// Largest single operator-provided file that will be served.
 const MAX_LOCAL_SKILL_FILE_BYTES: u64 = limits::MAX_SKILL_RESOURCE_BYTES as u64;
 
@@ -84,6 +86,18 @@ pub(crate) struct LocalLoadLimits {
     pub(crate) bundled_skills: usize,
     pub(crate) bundled_bytes: usize,
     pub(crate) bundled_resources: usize,
+}
+
+impl LocalLoadLimits {
+    fn admission_limits(self) -> AdmissionLimits {
+        AdmissionLimits {
+            active_skills: self.active_skills,
+            aggregate_bytes: self.aggregate_bytes,
+            per_skill_bytes: self.per_skill_bytes,
+            total_resources: self.total_resources,
+            live_candidate_bytes: self.live_candidate_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +158,60 @@ fn collect_files(
     Ok(())
 }
 
+fn open_local_skill_file(
+    path: &Path,
+    _expected: &std::fs::Metadata,
+) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        use rustix::fs::{Mode, OFlags, openat};
+
+        let fd = openat(
+            rustix::fs::CWD,
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        let file = std::fs::File::from(fd);
+        let actual = file.metadata()?;
+        if !actual.is_file() || actual.dev() != _expected.dev() || actual.ino() != _expected.ino() {
+            return Err(std::io::Error::other("skill file changed before read"));
+        }
+        return Ok(file);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        // FILE_FLAG_OPEN_REPARSE_POINT makes the open itself refuse to follow
+        // a symlink/reparse-point swap between lstat and read.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let actual = file.metadata()?;
+        if !actual.is_file() || actual.file_type().is_symlink() {
+            return Err(std::io::Error::other("skill file changed before read"));
+        }
+        return Ok(file);
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let file = std::fs::File::open(path)?;
+        let actual = file.metadata()?;
+        if !actual.is_file() {
+            return Err(std::io::Error::other("skill file changed before read"));
+        }
+        Ok(file)
+    }
+}
+
 /// Read one skill directory into an entry, or explain why it was skipped.
 fn load_skill(
     name: &str,
@@ -151,7 +219,7 @@ fn load_skill(
     counters: &mut LocalLoadCounters,
     admission: Option<(LocalLoadLimits, usize, usize, usize)>,
     after_stat: &impl Fn(&Path),
-) -> Result<(LocalSkill, usize, usize), SkillLoadError> {
+) -> Result<LocalSkill, SkillLoadError> {
     let mut found = Vec::new();
     let scan_started = Instant::now();
     collect_files(dir, dir, &mut found, counters).map_err(SkillLoadError::Invalid)?;
@@ -169,37 +237,18 @@ fn load_skill(
     let skill_bytes = found.iter().map(|(_, _, bytes)| bytes).sum::<usize>();
     let resource_count = found.len();
     if let Some((limits, local_skills, local_bytes, local_resources)) = admission {
-        for (kind, actual, limit) in [
-            (
-                "active_skills",
-                limits.bundled_skills + local_skills + 1,
-                limits.active_skills,
-            ),
-            (
-                "aggregate_bytes",
-                limits.bundled_bytes + local_bytes + skill_bytes,
-                limits.aggregate_bytes,
-            ),
-            ("per_skill_bytes", skill_bytes, limits.per_skill_bytes),
-            (
-                "total_resources",
-                limits.bundled_resources + local_resources + resource_count,
-                limits.total_resources,
-            ),
-            (
-                "live_candidate_bytes",
-                limits.bundled_bytes + local_bytes + skill_bytes,
-                limits.live_candidate_bytes,
-            ),
-        ] {
-            if actual > limit {
-                return Err(SkillLoadError::Limit(LocalLoadLimit {
-                    kind,
-                    limit,
-                    actual,
-                    counters: *counters,
-                }));
-            }
+        if let Some(violation) = limits.admission_limits().first_violation(AdmissionTotals {
+            skills: limits.bundled_skills + local_skills + 1,
+            bytes: limits.bundled_bytes + local_bytes + skill_bytes,
+            max_skill_bytes: skill_bytes,
+            resources: limits.bundled_resources + local_resources + resource_count,
+        }) {
+            return Err(SkillLoadError::Limit(LocalLoadLimit {
+                kind: violation.kind,
+                limit: violation.limit,
+                actual: violation.actual,
+                counters: *counters,
+            }));
         }
     }
     after_stat(dir);
@@ -237,7 +286,7 @@ fn load_skill(
         );
         let mut bytes = Vec::with_capacity(allowed.min(64 * 1024));
         let read_started = Instant::now();
-        std::fs::File::open(&path)
+        open_local_skill_file(&path, &current_metadata)
             .and_then(|file| {
                 file.take(allowed.saturating_add(1) as u64)
                     .read_to_end(&mut bytes)
@@ -249,7 +298,12 @@ fn load_skill(
             .read_nanos
             .saturating_add(read_started.elapsed().as_nanos() as u64);
         if bytes.len() > allowed {
-            let (limits, _, local_bytes, _) = admission.expect("bounded read has admission");
+            let Some((limits, _, local_bytes, _)) = admission else {
+                return Err(SkillLoadError::Invalid(format!(
+                    "{} grew past the {MAX_LOCAL_SKILL_FILE_BYTES}-byte file cap during read",
+                    path.display()
+                )));
+            };
             let aggregate_limit = limits
                 .aggregate_bytes
                 .saturating_sub(limits.bundled_bytes + local_bytes);
@@ -313,7 +367,7 @@ fn load_skill(
         .validate_nanos
         .saturating_add(validate_started.elapsed().as_nanos() as u64);
 
-    Ok((LocalSkill { entry, files }, skill_bytes, resource_count))
+    Ok(LocalSkill { entry, files })
 }
 
 #[derive(Debug)]
@@ -407,8 +461,7 @@ fn load_local_skills_bounded_with_hook(
         let admission =
             limits.map(|limits| (limits, loaded.skills.len(), local_bytes, local_resources));
         match load_skill(name, &path, &mut loaded.counters, admission, after_stat) {
-            Ok((skill, skill_bytes, skill_resources)) => {
-                let _ = (skill_bytes, skill_resources);
+            Ok(skill) => {
                 loaded.skills.insert(name.to_string(), skill);
             }
             Err(SkillLoadError::Limit(mut limit)) => {
@@ -465,7 +518,6 @@ mod tests {
 
     fn load_test_skill(name: &str, dir: &Path) -> Result<LocalSkill, SkillLoadError> {
         load_skill(name, dir, &mut LocalLoadCounters::default(), None, &|_| {})
-            .map(|(skill, _, _)| skill)
     }
 
     #[test]

@@ -96,6 +96,8 @@ struct SkillsServer {
     get_calls: Arc<AtomicUsize>,
     /// When set, `skills/get` answers with this entry; otherwise -32602.
     get_entry: Arc<Option<Value>>,
+    /// Explicit protocol error used to verify code-based classification independent of text.
+    get_error: Arc<Option<ErrorData>>,
     omit_get_result_type: bool,
     /// When false, the handshake omits the skills extension entirely.
     declares_extension: bool,
@@ -118,6 +120,7 @@ impl SkillsServer {
             list_calls: Arc::new(AtomicUsize::new(0)),
             get_calls: Arc::new(AtomicUsize::new(0)),
             get_entry: Arc::new(None),
+            get_error: Arc::new(None),
             omit_get_result_type: false,
             declares_extension: true,
             tamper: false,
@@ -131,6 +134,11 @@ impl SkillsServer {
 
     fn with_get(mut self, entry: Value) -> Self {
         self.get_entry = Arc::new(Some(entry));
+        self
+    }
+
+    fn with_get_error(mut self, code: ErrorCode, message: &str) -> Self {
+        self.get_error = Arc::new(Some(ErrorData::new(code, message.to_owned(), None)));
         self
     }
 
@@ -264,6 +272,9 @@ impl ServerHandler for SkillsServer {
                     std::future::pending::<()>().await;
                 }
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
+                if let Some(error) = self.get_error.as_ref() {
+                    return Err(error.clone());
+                }
                 match self.get_entry.as_ref() {
                     Some(entry) => {
                         let mut result = json!({
@@ -554,7 +565,10 @@ async fn a_cache_scope_change_mid_pagination_is_rejected() {
         .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
         .await
         .expect_err("inconsistent cacheScope is rejected");
-    assert!(error.contains("cacheScope"));
+    assert!(matches!(
+        error,
+        super::skills_list::UpstreamSkillsError::CacheScopeChanged
+    ));
 }
 
 #[tokio::test]
@@ -571,7 +585,10 @@ async fn a_malformed_page_fails_rather_than_returning_a_partial_snapshot() {
         .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
         .await
         .expect_err("a malformed page fails the walk");
-    assert!(error.contains("malformed"));
+    assert!(matches!(
+        error,
+        super::skills_list::UpstreamSkillsError::Capability(_)
+    ));
 }
 
 #[test]
@@ -659,7 +676,10 @@ async fn unknown_result_type_is_rejected_on_the_client_path() {
         .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
         .await
         .expect_err("unknown resultType values must not be silently accepted");
-    assert!(error.contains("malformed"), "{error}");
+    assert!(matches!(
+        error,
+        super::skills_list::UpstreamSkillsError::Capability(_)
+    ));
 }
 
 #[tokio::test]
@@ -683,6 +703,40 @@ async fn skills_get_treats_invalid_params_as_not_a_skill() {
 }
 
 #[tokio::test]
+async fn skills_get_uses_error_code_not_display_text_for_absence() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get_error(ErrorCode::INVALID_PARAMS, "completely custom wording");
+    let pool = catalog_pool_with_server("up", server).await;
+    let answer = pool
+        .fetch_upstream_skill(
+            "up",
+            &peer_for(&pool, "up").await,
+            "skill://up/nope/SKILL.md",
+            None,
+        )
+        .await
+        .expect("-32602 remains authoritative regardless of text");
+    assert!(answer.is_none());
+
+    let server = SkillsServer::new(vec![json!({ "skills": [] })]).with_get_error(
+        ErrorCode::INTERNAL_ERROR,
+        "Invalid params: looks absent but is not",
+    );
+    let pool = catalog_pool_with_server("up", server).await;
+    assert!(
+        pool.fetch_upstream_skill(
+            "up",
+            &peer_for(&pool, "up").await,
+            "skill://up/nope/SKILL.md",
+            None,
+        )
+        .await
+        .is_err(),
+        "message text must not turn a different MCP error into absence"
+    );
+}
+
+#[tokio::test]
 async fn skills_get_reports_a_malformed_typed_result_with_upstream_context() {
     let server =
         SkillsServer::new(vec![json!({ "skills": [] })]).with_get(json!("not a skill entry"));
@@ -698,12 +752,16 @@ async fn skills_get_reports_a_malformed_typed_result_with_upstream_context() {
         .await
         .expect_err("a malformed typed skills/get result must fail");
 
-    assert!(error.contains("upstream `up`"), "{error}");
+    let detail = error
+        .capability()
+        .expect("typed capability failure")
+        .to_string();
+    assert!(detail.contains("upstream `up`"), "{detail}");
     assert!(
-        error.contains("skills/get returned a malformed result"),
-        "{error}"
+        detail.contains("skills/get returned a malformed result"),
+        "{detail}"
     );
-    assert!(!error.contains("skills/get failed"), "{error}");
+    assert!(!detail.contains("skills/get failed"), "{detail}");
 }
 
 #[cfg(feature = "skills")]
@@ -815,7 +873,7 @@ async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
     let pool = catalog_pool_with_server("up", server).await;
     let alice = super::SepSkillProvider::new(
         Arc::clone(&pool),
-        skills_config("up", None),
+        oauth_skills_config("up", None),
         Some("alice".to_string()),
     );
     alice
@@ -828,7 +886,7 @@ async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
 
     let bob = super::SepSkillProvider::new(
         Arc::clone(&pool),
-        skills_config("up", None),
+        oauth_skills_config("up", None),
         Some("bob".to_string()),
     );
     assert!(
@@ -850,7 +908,7 @@ async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
 
     let narrowed = super::SepSkillProvider::new(
         pool,
-        skills_config("up", Some(vec!["allowed"])),
+        oauth_skills_config("up", Some(vec!["allowed"])),
         Some("alice".to_string()),
     );
     assert!(
@@ -938,7 +996,7 @@ async fn direct_get_cannot_reuse_a_listed_supporting_resource_uri() {
         })
         .await
         .expect_err("ambiguous ownership must not be cached");
-    assert!(matches!(error, SkillProviderError::Provider { .. }));
+    assert_eq!(error, SkillProviderError::ManifestStale);
 }
 
 #[tokio::test]
@@ -1076,7 +1134,10 @@ async fn sep_provider_rejects_wrong_provider_and_preserves_acquisition_failure()
         })
         .await
         .expect_err("missing connection is not absence");
-    assert!(matches!(unavailable, SkillProviderError::Provider { .. }));
+    assert!(matches!(
+        unavailable,
+        SkillProviderError::Unavailable { .. }
+    ));
 }
 
 #[tokio::test]
@@ -1163,6 +1224,24 @@ fn skills_config(
     }
 }
 
+fn oauth_skills_config(
+    name: &str,
+    expose: Option<Vec<&str>>,
+) -> labby_runtime::gateway_config::UpstreamConfig {
+    use labby_runtime::gateway_config::{
+        UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    };
+    let mut config = skills_config(name, expose);
+    config.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Dynamic,
+        scopes: None,
+        credential: Default::default(),
+        prefer_client_metadata_document: None,
+    });
+    config
+}
+
 #[tokio::test]
 async fn skills_are_not_fetched_at_all_unless_the_upstream_opts_in() {
     let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]);
@@ -1200,6 +1279,54 @@ async fn an_upstream_without_the_extension_is_empty_not_an_error() {
         calls.load(Ordering::SeqCst),
         0,
         "never asks a server that did not declare it"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_cold_reads_share_one_skills_list_fetch() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha")],
+        "ttlMs": 600_000
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+    let reads = (0..16)
+        .map(|_| pool.upstream_skills(&config, None))
+        .collect::<Vec<_>>();
+    let results = futures::future::join_all(reads).await;
+    assert!(results.into_iter().all(|result| result.is_ok()));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "cold reads must single-flight"
+    );
+}
+
+#[tokio::test]
+async fn non_oauth_skills_catalog_is_shared_across_downstream_subjects() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha")],
+        "ttlMs": 600_000
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+    pool.upstream_skills(&config, Some("alice")).await.unwrap();
+    pool.upstream_skills(&config, Some("bob")).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn oauth_skills_catalog_remains_subject_scoped() {
+    let config = oauth_skills_config("up", None);
+    assert_eq!(
+        super::skills::skills_cache_subject(&config, Some("alice")),
+        Some("alice")
+    );
+    assert_eq!(
+        super::skills::skills_cache_subject(&config, Some("bob")),
+        Some("bob")
     );
 }
 
@@ -1327,13 +1454,13 @@ async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
 }
 
 #[tokio::test]
-async fn two_subjects_never_share_a_cached_catalog() {
+async fn two_oauth_subjects_never_share_a_cached_catalog() {
     let server = SkillsServer::new(vec![
         json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
-    let config = skills_config("up", None);
+    let config = oauth_skills_config("up", None);
 
     pool.upstream_skills(&config, Some("alice"))
         .await
@@ -1381,7 +1508,7 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
-    let config = skills_config("up", None);
+    let config = oauth_skills_config("up", None);
 
     pool.upstream_skills(&config, Some("alice"))
         .await
@@ -1400,6 +1527,23 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
         .await
         .expect("refetch");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn stale_refresh_publication_is_rejected_after_invalidation_epoch_advances() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let epoch = pool.skills_cache_epoch("up").await;
+
+    pool.invalidate_upstream_skills("up").await;
+
+    let stale =
+        super::skills_cache::CachedSkills::new(super::skills_list::UpstreamSkills::default());
+    assert!(
+        !pool.store_skills("up", None, epoch, stale).await,
+        "a response from the pre-invalidation epoch must not resurrect the cache"
+    );
+    assert!(pool.upstreams_with_cached_skills().await.is_empty());
 }
 
 #[tokio::test]
@@ -1443,14 +1587,10 @@ async fn a_cold_gateway_attempts_the_lazy_connect_instead_of_giving_up() {
         .upstream_skills(&skills_config("up", None), None)
         .await
         .expect_err("this fixture cannot reconnect, so the attempt must fail");
-    assert!(
-        error.contains("could not be connected for skills"),
-        "a cold upstream must attempt the lazy connect; got: {error}"
-    );
-    assert!(
-        !error.contains("is not connected"),
-        "reaching `acquire_peer` means the lazy connect was skipped: {error}"
-    );
+    assert!(matches!(
+        error,
+        super::skills_list::UpstreamSkillsError::Unavailable
+    ));
 }
 
 #[tokio::test]

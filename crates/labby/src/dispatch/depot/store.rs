@@ -73,11 +73,29 @@ impl Store {
     }
 
     pub fn read_pair(&self) -> Result<Pair, StoreError> {
+        self.read_pair_after_config_lock(|| {})
+    }
+
+    fn read_pair_after_config_lock(
+        &self,
+        after_config_lock: impl FnOnce(),
+    ) -> Result<Pair, StoreError> {
         let config = HostConfigLock::acquire(&self.config).map_err(map_host)?;
+        after_config_lock();
         let environment = HostConfigLock::acquire(&self.environment).map_err(map_host)?;
         Ok(Pair {
             config: config.read_raw().map_err(map_host)?,
             environment: environment.read_raw().map_err(map_host)?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_pair_notifying(
+        &self,
+        config_acquired: std::sync::mpsc::SyncSender<()>,
+    ) -> Result<Pair, StoreError> {
+        self.read_pair_after_config_lock(|| {
+            let _ = config_acquired.send(());
         })
     }
 

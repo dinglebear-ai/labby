@@ -172,6 +172,36 @@ binary or either receipt, the installer writes a recovery journal beneath
 `.labby-install/`; a later invocation restores the complete pre-install
 snapshot when it finds an interrupted activation. If restoration fails, the
 installer stops and retains the journal for diagnosis.
+All Unix installer entry points share a process-level transaction lock and
+flush journal boundaries before advancing them. Successful activation retains
+only the current artifact and the immediately previous artifact required for
+offline rollback.
+
+### Automatic updates on macOS
+
+For a persistent macOS server, enable daily updates in the existing server job:
+
+```bash
+LABBY_SERVICE_AUTO_UPDATE=1 bash scripts/install-macos-service.sh install
+```
+
+This runs `labby serve --auto-update` under launchd and removes the separate
+updater job after the server passes its health check. See the
+[macOS setup instructions](docs/services/SETUP.md#macos-server-and-automatic-updates).
+
+For an installation without a persistent server, use the standalone daily job:
+
+```bash
+labby update --auto-update enable
+labby update --auto-update status
+labby update --auto-update disable
+```
+
+Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
+verification. They skip drafts, prereleases, missing platform assets, and versions
+equal to or older than the installed binary. The installer verifies attestations
+and checksums before atomic replacement. No separate language runtime is required.
+Use `labby update --automatic --dry-run` to check without installing.
 
 ### Build From Source
 

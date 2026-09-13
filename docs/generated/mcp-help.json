@@ -1096,6 +1096,12 @@
               "ty": "string",
               "required": true,
               "description": "Pending pairing request id"
+            },
+            {
+              "name": "pairing_fingerprint",
+              "ty": "string",
+              "required": true,
+              "description": "Fingerprint displayed by the requesting browser extension"
             }
           ],
           "returns": "Browser"
@@ -2748,6 +2754,22 @@
             }
           ],
           "returns": "ProbeResult"
+        },
+        {
+          "name": "gateway.oauth.authorize",
+          "description": "Authorize an upstream for the authenticated non-admin caller. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "upstream",
+              "ty": "string",
+              "required": true,
+              "description": "Configured upstream name"
+            }
+          ],
+          "returns": "BeginAuthorization"
         },
         {
           "name": "gateway.oauth.start",

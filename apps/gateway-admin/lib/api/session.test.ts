@@ -68,6 +68,68 @@ test('loadBrowserSession stores authenticated payloads', async () => {
   assert.equal(getBrowserSessionState().status, 'authenticated')
 })
 
+test('project-bound sessions preserve explicit project context without an authority projection', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'project-session-user' },
+    expires_at: 124,
+    csrf_token: 'csrf-project',
+    project_id: '  project-bound  ',
+    authority_generation: null,
+    organization_id: null,
+    owner: null,
+    active_owner: null,
+    teams: [],
+    projects: [],
+    capabilities: [],
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status, 'authenticated')
+  assert.equal(state.status === 'authenticated' ? state.projectId : undefined, 'project-bound')
+  assert.equal(getSessionAuthority(), undefined)
+})
+
+test('whitespace-only project context remains unbound', async () => {
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'project-session-user' },
+    expires_at: 124,
+    csrf_token: 'csrf-project',
+    project_id: '   ',
+  }), { status: 200 })) as FetchMock
+
+  const state = await loadBrowserSession()
+  assert.equal(state.status, 'authenticated')
+  assert.equal(state.status === 'authenticated' ? state.projectId : 'unexpected', undefined)
+  assert.equal(getSessionAuthority(), undefined)
+})
+
+test('same-subject project binding changes advance the browser session epoch without authority projection', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'project-session-user' },
+    expiresAt: 123,
+    csrfToken: 'csrf-old',
+    projectId: 'project-a',
+  })
+  const before = getBrowserSessionEpoch()
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'project-session-user' },
+    expires_at: 124,
+    csrf_token: 'csrf-new',
+    project_id: 'project-b',
+  }), { status: 200 })) as FetchMock
+
+  await loadBrowserSession()
+  assert.ok(getBrowserSessionEpoch() > before)
+  const state = getBrowserSessionState()
+  assert.equal(state.status === 'authenticated' ? state.projectId : undefined, 'project-b')
+})
+
 test('same-subject server authority changes advance the browser session epoch', async () => {
   __setBrowserSessionStateForTests({
     status: 'authenticated',

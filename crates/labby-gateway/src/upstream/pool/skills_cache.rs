@@ -22,7 +22,7 @@
 //! turn every read into a fetch while a very large one would pin a stale
 //! catalog indefinitely.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -43,9 +43,16 @@ pub(super) const SKILLS_TTL_DEFAULT: Duration = Duration::from_mins(5);
 /// Evict a cached catalog untouched for this long.
 pub(super) const SKILLS_CACHE_IDLE_TTL: Duration = Duration::from_mins(30);
 
-/// Hard cap on cached catalogs. Cardinality is upstreams × subjects, so an
-/// OAuth deployment with many principals would otherwise grow without bound.
-pub(super) const SKILLS_CACHE_MAX_ENTRIES: usize = 512;
+/// Subject-scoped catalog cap per upstream. Non-OAuth upstreams collapse all callers
+/// onto one cache shard, while OAuth upstreams retain strict per-subject isolation.
+/// A per-upstream cap prevents one busy identity population from evicting unrelated
+/// upstream catalogs.
+pub(super) const SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM: usize = 64;
+
+/// Failed background refreshes are negatively cached so an unhealthy upstream
+/// is not hammered on every downstream read of the stale snapshot.
+pub(super) const SKILLS_REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
+pub(super) const SKILLS_REFRESH_BACKOFF_MAX: Duration = Duration::from_mins(1);
 
 /// Direct `skills/get` manifests retained per catalog shard.
 ///
@@ -54,6 +61,7 @@ pub(super) const SKILLS_CACHE_MAX_ENTRIES: usize = 512;
 #[derive(Debug, Clone)]
 pub(super) struct CachedDirectSkill {
     pub(super) skill: ValidatedSkill,
+    pub(super) owned_uris: BTreeSet<String>,
     expires_at: Instant,
     last_used: Instant,
 }
@@ -61,8 +69,20 @@ pub(super) struct CachedDirectSkill {
 impl CachedDirectSkill {
     pub(super) fn new(skill: ValidatedSkill) -> Self {
         let now = Instant::now();
+        let owned_uris = std::iter::once(&skill.entry.uri)
+            .chain(
+                skill
+                    .entry
+                    .resources
+                    .iter()
+                    .flatten()
+                    .map(|resource| &resource.uri),
+            )
+            .filter_map(|uri| parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()))
+            .collect();
         Self {
             skill,
+            owned_uris,
             expires_at: now + SKILLS_TTL_DEFAULT,
             last_used: now,
         }
@@ -90,6 +110,7 @@ pub(super) type SkillsCacheKey = (String, Option<String>);
 pub(super) struct CachedSkills {
     pub(super) skills: Arc<UpstreamSkills>,
     pub(super) direct: BTreeMap<String, CachedDirectSkill>,
+    pub(super) direct_resource_index: BTreeMap<String, String>,
     /// When this snapshot was fetched.
     fetched_at: Instant,
     /// When it stops being fresh, already clamped.
@@ -99,6 +120,12 @@ pub(super) struct CachedSkills {
     /// Set while a background refresh is in flight, so a burst of readers
     /// spawns one refresh rather than one per reader.
     pub(super) refreshing: bool,
+    /// Start of the current background refresh, for operator diagnostics.
+    refresh_started_at: Option<Instant>,
+    /// Earliest instant a failed background refresh may be retried.
+    retry_after: Option<Instant>,
+    /// Consecutive failed background refreshes used for bounded exponential backoff.
+    refresh_failures: u32,
 }
 
 impl CachedSkills {
@@ -108,15 +135,37 @@ impl CachedSkills {
         Self {
             skills: Arc::new(skills),
             direct: BTreeMap::new(),
+            direct_resource_index: BTreeMap::new(),
             fetched_at: now,
             expires_at: now + ttl,
             last_used: now,
             refreshing: false,
+            refresh_started_at: None,
+            retry_after: None,
+            refresh_failures: 0,
         }
     }
 
     pub(super) fn is_fresh(&self) -> bool {
         Instant::now() < self.expires_at
+    }
+
+    /// Shallow snapshot for list/status readers. Direct-get manifests are a
+    /// separate mutable side cache and must not be deep-cloned just to inspect
+    /// the listed catalog.
+    pub(super) fn read_snapshot(&self) -> Self {
+        Self {
+            skills: Arc::clone(&self.skills),
+            direct: BTreeMap::new(),
+            direct_resource_index: BTreeMap::new(),
+            fetched_at: self.fetched_at,
+            expires_at: self.expires_at,
+            last_used: self.last_used,
+            refreshing: self.refreshing,
+            refresh_started_at: self.refresh_started_at,
+            retry_after: self.retry_after,
+            refresh_failures: self.refresh_failures,
+        }
     }
 
     /// How long this snapshot stays fresh. Zero once expired.
@@ -133,39 +182,94 @@ impl CachedSkills {
 
     pub(super) fn touch(&mut self) {
         self.last_used = Instant::now();
-        self.direct.retain(|_, snapshot| {
-            snapshot.is_fresh() && snapshot.last_used.elapsed() < SKILLS_CACHE_IDLE_TTL
-        });
     }
 
-    pub(super) fn retain_direct_from(&mut self, previous: &Self) {
-        self.direct = previous
+    pub(super) fn prune_direct(&mut self) {
+        let stale = self
             .direct
             .iter()
             .filter(|(_, snapshot)| {
-                snapshot.is_fresh()
-                    && !snapshot_owned_uris(snapshot)
-                        .iter()
-                        .any(|uri| self.skills.resource_index.contains_key(uri))
+                !snapshot.is_fresh() || snapshot.last_used.elapsed() >= SKILLS_CACHE_IDLE_TTL
             })
-            .map(|(uri, snapshot)| (uri.clone(), snapshot.clone()))
-            .collect();
+            .map(|(owner, _)| owner.clone())
+            .collect::<Vec<_>>();
+        for owner in stale {
+            self.remove_direct(&owner);
+        }
     }
-}
 
-fn snapshot_owned_uris(snapshot: &CachedDirectSkill) -> Vec<String> {
-    std::iter::once(&snapshot.skill.entry.uri)
-        .chain(
-            snapshot
-                .skill
-                .entry
-                .resources
-                .iter()
-                .flatten()
-                .map(|resource| &resource.uri),
-        )
-        .filter_map(|uri| parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()))
-        .collect()
+    pub(super) fn remove_direct(&mut self, owner: &str) -> Option<CachedDirectSkill> {
+        let removed = self.direct.remove(owner)?;
+        for uri in &removed.owned_uris {
+            if self
+                .direct_resource_index
+                .get(uri)
+                .is_some_and(|indexed_owner| indexed_owner == owner)
+            {
+                self.direct_resource_index.remove(uri);
+            }
+        }
+        Some(removed)
+    }
+
+    pub(super) fn insert_direct(&mut self, owner: String, snapshot: CachedDirectSkill) {
+        self.remove_direct(&owner);
+        for uri in &snapshot.owned_uris {
+            self.direct_resource_index
+                .insert(uri.clone(), owner.clone());
+        }
+        self.direct.insert(owner, snapshot);
+    }
+
+    /// Mark a background refresh in flight if no refresh or failure cooldown is active.
+    pub(super) fn begin_refresh(&mut self) -> bool {
+        let now = Instant::now();
+        if self.refreshing
+            || self
+                .retry_after
+                .is_some_and(|retry_after| retry_after > now)
+        {
+            return false;
+        }
+        self.refreshing = true;
+        self.refresh_started_at = Some(now);
+        true
+    }
+
+    /// Clear refresh state after a failure and arm bounded exponential backoff.
+    pub(super) fn fail_refresh(&mut self) {
+        self.refreshing = false;
+        self.refresh_started_at = None;
+        self.refresh_failures = self.refresh_failures.saturating_add(1);
+        let shift = self.refresh_failures.saturating_sub(1).min(6);
+        let multiplier = 1_u32 << shift;
+        let delay = SKILLS_REFRESH_BACKOFF_BASE
+            .saturating_mul(multiplier)
+            .min(SKILLS_REFRESH_BACKOFF_MAX);
+        self.retry_after = Some(Instant::now() + delay);
+    }
+
+    pub(super) fn refresh_age(&self) -> Option<Duration> {
+        self.refresh_started_at.map(|started| started.elapsed())
+    }
+
+    pub(super) fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
+            .map(|retry_after| retry_after.saturating_duration_since(Instant::now()))
+    }
+
+    pub(super) fn retain_direct_from(&mut self, previous: &Self) {
+        for (owner, snapshot) in &previous.direct {
+            if snapshot.is_fresh()
+                && !snapshot
+                    .owned_uris
+                    .iter()
+                    .any(|uri| self.skills.resource_index.contains_key(uri))
+            {
+                self.insert_direct(owner.clone(), snapshot.clone());
+            }
+        }
+    }
 }
 
 /// Clamp an upstream-supplied `ttlMs` into the range Labby will honor.
@@ -183,18 +287,28 @@ pub(super) fn clamp_ttl(ttl_ms: Option<u64>) -> Duration {
 /// Eviction runs on insert rather than on a timer: the cache is only reachable
 /// through the fetch path, so an entry that is never read again is also never
 /// in anybody's way until the next insert needs the room.
-pub(super) fn evict(cache: &mut HashMap<SkillsCacheKey, CachedSkills>) {
+pub(super) fn evict(cache: &mut HashMap<SkillsCacheKey, CachedSkills>) -> usize {
+    let before = cache.len();
     cache.retain(|_, entry| entry.last_used.elapsed() < SKILLS_CACHE_IDLE_TTL);
-    while cache.len() > SKILLS_CACHE_MAX_ENTRIES {
-        let Some(oldest) = cache
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| key.clone())
-        else {
-            break;
-        };
-        cache.remove(&oldest);
+
+    let mut by_upstream: HashMap<String, Vec<(SkillsCacheKey, Instant)>> = HashMap::new();
+    for (key @ (upstream, _), entry) in cache.iter() {
+        by_upstream
+            .entry(upstream.clone())
+            .or_default()
+            .push((key.clone(), entry.last_used));
     }
+    for mut entries in by_upstream.into_values() {
+        if entries.len() <= SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM {
+            continue;
+        }
+        entries.sort_unstable_by_key(|(_, last_used)| *last_used);
+        let remove = entries.len() - SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM;
+        for (key, _) in entries.into_iter().take(remove) {
+            cache.remove(&key);
+        }
+    }
+    before.saturating_sub(cache.len())
 }
 
 /// Per-key single-flight guards.
@@ -260,21 +374,54 @@ mod tests {
     }
 
     #[test]
-    fn eviction_drops_the_least_recently_used_over_the_cap() {
+    fn eviction_caps_subjects_per_upstream_without_cross_upstream_thrashing() {
         let mut cache: HashMap<SkillsCacheKey, CachedSkills> = HashMap::new();
-        for i in 0..SKILLS_CACHE_MAX_ENTRIES + 10 {
+        for i in 0..SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM + 10 {
             let mut entry = CachedSkills::new(snapshot(None));
-            // Stagger last_used so the eviction order is deterministic.
             entry.last_used = Instant::now()
                 .checked_sub(Duration::from_secs(1000 - i as u64))
                 .expect("staggered instant is within range");
-            cache.insert((format!("upstream-{i}"), None), entry);
+            cache.insert(("busy".to_string(), Some(format!("subject-{i}"))), entry);
         }
+        for i in 0..8 {
+            cache.insert(
+                (format!("quiet-{i}"), None),
+                CachedSkills::new(snapshot(None)),
+            );
+        }
+
         evict(&mut cache);
-        assert_eq!(cache.len(), SKILLS_CACHE_MAX_ENTRIES);
-        // The oldest keys went first.
-        assert!(!cache.contains_key(&("upstream-0".to_string(), None)));
-        assert!(cache.contains_key(&(format!("upstream-{}", SKILLS_CACHE_MAX_ENTRIES + 9), None)));
+
+        let busy = cache
+            .keys()
+            .filter(|(upstream, _)| upstream == "busy")
+            .count();
+        assert_eq!(busy, SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM);
+        assert!(!cache.contains_key(&("busy".to_string(), Some("subject-0".to_string()))));
+        for i in 0..8 {
+            assert!(cache.contains_key(&(format!("quiet-{i}"), None)));
+        }
+    }
+
+    #[test]
+    fn failed_refresh_enters_bounded_negative_backoff() {
+        let mut entry = CachedSkills::new(snapshot(Some(60_000)));
+        assert!(entry.begin_refresh());
+        entry.fail_refresh();
+        let first = entry.retry_after().expect("retry delay");
+        assert!(first > Duration::ZERO);
+        assert!(first <= SKILLS_REFRESH_BACKOFF_BASE);
+        assert!(
+            !entry.begin_refresh(),
+            "backoff suppresses an immediate retry"
+        );
+
+        entry.retry_after = Some(Instant::now());
+        assert!(entry.begin_refresh());
+        entry.fail_refresh();
+        let second = entry.retry_after().expect("second retry delay");
+        assert!(second >= first);
+        assert!(second <= SKILLS_REFRESH_BACKOFF_MAX);
     }
 
     #[test]

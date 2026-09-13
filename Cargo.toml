@@ -4,7 +4,7 @@ exclude = ["verification"]
 members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/labby-browser", "crates/labby-codemode", "crates/labby-gateway", "crates/labby-model", "crates/labby-openapi", "crates/labby-web", "crates/labby-runtime", "crates/labby-winjob", "crates/labby-primitives", "crates/xtask"]
 
 [workspace.package]
-version = "1.16.1"
+version = "1.18.1"
 edition = "2024"
 rust-version = "1.97.1"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
@@ -50,7 +50,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "multipart",
 ] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-base64 = "0.22"
+base64 = "0.23"
 url = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -83,7 +83,7 @@ dialoguer = { version = "0.12", default-features = false }
 # config
 dotenvy = "0.15"
 toml = "1.1"
-serde_yaml_ng = "0.10.0"
+serde-saphyr = { version = "1.2.0", default-features = false, features = ["deserialize"] }
 
 # mcp
 rmcp = { version = "=3.3.0", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "0e1184b47645d5eb64d1df3bb84067b1d4a53340", features = [

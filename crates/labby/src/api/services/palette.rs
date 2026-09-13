@@ -1281,7 +1281,7 @@ mod tests {
             .unwrap();
         let error: Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(error["kind"], "skill_library_unavailable");
+        assert_eq!(error["kind"], "service_unavailable");
     }
 
     // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,

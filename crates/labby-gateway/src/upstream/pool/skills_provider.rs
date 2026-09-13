@@ -11,6 +11,68 @@ use labby_runtime::skills::{
 };
 
 use super::UpstreamPool;
+use super::capability_call::CapabilityCallError;
+use super::skills_list::UpstreamSkillsError;
+
+fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
+    match error {
+        UpstreamSkillsError::Capability(CapabilityCallError::Timeout { .. }) => {
+            SkillProviderError::DeadlineExceeded
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::ResponseTooLarge { .. }) => {
+            SkillProviderError::LimitExceeded {
+                what: "response_bytes",
+                limit: labby_runtime::skills::limits::MAX_SKILL_RESOURCE_BYTES,
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
+        | UpstreamSkillsError::Unavailable
+        | UpstreamSkillsError::Invalidated
+        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
+            reason: "upstream_unavailable".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {
+            SkillProviderError::Unavailable {
+                reason: "upstream_queue_saturated".to_owned(),
+            }
+        }
+        UpstreamSkillsError::LimitExceeded => SkillProviderError::LimitExceeded {
+            what: "direct_skills",
+            limit: labby_runtime::skills::limits::MAX_SKILLS_PER_UPSTREAM,
+        },
+        UpstreamSkillsError::Collision => SkillProviderError::ManifestStale,
+        UpstreamSkillsError::InvalidUri => SkillProviderError::InvalidRequest {
+            field: "skill.source_id",
+            reason: "invalid_skill_uri",
+        },
+        UpstreamSkillsError::InvalidManifest { reason } => SkillProviderError::Integrity { reason },
+        UpstreamSkillsError::Capability(CapabilityCallError::Mcp { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_mcp_error".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Protocol { .. })
+        | UpstreamSkillsError::CacheScopeChanged
+        | UpstreamSkillsError::IdentityMismatch => SkillProviderError::Provider {
+            reason: "upstream_protocol_error".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::Cancelled { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_cancelled".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::InputRequiredRoundsExceeded {
+            ..
+        }) => SkillProviderError::Provider {
+            reason: "input_required_rounds_exceeded".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::Other { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_error".to_owned(),
+            }
+        }
+    }
+}
 
 /// One caller-scoped SEP-2640 upstream exposed through the neutral provider seam.
 ///
@@ -81,7 +143,7 @@ impl SkillProvider for SepSkillProvider {
             )
             .await
             .map_err(|_| SkillProviderError::DeadlineExceeded)?
-            .map_err(|reason| SkillProviderError::Unavailable { reason })?;
+            .map_err(map_upstream_skills_error)?;
             let available = exposed.skills.len();
             let skills = exposed
                 .skills
@@ -112,7 +174,7 @@ impl SkillProvider for SepSkillProvider {
                     .pool
                     .upstream_skills(&self.config, self.subject.as_deref())
                     .await
-                    .map_err(|reason| SkillProviderError::Unavailable { reason })?;
+                    .map_err(map_upstream_skills_error)?;
                 let skill = if let Some(skill) = exposed
                     .skills
                     .iter()
@@ -128,7 +190,7 @@ impl SkillProvider for SepSkillProvider {
                             request.id.source_id(),
                         )
                         .await
-                        .map_err(|reason| SkillProviderError::Provider { reason })?
+                        .map_err(map_upstream_skills_error)?
                 };
                 let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
                 let result = SkillGetResult {

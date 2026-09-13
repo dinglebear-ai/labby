@@ -1147,7 +1147,10 @@ pub struct AuthFileConfig {
     /// Optional path override for the persisted JWT signing key.
     #[serde(default)]
     pub key_path: Option<PathBuf>,
-    /// Bootstrap secret required for dynamic client registration.
+    /// Enable dynamic client registration (default true). CIMD remains available.
+    #[serde(default)]
+    pub enable_dynamic_registration: Option<bool>,
+    /// Legacy bootstrap secret retained for configuration compatibility.
     #[serde(default)]
     pub bootstrap_secret: Option<String>,
     /// Additional redirect URI patterns allowed for dynamic client registration.
@@ -1288,6 +1291,13 @@ fn resolve_auth_with_env(
 
     if let Some(config) = config {
         insert_if_some(&mut merged, "LABBY_AUTH_MODE", config.mode.clone());
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION",
+            config
+                .enable_dynamic_registration
+                .map(|enabled| enabled.to_string()),
+        );
         insert_if_some(&mut merged, "LABBY_PUBLIC_URL", config.public_url.clone());
         insert_if_some(
             &mut merged,
@@ -1478,7 +1488,19 @@ fn resolve_auth_with_env(
         _ => {}
     }
 
+    let dynamic_registration = match merged
+        .get("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        Some(_) => {
+            anyhow::bail!("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION must be true, false, 1, or 0")
+        }
+    };
     let resolved = auth_config::AuthConfigBuilder::new()
+        .enable_dynamic_registration(dynamic_registration)
         .env_prefix("LABBY")
         .build_from_sources(merged)
         .map_err(anyhow::Error::from)?;
@@ -2439,6 +2461,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "web.disable_auth" => serde_json::json!(cfg.web.disable_auth),
         "auth" => serde_json::to_value(&cfg.auth).unwrap_or(serde_json::Value::Null),
         "code_mode.enabled" => serde_json::json!(cfg.code_mode.enabled),
+        "gateway.auto_reconnect" => serde_json::json!(cfg.gateway.auto_reconnect),
         "gateway.disable_spawn_guard" => serde_json::json!(cfg.gateway.disable_spawn_guard),
         "oauth.machines" => {
             serde_json::to_value(&cfg.oauth.machines).unwrap_or(serde_json::Value::Null)
@@ -3311,6 +3334,7 @@ future = "keep"
             public_url: Some("https://lab.example.com".to_string()),
             sqlite_path: None,
             key_path: None,
+            enable_dynamic_registration: None,
             bootstrap_secret: Some("bootstrap".to_string()),
             allowed_client_redirect_uris: Some(vec![
                 "https://callback.example.com/callback/*".to_string(),
@@ -3366,6 +3390,73 @@ future = "keep"
             admin_email: Some("admin@example.com".to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn oauth_product_enables_dynamic_registration_by_default() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_allows_explicit_dynamic_registration_disable() {
+        let cfg = minimal_oauth_file_config();
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                    "false".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(!resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_environment_overrides_file_registration_policy() {
+        let cfg = AuthFileConfig {
+            enable_dynamic_registration: Some(false),
+            ..minimal_oauth_file_config()
+        };
+        assert!(!resolve_oauth_fixture(&cfg).enable_dynamic_registration);
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                (
+                    "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                    "true".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(resolved.enable_dynamic_registration);
+    }
+
+    #[test]
+    fn oauth_product_rejects_invalid_dynamic_registration_policy() {
+        let error = resolve_auth_with_env(
+            Some(&minimal_oauth_file_config()),
+            [(
+                "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION".into(),
+                "maybe".into(),
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION")
+        );
     }
 
     #[test]

@@ -143,6 +143,44 @@ pub struct GatewayReloadOutcome {
 }
 
 impl GatewayManager {
+    /// Reconcile cleanup against the current committed configuration, serialized
+    /// with reloads so an older cleanup cannot rearm a replaced pool or policy.
+    pub(crate) async fn reconcile_after_upstream_cleanup(
+        &self,
+        name: &str,
+        dry_run: bool,
+    ) -> Result<(), ToolError> {
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let manager = self.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            // Like configuration commits, cleanup owns its mutation lease until
+            // reconciliation and recovery rearming finish, even if its caller leaves.
+            let _mutation_guard = mutation_guard;
+            let cfg = manager.config.read().await.clone();
+            let current_pool = manager.runtime.current_pool().await;
+            if !dry_run && let Some(pool) = current_pool.as_deref() {
+                pool.reconcile_lazy_upstreams(
+                    &cfg.upstream,
+                    &HashSet::from([name]),
+                    "gateway.mcp.cleanup",
+                )
+                .await;
+                pool.ensure_recovery_tasks(&cfg.upstream).await;
+            }
+            manager
+                .reconcile_runtime_state(&cfg, current_pool.as_deref())
+                .await
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!(
+                "gateway cleanup reconciliation task failed: {error}"
+            ))
+        })?
+    }
+
     pub async fn reload_with_origin(
         &self,
         origin: Option<&str>,
@@ -473,6 +511,9 @@ impl GatewayManager {
                         "gateway.reload.transactional_selective.rollback",
                     )
                     .await;
+                    // Restore recovery as well as lazy entries: the candidate
+                    // eviction cancelled the previous upstream's task.
+                    pool.ensure_recovery_tasks(&previous_cfg.upstream).await;
                 }
                 // Leave restored upstreams lazy. Rollback must not depend on
                 // network availability; the next real request can reconnect the
@@ -501,6 +542,9 @@ impl GatewayManager {
                 return Err(error);
             }
 
+            // The selective revision is now durable. Only committed configs
+            // may own recurring reconnect work.
+            pool.ensure_recovery_tasks(&cfg.upstream).await;
             let observed = ReconcileCatalogObservation::observe(
                 &before,
                 &after,
@@ -558,8 +602,11 @@ impl GatewayManager {
             "gateway reconcile"
         );
         let fresh_pool = {
-            let base_pool =
-                self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
+            let base_pool = self.new_base_pool(
+                cfg.upstream_request_timeout(),
+                cfg.upstream_relay_timeout(),
+                cfg.gateway.auto_reconnect,
+            );
             let pool = Arc::new(
                 base_pool
                     .with_runtime_origin(runtime_origin_tag(origin))
@@ -626,7 +673,7 @@ impl GatewayManager {
             .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
             .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
-        self.runtime.swap(fresh_pool).await;
+        self.runtime.swap(fresh_pool.clone()).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can
         // therefore never leave `runtime` as None. Drain in an owned task so
@@ -656,6 +703,11 @@ impl GatewayManager {
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
         self.advance_runtime_config_generation();
+        // A private candidate must not retain itself through background tasks
+        // if validation/persistence fails or reload is cancelled before swap.
+        if let Some(pool) = fresh_pool {
+            pool.ensure_recovery_tasks(&cfg.upstream).await;
+        }
         let observed = ReconcileCatalogObservation::observe(
             &before,
             &after,

@@ -210,10 +210,11 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
+| macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Incus source contract | `docker` | validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
+| Incus source contract | `docker` | runs the image release ShellCheck command at default severity and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
@@ -239,10 +240,9 @@ skill lookup and direct resource reads without hiding the gateway's own skill.
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
 The frontend build is required because the Rust binary embeds the exported
-Labby assets. It is a production build gate, not a TypeScript strictness gate:
-`apps/gateway-admin/next.config.mjs` currently sets
-`typescript.ignoreBuildErrors = true`. Run `pnpm test` in
-`apps/gateway-admin` for the frontend unit and install-script test contract.
+Labby assets. CI runs an explicit TypeScript check as well as the production
+build. Run `pnpm test` in `apps/gateway-admin` for the frontend unit and
+install-script test contract.
 
 The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
 script with its declared shell, runs ShellCheck at warning severity, and runs
@@ -348,8 +348,20 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Compose,
-   Incus, and host-service deployment. Each adapter must install N-1 and seed
+   binding. It then invokes a platform-owned adapter for Unix, Windows, Incus, and
+   host-service deployment. The macOS adapter exists, but its leg is off until
+   a release carrying the macOS arm64 archive is published, because until then
+   there is no macOS N-1 to install. The host-service leg is advisory: it runs
+   and reports, but cannot block a release, until the service can write its
+   logs under the v1.16 systemd sandbox. N-1 is the newest published
+   (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
+   candidate, merged into it, and carries the leg's archive and `.sha256`
+   sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
+   releases stayed drafts or never received assets are skipped; if no release
+   qualifies, the leg fails closed. The authenticated check is a bearer
+   `help` call on the gateway: from v1.16, a bearer-mode install with no access
+   store answers gateway admin actions with setup-required until an owner
+   bootstraps through OAuth. Each adapter must install N-1 and seed
    real application-schema rows in registered OAuth clients, access security
    events, and upstream usage calls, plus representative files in gateway
    configuration and credentials, snippets, imported skills, and artifact
@@ -368,8 +380,11 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts Incus-pointer
-   restoration and restoration of the GitHub release to draft.
+7. If publication fails, the rollback transaction attempts Incus-pointer and
+   npm stable-pointer restoration before returning a previously draft GitHub
+   release to draft. Attempted npm writes are explicitly compensated even when
+   registry reads still show the old tag. If either consumer pointer cannot be
+   restored, release assets remain public and recovery reports failure.
    It verifies each final state independently, emits one compound JSON record,
    and fails if any recovery step or final-state proof fails. Because npm and
    MCP versions are immutable, a failed transaction also records either
@@ -383,12 +398,17 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    recovery receipt retains the exact prior ref target, so rollback is another
    pointer-only leased CAS and never rewrites generation contents.
    They return validated 64-hex subject digests before the stable GitHub release
-   becomes visible. npm publishes the immutable version under a version-specific
-   candidate dist-tag; the `latest` consumer pointer is not advanced yet. No
+   becomes visible. The MCP Registry only accepts a manifest whose npm version
+   is already published with a matching `mcpName`, so the `npm-candidate` job
+   runs after the upgrade and Incus gates and before the registry call. It
+   publishes the immutable npm version under a version-specific candidate
+   dist-tag; the `latest` consumer pointer is not advanced yet. No
    distribution workflow is triggered by `release.published`.
 9. Only after every candidate qualification and publisher succeeds does
    `release.yml` promote the draft through the verified promotion helper. It
    advances and verifies npm's `latest` dist-tag only after that promotion.
+   A shared concurrency group serializes promotion and rollback across tags;
+   npm and Incus version guards reject an older run after a newer promotion.
    Promotion failure enters the same recovery path and retains an actionable
    record of immutable registry identities that cannot be deleted.
 10. The aggregate reconciler runs immediately after Release completes and on a
@@ -498,16 +518,14 @@ Binary size is tracked but not hard-gated in CI unless repo tooling enforces a m
 The shared `build-gateway-admin` action installs dependencies, verifies the
 synced installer, runs `pnpm run test:unit`, runs `pnpm exec tsc --noEmit`, and
 then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
-assets that are compiled into the `lab` binary. Keep TypeScript explicit here:
-`next.config.mjs` intentionally ignores build-time TypeScript errors so asset
-builds are not the type-safety boundary.
+assets compiled into the `labby` binary. The explicit TypeScript check provides
+a distinct type-safety gate alongside the Next.js production build.
 
 ```bash
 cd apps/gateway-admin
 pnpm run test:unit
 pnpm exec tsc --noEmit
 pnpm test
-pnpm test:acp
 pnpm test:browser
 ```
 

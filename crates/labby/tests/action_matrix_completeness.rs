@@ -180,12 +180,14 @@ fn every_registered_action_has_an_authority_classification() {
         }
 
         // The reviewed per-principal expectations fixture is a third source:
-        // a Team member must be allowed exactly the read/operate classes.
+        // a Team member gets read/operate over the Team, and management
+        // of their own personal credentials regardless of Team membership.
         if let Some(allowed) = team_member_allowed.get(&action.key()) {
-            let member_class = matches!(
-                classification.operation,
-                OperationClass::Discover | OperationClass::Read | OperationClass::Operate
-            );
+            let member_class = classification.owners == [OwnerKind::Personal]
+                || matches!(
+                    classification.operation,
+                    OperationClass::Discover | OperationClass::Read | OperationClass::Operate
+                );
             assert_eq!(
                 *allowed,
                 member_class,

@@ -1,10 +1,5 @@
 //! Stable surface contract for the Artifact management service.
 
-#![allow(
-    dead_code,
-    reason = "kept as a compile-time assertion of the cross-surface service contract"
-)]
-
 pub(crate) const SERVICE_NAME: &str = "artifacts";
 pub(crate) const FEATURE_GATE: &str = "skills";
 pub(crate) const HTTP_ROUTE: &str = "/v1/artifacts";

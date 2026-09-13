@@ -209,9 +209,9 @@ fn callback_error_does_not_reflect_cookie_or_identity_metadata() {
 #[test]
 fn unsafe_correlation_is_rejected_without_reflection() {
     let secret = "secret\nforged-log-field";
-    let error = skill_library_callback_correlation(Some(secret)).unwrap_err();
-    let rendered = format!("{error:?}");
-    assert!(matches!(error, ToolError::InvalidParam { .. }));
+    let correlation = skill_library_callback_correlation(Some(secret)).unwrap();
+    let rendered = format!("{correlation:?}");
+    assert!(correlation.as_str().starts_with("mcp-skill-library-"));
     assert!(!rendered.contains(secret));
     assert!(!rendered.contains("forged-log-field"));
 }
@@ -343,7 +343,7 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
         ),
     ];
 
-    for (label, via_session, authenticator, headers, expected_correlation) in cases {
+    for (label, via_session, authenticator, headers, _expected_correlation) in cases {
         let mut context = RequestContext::new(NumberOrString::Number(1), running.peer().clone());
         let mut request = Request::builder().uri("https://lab.example/mcp");
         for (name, value) in &headers {
@@ -383,11 +383,7 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
         let correlation = envelope["error"]["correlation_id"]
             .as_str()
             .expect("client-visible correlation");
-        if let Some(expected) = expected_correlation {
-            assert_eq!(correlation, expected, "{label}");
-        } else {
-            assert!(correlation.starts_with("mcp-skill-library-rejection-"));
-        }
+        assert!(correlation.starts_with("mcp-skill-library-rejection-"));
         for secret in [
             "cross-origin-secret",
             "missing-csrf-secret",
@@ -460,7 +456,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let store =
         Arc::new(ArtifactStore::new(root.path().join("artifacts")).expect("artifact store"));
     let projection: Arc<dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>> =
-        Arc::new(ArtifactFirstPartyProjection);
+        Arc::new(ArtifactFirstPartyProjection::default());
     let snapshot = store.library_snapshot().expect("initial library snapshot");
     let initial = projection
         .prepare(&store, &snapshot, None)

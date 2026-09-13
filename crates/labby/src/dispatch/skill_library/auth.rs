@@ -1,10 +1,5 @@
 //! Final-boundary Skill Library authorization.
 
-#![allow(
-    dead_code,
-    reason = "commit-bound policy seam is consumed by the Wave 2 Skill Library dispatcher"
-)]
-
 use std::collections::BTreeSet;
 
 use labby_auth::{Authenticator, VerifiedIdentity};
@@ -268,7 +263,11 @@ pub(crate) fn product_grants_are_route_bound(
 /// Target visibility relevant to non-enumerating read policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SkillLibraryTarget<'a> {
+    /// Collection-level target used when authorizing list/search of shared active records.
     SharedActive,
+    /// Record-level shared target. Carries ownership so tenant isolation is enforced before
+    /// authorization succeeds, preventing cross-tenant record IDs from becoming an oracle.
+    SharedActiveRecord(&'a LibraryOwnership),
     Personal(&'a LibraryOwnership),
     Mutation(&'a LibraryOwnership),
     CreateForCaller,
@@ -291,6 +290,8 @@ pub(crate) struct SkillLibraryAuthorizationDecision {
 }
 
 impl SkillLibraryAuthorizationDecision {
+    #[cfg(test)]
+    #[expect(dead_code, reason = "test-only authorization inspection seam")]
     pub(crate) fn tenant_id(&self) -> &LibraryTenantId {
         &self.tenant_id
     }
@@ -391,25 +392,17 @@ impl SkillLibraryAuthorizationDecision {
         visibility: SkillVisibility,
         is_active: bool,
     ) -> bool {
-        ownership.tenant_id == self.tenant_id
-            && match ownership.owner_kind() {
-                LibraryOwnerKind::Personal => {
-                    self.permits_personal(ownership)
-                        || (visibility == SkillVisibility::Tenant && is_active)
-                }
-                LibraryOwnerKind::Project => {
-                    (ownership.owner_id == self.project_id || self.is_platform_admin)
-                        && (visibility == SkillVisibility::Tenant || self.is_admin)
-                        && is_active
-                }
-                LibraryOwnerKind::Team => {
-                    self.is_platform_admin
-                        || (self.team_ids.len() == 1
-                            && self.team_ids.contains(&ownership.owner_id)
-                            && visibility == SkillVisibility::Tenant)
-                            && is_active
-                }
-            }
+        labby_runtime::artifacts::permits_skill_library_record(
+            &self.tenant_id,
+            &self.actor_id,
+            &self.project_id,
+            &self.team_ids,
+            self.is_admin,
+            self.is_platform_admin,
+            ownership,
+            visibility,
+            is_active,
+        )
     }
 }
 
@@ -678,6 +671,7 @@ fn narrow_to_selected_team(
 }
 
 /// Fail-closed adapter for surfaces where authentication may be absent.
+#[cfg(test)]
 pub(crate) async fn authorize_optional_at_boundary(
     runtime: &AccessRuntime,
     caller: Option<SkillLibraryCaller>,
@@ -715,6 +709,7 @@ pub(crate) async fn authorize_optional_at_boundary(
 /// The executor receives the sealed authorization only after the uncached membership read. A
 /// validation-time decision cannot be supplied here, so revocation before this call prevents the
 /// executor and therefore prevents any ArtifactStore mutation or idempotent replay.
+#[cfg(test)]
 pub(crate) async fn authorize_and_commit<T, E>(
     runtime: &AccessRuntime,
     caller: SkillLibraryCaller,
@@ -853,18 +848,24 @@ where
         .map_err(SkillLibraryCommitError::Execution)
 }
 
+#[cfg(test)]
 enum OwnedSkillLibraryTarget {
     SharedActive,
+    SharedActiveRecord(LibraryOwnership),
     Personal(LibraryOwnership),
     Mutation(LibraryOwnership),
     CreateForCaller,
     LibraryRoot,
 }
 
+#[cfg(test)]
 impl From<SkillLibraryTarget<'_>> for OwnedSkillLibraryTarget {
     fn from(target: SkillLibraryTarget<'_>) -> Self {
         match target {
             SkillLibraryTarget::SharedActive => Self::SharedActive,
+            SkillLibraryTarget::SharedActiveRecord(ownership) => {
+                Self::SharedActiveRecord(ownership.clone())
+            }
             SkillLibraryTarget::Personal(ownership) => Self::Personal(ownership.clone()),
             SkillLibraryTarget::Mutation(ownership) => Self::Mutation(ownership.clone()),
             SkillLibraryTarget::CreateForCaller => Self::CreateForCaller,
@@ -873,10 +874,14 @@ impl From<SkillLibraryTarget<'_>> for OwnedSkillLibraryTarget {
     }
 }
 
+#[cfg(test)]
 impl OwnedSkillLibraryTarget {
     fn as_target(&self) -> SkillLibraryTarget<'_> {
         match self {
             Self::SharedActive => SkillLibraryTarget::SharedActive,
+            Self::SharedActiveRecord(ownership) => {
+                SkillLibraryTarget::SharedActiveRecord(ownership)
+            }
             Self::Personal(ownership) => SkillLibraryTarget::Personal(ownership),
             Self::Mutation(ownership) => SkillLibraryTarget::Mutation(ownership),
             Self::CreateForCaller => SkillLibraryTarget::CreateForCaller,
@@ -885,6 +890,7 @@ impl OwnedSkillLibraryTarget {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SkillLibraryCommitError<E> {
     #[error(transparent)]
@@ -957,7 +963,9 @@ fn validate_target_kind(
     } else {
         matches!(
             target,
-            SkillLibraryTarget::SharedActive | SkillLibraryTarget::Personal(_)
+            SkillLibraryTarget::SharedActive
+                | SkillLibraryTarget::SharedActiveRecord(_)
+                | SkillLibraryTarget::Personal(_)
         )
     };
     valid
@@ -982,6 +990,12 @@ fn resolve_grant(
             LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone()),
         ));
     }
+    if let SkillLibraryTarget::SharedActiveRecord(ownership) = target {
+        if ownership.tenant_id != *tenant_id {
+            return None;
+        }
+        return Some((LibraryGrant::Owner, ownership.clone()));
+    }
     let ownership = match target {
         SkillLibraryTarget::CreateForCaller => {
             LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone())
@@ -995,7 +1009,9 @@ fn resolve_grant(
             }
             LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone())
         }
-        SkillLibraryTarget::SharedActive => unreachable!(),
+        SkillLibraryTarget::SharedActive | SkillLibraryTarget::SharedActiveRecord(_) => {
+            unreachable!()
+        }
     };
     if ownership.tenant_id != *tenant_id {
         return None;

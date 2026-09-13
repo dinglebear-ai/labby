@@ -183,6 +183,15 @@ impl AgentDefinitionStore {
         Ok(())
     }
 
+    pub(crate) fn recover_expired_sessions(&self, now: i64) -> AccessStoreResult<usize> {
+        self.connection
+            .execute(
+                "UPDATE agent_sessions SET status='interrupted' WHERE status IN ('admitted','running') AND lease_expires_at<=?1",
+                [now],
+            )
+            .map_err(super::store::map_sqlite_error)
+    }
+
     pub(crate) fn session_status(
         &self,
         agent_id: &str,
@@ -412,6 +421,41 @@ mod tests {
             Some("admitted".to_owned())
         );
         assert_eq!(store.session_status("agent-1", "guessed").unwrap(), None);
+    }
+
+    #[test]
+    fn expired_live_sessions_recover_as_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        let mut store = AgentDefinitionStore::open(&path).unwrap();
+        let current = definition(1);
+        store.put(&current, "p-1", 1).unwrap();
+        store
+            .create_session("session-1", &current, "p-1", "authority-1", 100, 2)
+            .unwrap();
+        store
+            .set_session_status("agent-1", "session-1", "admitted", "running")
+            .unwrap();
+        assert_eq!(store.recover_expired_sessions(99).unwrap(), 0);
+        assert_eq!(
+            store
+                .session_status("agent-1", "session-1")
+                .unwrap()
+                .as_deref(),
+            Some("running")
+        );
+        assert_eq!(store.recover_expired_sessions(100).unwrap(), 1);
+        assert_eq!(
+            store
+                .session_status("agent-1", "session-1")
+                .unwrap()
+                .as_deref(),
+            Some("interrupted")
+        );
     }
 
     #[test]

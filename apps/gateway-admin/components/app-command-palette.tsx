@@ -97,7 +97,7 @@ import {
 import type { CreateGatewayInput, Gateway } from '@/lib/types/gateway'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 import { capabilityForPath } from '@/components/console/nav-model'
-import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -282,11 +282,11 @@ export function AppCommandPalette() {
     return required === null || (required !== undefined && capabilities.includes(required))
   }), [capabilities])
 
-  // Any authority change — a local workspace switch or a server-side change
-  // observed on session refresh — discards the palette's query, drill-down,
-  // and pending mutation. Subscribing to the session identity (rather than
-  // only the local switch event) covers both.
-  const workspaceIdentity = authorityIdentity(session.status === 'authenticated' ? session.authority : undefined)
+  // Any authority or project-context change — a local workspace switch or a
+  // server-side change observed on session refresh — discards the palette's
+  // query, drill-down, and pending mutation. The shared browser context
+  // identity also covers project-bound sessions without an authority projection.
+  const workspaceIdentity = getBrowserSessionContextIdentity()
   const lastWorkspaceIdentity = useRef(workspaceIdentity)
   useEffect(() => {
     if (lastWorkspaceIdentity.current === workspaceIdentity) return

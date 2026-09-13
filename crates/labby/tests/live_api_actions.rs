@@ -480,6 +480,31 @@ async fn prepare_authority_action(
                 )
                 .await,
             );
+            for _ in 0..100 {
+                let (status, body) = post_action(
+                    client,
+                    base,
+                    "/v1/tasks",
+                    "tasks.get",
+                    serde_json::json!({"task_id":params["task_id"]}),
+                    true,
+                )
+                .await;
+                if status.is_success()
+                    && serde_json::from_slice::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|value| value["state"].as_str().map(str::to_owned))
+                        .is_some_and(|state| {
+                            matches!(
+                                state.as_str(),
+                                "succeeded" | "failed" | "cancelled" | "expired"
+                            )
+                        })
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
         }
     }
     params

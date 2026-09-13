@@ -65,7 +65,11 @@ Surfaces add relevant identity without leaking request secrets:
 - `discouraged`: inspect or revise before retrying.
 - `never`: the request must change or external state must be repaired first.
 
-`side_effects` is conservative. `possible` or `unknown` means the caller must check whether work committed before repeating a mutating operation.
+`side_effects` is conservative. `possible` or `unknown` means the caller must check whether work committed before repeating a mutating operation. Response-size limits and execution budgets can be reached after earlier work completed; a `budget` origin does not imply that nothing ran. Agents must inspect operation status and the execution trace, then resume only unfinished work.
+
+For oversized responses, use supported pagination, ranges, or field selection. A size error does not guarantee omitted bytes were retained: use a resource or artifact reference only when one was actually returned. For `invalid_cursor`, restart the same listing without its cursor, preserve filters and scope, and deduplicate previously processed items.
+
+State-specific recovery keeps the original stable kind. OAuth state errors require a fresh authenticated flow; issuer/resource mismatches and unsupported PKCE methods require correcting the server or configuration without weakening validation. Stale enrichment suggestions and merge conflicts require regenerating against current state. Missing workspace configuration identifies `workspace.root`; startup-mounted route conflicts require a coordinated service restart after inspecting staged configuration.
 
 ## Surface rules
 

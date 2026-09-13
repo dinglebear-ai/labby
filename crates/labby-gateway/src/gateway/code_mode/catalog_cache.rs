@@ -11,16 +11,18 @@
 //! `resolve_code_mode_upstream_tool`, so a stale cache can only omit or
 //! over-offer `codemode.*` helpers — never execute against stale state.
 //!
-//! Concurrency model: one-shot invocations may read/write concurrently. Writes
-//! are atomic (temp file + rename) and merge into a freshly loaded copy, so the
-//! worst case for a lost race is a redundant refresh on a later run. Any parse
-//! failure is treated as a cache miss.
+//! Concurrency model: one-shot invocations may read/write concurrently. Every
+//! read-modify-write transaction is serialized both in-process and across Labby
+//! processes through a sibling advisory lock file, then published by the shared
+//! owner-only atomic writer. Any parse failure is treated as a cache miss.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -29,6 +31,7 @@ use crate::upstream::types::UpstreamTool;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 const CACHE_VERSION: u32 = 1;
+static CACHE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// How long a cached upstream catalog stays valid. The fingerprint catches
 /// config edits; the TTL catches upstream-side tool drift (server upgrades)
 /// that no config change reflects.
@@ -128,6 +131,14 @@ pub(crate) fn cache_path() -> PathBuf {
         .join("codemode-catalog.json")
 }
 
+fn cache_lock_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("codemode-catalog.json");
+    path.with_file_name(format!("{file_name}.lock"))
+}
+
 /// Stable fingerprint of an upstream config entry.
 pub(crate) fn fingerprint(config: &UpstreamConfig) -> String {
     let serialized = serde_json::to_string(config).unwrap_or_else(|_| format!("{:?}", config.name));
@@ -223,9 +234,9 @@ impl CatalogCache {
 
 /// Merge `updates` into the on-disk cache at `path` and persist atomically.
 ///
-/// Loads a fresh copy first so concurrent invocations updating different
-/// upstreams do not clobber each other's entries (last-writer-wins per file,
-/// but each write carries the latest visible merge).
+/// Holds both the process-local writer gate and the sibling advisory file lock
+/// across load, merge, and atomic persist, so concurrent invocations updating
+/// different upstreams cannot clobber each other.
 ///
 /// Upstreams that were still connecting when the caller's budget ended, or were
 /// never attempted, must NOT be passed in either argument — they have not
@@ -268,6 +279,40 @@ fn merge_and_store_blocking(
     updates: Vec<CatalogCacheUpdate>,
     failures: Vec<CatalogCacheFailure>,
 ) {
+    if let Err(error) = merge_and_store_locked(path, updates, failures) {
+        tracing::warn!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "code_mode.catalog_cache",
+            path = %path.display(),
+            error = %error,
+            "failed to persist code_mode catalog cache"
+        );
+    }
+}
+
+fn merge_and_store_locked(
+    path: &Path,
+    updates: Vec<CatalogCacheUpdate>,
+    failures: Vec<CatalogCacheFailure>,
+) -> std::io::Result<()> {
+    let _process_guard = CACHE_WRITE_LOCK
+        .lock()
+        .map_err(|_| std::io::Error::other("code_mode catalog cache writer lock poisoned"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("cache path has no parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cache_lock_path(path))?;
+    let mut file_lock = RwLock::new(lock_file);
+    let _file_guard = file_lock.write()?;
+
     let mut cache = CatalogCache::load_from(path);
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
@@ -282,20 +327,10 @@ fn merge_and_store_blocking(
     }
     changed |= prune_expired_failures(&mut cache, saved_at_unix);
 
-    if !changed {
-        return;
+    if changed {
+        persist_atomic(path, &cache)?;
     }
-
-    if let Err(error) = persist_atomic(path, &cache) {
-        tracing::warn!(
-            surface = "dispatch",
-            service = "gateway",
-            action = "code_mode.catalog_cache",
-            path = %path.display(),
-            error = %error,
-            "failed to persist code_mode catalog cache"
-        );
-    }
+    Ok(())
 }
 
 /// Record a probe failure, escalating the window when the same upstream fails
@@ -648,6 +683,80 @@ mod tests {
 
         assert_eq!(fingerprint(&config), fingerprint(&config));
         assert_ne!(fingerprint(&config), fingerprint(&changed));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_writers_preserve_distinct_upstream_updates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+
+        tokio::join!(
+            merge_and_store(
+                path.clone(),
+                vec![CatalogCacheUpdate {
+                    upstream_name: "alpha".to_string(),
+                    fingerprint: "fp-alpha".to_string(),
+                    tools: vec![test_tool("ping")],
+                }],
+                Vec::new(),
+            ),
+            merge_and_store(
+                path.clone(),
+                vec![CatalogCacheUpdate {
+                    upstream_name: "beta".to_string(),
+                    fingerprint: "fp-beta".to_string(),
+                    tools: vec![test_tool("pong")],
+                }],
+                Vec::new(),
+            ),
+        );
+
+        let cache = CatalogCache::load_from(&path);
+        assert_eq!(
+            cache
+                .fresh_tools("alpha", "fp-alpha")
+                .expect("alpha update")[0]
+                .tool
+                .name
+                .as_ref(),
+            "ping"
+        );
+        assert_eq!(
+            cache.fresh_tools("beta", "fp-beta").expect("beta update")[0]
+                .tool
+                .name
+                .as_ref(),
+            "pong"
+        );
+    }
+
+    #[test]
+    fn sibling_file_lock_excludes_an_independent_writer_handle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codemode-catalog.json");
+        let lock_path = cache_lock_path(&path);
+        let open = || {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .expect("open cache lock")
+        };
+        let mut first = RwLock::new(open());
+        let mut second = RwLock::new(open());
+
+        let guard = first.try_write().expect("first writer acquires lock");
+        assert!(
+            second.try_write().is_err(),
+            "independent writer must observe the advisory lock"
+        );
+        drop(guard);
+        assert!(
+            second.try_write().is_ok(),
+            "writer may acquire after the first guard is released"
+        );
     }
 
     /// The cache mirrors `config.toml` (its keys are digests of the serialized

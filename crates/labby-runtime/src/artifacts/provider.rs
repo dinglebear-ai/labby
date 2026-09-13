@@ -15,6 +15,7 @@ use super::model::ArtifactInterchange;
 use super::store::ArtifactStore;
 use super::validation;
 use super::{ArtifactError, invalid};
+use labby_primitives::ssrf::check_ip_not_private;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Semaphore;
@@ -1052,29 +1053,7 @@ fn validate_remote_origin(url: &Url) -> Result<(), ArtifactError> {
 }
 
 fn public_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || a == 0
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 192 && b == 0 && c == 0)
-                || a >= 224)
-        }
-        IpAddr::V6(ip) => {
-            !(ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || ip.to_ipv4_mapped().is_some())
-        }
-    }
+    check_ip_not_private(address, "artifact provider endpoint").is_ok()
 }
 
 /// Local-store implementation of the provider seam.

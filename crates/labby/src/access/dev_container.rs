@@ -258,6 +258,15 @@ pub(super) fn create_instance(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(storage)?;
+    create_instance_in_transaction(&transaction, input)?;
+    transaction.commit().map_err(storage)
+}
+
+fn create_instance_in_transaction(
+    transaction: &Transaction<'_>,
+    input: &CreateInstance<'_>,
+) -> Result<(), DevContainerLedgerError> {
+    validate_create(input)?;
     let owner = input.instance.owner();
     let owner_kind = owner_kind_name(owner.kind());
     let template = transaction
@@ -360,7 +369,7 @@ pub(super) fn create_instance(
             ],
         )
         .map_err(storage)?;
-    transaction.commit().map_err(storage)
+    Ok(())
 }
 
 fn validate_create(input: &CreateInstance<'_>) -> Result<(), DevContainerLedgerError> {
@@ -460,8 +469,77 @@ pub(crate) async fn create_approved_for_store(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) async fn authorize_and_create_approved_for_store(
+    store: &super::AccessStore,
+    request: super::AuthorityRequest,
+    owner: OwnerScope,
+    instance_id: String,
+    template_id: String,
+    secret_references: Vec<String>,
+    authority_fingerprint: String,
+    event_id: String,
+    now: i64,
+) -> Result<(labby_runtime::authority::AuthorityLease, CreatedRuntimeSpec), DevContainerLedgerError>
+{
+    store
+        .with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(super::store::map_sqlite_error)?;
+            let lease = super::authority::authorize_action_in_transaction(&transaction, request)?;
+            let created = match create_approved_in_transaction(
+                &transaction,
+                owner,
+                &instance_id,
+                &template_id,
+                secret_references,
+                &authority_fingerprint,
+                &event_id,
+                now,
+            ) {
+                Ok(created) => created,
+                Err(error) => return Ok(Err(error)),
+            };
+            if let Err(error) = transaction.commit() {
+                return Ok(Err(storage(error)));
+            }
+            Ok(Ok((lease, created)))
+        })
+        .await
+        .map_err(DevContainerLedgerError::from)?
+}
+
+#[allow(clippy::too_many_arguments)]
 fn create_approved(
     connection: &mut Connection,
+    owner: OwnerScope,
+    instance_id: &str,
+    template_id: &str,
+    secret_references: Vec<String>,
+    authority_fingerprint: &str,
+    event_id: &str,
+    now: i64,
+) -> Result<CreatedRuntimeSpec, DevContainerLedgerError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let created = create_approved_in_transaction(
+        &transaction,
+        owner,
+        instance_id,
+        template_id,
+        secret_references,
+        authority_fingerprint,
+        event_id,
+        now,
+    )?;
+    transaction.commit().map_err(storage)?;
+    Ok(created)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_approved_in_transaction(
+    transaction: &Transaction<'_>,
     owner: OwnerScope,
     instance_id: &str,
     template_id: &str,
@@ -474,7 +552,7 @@ fn create_approved(
         DevContainerId, DevContainerQuota, DevContainerTemplateId, HostCapabilityPolicy,
         ImageDigest, LifecycleNonce,
     };
-    let row = connection
+    let row = transaction
         .query_row(
             "SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status FROM dev_container_templates WHERE template_id=?1",
             [template_id],
@@ -542,8 +620,8 @@ fn create_approved(
         disk_bytes: q.disk_bytes,
         lifetime_seconds: q.max_lifetime_seconds,
     };
-    create_instance(
-        connection,
+    create_instance_in_transaction(
+        transaction,
         &CreateInstance {
             instance: &instance,
             resources,

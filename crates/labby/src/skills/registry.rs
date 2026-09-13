@@ -1,28 +1,30 @@
 //! Atomic, process-owned generations of first-party Skills.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Weak;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use labby_runtime::artifacts::{ArtifactError, ArtifactStore, LibraryMutation, LibrarySnapshot};
-use labby_runtime::skills::{ResourceDigest, limits};
+use labby_runtime::skills::ResourceDigest;
+#[cfg(test)]
+use labby_runtime::skills::limits;
 
+pub(crate) use super::admission::AdmissionLimits as GenerationLimits;
+use super::admission::AdmissionTotals;
 use super::local::{
     LocalLoadCounters, LocalLoadLimits, LocalSkillRejection, load_local_skills_bounded,
 };
-use super::providers::{ArtifactSkillAccess, CollisionRejection, FirstPartySkillProviders};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GenerationLimits {
-    pub(crate) active_skills: usize,
-    pub(crate) aggregate_bytes: usize,
-    pub(crate) per_skill_bytes: usize,
-    pub(crate) total_resources: usize,
-    pub(crate) live_candidate_bytes: usize,
-}
+#[cfg(test)]
+use super::providers::CollisionRejection;
+use super::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
 
 /// Restart-stable identity supplied by the persisted Artifact library.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,59 +34,41 @@ pub(crate) struct GenerationSeed {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Artifact library wiring consumes this initialization result"
-)]
 pub(crate) enum ProcessGenerationInitialization {
     Initialized,
     AlreadyInitialized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Artifact library wiring consumes this typed conflict"
-)]
 pub(crate) struct ProcessGenerationConflict {
     pub(crate) requested: GenerationSeed,
     pub(crate) initialized: GenerationSeed,
 }
 
-impl Default for GenerationLimits {
-    fn default() -> Self {
-        Self {
-            active_skills: limits::MAX_SKILLS_PER_UPSTREAM,
-            aggregate_bytes: 64 * 1024 * 1024,
-            per_skill_bytes: 16 * 1024 * 1024,
-            total_resources: limits::MAX_SKILLS_PER_UPSTREAM * limits::MAX_RESOURCES_PER_SKILL,
-            live_candidate_bytes: 64 * 1024 * 1024,
-        }
-    }
-}
-
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "generation diagnostics are consumed by the next dispatch bead"
-)]
 pub(crate) struct FirstPartyGeneration {
     pub(crate) id: u64,
     pub(crate) digest: String,
     pub(crate) active_digest: String,
     pub(crate) providers: FirstPartySkillProviders,
     pub(crate) rejected: Vec<LocalSkillRejection>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained generation admission diagnostics")
+    )]
     pub(crate) bytes: usize,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained generation admission diagnostics")
+    )]
     pub(crate) resources: usize,
+    #[expect(dead_code, reason = "retained startup degradation diagnostics")]
     pub(crate) degraded: Option<RefreshRejection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "refresh rejection is consumed by the next dispatch bead"
-)]
 pub(crate) enum RefreshRejection {
+    #[cfg(test)]
     Stale {
         expected: u64,
         actual: u64,
@@ -94,12 +78,14 @@ pub(crate) enum RefreshRejection {
         limit: usize,
         actual: usize,
     },
+    Verification,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
-#[allow(
+#[expect(
     dead_code,
-    reason = "refresh diagnostics are consumed by the next dispatch bead"
+    reason = "test diagnostics expose the complete refresh snapshot"
 )]
 pub(crate) struct RefreshDiagnostics {
     pub(crate) generation: u64,
@@ -115,6 +101,7 @@ pub(crate) struct RefreshDiagnostics {
     pub(crate) counters: GenerationCounters,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct GenerationCounters {
     pub(crate) builds: u64,
@@ -130,6 +117,7 @@ pub(crate) struct GenerationCounters {
     pub(crate) swap_nanos: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RefreshTicket {
     generation: u64,
@@ -137,6 +125,7 @@ pub(crate) struct RefreshTicket {
     request: u64,
 }
 
+#[cfg(test)]
 impl RefreshTicket {
     fn key(self, expected: Option<u64>) -> RefreshKey {
         RefreshKey {
@@ -147,6 +136,7 @@ impl RefreshTicket {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct RefreshKey {
     generation: u64,
@@ -154,13 +144,16 @@ struct RefreshKey {
     expected: Option<u64>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct RefreshState {
     cached: BTreeMap<RefreshKey, Result<RefreshDiagnostics, RefreshRejection>>,
 }
 
+#[cfg(test)]
 const MAX_CACHED_REFRESH_OUTCOMES: usize = 64;
 
+#[cfg(test)]
 impl RefreshState {
     fn cache(&mut self, key: RefreshKey, result: Result<RefreshDiagnostics, RefreshRejection>) {
         self.cached.insert(key, result);
@@ -173,6 +166,7 @@ impl RefreshState {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct AtomicGenerationCounters {
     builds: AtomicU64,
@@ -190,18 +184,25 @@ struct AtomicGenerationCounters {
 
 pub(crate) struct FirstPartyGenerationManager {
     current: Arc<ArcSwap<FirstPartyGeneration>>,
+    #[cfg(test)]
     refresh: Mutex<RefreshState>,
+    #[cfg(test)]
     root: PathBuf,
+    #[cfg(test)]
     limits: GenerationLimits,
     initial_seed: GenerationSeed,
+    #[cfg(test)]
     completed_build_epoch: AtomicU64,
+    #[cfg(test)]
     counters: AtomicGenerationCounters,
+    #[cfg(test)]
     next_ticket: AtomicU64,
+    #[cfg(test)]
     live_generations: Mutex<Vec<Weak<FirstPartyGeneration>>>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code, reason = "observability seam is consumed by product wiring")]
 pub(crate) struct GenerationObservability {
     pub(crate) current: u64,
     pub(crate) live_generations: usize,
@@ -234,7 +235,7 @@ impl FirstPartyGenerationManager {
     ) -> Self {
         let initial_id = seed.version.max(1);
         let initial_seed = seed.clone();
-        let (mut initial, initial_load) =
+        let (mut initial, _initial_load) =
             Self::build(&root, limits, initial_id).unwrap_or_else(|(rejection, counters)| {
                 tracing::error!(reason = ?rejection, "first-party Skill generation is degraded");
                 let providers = FirstPartySkillProviders::from_local_skills([]);
@@ -262,45 +263,57 @@ impl FirstPartyGenerationManager {
                 .expect("new generation is not yet shared")
                 .active_digest = seed.active_digest;
         }
-        let counters = AtomicGenerationCounters::default();
-        counters.builds.store(1, Ordering::Relaxed);
-        counters
-            .scans
-            .store(initial_load.directories_scanned as u64, Ordering::Relaxed);
-        counters
-            .files_scanned
-            .store(initial_load.files_scanned as u64, Ordering::Relaxed);
-        counters
-            .files_read
-            .store(initial_load.files_read as u64, Ordering::Relaxed);
-        counters
-            .bytes_read
-            .store(initial_load.bytes_read as u64, Ordering::Relaxed);
-        counters
-            .scan_nanos
-            .store(initial_load.scan_nanos, Ordering::Relaxed);
-        counters
-            .read_nanos
-            .store(initial_load.read_nanos, Ordering::Relaxed);
-        counters
-            .hash_nanos
-            .store(initial_load.hash_nanos, Ordering::Relaxed);
-        counters
-            .validate_nanos
-            .store(initial_load.validate_nanos, Ordering::Relaxed);
-        counters
-            .index_nanos
-            .store(initial_load.index_nanos, Ordering::Relaxed);
+        #[cfg(test)]
+        let counters = {
+            let counters = AtomicGenerationCounters::default();
+            counters.builds.store(1, Ordering::Relaxed);
+            counters
+                .scans
+                .store(_initial_load.directories_scanned as u64, Ordering::Relaxed);
+            counters
+                .files_scanned
+                .store(_initial_load.files_scanned as u64, Ordering::Relaxed);
+            counters
+                .files_read
+                .store(_initial_load.files_read as u64, Ordering::Relaxed);
+            counters
+                .bytes_read
+                .store(_initial_load.bytes_read as u64, Ordering::Relaxed);
+            counters
+                .scan_nanos
+                .store(_initial_load.scan_nanos, Ordering::Relaxed);
+            counters
+                .read_nanos
+                .store(_initial_load.read_nanos, Ordering::Relaxed);
+            counters
+                .hash_nanos
+                .store(_initial_load.hash_nanos, Ordering::Relaxed);
+            counters
+                .validate_nanos
+                .store(_initial_load.validate_nanos, Ordering::Relaxed);
+            counters
+                .index_nanos
+                .store(_initial_load.index_nanos, Ordering::Relaxed);
+            counters
+        };
+        #[cfg(test)]
         let live_generations = Mutex::new(vec![Arc::downgrade(&initial)]);
         Self {
             current: Arc::new(ArcSwap::from(initial)),
+            #[cfg(test)]
             refresh: Mutex::new(RefreshState::default()),
+            #[cfg(test)]
             root,
+            #[cfg(test)]
             limits,
             initial_seed,
+            #[cfg(test)]
             completed_build_epoch: AtomicU64::new(1),
+            #[cfg(test)]
             counters,
+            #[cfg(test)]
             next_ticket: AtomicU64::new(1),
+            #[cfg(test)]
             live_generations,
         }
     }
@@ -313,10 +326,11 @@ impl FirstPartyGenerationManager {
         Arc::clone(&self.current)
     }
 
-    #[allow(
-        dead_code,
-        reason = "runtime primitive is wired to dispatch by the next bead"
-    )]
+    // Directory-only refresh is intentionally test-only. Production publication
+    // is owned exclusively by the Skill Library activation composer so a local
+    // directory scan can never replace a generation containing active Artifact
+    // skills. Re-enable through that composer, not by writing this cell directly.
+    #[cfg(test)]
     pub(crate) fn refresh(
         &self,
         expected: Option<u64>,
@@ -324,6 +338,7 @@ impl FirstPartyGenerationManager {
         self.refresh_with_ticket(self.begin_refresh(), expected)
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_refresh(&self) -> RefreshTicket {
         RefreshTicket {
             generation: self.generation().id,
@@ -332,6 +347,7 @@ impl FirstPartyGenerationManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn refresh_with_ticket(
         &self,
         ticket: RefreshTicket,
@@ -414,6 +430,7 @@ impl FirstPartyGenerationManager {
         result
     }
 
+    #[cfg(test)]
     fn diagnostics(
         &self,
         generation: &FirstPartyGeneration,
@@ -437,6 +454,7 @@ impl FirstPartyGenerationManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn counters(&self) -> GenerationCounters {
         GenerationCounters {
             builds: self.counters.builds.load(Ordering::Relaxed),
@@ -453,7 +471,6 @@ impl FirstPartyGenerationManager {
         }
     }
 
-    #[allow(dead_code, reason = "observability seam is consumed by product wiring")]
     /// Raw length of the weak-generation vec, without the reaping pass that
     /// `generation_observability` performs. A test asserting the vec stays
     /// bounded must not read it through an accessor that does the reaping.
@@ -487,6 +504,7 @@ impl FirstPartyGenerationManager {
         }
     }
 
+    #[cfg(test)]
     fn record_load(&self, counters: LocalLoadCounters) {
         self.counters
             .scans
@@ -555,16 +573,21 @@ impl FirstPartyGenerationManager {
             .index_nanos
             .saturating_add(index_started.elapsed().as_nanos() as u64);
         let (skills, bytes, max_skill_bytes, resources) = providers.admission_totals();
-        check("active_skills", skills, caps.active_skills)
-            .map_err(|error| (error, load_counters))?;
-        check("aggregate_bytes", bytes, caps.aggregate_bytes)
-            .map_err(|error| (error, load_counters))?;
-        check("per_skill_bytes", max_skill_bytes, caps.per_skill_bytes)
-            .map_err(|error| (error, load_counters))?;
-        check("total_resources", resources, caps.total_resources)
-            .map_err(|error| (error, load_counters))?;
-        check("live_candidate_bytes", bytes, caps.live_candidate_bytes)
-            .map_err(|error| (error, load_counters))?;
+        if let Some(violation) = caps.first_violation(AdmissionTotals {
+            skills,
+            bytes,
+            max_skill_bytes,
+            resources,
+        }) {
+            return Err((
+                RefreshRejection::Limit {
+                    kind: violation.kind,
+                    limit: violation.limit,
+                    actual: violation.actual,
+                },
+                load_counters,
+            ));
+        }
         let encoded = serde_json::to_vec(
             &providers
                 .discover()
@@ -572,7 +595,7 @@ impl FirstPartyGenerationManager {
                 .map(|entry| &entry.validated().entry)
                 .collect::<Vec<_>>(),
         )
-        .expect("validated Skill entries serialize");
+        .map_err(|_| (RefreshRejection::Verification, load_counters))?;
         let hash_started = Instant::now();
         let digest = ResourceDigest::of_bytes(&encoded).to_wire();
         load_counters.hash_nanos = load_counters
@@ -594,12 +617,123 @@ impl FirstPartyGenerationManager {
     }
 }
 
+const ARTIFACT_MATERIALIZATION_CACHE_MAX: usize = 1024;
+type ArtifactRevisionKey = (String, String);
+
+#[derive(Default)]
+pub(crate) struct ArtifactSkillMaterializationCache {
+    state: Mutex<ArtifactSkillMaterializationState>,
+}
+
+#[derive(Default)]
+struct ArtifactSkillMaterializationState {
+    entries: BTreeMap<ArtifactRevisionKey, Arc<super::local::LocalSkill>>,
+    recency: VecDeque<ArtifactRevisionKey>,
+}
+
+impl ArtifactSkillMaterializationCache {
+    fn get(&self, key: &ArtifactRevisionKey) -> Option<Arc<super::local::LocalSkill>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let skill = Arc::clone(state.entries.get(key)?);
+        state.recency.retain(|candidate| candidate != key);
+        state.recency.push_back(key.clone());
+        Some(skill)
+    }
+
+    fn insert(
+        &self,
+        key: ArtifactRevisionKey,
+        skill: Arc<super::local::LocalSkill>,
+    ) -> Arc<super::local::LocalSkill> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = state.entries.get(&key).cloned() {
+            state.recency.retain(|candidate| candidate != &key);
+            state.recency.push_back(key);
+            return existing;
+        }
+        state.recency.push_back(key.clone());
+        state.entries.insert(key, Arc::clone(&skill));
+        while state.entries.len() > ARTIFACT_MATERIALIZATION_CACHE_MAX {
+            let Some(oldest) = state.recency.pop_front() else {
+                break;
+            };
+            state.entries.remove(&oldest);
+        }
+        skill
+    }
+
+    fn materialize(
+        &self,
+        store: &ArtifactStore,
+        artifact_id: &str,
+        name: &str,
+        revision_id: &str,
+    ) -> Result<Arc<super::local::LocalSkill>, ArtifactError> {
+        let key = (artifact_id.to_owned(), revision_id.to_owned());
+        if let Some(skill) = self.get(&key) {
+            return Ok(skill);
+        }
+        let revision = store.revision(artifact_id, revision_id)?;
+        let mut logical = Vec::with_capacity(revision.components.len());
+        for component in &revision.components {
+            let bytes =
+                store.read_skill_revision_file(artifact_id, revision_id, &component.path)?;
+            let content = String::from_utf8(bytes).map_err(|_| ArtifactError::SkillVerification)?;
+            logical.push(labby_runtime::artifacts::LogicalSkillFile::new(
+                component.path.clone(),
+                content,
+            ));
+        }
+        let materialized =
+            labby_runtime::artifacts::materialize_logical_skill(name, logical, Default::default())?;
+        let text_files = materialized
+            .resources
+            .into_iter()
+            .map(|(uri, bytes)| {
+                String::from_utf8(bytes)
+                    .map(|text| (uri, text))
+                    .map_err(|_| ArtifactError::SkillVerification)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        Ok(self.insert(
+            key,
+            Arc::new(super::local::LocalSkill {
+                entry: materialized.skill.entry,
+                files: text_files,
+            }),
+        ))
+    }
+}
+
 /// Build one exact immutable first-party generation from committed Artifact revisions.
+#[cfg(test)]
 pub(crate) fn project_artifact_generation(
     store: &ArtifactStore,
     snapshot: &LibrarySnapshot,
     mutation: Option<&LibraryMutation>,
     base: &FirstPartyGeneration,
+) -> Result<Arc<FirstPartyGeneration>, ArtifactError> {
+    project_artifact_generation_cached(
+        store,
+        snapshot,
+        mutation,
+        base,
+        &ArtifactSkillMaterializationCache::default(),
+    )
+}
+
+pub(crate) fn project_artifact_generation_cached(
+    store: &ArtifactStore,
+    snapshot: &LibrarySnapshot,
+    mutation: Option<&LibraryMutation>,
+    base: &FirstPartyGeneration,
+    materializations: &ArtifactSkillMaterializationCache,
 ) -> Result<Arc<FirstPartyGeneration>, ArtifactError> {
     let mut active = snapshot
         .records
@@ -659,38 +793,9 @@ pub(crate) fn project_artifact_generation(
             }) if changed == artifact_id => *visibility,
             _ => record.visibility,
         };
-        let revision = store.revision(artifact_id, revision_id)?;
-        let mut files = Vec::with_capacity(revision.components.len());
-        for component in &revision.components {
-            files.push((
-                component.path.clone(),
-                store.read_skill_revision_file(artifact_id, revision_id, &component.path)?,
-            ));
-        }
-        let logical = files
-            .into_iter()
-            .map(|(path, bytes)| {
-                String::from_utf8(bytes)
-                    .map(|content| labby_runtime::artifacts::LogicalSkillFile::new(path, content))
-                    .map_err(|_| ArtifactError::SkillVerification)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let materialized =
-            labby_runtime::artifacts::materialize_logical_skill(name, logical, Default::default())?;
-        let text_files = materialized
-            .resources
-            .into_iter()
-            .map(|(uri, bytes)| {
-                String::from_utf8(bytes)
-                    .map(|text| (uri, text))
-                    .map_err(|_| ArtifactError::SkillVerification)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let materialized = materializations.materialize(store, artifact_id, name, revision_id)?;
         local.push((
-            super::local::LocalSkill {
-                entry: materialized.skill.entry,
-                files: text_files,
-            },
+            (*materialized).clone(),
             ArtifactSkillAccess {
                 ownership: record.ownership.clone(),
                 visibility,
@@ -703,20 +808,16 @@ pub(crate) fn project_artifact_generation(
         return Err(ArtifactError::Conflict("active_skill_collision"));
     }
     let (skills, bytes, max_skill_bytes, resources) = providers.admission_totals();
-    let limits = GenerationLimits::default();
-    for (what, actual, limit) in [
-        ("active_skills", skills, limits.active_skills),
-        ("aggregate_bytes", bytes, limits.aggregate_bytes),
-        ("per_skill_bytes", max_skill_bytes, limits.per_skill_bytes),
-        ("total_resources", resources, limits.total_resources),
-        ("live_candidate_bytes", bytes, limits.live_candidate_bytes),
-    ] {
-        if actual > limit {
-            return Err(ArtifactError::LimitExceeded {
-                what,
-                limit: limit as u64,
-            });
-        }
+    if let Some(violation) = GenerationLimits::default().first_violation(AdmissionTotals {
+        skills,
+        bytes,
+        max_skill_bytes,
+        resources,
+    }) {
+        return Err(ArtifactError::LimitExceeded {
+            what: violation.kind,
+            limit: violation.limit as u64,
+        });
     }
     let active_digest = labby_runtime::artifacts::canonical_json::digest(&active)?;
     let encoded = serde_json::to_vec(
@@ -738,18 +839,6 @@ pub(crate) fn project_artifact_generation(
         resources,
         degraded: None,
     }))
-}
-
-fn check(kind: &'static str, actual: usize, limit: usize) -> Result<(), RefreshRejection> {
-    if actual > limit {
-        Err(RefreshRejection::Limit {
-            kind,
-            limit,
-            actual,
-        })
-    } else {
-        Ok(())
-    }
 }
 
 static FIRST_PARTY_GENERATION_MANAGER: OnceLock<FirstPartyGenerationManager> = OnceLock::new();
@@ -794,10 +883,6 @@ fn compare_initialized_seed(
 /// This must run before a request first accesses [`first_party_generation_manager`].
 /// Repeating the same seed is safe; attempting to replace an initialized identity
 /// is rejected so request readers cannot silently change generation lineage.
-#[allow(
-    dead_code,
-    reason = "Artifact library wiring is delivered by bead lab-2h806.6"
-)]
 pub(crate) fn initialize_first_party_generation_manager(
     seed: GenerationSeed,
 ) -> Result<ProcessGenerationInitialization, ProcessGenerationConflict> {
@@ -1073,6 +1158,46 @@ mod tests {
 
     #[test]
     fn every_aggregate_bound_accepts_cap_and_rejects_cap_plus_one() {
+        let check = |kind, actual, limit| {
+            let mut limits = GenerationLimits::default();
+            let mut totals = AdmissionTotals {
+                skills: 0,
+                bytes: 0,
+                max_skill_bytes: 0,
+                resources: 0,
+            };
+            match kind {
+                "active_skills" => {
+                    limits.active_skills = limit;
+                    totals.skills = actual;
+                }
+                "aggregate_bytes" => {
+                    limits.aggregate_bytes = limit;
+                    totals.bytes = actual;
+                }
+                "per_skill_bytes" => {
+                    limits.per_skill_bytes = limit;
+                    totals.max_skill_bytes = actual;
+                }
+                "total_resources" => {
+                    limits.total_resources = limit;
+                    totals.resources = actual;
+                }
+                "live_candidate_bytes" => {
+                    limits.live_candidate_bytes = limit;
+                    totals.bytes = actual;
+                }
+                _ => unreachable!("unknown admission limit"),
+            }
+            limits
+                .first_violation(totals)
+                .map(|violation| RefreshRejection::Limit {
+                    kind: violation.kind,
+                    limit: violation.limit,
+                    actual: violation.actual,
+                })
+                .map_or(Ok(()), Err)
+        };
         for kind in [
             "active_skills",
             "aggregate_bytes",

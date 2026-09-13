@@ -267,12 +267,12 @@ async fn create_instance(
             .collect::<Result<Vec<_>, _>>()?,
         Some(_) => return Err(invalid("secret_references")),
     };
-    let (lease, _) = authorize(context, store, action, owner.clone(), &instance_id)
-        .await
-        .map_err(store_error)?;
     let now = now_millis()?;
-    let created = crate::access::create_approved_for_store(
+    let request = authority_request(context, action, owner.clone(), &instance_id, now)
+        .map_err(store_error)?;
+    let (lease, created) = crate::access::authorize_and_create_approved_for_store(
         store,
+        request,
         owner,
         instance_id.clone(),
         template_id,
@@ -581,6 +581,7 @@ fn ledger_error(instance_id: &str, error: &DevContainerLedgerError) -> ToolError
             sdk_kind: "quota_exceeded".into(),
             message: "Dev Container quota is exhausted for this owner or template".into(),
         },
+        DevContainerLedgerError::Storage(DevContainerStorageFailure::NotAuthorized) => denied(),
         DevContainerLedgerError::Storage(failure) => {
             match failure {
                 DevContainerStorageFailure::Corrupt

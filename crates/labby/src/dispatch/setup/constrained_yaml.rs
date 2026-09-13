@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use serde_yaml_ng::Value;
+use serde_json::Value;
 
 const MAX_BYTES: usize = 1_048_576;
 const MAX_DEPTH: usize = 32;
@@ -11,10 +11,10 @@ pub(super) fn parse<T: DeserializeOwned>(yaml: &str) -> Result<T, String> {
         return Err(format!("YAML exceeds {MAX_BYTES} bytes"));
     }
     reject_graph_syntax(yaml)?;
-    let value: Value = serde_yaml_ng::from_str(yaml).map_err(|error| error.to_string())?;
+    let value: Value = serde_saphyr::from_str(yaml).map_err(|error| error.to_string())?;
     let mut nodes = 0;
     validate_value(&value, 0, &mut nodes)?;
-    serde_yaml_ng::from_value(value).map_err(|error| error.to_string())
+    serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 fn reject_graph_syntax(yaml: &str) -> Result<(), String> {
@@ -90,7 +90,7 @@ fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), 
         return Err(format!("YAML exceeds {MAX_NODES} nodes"));
     }
     match value {
-        Value::Sequence(values) => {
+        Value::Array(values) => {
             if values.len() > MAX_COLLECTION_ITEMS {
                 return Err(format!(
                     "YAML collection exceeds {MAX_COLLECTION_ITEMS} items"
@@ -100,20 +100,16 @@ fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), 
                 validate_value(value, depth + 1, nodes)?;
             }
         }
-        Value::Mapping(values) => {
+        Value::Object(values) => {
             if values.len() > MAX_COLLECTION_ITEMS {
                 return Err(format!(
                     "YAML collection exceeds {MAX_COLLECTION_ITEMS} items"
                 ));
             }
-            for (key, value) in values {
-                if !matches!(key, Value::String(_)) {
-                    return Err("YAML mapping keys must be explicit strings".into());
-                }
+            for value in values.values() {
                 validate_value(value, depth + 1, nodes)?;
             }
         }
-        Value::Tagged(_) => return Err("YAML tags are not allowed".into()),
         _ => {}
     }
     Ok(())
@@ -122,7 +118,7 @@ fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use serde_yaml_ng::Value;
+    use serde_json::Value;
 
     #[test]
     fn rejects_graph_features_in_mapping_and_sequence_positions() {

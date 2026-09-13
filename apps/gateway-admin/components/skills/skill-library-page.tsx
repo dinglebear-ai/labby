@@ -19,6 +19,9 @@ import {
   type SkillValidation,
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
+import { isAbortError } from '@/lib/api/service-action-client'
+import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
+import { authorityIdentity, getBrowserSessionContextIdentity, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -63,6 +66,65 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 }
 
 export function SkillLibraryPageContent() {
+  const session = useBrowserSession()
+  const bypassBrowserSessionAuth = shouldBypassBrowserSessionAuth()
+  const projectId = session.status === 'authenticated' ? session.projectId : undefined
+
+  if (projectId && session.status === 'authenticated') {
+    // Key the project-scoped editor to the caller and current authority
+    // identity so workspace, login, or policy changes cannot leave stale
+    // Artifacts or in-flight editor state visible in a new context.
+    const scopeKey = `${session.user.sub}:${projectId}:${authorityIdentity(session.authority)}`
+    return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
+  }
+
+  const projects = session.status === 'authenticated' ? session.authority?.projects ?? [] : []
+  const chooseProject = (nextProjectId: string) => {
+    try {
+      selectSessionWorkspace({ projectId: nextProjectId })
+    } catch (cause) {
+      toast.error(getErrorMessage(cause, 'The project workspace could not be selected.'))
+    }
+  }
+
+  return (
+    <div className="grid gap-4">
+      <div>
+        <h2 className="font-display text-xl font-semibold">Artifact Library</h2>
+        <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p>
+      </div>
+
+      {session.status === 'loading' && !bypassBrowserSessionAuth ? (
+        <div className="flex min-h-56 items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
+      ) : session.status === 'loading' ? (
+        <DashboardPanel title="Project required">
+          <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to manage the Artifact Library.</p>
+        </DashboardPanel>
+      ) : session.status === 'authenticated' ? (
+        <DashboardPanel title="Project required">
+          <p className="text-sm text-aurora-text-muted">The Artifact Library is project-scoped. Select an eligible project workspace to continue.</p>
+          {projects.length > 0 ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {projects.map(project => (
+                <Button key={project.id} variant="outline" size="sm" onClick={() => chooseProject(project.id)}>
+                  {project.name ?? project.id}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className={cn(AURORA_DENSE_META, 'mt-3 text-aurora-text-muted')}>No eligible project is available for this session. Create or assign a project in the Control Plane, then refresh your session.</p>
+          )}
+        </DashboardPanel>
+      ) : (
+        <DashboardPanel title="Library unavailable">
+          <p className="text-sm text-destructive">{session.status === 'auth_error' ? session.message : 'Sign in to select a project workspace.'}</p>
+        </DashboardPanel>
+      )}
+    </div>
+  )
+}
+
+function ProjectScopedSkillLibraryPageContent() {
   const [page, setPage] = useState<SkillLibraryPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -90,8 +152,9 @@ export function SkillLibraryPageContent() {
     setBusy(current => current === 'load-revision' ? null : current)
   }
 
-  function editorOperationIsCurrent(generation: number) {
-    return generation === editorGeneration.current
+  function editorOperationIsCurrent(generation: number, contextIdentity?: string) {
+    return generation === editorGeneration.current &&
+      (contextIdentity === undefined || contextIdentity === getBrowserSessionContextIdentity())
   }
 
   const load = useCallback(async (signal?: AbortSignal, search = '') => {
@@ -104,7 +167,7 @@ export function SkillLibraryPageContent() {
       setPage(next)
       setSelectedId(current => current && next.items.some(item => item.artifact_id === current) ? current : next.items[0]?.artifact_id ?? null)
     } catch (cause) {
-      if (!signal?.aborted && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
+      if (!isAbortError(cause) && !signal?.aborted && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
     } finally {
       if (!signal?.aborted && generation === listGeneration.current) setLoading(false)
     }
@@ -122,7 +185,7 @@ export function SkillLibraryPageContent() {
       if (generation !== listGeneration.current) return
       setPage(current => current?.next_cursor === cursor ? { ...next, items: [...current.items, ...next.items] } : current)
     } catch (cause) {
-      if (generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
+      if (!isAbortError(cause) && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
     } finally {
       if (generation === listGeneration.current) setLoading(false)
     }
@@ -131,7 +194,11 @@ export function SkillLibraryPageContent() {
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
-    return () => controller.abort()
+    return () => {
+      listGeneration.current += 1
+      editorGeneration.current += 1
+      controller.abort()
+    }
   }, [load])
 
   const selected = useMemo(() => page?.items.find(item => item.artifact_id === selectedId), [page, selectedId])
@@ -154,13 +221,14 @@ export function SkillLibraryPageContent() {
     if (!selected) return
     const target = { artifactId: selected.artifact_id, revisionId: selected.latest_revision_id }
     const generation = ++editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('load-revision')
     try {
       const contents = await Promise.all(selected.latest_revision_files.map(async revisionFile => {
         const loaded = await skillLibrary.read(target.artifactId, target.revisionId, revisionFile.path)
         return { path: loaded.path, content: loaded.text }
       }))
-      if (generation !== editorGeneration.current) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setEditingArtifact(target)
       setName(selected.name)
       setVisibility(selected.visibility)
@@ -169,34 +237,36 @@ export function SkillLibraryPageContent() {
       setValidation(null)
       setEditing(true)
     } catch (cause) {
-      if (generation === editorGeneration.current) toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
     } finally {
-      if (generation === editorGeneration.current) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function validate() {
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('validate')
     try {
       const result = await skillLibrary.validate(name.trim(), files)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setValidation(result)
       if (result.valid) toast.success('Skill is valid')
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function save() {
     if (!page) return
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('save')
     try {
       const checked = await skillLibrary.validate(name.trim(), files)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setValidation(checked)
       if (!checked.valid) return
       const receipt = editingArtifact
@@ -212,25 +282,27 @@ export function SkillLibraryPageContent() {
             expectedLibraryVersion: page.library_version,
             idempotencyKey: requestKey('create'),
           })
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Immutable revision saved', { description: 'Activate it when you are ready to publish.' })
       setEditing(false)
       setEditingArtifact(null)
       await load(undefined, appliedQuery)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) {
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
         toast.error(getErrorMessage(cause, 'Unable to save this Skill.'))
         await load(undefined, appliedQuery)
       }
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function activate() {
     if (!page || !selected) return
+    const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('activate')
     try {
       await skillLibrary.activate({
@@ -239,18 +311,23 @@ export function SkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('activate'),
       })
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Skill published')
       await load(undefined, appliedQuery)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to activate this Skill.'))
-      await load(undefined, appliedQuery)
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
+        toast.error(getErrorMessage(cause, 'Unable to activate this Skill.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
   async function archive() {
     if (!page || !selected || !window.confirm(`Archive ${selected.name}?`)) return
+    const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('archive')
     try {
       await skillLibrary.archive({
@@ -258,13 +335,16 @@ export function SkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('archive'),
       })
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Artifact archived')
       await load(undefined, appliedQuery)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to archive this Artifact.'))
-      await load(undefined, appliedQuery)
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
+        toast.error(getErrorMessage(cause, 'Unable to archive this Artifact.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 
@@ -278,6 +358,7 @@ export function SkillLibraryPageContent() {
       return
     }
     const generation = editorGeneration.current
+    const contextIdentity = getBrowserSessionContextIdentity()
     setBusy('import')
     try {
       const source = {
@@ -291,19 +372,19 @@ export function SkillLibraryPageContent() {
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('import'),
       })
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       toast.success('Artifact imported', { description: 'The exact provider revision is now stored in this Labby library.' })
       setImporting(false)
       await load(undefined, appliedQuery)
-      if (!editorOperationIsCurrent(generation)) return
+      if (!editorOperationIsCurrent(generation, contextIdentity)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      if (editorOperationIsCurrent(generation)) {
+      if (!isAbortError(cause) && editorOperationIsCurrent(generation, contextIdentity)) {
         toast.error(getErrorMessage(cause, 'Unable to import this Artifact.'))
         await load(undefined, appliedQuery)
       }
     } finally {
-      if (editorOperationIsCurrent(generation)) setBusy(null)
+      if (editorOperationIsCurrent(generation, contextIdentity)) setBusy(null)
     }
   }
 

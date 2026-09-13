@@ -101,6 +101,9 @@ pub struct McpServeArgs {
 /// `labby serve` arguments.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
+    /// Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon).
+    #[arg(long)]
+    pub auto_update: bool,
     /// Comma- or space-separated list of services to enable. Empty = all.
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
@@ -126,6 +129,7 @@ pub struct ServeArgs {
 pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode> {
     run(
         ServeArgs {
+            auto_update: false,
             services: args.services,
             transport: Some(Transport::Stdio),
             host: None,
@@ -180,7 +184,7 @@ fn bootstrap_skill_library(
     })?;
     let manager = first_party_generation_manager();
     let projection: Arc<dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>> =
-        Arc::new(ArtifactFirstPartyProjection);
+        Arc::new(ArtifactFirstPartyProjection::default());
     let candidate = projection
         .prepare(&store, &snapshot, None)
         .context("build persisted Skill Library generation")?;
@@ -234,14 +238,30 @@ fn configure_skill_library_imports(
 fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
     bootstrap: impl FnOnce() -> Result<T>,
-) -> Result<Option<T>> {
-    if ["artifacts", "bundles", "jobs", "sources", "uploads"]
+) -> Option<T> {
+    if !["artifacts", "bundles", "jobs", "sources", "uploads"]
         .iter()
         .any(|service| registry.service(service).is_some())
     {
-        bootstrap().map(Some)
-    } else {
-        Ok(None)
+        return None;
+    }
+
+    match bootstrap() {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            // Skill Library persistence is an optional subsystem from the daemon's
+            // point of view. A corrupt/truncated/forward-schema state file must not
+            // take down the public MCP endpoint, gateway controls, or operator UI.
+            // Keep the detailed cause in operator logs while transport surfaces see
+            // only the stable service_unavailable contract.
+            tracing::error!(
+                subsystem = "startup",
+                phase = "artifacts.degraded",
+                error = %error,
+                "Skill Library bootstrap failed; continuing with Artifact services unavailable"
+            );
+            None
+        }
     }
 }
 
@@ -276,6 +296,12 @@ async fn initialize_selected_file_stash_runtime(
 }
 
 async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+    if args.auto_update {
+        crate::self_update::require_macos()?;
+        if matches!(args.transport, Some(Transport::Stdio)) || args.command.is_some() {
+            anyhow::bail!("--auto-update requires a supervised hosted server, not stdio");
+        }
+    }
     let transport = resolve_transport(
         args.transport,
         args.command.as_ref(),
@@ -445,7 +471,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     #[cfg(feature = "skills")]
     let skill_library_runtime =
-        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config))?;
+        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config));
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
@@ -875,6 +901,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         transport,
         unix_listener_config,
         peer_auth_enabled,
+        args.auto_update,
     )
     .await;
     file_stash_runtime.shutdown().await;
@@ -1160,6 +1187,7 @@ async fn run_http(
     transport: Transport,
     unix_listener_config: Option<HostedUnixConfig>,
     peer_auth_enabled: bool,
+    auto_update: bool,
 ) -> Result<ExitCode> {
     #[cfg(feature = "gateway")]
     let code_mode_shutdown = state.gateway_manager.clone();
@@ -1261,6 +1289,7 @@ async fn run_http(
         "http router ready"
     );
     let listener_status = HostedListenerStatus {
+        auto_update,
         web_assets_enabled,
         bearer_token_configured,
         mount_http_mcp,
@@ -1317,6 +1346,7 @@ async fn prune_resource_leases(
 
 #[derive(Debug, Clone, Copy)]
 struct HostedListenerStatus {
+    auto_update: bool,
     web_assets_enabled: bool,
     bearer_token_configured: bool,
     mount_http_mcp: bool,
@@ -1389,6 +1419,129 @@ async fn wait_for_shutdown_signal(transport: &'static str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+async fn hosted_shutdown(transport: &'static str, auto_update: bool) -> Result<()> {
+    tokio::select! {
+        result = wait_for_shutdown_signal(transport) => result,
+        result = wait_for_reload_signals(transport) => result,
+        () = crate::self_update::server_update_loop(), if auto_update => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+async fn run_until_shutdown<F, S>(
+    server: F,
+    stop: tokio::sync::oneshot::Sender<()>,
+    shutdown: S,
+    drain_timeout: Duration,
+) -> Result<()>
+where
+    F: Future<Output = std::io::Result<()>>,
+    S: Future<Output = Result<()>>,
+{
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => { result?; }
+        result = shutdown => {
+            result?;
+            let _ = stop.send(());
+            match tokio::time::timeout(drain_timeout, &mut server).await {
+                Ok(result) => result?,
+                Err(_) => tracing::warn!("server drain deadline reached; closing remaining connections"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod update_shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn update_shutdown_signals_the_listener_and_waits_for_drain() {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = drained.clone();
+        let server = async move {
+            stopped.await.unwrap();
+            tokio::task::yield_now().await;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        run_until_shutdown(
+            server,
+            stop,
+            std::future::ready(Ok(())),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(drained.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn update_shutdown_does_not_wait_forever_for_long_lived_connections() {
+        let (stop, _stopped) = tokio::sync::oneshot::channel();
+        run_until_shutdown(
+            std::future::pending(),
+            stop,
+            std::future::ready(Ok(())),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn verified_update_drains_before_supervisor_restart_oracle() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let drained = Arc::new(AtomicBool::new(false));
+        let server_drained = Arc::clone(&drained);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = async move {
+            let _ = stopped.await;
+            server_drained.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let mut outcomes = std::collections::VecDeque::from([
+            Ok(serde_json::json!({"installed": false})),
+            Ok(serde_json::json!({"installed": true, "version": "v-next"})),
+        ]);
+        let update = async {
+            crate::self_update::wait_for_installed_update(
+                || std::future::ready(outcomes.pop_front().expect("bounded update checks")),
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+            .await;
+            Ok(())
+        };
+
+        run_until_shutdown(server, stop, update, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(
+            outcomes.is_empty(),
+            "the verified installed result ended polling"
+        );
+        assert!(
+            drained.load(Ordering::SeqCst),
+            "listener drained before return"
+        );
+
+        let supervisor_started_replacement = drained.load(Ordering::SeqCst);
+        assert!(
+            supervisor_started_replacement,
+            "a supervisor may restart only after the old listener drains"
+        );
+    }
+}
+
 async fn serve_tcp_listener(
     host: &str,
     port: u16,
@@ -1455,13 +1608,27 @@ async fn serve_tcp_listener(
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     #[cfg(unix)]
-    tokio::select! {
-        result = axum::serve(listener, service) => { result?; }
-        result = wait_for_reload_signals("http") => { result?; }
-        result = wait_for_shutdown_signal("http") => { result?; }
+    {
+        use std::future::IntoFuture;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = axum::serve(listener, service)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .into_future();
+        run_until_shutdown(
+            server,
+            stop,
+            hosted_shutdown("http", status.auto_update),
+            Duration::from_secs(30),
+        )
+        .await?;
     }
     #[cfg(not(unix))]
-    axum::serve(listener, service).await?;
+    {
+        let _ = status.auto_update;
+        axum::serve(listener, service).await?;
+    }
     Ok(())
 }
 
@@ -1476,6 +1643,7 @@ async fn serve_unix_listener(
         bearer_token_configured,
         mount_http_mcp,
         peer_auth_enabled,
+        ..
     } = status;
     let socket_kind = if config.abstract_socket() {
         "abstract"
@@ -1544,11 +1712,20 @@ async fn serve_unix_listener(
     );
 
     let service = router.into_make_service_with_connect_info::<unix_listener::UnixConnectInfo>();
-    tokio::select! {
-        result = axum::serve(listener, service) => { result?; }
-        result = wait_for_reload_signals("unix_socket") => { result?; }
-        result = wait_for_shutdown_signal("unix_socket") => { result?; }
-    }
+    use std::future::IntoFuture;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, service)
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
+        })
+        .into_future();
+    run_until_shutdown(
+        server,
+        stop,
+        hosted_shutdown("unix_socket", status.auto_update),
+        Duration::from_secs(30),
+    )
+    .await?;
     Ok(())
 }
 
@@ -2664,8 +2841,18 @@ mod tests {
         let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
         let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
             panic!("excluded artifacts service must not touch Artifact Library storage")
-        })
-        .unwrap();
+        });
+        assert!(result.is_none());
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn selected_artifact_service_degrades_when_skill_library_bootstrap_fails() {
+        let registry =
+            filter_registry(build_default_registry(), &["artifacts".to_owned()]).unwrap();
+        let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<u8> {
+            anyhow::bail!("corrupt persisted Skill Library fixture")
+        });
         assert!(result.is_none());
     }
 
@@ -2675,7 +2862,7 @@ mod tests {
         for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
             let registry =
                 filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
-            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8));
             assert_eq!(
                 result,
                 Some(41),

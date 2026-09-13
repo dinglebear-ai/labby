@@ -36,6 +36,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
   configuration, environment, service, action, CLI, API, and OpenAPI inventory
   coverage with drift tests.
 
+### Changed
+
+- **skills/artifacts (breaking):** durable Skill Library lifecycle actions use the
+  `artifacts.*` namespace and `/v1/artifacts`; legacy `skill_library.*` configuration
+  and action names are not valid. Exact acquisition sources are configured under
+  `[[artifacts.sources]]`. The read-only `skills.*` compatibility actions remain only
+  as adapters over the canonical registry, while SEP-2640 uses native `skills/list`
+  and `skills/get`. The pinned accepted SEP contract and current URI, pagination, and
+  cache semantics are documented in `docs/contracts/skills-extension.md`.
+
 ### Fixed
 
 - **security:** pin patched npm dependencies across the root toolchain, Gateway Admin, and Palette to clear all open Dependabot alerts and current `brace-expansion` and Hono audit findings.
@@ -71,6 +81,72 @@ identifiers were removed. Commit links remain the authoritative historical recor
 ### Licensing
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
+
+## [1.18.1](https://github.com/dinglebear-ai/labby/compare/v1.18.0...v1.18.1) (2026-09-13)
+
+
+### Fixed
+
+* complete automatic update and reconnect lifecycle recovery ([#628](https://github.com/dinglebear-ai/labby/issues/628)) ([903bec9](https://github.com/dinglebear-ai/labby/commit/903bec96c0b39ba73dd6735900abacc7a7afa791))
+* make release PR refreshes atomic ([#627](https://github.com/dinglebear-ai/labby/issues/627)) ([d4ce107](https://github.com/dinglebear-ai/labby/commit/d4ce107c581888430346cf31652dd4fb01280e08))
+* **oauth:** support personal upstream authorization without admin escalation ([#623](https://github.com/dinglebear-ai/labby/issues/623)) ([d5e328c](https://github.com/dinglebear-ai/labby/commit/d5e328c308d1f09d987e7af2cd4b76fc89ae3b1e))
+* tolerate release PR head propagation ([#631](https://github.com/dinglebear-ai/labby/issues/631)) ([f2bc51e](https://github.com/dinglebear-ai/labby/commit/f2bc51ed3131c55ac99e9a196542a465b2b05025))
+
+## [1.18.0](https://github.com/dinglebear-ai/labby/compare/v1.17.3...v1.18.0) (2026-09-13)
+
+
+### Added
+
+* **auth:** native operator login and Aurora OAuth screens ([#621](https://github.com/dinglebear-ai/labby/issues/621)) ([3190855](https://github.com/dinglebear-ai/labby/commit/3190855b291fc263c8aae2468cfaa16167339c37))
+
+
+### Fixed
+
+* **ci:** separate host-service qualification restart phases ([#620](https://github.com/dinglebear-ai/labby/issues/620)) ([c340a18](https://github.com/dinglebear-ai/labby/commit/c340a18597cef29dc5c043df841c252872809ac2))
+* give agents actionable and safe error recovery ([#625](https://github.com/dinglebear-ai/labby/issues/625)) ([9704cd3](https://github.com/dinglebear-ai/labby/commit/9704cd3e81975f8723d22a351fd5becebd6d4084))
+* **release:** make stable pointer verification and rollback durable ([#622](https://github.com/dinglebear-ai/labby/issues/622)) ([53d161e](https://github.com/dinglebear-ai/labby/commit/53d161ea159261866174fe3c0840d98ccbc0313b))
+
+## [1.17.3](https://github.com/dinglebear-ai/labby/compare/v1.17.2...v1.17.3) (2026-09-13)
+
+
+### Fixed
+
+* **release:** qualify Incus provisioning and hardened service startup ([#618](https://github.com/dinglebear-ai/labby/issues/618)) ([7768738](https://github.com/dinglebear-ai/labby/commit/77687388383af1c6cc3cfbb7944d182ce0151dd4))
+
+## [1.17.2](https://github.com/dinglebear-ai/labby/compare/v1.17.1...v1.17.2) (2026-09-13)
+
+
+### Fixed
+
+* **release:** qualify Incus image preflight before tagging ([#616](https://github.com/dinglebear-ai/labby/issues/616)) ([c74e4fc](https://github.com/dinglebear-ai/labby/commit/c74e4fc00c375b5a4db2902056fc60ddd4d36144))
+
+## [1.17.1](https://github.com/dinglebear-ai/labby/compare/v1.17.0...v1.17.1) (2026-09-13)
+
+
+### Fixed
+
+* **release:** wait for restored services to become ready ([#614](https://github.com/dinglebear-ai/labby/issues/614)) ([8dac91c](https://github.com/dinglebear-ai/labby/commit/8dac91cef2e0f782308b4b21ad4a81adc0ab08bb))
+
+## [1.17.0](https://github.com/dinglebear-ai/labby/compare/v1.16.1...v1.17.0) (2026-09-12)
+
+
+### Added
+
+* **browser:** support hardened remote browser bridge ([#593](https://github.com/dinglebear-ai/labby/issues/593)) ([ba39ee0](https://github.com/dinglebear-ai/labby/commit/ba39ee04cba69d096fd9fdd03a1c3e76cacf7689))
+* **gateway:** recover disconnected upstream MCPs ([#612](https://github.com/dinglebear-ai/labby/issues/612)) ([193ebc8](https://github.com/dinglebear-ai/labby/commit/193ebc84a74d79b572e0ce2b7a96ee48f4e8a10c))
+* **update:** integrate automatic updates into the macOS service ([#611](https://github.com/dinglebear-ai/labby/issues/611)) ([4cdb9b0](https://github.com/dinglebear-ai/labby/commit/4cdb9b0d41dd7009fcd7bcc28d78812c842d91af))
+
+
+### Fixed
+
+* **access:** expose approved offline schema migration ([#606](https://github.com/dinglebear-ai/labby/issues/606)) ([61e9fa4](https://github.com/dinglebear-ai/labby/commit/61e9fa4e1e060dc2b0e9347ab48ec2e2b277d9c9))
+* **ci:** repair the release pipeline so releases publish again ([#605](https://github.com/dinglebear-ai/labby/issues/605)) ([db4253b](https://github.com/dinglebear-ai/labby/commit/db4253b5088428a5b7353e19fc3a59bdfeafa928))
+* harden recent merged security boundaries ([#596](https://github.com/dinglebear-ai/labby/issues/596)) ([4e05698](https://github.com/dinglebear-ai/labby/commit/4e05698b497c707a73df7e600d097712a4086f74))
+* **mcp:** let app-only upstream tools through the widget-callback destructive gate ([#594](https://github.com/dinglebear-ai/labby/issues/594)) ([7441012](https://github.com/dinglebear-ai/labby/commit/7441012bf38f9ab9b0824f110b9c5ee1242c6316))
+* **mcp:** normalize legacy resource read result envelopes ([#607](https://github.com/dinglebear-ai/labby/issues/607)) ([2ecebd4](https://github.com/dinglebear-ai/labby/commit/2ecebd49feae453e516166b03edfe0102744da15))
+* **skills:** address comprehensive review findings ([#597](https://github.com/dinglebear-ai/labby/issues/597)) ([4fdd325](https://github.com/dinglebear-ai/labby/commit/4fdd32526cbb33290940586927fd2ad38a9d5fb6))
+* **ui:** accept pending-authority sessions and add owner setup ([#604](https://github.com/dinglebear-ai/labby/issues/604)) ([812b7b2](https://github.com/dinglebear-ai/labby/commit/812b7b2ec2bdfb4b159ec3d10026104a3d72a614))
+* **web:** preserve Skill Library project context ([#595](https://github.com/dinglebear-ai/labby/issues/595)) ([ae0ecb7](https://github.com/dinglebear-ai/labby/commit/ae0ecb779371c8b4dc81963daf323be7d4553f3d))
 
 ## [1.16.1](https://github.com/dinglebear-ai/labby/compare/v1.16.0...v1.16.1) (2026-09-11)
 

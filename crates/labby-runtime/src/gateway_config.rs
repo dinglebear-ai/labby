@@ -1709,6 +1709,11 @@ pub struct WebPreferences {
 /// Controls the stdio spawn-guard that validates upstream MCP server commands.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayPreferences {
+    /// Periodically probe disconnected upstream MCP servers and replace stale
+    /// connections when they become reachable again. Disabled by default
+    /// because recovery may restart configured stdio child processes.
+    #[serde(default)]
+    pub auto_reconnect: bool,
     /// Extra commands allowed as stdio upstream programs beyond the built-in list
     /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2003,6 +2008,16 @@ expose_code_mode = true
     }
 
     use super::*;
+
+    #[test]
+    fn auto_reconnect_is_opt_in() {
+        let default: GatewayPreferences = toml::from_str("").expect("default preferences");
+        assert!(!default.auto_reconnect);
+
+        let enabled: GatewayPreferences =
+            toml::from_str("auto_reconnect = true").expect("enabled preferences");
+        assert!(enabled.auto_reconnect);
+    }
 
     #[test]
     fn omitted_proxy_flags_default_to_true() {

@@ -30,7 +30,7 @@ export function beginAuthorityRequest(snapshot: AuthoritySnapshot, contextGenera
 export function invalidateAuthorityRequests(currentGeneration: number) {
   for (const [generation, bucket] of controllers) {
     if (generation !== currentGeneration) {
-      for (const controller of bucket) controller.abort(new DOMException('Authority context changed', 'AbortError'))
+      for (const controller of bucket) controller.abort(new DOMException('Authority or project context changed', 'AbortError'))
       controllers.delete(generation)
     }
   }

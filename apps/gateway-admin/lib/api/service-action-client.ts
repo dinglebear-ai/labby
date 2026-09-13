@@ -1,8 +1,7 @@
 import { gatewayRequestInit } from './gateway-request.ts'
-import { authorityIdentity } from '../auth/authority.ts'
 import {
+  getBrowserSessionContextIdentity,
   getBrowserSessionState,
-  getSessionAuthority,
   getSessionCsrfToken,
   loadBrowserSession,
   type BrowserSessionState,
@@ -99,13 +98,15 @@ export async function performServiceAction<T, TError extends ServiceActionError>
 }): Promise<T> {
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
+  const initialContext = getBrowserSessionContextIdentity()
+  const initialContextIsCurrent = () => initialContext === getBrowserSessionContextIdentity()
 
-  // Every attempt captures the authority it was issued under and rejects its
-  // own response if that authority changed while it was in flight. "No
-  // projection" is itself an identity, so a session that gains or loses its
-  // authority mid-request is also treated as a change.
+  // Every attempt captures the session's authority/project identity and
+  // rejects its own response if that context changes while it is in flight.
+  // The shared identity includes the authenticated subject and explicit
+  // project binding while deliberately excluding transport-only fields.
   const request = async () => {
-    const issuedUnder = authorityIdentity(getSessionAuthority())
+    const issuedUnder = getBrowserSessionContextIdentity()
     let response: Response
     try {
       const init = gatewayRequestInit(action, params, undefined, signal)
@@ -117,6 +118,9 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       if (isAbortError(error)) {
         throw error
       }
+      if (issuedUnder !== getBrowserSessionContextIdentity()) {
+        throw new DOMException('Authority or project context changed', 'AbortError')
+      }
       const message = error instanceof Error ? error.message : 'unknown network error'
       throw createError(
         `${serviceLabel} backend action \`${action}\` failed before a response was received: ${message}`,
@@ -125,9 +129,17 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       )
     }
 
-    const result = await parseActionResponse<T, TError>(response, createError)
-    if (issuedUnder !== authorityIdentity(getSessionAuthority())) {
-      throw new DOMException('Authority context changed', 'AbortError')
+    let result: T
+    try {
+      result = await parseActionResponse<T, TError>(response, createError)
+    } catch (error) {
+      if (issuedUnder !== getBrowserSessionContextIdentity()) {
+        throw new DOMException('Authority or project context changed', 'AbortError')
+      }
+      throw error
+    }
+    if (issuedUnder !== getBrowserSessionContextIdentity()) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
     }
     return result
   }
@@ -149,6 +161,10 @@ export async function performServiceAction<T, TError extends ServiceActionError>
       throw error
     }
 
+    if (!initialContextIsCurrent()) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
+    }
+
     const currentSession = getBrowserSessionState()
     if (
       currentSession.status === 'authenticated' &&
@@ -160,6 +176,9 @@ export async function performServiceAction<T, TError extends ServiceActionError>
     const session = await refreshBrowserSession()
     if (session.status !== 'authenticated') {
       throw error
+    }
+    if (!initialContextIsCurrent()) {
+      throw new DOMException('Authority or project context changed', 'AbortError')
     }
 
     return request()

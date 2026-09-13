@@ -31,7 +31,7 @@ export function captureGatewayAuthority(signal?: AbortSignal, connectionId = 'lo
 
 export function assertGatewayAuthorityCurrent(generation: number) {
   if (generation !== getBrowserSessionEpoch()) {
-    throw new DOMException('Authority context changed', 'AbortError')
+    throw new DOMException('Authority or project context changed', 'AbortError')
   }
 }
 

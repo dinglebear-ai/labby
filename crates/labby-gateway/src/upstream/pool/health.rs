@@ -219,6 +219,25 @@ impl UpstreamPool {
         self.catalog_write().await.insert(name.to_string(), entry);
     }
 
+    /// Advance a failed tool circuit past quarantine without a wall-clock sleep.
+    /// Preserves the failure count and all other catalog state.
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn expire_tool_cooldown_for_tests(&self, name: &str) -> bool {
+        let mut catalog = self.catalog_write().await;
+        let Some(entry) = catalog.get_mut(name) else {
+            return false;
+        };
+        let UpstreamHealth::Unhealthy {
+            consecutive_failures,
+        } = entry.tool_health
+        else {
+            return false;
+        };
+        entry.tool_unhealthy_since =
+            Instant::now().checked_sub(types::reprobe_interval_for_failures(consecutive_failures));
+        entry.tool_unhealthy_since.is_some()
+    }
+
     /// Check if an upstream capability is due for a re-probe.
     #[allow(clippy::significant_drop_tightening)]
     pub async fn should_reprobe(&self, upstream_name: &str) -> bool {

@@ -34,6 +34,8 @@
     "scripts/ci/generate-release-sboms.sh",
     "scripts/ci/manage-release-incident.sh",
     "scripts/ci/qualify-n-minus-one.sh",
+    "scripts/ci/n-minus-one-diagnostics.sh",
+    "scripts/ci/n-minus-one-token.sh",
     "scripts/ci/verify-release-provenance.sh",
     "scripts/ci/upload-immutable-release-assets.sh",
     "scripts/ci/validate-container-inputs.sh",
@@ -68,6 +70,9 @@
     "scripts/tests/incus-bootstrap-transaction.sh",
     "scripts/tests/incus-bootstrap-full-fake.py",
     "scripts/ci/test-incus-contract.py",
-    "scripts/ci/test-build-on-tootie-incus.py"
+    "scripts/ci/test-build-on-tootie-incus.py",
+    "scripts/ci/test_npm_pointer.py",
+    "scripts/ci/test_update_safety_oracles.py",
+    "scripts/tests/test_timeout.py"
   ]
 }

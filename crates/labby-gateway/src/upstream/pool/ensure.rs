@@ -29,6 +29,12 @@ use super::skills_list::peer_declares_skills;
 use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    Tools,
+    Connection,
+}
+
 /// Validate an upstream config entry and, if valid, return the catalog entry
 /// that should be inserted for it.
 ///
@@ -148,9 +154,51 @@ impl UpstreamPool {
         oauth_subject: Option<&str>,
         runtime_owner: Option<&UpstreamRuntimeOwner>,
     ) -> impl Future<Output = anyhow::Result<bool>> + Send {
+        self.ensure_upstream_ready(config, oauth_subject, runtime_owner, Readiness::Tools)
+    }
+
+    /// Reuse a capability-only peer without requiring any exposed tools.
+    /// Readiness is rechecked inside the same lock used by tool discovery.
+    pub fn ensure_connection_for_upstream(
+        &self,
+        config: &UpstreamConfig,
+        oauth_subject: Option<&str>,
+        runtime_owner: Option<&UpstreamRuntimeOwner>,
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send {
+        self.ensure_upstream_ready(config, oauth_subject, runtime_owner, Readiness::Connection)
+    }
+
+    async fn upstream_is_ready(&self, name: &str, readiness: Readiness) -> bool {
+        match readiness {
+            Readiness::Tools => self.has_healthy_tools_for_upstream(name).await,
+            Readiness::Connection => self.connections.read().await.contains_key(name),
+        }
+    }
+
+    fn ensure_upstream_ready(
+        &self,
+        config: &UpstreamConfig,
+        oauth_subject: Option<&str>,
+        runtime_owner: Option<&UpstreamRuntimeOwner>,
+        readiness: Readiness,
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send {
         Box::pin(async move {
             if !config.enabled {
                 return Ok(false);
+            }
+            // Connection-only callers reuse an already registered peer, including
+            // in-process skill providers. Do not turn that readiness check into
+            // a new OAuth tool-discovery request. Tool discovery remains scoped
+            // to the caller below, even when a regular peer exists.
+            if readiness == Readiness::Connection
+                && config.oauth.is_some()
+                && oauth_subject.is_some()
+            {
+                let connect_lock = self.lazy_connect_lock(&config.name).await;
+                let _connect_guard = connect_lock.lock().await;
+                if self.upstream_is_ready(&config.name, readiness).await {
+                    return Ok(false);
+                }
             }
             // OAuth tool discovery is identity-scoped. Keep its peer and tool list
             // in the per-(upstream, subject) cache; publishing either into the
@@ -181,18 +229,35 @@ impl UpstreamPool {
                 .oauth
                 .as_ref()
                 .and_then(|_| self.oauth_lifecycle_epoch());
-            if self.has_healthy_tools_for_upstream(&config.name).await {
-                self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                    .await;
+            if self.upstream_is_ready(&config.name, readiness).await {
+                if readiness == Readiness::Tools {
+                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                        .await;
+                }
                 return Ok(false);
             }
 
             let connect_lock = self.lazy_connect_lock(&config.name).await;
             let _connect_guard = connect_lock.lock().await;
-            if self.has_healthy_tools_for_upstream(&config.name).await {
-                self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
-                    .await;
+            if self.upstream_is_ready(&config.name, readiness).await {
+                if readiness == Readiness::Tools {
+                    self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                        .await;
+                }
                 return Ok(false);
+            }
+
+            if readiness == Readiness::Connection
+                && self
+                    .upstream_tool_health(&config.name)
+                    .await
+                    .is_some_and(|health| !health.is_routable())
+                && !self.should_reprobe(&config.name).await
+            {
+                anyhow::bail!(
+                    "upstream `{}` connection is cooling down after failures",
+                    config.name
+                );
             }
 
             self.ensure_lazy_upstream_entry(config).await;

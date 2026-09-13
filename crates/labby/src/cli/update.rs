@@ -1,17 +1,21 @@
 //! `labby update` — install the latest release, then refresh Incus when present.
 
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
 
 use crate::output::{OutputFormat, print};
 
-const INSTALL_SCRIPT: &str = include_str!("../../../../scripts/install.sh");
-
 #[derive(Debug, Args, Clone)]
 pub struct UpdateArgs {
+    /// Install a newer stable release on this host only (macOS Apple Silicon).
+    #[arg(long, conflicts_with_all = ["auto_update", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets"])]
+    pub automatic: bool,
+    /// Enable, disable, or inspect daily native macOS updates.
+    #[arg(long, value_parser = ["enable", "disable", "status"], conflicts_with_all = ["automatic", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets", "no_incus_sync"])]
+    pub auto_update: Option<String>,
     /// Release tag to install. Defaults to the latest GitHub release with a Labby binary asset.
     #[arg(long, default_value = "latest")]
     pub version: String,
@@ -53,6 +57,22 @@ struct UpdateOutcome {
 }
 
 pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
+    if cfg!(windows) {
+        anyhow::bail!(
+            "labby update is not supported on Windows; close Labby and rerun the verified PowerShell installer described at https://github.com/dinglebear-ai/labby#quick-start to update labby.exe"
+        );
+    }
+    if let Some(action) = &args.auto_update {
+        let outcome = crate::self_update::schedule(action, args.dry_run)?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.automatic {
+        let outcome =
+            crate::self_update::automatic(&std::env::current_exe()?, args.dry_run).await?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let install_dir = resolve_install_dir(args.install_dir.as_ref())?;
     let binary = install_dir.join("labby");
 
@@ -74,7 +94,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    run_install_script(&args.version, &install_dir)?;
+    crate::self_update::install_requested_release(&args.version, &install_dir).await?;
     let (incus_sync, incus_sync_skipped) = if args.no_incus_sync {
         (None, Some("--no-incus-sync requested".to_string()))
     } else {
@@ -109,27 +129,6 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     };
     render_outcome(outcome, format)?;
     Ok(ExitCode::SUCCESS)
-}
-
-fn run_install_script(version: &str, install_dir: &PathBuf) -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let script = tempdir.path().join("install.sh");
-    std::fs::write(&script, INSTALL_SCRIPT)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
-    }
-    let status = Command::new("sh")
-        .arg(&script)
-        .env("LABBY_INSTALL_VERSION", version)
-        .env("LABBY_INSTALL_DIR", install_dir)
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("install.sh failed with status {status}")
-    }
 }
 
 fn resolve_install_dir(explicit: Option<&PathBuf>) -> Result<PathBuf> {

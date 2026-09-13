@@ -247,13 +247,12 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
             // Classify the MCP failure alone. The child's stderr is its own log
             // output, so it must not reach `compatibility_retry`; a server that
             // merely logs "Method not found" is not rejecting `server/discover`.
-            let lifecycle_error = anyhow::anyhow!(first_error.protocol_error().to_string());
             // A child that exited before answering proved nothing about its
             // lifecycle; only a live peer's rejection justifies a respawn.
             if initial_attempt == LifecycleAttempt::Modern
                 && !first_error.child_exited()
                 && let Some(attempt) =
-                    compatibility_retry(&lifecycle_error, LifecycleTransport::Stdio)
+                    compatibility_retry(first_error.protocol_error(), LifecycleTransport::Stdio)
             {
                 remember_legacy_stdio_lifecycle(lifecycle_key);
                 log_fallback(

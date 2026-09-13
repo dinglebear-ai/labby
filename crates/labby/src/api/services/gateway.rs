@@ -356,7 +356,7 @@ async fn handle(
     };
     let team_id = selected_team_id(&headers)
         .map_err(|error| ApiError::new(error).with_service_action("gateway", &req.action))?;
-    crate::access::authorize_gateway_action(
+    let gateway_authority = crate::access::authorize_gateway_action(
         &state.access_runtime,
         identity,
         crate::access::AuthorityCeiling::from_auth_context(&auth_context.0),
@@ -370,6 +370,7 @@ async fn handle(
     let access_runtime = Arc::clone(&state.access_runtime);
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let auth_for_dispatch = auth.clone();
+    let gateway_authority_for_dispatch = gateway_authority.clone();
     let manager = state
         .gateway_manager
         .clone()
@@ -392,6 +393,7 @@ async fn handle(
             let manager = Arc::clone(&manager);
             let subject = subject.clone();
             let auth = auth_for_dispatch.clone();
+            let gateway_authority = gateway_authority_for_dispatch.clone();
             async move {
                 if let Some(team_id) = team_id.as_deref()
                     && crate::dispatch::gateway::team_scoped_gateway_action(&action)
@@ -411,6 +413,9 @@ async fn handle(
                     params,
                 )?;
                 let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
+                if let Some(authority) = gateway_authority.as_ref() {
+                    authority.validate_before_external_effect().await?;
+                }
                 // Unlike trusted stdio MCP, an unauthenticated HTTP request
                 // must never inherit the shared gateway OAuth credential.
                 let oauth_subject =

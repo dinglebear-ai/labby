@@ -5,10 +5,11 @@ use labby_primitives::access::{
     ActionRef, Capability, InstallationId, OwnerScope, ResourceFamily, ResourceId, ResourceRef,
     TeamId,
 };
-use labby_runtime::authority::AuthoritySafeBoundary;
+use labby_runtime::authority::{AuthorityLease, AuthoritySafeBoundary};
 
 use super::{
-    AccessRuntime, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest, authorize_action,
+    AccessRuntime, AccessStore, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
+    authorize_action,
 };
 use crate::dispatch::error::ToolError;
 use serde_json::Value;
@@ -16,9 +17,37 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GatewayAuthorityClass {
     Public,
+    PersonalManage,
     ScopedRead,
     ScopedManage,
     PlatformManage,
+}
+
+#[derive(Clone)]
+pub(crate) struct GatewayActionAuthorization {
+    store: AccessStore,
+    identity: VerifiedIdentity,
+    owner: OwnerScope,
+    capability: Capability,
+    lease: AuthorityLease,
+    action: String,
+}
+
+impl GatewayActionAuthorization {
+    pub(crate) async fn validate_before_external_effect(&self) -> Result<(), ToolError> {
+        let epochs = super::refresh_authority_epochs(
+            &self.store,
+            self.identity.clone(),
+            self.owner.clone(),
+            self.capability,
+        )
+        .await
+        .map_err(|error| map_authority_error(&self.action, error))?;
+        let now = now_millis()?;
+        self.lease
+            .validate_at(AuthoritySafeBoundary::BeforeExternalEffect, now, &epochs)
+            .map_err(|_| denied())
+    }
 }
 
 /// Gateway policy is team-manageable; host configuration and process/credential
@@ -26,6 +55,7 @@ pub(crate) enum GatewayAuthorityClass {
 pub(crate) fn gateway_authority_class(action: &str) -> Option<GatewayAuthorityClass> {
     Some(match action {
         "help" | "schema" => GatewayAuthorityClass::Public,
+        "gateway.oauth.authorize" => GatewayAuthorityClass::PersonalManage,
         "gateway.loadout.list"
         | "gateway.loadout.list_state"
         | "gateway.loadout.get"
@@ -163,10 +193,10 @@ pub(crate) async fn authorize_gateway_action(
     installation_id: &str,
     team_id: Option<&str>,
     action: &str,
-) -> Result<(), ToolError> {
+) -> Result<Option<GatewayActionAuthorization>, ToolError> {
     let class = gateway_authority_class(action).ok_or_else(denied)?;
     if class == GatewayAuthorityClass::Public {
-        return Ok(());
+        return Ok(None);
     }
     let store = runtime.store().await.map_err(|error| {
         tracing::warn!(
@@ -179,6 +209,13 @@ pub(crate) async fn authorize_gateway_action(
         unavailable()
     })?;
     let (owner, capability, resource_id) = match class {
+        GatewayAuthorityClass::PersonalManage => {
+            let owner = super::resolve_personal_owner(&store, identity.clone())
+                .await
+                .map_err(|error| map_authority_error(action, error))?;
+            let resource_id = owner.id().to_owned();
+            (owner, Capability::ScopeManage, resource_id)
+        }
         GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage => {
             let team_id = team_id.ok_or_else(denied)?;
             let owner = OwnerScope::Team(TeamId::new(team_id).map_err(|_| denied())?);
@@ -198,28 +235,25 @@ pub(crate) async fn authorize_gateway_action(
     };
     let action_ref = ActionRef::new("gateway", action).map_err(|_| denied())?;
     let resource = ResourceRef::new(
-        owner,
+        owner.clone(),
         ResourceFamily::Gateway,
         ResourceId::new(resource_id).map_err(|_| denied())?,
     );
-    let now = u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| denied())?
-            .as_millis(),
-    )
-    .map_err(|_| denied())?;
-    authorize_action(
+    let now = now_millis()?;
+    let lease = authorize_action(
         &store,
         AuthorityRequest::new(
-            identity,
+            identity.clone(),
             ActionAuthoritySpec::SCHEMA_VERSION,
             action_ref.clone(),
             resource,
             ceiling,
             None,
             now,
-            vec![AuthoritySafeBoundary::BeforeDispatch],
+            vec![
+                AuthoritySafeBoundary::BeforeDispatch,
+                AuthoritySafeBoundary::BeforeExternalEffect,
+            ],
             vec![ActionAuthoritySpec::new(
                 action_ref,
                 ResourceFamily::Gateway,
@@ -228,8 +262,29 @@ pub(crate) async fn authorize_gateway_action(
         ),
     )
     .await
-    .map(|_| ())
-    .map_err(|error| match error {
+    .map_err(|error| map_authority_error(action, error))?;
+    Ok(Some(GatewayActionAuthorization {
+        store,
+        identity,
+        owner,
+        capability,
+        lease,
+        action: action.to_owned(),
+    }))
+}
+
+fn now_millis() -> Result<u64, ToolError> {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| denied())?
+            .as_millis(),
+    )
+    .map_err(|_| denied())
+}
+
+fn map_authority_error(action: &str, error: crate::access::AccessStoreError) -> ToolError {
+    match error {
         crate::access::AccessStoreError::NotAuthorized
         | crate::access::AccessStoreError::IdentityUnavailable
         | crate::access::AccessStoreError::ProjectAccessUnavailable
@@ -244,7 +299,7 @@ pub(crate) async fn authorize_gateway_action(
             );
             unavailable()
         }
-    })
+    }
 }
 
 fn denied() -> ToolError {
@@ -266,6 +321,26 @@ fn unavailable() -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_oauth_does_not_inherit_team_or_platform_authority() {
+        assert!(!gateway_transport_requires_admin("gateway.oauth.authorize"));
+        assert_eq!(
+            gateway_runtime_subject("gateway.oauth.authorize", Some("team-a"), Some("caller")),
+            Some("caller".into())
+        );
+        assert_eq!(
+            qualify_team_gateway_params(
+                "gateway.oauth.authorize",
+                None,
+                serde_json::json!({"upstream":"linear"})
+            )
+            .unwrap(),
+            serde_json::json!({"upstream":"linear"})
+        );
+        assert!(gateway_transport_requires_admin("gateway.oauth.start"));
+        assert!(gateway_transport_requires_admin("gateway.oauth.clear"));
+    }
 
     #[test]
     fn team_policy_is_distinct_from_host_authority() {

@@ -4,11 +4,13 @@ pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod blocking;
 pub(crate) mod catalog;
+#[cfg(test)]
 pub(crate) mod client;
 pub(crate) mod depot;
 pub(crate) mod dispatch;
 pub(crate) mod import;
 pub(crate) mod params;
+pub(crate) mod surface;
 pub(crate) mod types;
 
 use std::sync::{Arc, OnceLock};

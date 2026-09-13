@@ -20,12 +20,15 @@
 //! fields and cannot represent arbitrary authored YAML.
 
 use serde_json::{Map, Value};
+use serde_saphyr::{MergeKeyPolicy, Options};
 
 use crate::error::ToolError;
 use crate::skills::limits::{
     MAX_COMPATIBILITY_CHARS, MAX_DESCRIPTION_CHARS, MAX_FRONTMATTER_BYTES, MAX_NAME_CHARS,
     MAX_SKILL_MD_FRONTMATTER_BYTES,
 };
+
+const MAX_SKILL_FRONTMATTER_DEPTH: usize = 32;
 
 /// Reverse-domain prefix reserved inside `metadata` for MCP extensions.
 ///
@@ -195,13 +198,43 @@ pub fn parse_skill_md_frontmatter(content: &str) -> Result<Map<String, Value>, T
     }
 
     let block = raw.join("\n");
-    let parsed: Value = serde_yaml_ng::from_str(&block)
+    let mut options = Options::default();
+    options.emit_comments = false;
+    options.merge_keys = MergeKeyPolicy::Error;
+    options.reject_unsupported_tags = true;
+    options.alias_limits.max_total_replayed_events = 0;
+    options.alias_limits.max_replay_stack_depth = 0;
+    options.alias_limits.max_alias_expansions_per_anchor = 0;
+    let parsed: Value = serde_saphyr::from_str_with_options(&block, options)
         .map_err(|err| invalid(format!("SKILL.md frontmatter is not valid YAML: {err}")))?;
+    validate_skill_frontmatter_depth(&parsed, 0)?;
     match parsed {
         Value::Object(map) => Ok(map),
         Value::Null => Ok(Map::new()),
         _ => Err(invalid("SKILL.md frontmatter must be a YAML mapping")),
     }
+}
+
+fn validate_skill_frontmatter_depth(value: &Value, depth: usize) -> Result<(), ToolError> {
+    if depth > MAX_SKILL_FRONTMATTER_DEPTH {
+        return Err(invalid(format!(
+            "SKILL.md frontmatter exceeds {MAX_SKILL_FRONTMATTER_DEPTH} nesting levels"
+        )));
+    }
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                validate_skill_frontmatter_depth(value, depth + 1)?;
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                validate_skill_frontmatter_depth(value, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Compare an entry's `frontmatter` against the frontmatter actually present in
@@ -392,6 +425,31 @@ mod tests {
             parsed.get("description"),
             Some(&json!("Follow conventions"))
         );
+    }
+
+    #[test]
+    fn rejects_yaml_graph_features_duplicate_keys_and_deep_nesting() {
+        for content in [
+            "---\nname: x\ndescription: d\ncopy: &a value\nother: *a\n---\n",
+            "---\nname: x\ndescription: d\nbase: &b {k: v}\nmerged: {<<: *b}\n---\n",
+            "---\nname: x\nname: y\ndescription: d\n---\n",
+            "---\nname: x\ndescription: d\ncustom: !unsafe value\n---\n",
+        ] {
+            assert!(
+                parse_skill_md_frontmatter(content).is_err(),
+                "accepted {content:?}"
+            );
+        }
+
+        let mut nested = String::from("---\nname: x\ndescription: d\ndeep:\n");
+        for depth in 0..=MAX_SKILL_FRONTMATTER_DEPTH {
+            nested.push_str(&format!("{}level-{depth}:\n", "  ".repeat(depth + 1)));
+        }
+        nested.push_str(&format!(
+            "{}value: end\n---\n",
+            "  ".repeat(MAX_SKILL_FRONTMATTER_DEPTH + 2)
+        ));
+        assert!(parse_skill_md_frontmatter(&nested).is_err());
     }
 
     #[test]

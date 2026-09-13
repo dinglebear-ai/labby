@@ -18,6 +18,51 @@ async fn browser_runtime_is_created_only_by_a_validated_extension_socket() {
         .expect("browser ownership deadline");
 }
 
+#[tokio::test]
+async fn browser_runtime_accepts_validated_extension_socket_from_non_loopback_peer() {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        verify_non_loopback_socket_admission(),
+    )
+    .await
+    .expect("non-loopback browser admission deadline");
+}
+
+async fn verify_non_loopback_socket_admission() {
+    // IPv4-mapped loopback stays local to the test machine while Rust's
+    // IpAddr::is_loopback() deliberately classifies it as non-loopback. That
+    // makes this a deterministic regression for the former transport-peer gate.
+    let bind_ip: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+    assert!(
+        !bind_ip.is_loopback(),
+        "fixture must exercise non-loopback admission"
+    );
+    if std::net::TcpListener::bind(std::net::SocketAddr::new(bind_ip, 0)).is_err() {
+        return;
+    }
+    let server = live_labby::LiveLabbyBuilder::new()
+        .bind_ip(bind_ip)
+        .start()
+        .await
+        .expect("non-loopback browser gateway");
+    let base = &server.connection().base_url;
+    let socket_url = format!("{}/browser/socket", base.replacen("http://", "ws://", 1));
+    let mut request = socket_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Origin",
+        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("Host", "localhost".parse().unwrap());
+    let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(response.status().as_u16(), 101);
+    socket.close(None).await.unwrap();
+    assert!(server.finish().await.is_clean());
+}
+
 async fn verify_runtime_ownership() {
     let token = "browser-runtime-disposable-token";
     let server = live_labby::LiveLabbyBuilder::new()

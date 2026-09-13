@@ -128,6 +128,10 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // the process-scoped provider-neutral relay used by remote Artifact
     // discovery and acquisition.
     ("skill_library", "artifact_control"),
+    // skill_library → remote_control: the authenticated Skill Library surface
+    // delegates provider-neutral remote Artifact actions to their canonical
+    // transport dispatcher after resolving authority through artifact_control.
+    ("skill_library", "remote_control"),
     // snippets → gateway: snippets reuses gateway::code_mode (the shared JS
     //   execution kernel) plus the GatewayManager handle. The Arch-M2
     //   relocation of code_mode to a top-level peer is DEFERRED, so this edge

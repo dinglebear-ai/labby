@@ -110,7 +110,7 @@ impl GatewayManager {
             let cfg = self.config.read().await;
             (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
         };
-        let pool = self.new_base_pool(request_timeout, relay_timeout);
+        let pool = self.new_base_pool(request_timeout, relay_timeout, false);
         pool.discover_all_for_subject(&[config], subject).await;
         let snapshot = OauthStatusDiscoverySnapshot {
             completed_at: tokio::time::Instant::now(),
@@ -403,6 +403,15 @@ impl GatewayManager {
     ) -> Result<BeginAuthorization, ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "start")?;
+        if subject != crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT
+            && manager.credential_source_label() == "google_provider"
+        {
+            return Err(ToolError::Forbidden {
+                message: "Central provider credentials require shared operator authorization"
+                    .into(),
+                required_scopes: vec!["lab:admin".into()],
+            });
+        }
 
         let result = manager.begin_authorization(subject).await.map_err(|e| {
             tracing::warn!(
@@ -449,6 +458,15 @@ impl GatewayManager {
     ) -> Result<(), ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "callback")?;
+        if subject != crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT
+            && manager.credential_source_label() == "google_provider"
+        {
+            return Err(ToolError::Forbidden {
+                message: "Central provider credentials require shared operator authorization"
+                    .into(),
+                required_scopes: vec!["lab:admin".into()],
+            });
+        }
 
         manager
             .complete_authorization_callback_with_issuer(subject, code, state, issuer)

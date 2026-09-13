@@ -65,6 +65,24 @@ fn is_ipv6_ula(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xfe00) == 0xfc00
 }
 
+fn is_ipv6_site_local(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfec0
+}
+
+fn is_ipv6_nat64_well_known(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x0064
+        && segments[1] == 0xff9b
+        && segments[2] == 0
+        && segments[3] == 0
+        && segments[4] == 0
+        && segments[5] == 0
+}
+
+fn is_ipv6_6to4(ip: Ipv6Addr) -> bool {
+    ip.segments()[0] == 0x2002
+}
+
 /// Reject an IP that targets private, loopback, link-local, documentation,
 /// benchmark, CGNAT, ULA, or IPv4-mapped-private space. `context` is a non-secret label (redacted URL or
 /// bare host) used only to build the error message.
@@ -107,6 +125,9 @@ pub fn check_ip_not_private(ip: IpAddr, context: &str) -> Result<(), SsrfError> 
                 || v6.is_multicast()
                 || is_ipv6_link_local(v6)
                 || is_ipv6_ula(v6)
+                || is_ipv6_site_local(v6)
+                || is_ipv6_nat64_well_known(v6)
+                || is_ipv6_6to4(v6)
                 || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8)
         }
     };
@@ -237,6 +258,10 @@ mod tests {
             "203.0.113.1",
             "::1",
             "2001:db8::1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:1",
+            "2002:c0a8:0101::1",
+            "fec0::1",
             "fe80::1",
             "fc00::1",
             "fd00::1",

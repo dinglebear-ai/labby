@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-13"
 ---
 
 # HTTP Auth Modes
@@ -41,6 +41,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTHELIA_CA_CERT_PATH` | no | Optional PEM CA certificate for the exact Authelia origin. Mount it read-only; this does not extend trust to other outbound requests. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
+| `LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION` | no | Enable public RFC 7591 registration. Defaults to `true`; set `false` (or `auth.enable_dynamic_registration = false`) to require CIMD or preregistered clients. Registration grants no user authority; redirect checks, rate limits, PKCE, and access policy still apply. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Additional users come from the SQLite-backed allowlist. |
 | `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Google authorization matches the provider-asserted `hd` claim; Authelia authorization matches the exact domain of its verified email claim. `email_verified` is enforced first. Empty (the default) disables domain-based access. |
@@ -127,6 +128,54 @@ emergency way to invalidate residual access JWTs. If the Authelia client secret
 or private CA material is compromised, rotate it at Authelia, replace the
 server-held secret/file, and restart all Labby processes. Never put secrets in
 TOML, command lines, logs, or support bundles.
+
+## Remote CLI operator sign-in
+
+`labby login --server https://lab.example` opens the existing browser OAuth
+flow for the operator account. Configure `LABBY_SERVER_URL=https://lab.example`
+for subsequent commands. Login does not create an identity grant or bypass
+platform authorization: the authenticated account must already have authority
+for the requested operation.
+
+Client registration is selected from server metadata. A current Labby server
+publishes its native client at `/.well-known/labby-cli-client.json`; the CLI uses
+that CIMD identity when the server advertises support. Otherwise it uses an
+advertised dynamic registration endpoint. The selection is saved with the
+server profile so refresh keeps the same client binding. Reverse proxies must
+forward the public native-client document to Labby along with OAuth routes.
+
+Explicit alternatives are available for deployment policy and older servers:
+
+```bash
+labby login --server https://lab.example --dynamic-registration
+labby login --server https://lab.example --client-metadata-url https://client.example/labby.json
+labby login --server https://lab.example --client-id registered-native-client
+labby login --server https://lab.example --client-id registered-client --client-secret-env LABBY_CLI_CLIENT_SECRET
+```
+
+Only the environment variable name is stored for a preregistered secret; the
+secret value remains in its configured source. The metadata document contains
+public client identity and loopback redirects only. It cannot authorize an
+account or grant access to the gateway.
+
+The server supports authorization-code with S256 PKCE and rotating refresh
+tokens for human clients. Machine `client_credentials` and enterprise JWT-bearer
+grants are available when their clients/issuers are configured, and only then
+appear in metadata. Those workflows require their own credentials and trust
+configuration; the interactive CLI login remains an authorization-code client.
+
+The client reuses the PKCE callback, encrypted OAuth store, and token refresh
+runtime. Sessions are isolated by canonical HTTPS server origin under
+`$LABBY_HOME/cli-sessions/`. Keys and stores are private to the local user.
+A per-server file lock serializes login and refresh across CLI processes.
+Only explicit `login` opens a browser; unavailable or revoked saved sessions
+produce an actionable authentication error during ordinary commands.
+
+An explicit `LABBY_MCP_HTTP_TOKEN` still takes precedence over saved sign-in.
+When migrating a client from an unprovisioned static token, back up its local
+`.env` and remove that token override after verifying the new sign-in.
+Plugin-selected targets continue to use only `CLAUDE_PLUGIN_OPTION_API_TOKEN`;
+saved operator credentials are never inherited by plugin or opportunistic targets.
 
 ## Native loopback callbacks
 
@@ -1103,6 +1152,33 @@ upstream and preserve relay/cancellation metadata; a subject-scoped resource
 policy denial cannot fall through to a global connection. Other upstream churn
 remains discoverable inside `codemode.search(...)` / `codemode.describe(...)`
 without expanding the host Tool JSON.
+
+## Browser authorization and MCP caller scope
+
+The gateway browser OAuth controls manage the shared upstream grant. A successful
+browser callback confirms that flow completed; it does not prove that a particular
+MCP connector can use the grant. Admin callers (`lab:admin`) use the shared gateway
+identity. Authenticated non-admin callers use their own subject and cannot borrow
+that shared grant. Repeating the browser authorization does not populate their
+personal credential entry.
+
+When an upstream reports missing personal credentials, call the native Gateway
+service action `gateway.oauth.authorize` with `{ "upstream": "<name>" }` from
+a connector with `lab` scope. Creating a personal grant requires `scope.manage`;
+a `lab:read`-only connector cannot initiate authorization. Use a `lab`-scoped
+connector for the same account to establish the grant, then retry from the
+read-only connector. Open the returned `authorization_url` in a browser signed into the same
+Labby account, approve the upstream authorization, then retry the upstream call.
+The action obtains the credential subject from the verified transport context,
+rejects subject overrides and route-hidden upstreams, and cannot replace central
+Google-provider or shared operator credentials. The callback requires the matching
+browser account and consumes the expiring PKCE state once. No admin scope is added.
+
+Check the connector's account and granted scopes. For an operator connector intended to have admin
+access, explicitly request and approve `lab:admin` through the connector's login
+flow. Do not automatically elevate restricted connectors or copy shared credentials
+into a personal entry. Reconnect if the client retains an older session, then
+verify an actual upstream tool call; discovery alone is not sufficient proof.
 
 ## Auth Precedence
 

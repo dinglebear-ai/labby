@@ -4,7 +4,22 @@ import React, { act } from 'react'
 
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.tsx'
 import { skillLibrary, type SkillLibraryItem, type SkillLibraryPage } from '../../lib/api/skill-library-client.ts'
+import { __setBrowserSessionStateForTests, selectSessionWorkspace } from '../../lib/auth/session-store.ts'
 import { SkillLibraryPageContent } from './skill-library-page.tsx'
+
+function authenticateProject(projectId = 'project-1') {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId,
+  })
+}
+
+test.afterEach(() => {
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+})
 
 function item(id: string): SkillLibraryItem {
   return {
@@ -38,6 +53,7 @@ async function setInputValue(input: HTMLInputElement, value: string) {
 
 test('a delayed revision read cannot open against a newly selected Artifact', async () => {
   installTestDom()
+  authenticateProject()
   const originalList = skillLibrary.list
   const originalRead = skillLibrary.read
   const page: SkillLibraryPage = {
@@ -81,6 +97,7 @@ test('a delayed revision read cannot open against a newly selected Artifact', as
 
 test('editor fields are locked while delayed validation and save use their snapshot', async () => {
   installTestDom()
+  authenticateProject()
   const originalList = skillLibrary.list
   const originalValidate = skillLibrary.validate
   const originalCreate = skillLibrary.create
@@ -134,8 +151,138 @@ test('editor fields are locked while delayed validation and save use their snaps
   }
 })
 
+test('a project switch while save validation is pending never writes into the new project', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeProjectId: 'project-1',
+      teams: [],
+      projects: [
+        { id: 'project-1', role: 'owner' },
+        { id: 'project-2', role: 'owner' },
+      ],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  const originalValidate = skillLibrary.validate
+  const originalCreate = skillLibrary.create
+  const page: SkillLibraryPage = {
+    library_version: 1,
+    published_library_version: 1,
+    can_create: true,
+    create_visibilities: ['private'],
+    allowed_actions: [],
+    items: [],
+  }
+  let resolveValidation!: (value: Awaited<ReturnType<typeof skillLibrary.validate>>) => void
+  const pendingValidation = new Promise<Awaited<ReturnType<typeof skillLibrary.validate>>>(resolve => { resolveValidation = resolve })
+  let createCalls = 0
+  skillLibrary.list = async () => page
+  skillLibrary.validate = async () => pendingValidation
+  skillLibrary.create = async () => {
+    createCalls += 1
+    throw new Error('create must not run after the project changes')
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    const button = (label: string) => [...view.container.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.includes(label)) as HTMLButtonElement
+    await act(async () => button('Create skill').click())
+    act(() => button('Save immutable revision').click())
+    await act(async () => {
+      selectSessionWorkspace({ projectId: 'project-2' })
+      resolveValidation({ valid: true, rejections: [] })
+      await Promise.resolve()
+    })
+
+    assert.equal(createCalls, 0)
+  } finally {
+    skillLibrary.list = originalList
+    skillLibrary.validate = originalValidate
+    skillLibrary.create = originalCreate
+    await view.unmount()
+  }
+})
+
+test('an aborted old-project activation cannot trigger a stale reload', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeProjectId: 'project-1',
+      teams: [],
+      projects: [
+        { id: 'project-1', role: 'owner' },
+        { id: 'project-2', role: 'owner' },
+      ],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  const originalActivate = skillLibrary.activate
+  const page: SkillLibraryPage = {
+    library_version: 1,
+    published_library_version: 1,
+    can_create: true,
+    create_visibilities: ['private'],
+    allowed_actions: [],
+    items: [{ ...item('alpha'), allowed_actions: ['artifacts.activate'] }],
+  }
+  let rejectActivation!: (reason: unknown) => void
+  const pendingActivation = new Promise<Awaited<ReturnType<typeof skillLibrary.activate>>>((_, reject) => { rejectActivation = reject })
+  let listCalls = 0
+  skillLibrary.list = async () => { listCalls += 1; return page }
+  skillLibrary.activate = async () => pendingActivation
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    const button = [...view.container.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.includes('Activate latest revision')) as HTMLButtonElement
+    assert.ok(button)
+    act(() => button.click())
+    await act(async () => {
+      selectSessionWorkspace({ projectId: 'project-2' })
+      rejectActivation(new DOMException('Authority or project context changed', 'AbortError'))
+      await Promise.resolve()
+    })
+    await act(async () => {})
+
+    assert.equal(listCalls, 2, 'only the old and newly mounted project contexts should list')
+  } finally {
+    skillLibrary.list = originalList
+    skillLibrary.activate = originalActivate
+    await view.unmount()
+  }
+})
+
 test('a pending import locks cancellation and its source fields until completion', async () => {
   installTestDom()
+  authenticateProject()
   const originalList = skillLibrary.list
   const originalImport = skillLibrary.import
   const page: SkillLibraryPage = {
@@ -190,6 +337,7 @@ test('a pending import locks cancellation and its source fields until completion
 
 test('refreshing the library does not lock a new-Skill editor to incidental selection', async () => {
   installTestDom()
+  authenticateProject()
   const originalList = skillLibrary.list
   const page: SkillLibraryPage = {
     library_version: 1,
@@ -213,6 +361,204 @@ test('refreshing the library does not lock a new-Skill editor to incidental sele
     assert.equal(name.disabled, false)
     assert.equal(name.value, 'my-skill')
     assert.match(view.container.textContent ?? '', /Create a Skill/)
+  } finally {
+    skillLibrary.list = originalList
+    await view.unmount()
+  }
+})
+
+test('mock data mode renders a terminal project state instead of waiting forever for auth', async () => {
+  installTestDom()
+  const previousMockData = process.env.NEXT_PUBLIC_MOCK_DATA
+  process.env.NEXT_PUBLIC_MOCK_DATA = 'true'
+  __setBrowserSessionStateForTests({ status: 'loading' })
+  const originalList = skillLibrary.list
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    throw new Error('mock mode must not issue a project-scoped library request')
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.equal(listCalls, 0)
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.match(view.container.textContent ?? '', /Mock data mode does not project an authenticated project/)
+  } finally {
+    skillLibrary.list = originalList
+    if (previousMockData === undefined) delete process.env.NEXT_PUBLIC_MOCK_DATA
+    else process.env.NEXT_PUBLIC_MOCK_DATA = previousMockData
+    await view.unmount()
+  }
+})
+
+test('library waits for an explicit project selection before issuing requests', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'personal', id: 'principal-1' },
+      teams: [],
+      projects: [{ id: 'project-1', role: 'owner', name: 'Project One' }],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  const page: SkillLibraryPage = {
+    library_version: 1,
+    published_library_version: 1,
+    can_create: true,
+    create_visibilities: ['private'],
+    allowed_actions: [],
+    items: [],
+  }
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    return page
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.equal(listCalls, 0, 'no project-scoped request may run before selection')
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.match(view.container.textContent ?? '', /Select an eligible project workspace/)
+
+    const projectButton = [...view.container.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.includes('Project One')) as HTMLButtonElement
+    assert.ok(projectButton)
+    await act(async () => projectButton.click())
+    await act(async () => {})
+
+    assert.equal(listCalls, 1)
+    assert.match(view.container.textContent ?? '', /No managed Skills yet/)
+  } finally {
+    skillLibrary.list = originalList
+    await view.unmount()
+  }
+})
+
+test('same-project workspace identity changes remount the library', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeTeamId: 'team-a',
+      activeProjectId: 'project-1',
+      teams: [
+        { id: 'team-a', role: 'owner', membershipEpoch: 1, policyEpoch: 1 },
+        { id: 'team-b', role: 'owner', membershipEpoch: 1, policyEpoch: 1 },
+      ],
+      projects: [{ id: 'project-1', role: 'owner', name: 'Project One' }],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    return {
+      library_version: listCalls,
+      published_library_version: listCalls,
+      can_create: true,
+      create_visibilities: ['private'],
+      allowed_actions: [],
+      items: [item(listCalls === 1 ? 'alpha' : 'bravo')],
+    }
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.match(view.container.textContent ?? '', /alpha/)
+
+    await act(async () => {
+      selectSessionWorkspace({ teamId: 'team-b', projectId: 'project-1' })
+      await Promise.resolve()
+    })
+    await act(async () => {})
+
+    assert.equal(listCalls, 2)
+    assert.match(view.container.textContent ?? '', /bravo/)
+    assert.doesNotMatch(view.container.textContent ?? '', /alpha/)
+  } finally {
+    skillLibrary.list = originalList
+    await view.unmount()
+  }
+})
+
+test('switching projects remounts the library and drops prior project state', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    projectId: 'project-1',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'project', id: 'project-1' },
+      activeProjectId: 'project-1',
+      teams: [],
+      projects: [
+        { id: 'project-1', role: 'owner', name: 'Project One' },
+        { id: 'project-2', role: 'owner', name: 'Project Two' },
+      ],
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const originalList = skillLibrary.list
+  let listCalls = 0
+  skillLibrary.list = async () => {
+    listCalls += 1
+    return {
+      library_version: listCalls,
+      published_library_version: listCalls,
+      can_create: true,
+      create_visibilities: ['private'],
+      allowed_actions: [],
+      items: [item(listCalls === 1 ? 'alpha' : 'bravo')],
+    }
+  }
+
+  const view = await renderClient(<SkillLibraryPageContent />)
+  try {
+    await act(async () => {})
+    assert.match(view.container.textContent ?? '', /alpha/)
+
+    await act(async () => {
+      selectSessionWorkspace({ projectId: 'project-2' })
+      await Promise.resolve()
+    })
+    await act(async () => {})
+
+    assert.equal(listCalls, 2)
+    assert.match(view.container.textContent ?? '', /bravo/)
+    assert.doesNotMatch(view.container.textContent ?? '', /alpha/)
   } finally {
     skillLibrary.list = originalList
     await view.unmount()

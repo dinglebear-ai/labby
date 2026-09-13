@@ -367,6 +367,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "validation_failed"
         | "invalid_hint"
         | "conflict"
+        | "stale_suggestion"
+        | "merge_write_conflict"
+        | "workspace_not_configured"
+        | "restart_required"
         | "oauth_account_ambiguous"
         | "oauth_client_mismatch"
         | "path_traversal"
@@ -386,6 +390,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "confirmation_required"
         | "auth_failed"
         | "auth_required"
+        | "oauth_state_invalid"
+        | "oauth_resource_mismatch"
+        | "oauth_issuer_mismatch"
+        | "oauth_unsupported_method"
         | "oauth_needs_reauth"
         | "oauth_scope_upgrade_required"
         | "oauth_shared_credential_protected"
@@ -422,6 +430,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "timeout"
         | "bad_gateway"
         | "service_unavailable"
+        | "runtime_unavailable"
+        | "provider_error"
         | "provider_unavailable"
         | "provider_timeout"
         | "not_connected"
@@ -437,6 +447,14 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
 /// Estimate side-effect risk from the canonical origin of an error kind.
 #[must_use]
 pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
+    // These limits can reject a result or a later step after work committed.
+    // Budget origin alone does not establish pre-execution rejection.
+    if matches!(
+        kind,
+        "result_too_large" | "response_too_large" | "budget_exceeded" | "call_budget_exceeded"
+    ) {
+        return AgentSideEffectRisk::Possible;
+    }
     match origin_for_kind(kind) {
         AgentErrorOrigin::Validation
         | AgentErrorOrigin::Policy
@@ -465,10 +483,22 @@ pub fn recovery_for_kind(
     };
     match kind {
         "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint"
-        | "conflict" | "tool_error" => AgentRecoveryAdvice {
+        | "conflict" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::ReviseAndRetry,
             same_arguments: revised_retry,
             guidance: "Inspect the error details, correct the command or parameters, and retry only after changing the call.".to_string(),
+            retry_after_ms: None,
+        },
+        "tool_error" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: revised_retry,
+            guidance: "Inspect the preserved upstream error and current operation status. Check whether partial effects committed before revising the command or parameters; resume only unfinished work. Consult existing operation records and reuse an idempotency key only for the same operation and arguments when supported.".to_string(),
+            retry_after_ms: None,
+        },
+        "invalid_cursor" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Rediscover,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Restart the same listing without a cursor, keeping its filters and scope consistent, then use only the next cursor returned by that listing. Do not invent or reuse an expired cursor; deduplicate items already processed.".to_string(),
             retry_after_ms: None,
         },
         // An HTTP route that is not registered at all. Distinct from
@@ -486,7 +516,7 @@ pub fn recovery_for_kind(
         },
         "unknown_action" | "unknown_subaction" | "unknown_tool" | "unknown_upstream"
         | "unknown_instance" | "ambiguous_tool" | "not_found" | "snippet_not_found"
-        | "invalid_code_mode_id" | "invalid_cursor" => AgentRecoveryAdvice {
+        | "invalid_code_mode_id" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::Rediscover,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "List or search the available actions, tools, prompts, or resources, then retry with a valid identifier.".to_string(),
@@ -499,7 +529,8 @@ pub fn recovery_for_kind(
             retry_after_ms,
         },
         "timeout" | "network_error" | "upstream_error" | "bad_gateway"
-        | "service_unavailable" | "provider_unavailable" | "provider_timeout"
+        | "service_unavailable" | "runtime_unavailable" | "provider_error"
+        | "provider_unavailable" | "provider_timeout"
         | "not_connected" | "connection_error" | "connection_refused" | "dns_error"
         | "relay_forwarder_init_failed" => {
             AgentRecoveryAdvice {
@@ -513,6 +544,48 @@ pub fn recovery_for_kind(
             action: AgentRecoveryAction::Reauthenticate,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Repair or refresh authentication before retrying. For an upstream OAuth server, use the gateway OAuth start action for that upstream.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_state_invalid" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Reauthenticate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Start a fresh OAuth authorization flow for the same upstream from an authenticated browser session. Complete the new flow in that session; do not reuse a callback URL, authorization code, or expired state from the failed flow.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_resource_mismatch" | "oauth_issuer_mismatch" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::InspectAndEscalate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Compare the configured upstream resource and expected issuer with the server's discovery metadata. Have the operator correct the configuration or server metadata before starting a fresh OAuth flow. Do not bypass issuer or resource validation or send credentials to a different endpoint to make the retry succeed.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_unsupported_method" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::InspectAndEscalate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Inspect the reported unsupported OAuth method and the authorization server's discovery metadata. The upstream must advertise and support S256 PKCE; have the operator correct or upgrade the server before restarting authorization. Do not downgrade to plain PKCE or disable verification.".to_string(),
+            retry_after_ms: None,
+        },
+        "stale_suggestion" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Rediscover,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Refresh the upstream metadata and generate a new enrichment suggestion. Review it against the current metadata hash before applying; do not replace the hash on an old suggestion just to bypass the stale-state check.".to_string(),
+            retry_after_ms: None,
+        },
+        "merge_write_conflict" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "The configuration changed since the merge was prepared. Re-read the current configuration and regenerate and review the merge before applying it. Preserve concurrent edits; do not force the stale draft over the current file.".to_string(),
+            retry_after_ms: None,
+        },
+        "workspace_not_configured" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Have the operator set workspace.root to the intended existing directory on the Labby server and restart the serving process so it resolves the new root. Verify workspace access after startup before retrying; do not substitute an unrelated directory.".to_string(),
+            retry_after_ms: None,
+        },
+        "restart_required" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::StartDependency,
+            same_arguments: AgentSameArgumentsRetry::Conditional,
+            guidance: "Inspect the reported protected-route or loadout dependency and any staged configuration. Apply the required configuration change through its supported staged action, then coordinate a Labby service restart with the operator. Verify the active configuration after restart before retrying; gateway reload does not replace startup-mounted routes.".to_string(),
             retry_after_ms: None,
         },
         "oauth_scope_upgrade_required" => AgentRecoveryAdvice {
@@ -539,9 +612,19 @@ pub fn recovery_for_kind(
             guidance: "Obtain explicit user confirmation and retry through the confirmed destructive-action path.".to_string(),
             retry_after_ms: None,
         },
-        "budget_exceeded" | "call_budget_exceeded" | "quota_exceeded"
-        | "result_too_large" | "artifact_too_large" | "content_too_large"
-        | "response_too_large"
+        "result_too_large" | "response_too_large" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReduceWork,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "The response exceeded a size limit; the operation may already have completed. Check its status before repeating a mutation. For a read, use supported pagination, range, or field-selection parameters to request smaller results. Follow any returned resource or artifact reference; do not assume omitted bytes are stored or invent a continuation cursor.".to_string(),
+            retry_after_ms: None,
+        },
+        "budget_exceeded" | "call_budget_exceeded" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReduceWork,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Inspect the execution trace and operation status for work already completed. Reduce fan-out or split the remaining work into smaller runs; do not replay the entire script or repeat completed mutations. Consult existing operation records and reuse an idempotency key only for the same operation and arguments when supported.".to_string(),
+            retry_after_ms: None,
+        },
+        "quota_exceeded" | "artifact_too_large" | "content_too_large"
         | "snippet_budget_exceeded" | "snippet_resolve_limit" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::ReduceWork,
             same_arguments: AgentSameArgumentsRetry::Never,
@@ -717,6 +800,133 @@ mod tests {
         assert_eq!(protected.origin, AgentErrorOrigin::Policy);
         assert_eq!(protected.recovery.action, AgentRecoveryAction::Confirm);
         assert_eq!(protected.side_effects, AgentSideEffectRisk::NoneExpected);
+    }
+
+    #[test]
+    fn post_execution_limits_preserve_partial_effect_risk() {
+        for kind in [
+            "result_too_large",
+            "response_too_large",
+            "budget_exceeded",
+            "call_budget_exceeded",
+        ] {
+            let value =
+                build_agent_error_value(kind, "limit reached", None, &AgentErrorContext::default());
+            assert_eq!(value["kind"], kind);
+            assert_eq!(value["origin"], "budget");
+            assert_eq!(value["side_effects"], "possible", "kind={kind}");
+            assert_eq!(value["recovery"]["same_arguments"], "never");
+            assert_eq!(value["recovery"]["action"], "reduce_work");
+            assert!(
+                value["recovery"]["guidance"]
+                    .as_str()
+                    .unwrap()
+                    .contains("status")
+            );
+        }
+        assert_eq!(
+            metadata_for_kind("content_too_large", None).side_effects,
+            AgentSideEffectRisk::NoneExpected
+        );
+    }
+
+    #[test]
+    fn size_limit_recovery_does_not_invent_retained_output() {
+        let advice = recovery_for_kind("result_too_large", None, false);
+        assert!(advice.guidance.contains("supported pagination"));
+        assert!(
+            advice
+                .guidance
+                .contains("do not assume omitted bytes are stored")
+        );
+    }
+
+    #[test]
+    fn stale_cursor_restarts_listing_and_tool_failure_checks_committed_work() {
+        let cursor = recovery_for_kind("invalid_cursor", None, false);
+        assert!(cursor.guidance.contains("without a cursor"));
+        assert!(cursor.guidance.contains("deduplicate"));
+        let tool = metadata_for_kind("tool_error", None);
+        assert_eq!(tool.side_effects, AgentSideEffectRisk::Possible);
+        assert!(tool.recovery.guidance.contains("partial effects committed"));
+    }
+
+    #[test]
+    fn oauth_security_failures_recover_without_weakening_validation() {
+        for (kind, phrase) in [
+            ("oauth_state_invalid", "do not reuse a callback"),
+            (
+                "oauth_resource_mismatch",
+                "Do not bypass issuer or resource validation",
+            ),
+            (
+                "oauth_issuer_mismatch",
+                "Do not bypass issuer or resource validation",
+            ),
+            ("oauth_unsupported_method", "Do not downgrade to plain PKCE"),
+        ] {
+            let value = metadata_for_kind(kind, None);
+            assert_eq!(value.origin, AgentErrorOrigin::Policy, "{kind}");
+            assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
+            assert_eq!(
+                value.recovery.same_arguments,
+                AgentSameArgumentsRetry::Never
+            );
+            assert!(value.recovery.guidance.contains(phrase), "{kind}");
+        }
+    }
+
+    #[test]
+    fn state_conflicts_identify_the_required_refresh_or_restart() {
+        for (kind, action, phrase) in [
+            (
+                "stale_suggestion",
+                AgentRecoveryAction::Rediscover,
+                "current metadata hash",
+            ),
+            (
+                "merge_write_conflict",
+                AgentRecoveryAction::ReviseAndRetry,
+                "Preserve concurrent edits",
+            ),
+            (
+                "workspace_not_configured",
+                AgentRecoveryAction::ReviseAndRetry,
+                "workspace.root",
+            ),
+            (
+                "restart_required",
+                AgentRecoveryAction::StartDependency,
+                "gateway reload does not",
+            ),
+        ] {
+            let value = metadata_for_kind(kind, None);
+            assert_eq!(value.origin, AgentErrorOrigin::Validation, "{kind}");
+            assert_eq!(value.side_effects, AgentSideEffectRisk::NoneExpected);
+            assert_eq!(value.recovery.action, action);
+            assert!(value.recovery.guidance.contains(phrase), "{kind}");
+        }
+    }
+
+    #[test]
+    fn unknown_kind_preserves_identity_and_discourages_uncertain_replay() {
+        let value = build_agent_error_value(
+            "vendor_new_failure",
+            "The upstream reported a new failure",
+            Some(&json!({"cause": {"code": 17}})),
+            &AgentErrorContext::default(),
+        );
+        assert_eq!(value["kind"], "vendor_new_failure");
+        assert_eq!(value["cause"]["code"], 17);
+        assert_eq!(value["side_effects"], "unknown");
+        assert_eq!(value["recovery"]["action"], "inspect_and_escalate");
+        assert_eq!(value["recovery"]["same_arguments"], "discouraged");
+        assert!(
+            value["recovery"]["guidance"]
+                .as_str()
+                .unwrap()
+                .contains("side effects are uncertain")
+        );
     }
 
     #[test]

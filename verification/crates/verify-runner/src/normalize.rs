@@ -76,7 +76,8 @@ impl TargetRegistry<'_> {
             return Err(NormalizationError::Budget);
         }
         let (entry, _) = self.resolve(raw).map_err(NormalizationError::Target)?;
-        let baseline = self.replay(raw, &options.replay).verdict;
+        let baseline_report = self.replay(raw, &options.replay);
+        let baseline = baseline_report.verdict;
         if matches!(baseline, TraceVerdict::Error | TraceVerdict::Incomplete) {
             return Err(NormalizationError::RawReplay(baseline));
         }
@@ -88,7 +89,7 @@ impl TargetRegistry<'_> {
         };
         for _ in 1..n {
             result.replays += 1;
-            if self.replay(raw, &options.replay).verdict != baseline {
+            if self.replay(raw, &options.replay) != baseline_report {
                 let mut quarantined = raw.scenario().clone();
                 quarantined.status = Status::Quarantined;
                 result.scenario = reseal(quarantined)?;
@@ -190,15 +191,22 @@ impl TargetRegistry<'_> {
                 }
             }
         }
+        // Transformations may change positions and fingerprints. Compare full
+        // evidence only between repeated executions of the same final input.
+        let mut final_report = None;
         for _ in 0..n {
             result.replays += 1;
-            if self.replay(&result.scenario, &options.replay).verdict != baseline {
+            let report = self.replay(&result.scenario, &options.replay);
+            if report.verdict != baseline
+                || final_report.as_ref().is_some_and(|first| first != &report)
+            {
                 let mut quarantined = raw.scenario().clone();
                 quarantined.status = Status::Quarantined;
                 result.scenario = reseal(quarantined)?;
                 result.discarded_transformation = true;
                 return Ok(result);
             }
+            final_report = Some(report);
         }
         // Normalization never waives an established regression gate. Importers
         // explicitly classify unreproduced evidence before requesting this API.

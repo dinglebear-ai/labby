@@ -338,7 +338,9 @@ Capability declaration (empty object = supported, no optional features):
 Clients MUST NOT call `resources/directory/read` against a server that has not
 declared `directoryRead: true`. Labby does not declare it.
 
-`skills/get` returns its entry **nested under a `skill` key** — not flat:
+`skills/get` returns its entry **nested under a `skill` key** — not flat. The
+following URI is the upstream-native SEP form; a Labby-aggregated copy is reminted
+under its configured gateway origin as described in [URI grammar](#uri-grammar).
 
 ```json
 {
@@ -354,7 +356,12 @@ declared `directoryRead: true`. Labby does not declare it.
 }
 ```
 
-`skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`.
+`skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`. Labby
+returns at most 128 entries per downstream page. Its cursor is opaque and bound to the
+captured first-party generation; a cursor from a replaced generation is rejected as an
+invalid request rather than being replayed against different content. First-party-only
+results advertise a 30-second TTL. Aggregated results clamp that TTL to the shortest
+remaining upstream TTL, and caller-dependent listings use private cache scope.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
 Servers using protocol version 2026-07-28 include `resultType: "complete"`.
 Labby accepts an absent `resultType` as `"complete"` as a compatibility
@@ -374,8 +381,10 @@ operations outside the SEP namespace as actions on its `artifacts` tool:
 
 These actions are a Labby extension and must not be presented as SEP-2640
 methods. They share the same immutable published generation as native
-`skills/list`, `skills/get`, and `resources/read`. Labby does not expose a
-duplicate `skills.*` action-tool compatibility namespace.
+`skills/list`, `skills/get`, and `resources/read`. The read-only compatibility
+actions `skills.list`, `skills.search`, `skills.get`, and `skills.read` are Labby
+legacy surface adapters over this same registry; they do not own lifecycle state and
+must not be confused with SEP method names or `artifacts.*` management.
 
 The management surface is versioned and optimistic: mutations require an
 expected library version and idempotency key, and revision-sensitive mutations
@@ -387,7 +396,7 @@ Authorization is caller-dependent. Personal entries are owner/admin-only;
 shared entries are company-readable only when active; owner and current admins
 may mutate. This is an access-control rule, not a `cacheScope` interpretation.
 The canonical lifecycle, storage, import, and MCP App behavior is documented in
-[Skills And Skill Library](../services/SKILLS.md).
+[Artifacts And Agent Skills](../services/SKILLS.md).
 
 ## Error kinds
 
@@ -395,6 +404,14 @@ The canonical lifecycle, storage, import, and MCP App behavior is documented in
 |------|--------|----------|-----------|--------------|
 | `skill_digest_mismatch` | `validation` | `rediscover` | `never` | `none_expected` |
 | `skill_manifest_stale` | `validation` | `rediscover` | `never` | `none_expected` |
+| `invalid_encoding` | `validation` | `revise_and_retry` | `discouraged` | `none_expected` |
+| `runtime_unavailable` | `upstream_transport` | `retry_later` | `conditional` | `possible` |
+| `provider_error` | `upstream_transport` | `retry_later` | `conditional` | `possible` |
+
+Verification failures are returned by Labby as JSON-RPC internal errors rather than
+`-32602`; the latter is reserved for malformed requests and definitive "not a skill
+this server serves" answers. The stable `ToolError` kind is carried in error data, and
+the public JSON-RPC message is fixed/redacted.
 
 `rediscover` rather than `do_not_retry` because the SEP's own prescribed recovery
 is to refresh the entry and proceed from the current `resources` set, and it

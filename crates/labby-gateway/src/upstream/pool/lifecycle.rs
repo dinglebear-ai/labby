@@ -127,6 +127,13 @@ impl UpstreamPool {
         self.evict_all_relay_connections().await;
         self.cancel_all_upstream_subscriptions().await;
 
+        // Cancel and await stale-while-revalidate work before dropping the cache.
+        // This prevents detached refreshes from outliving the pool generation and
+        // complements the cache epoch fence that rejects late publication.
+        self.skills_refresh_cancel.cancel();
+        self.skills_refresh_tasks.close();
+        self.skills_refresh_tasks.wait().await;
+
         // Drop every cached skill catalog. A snapshot that outlived the drain
         // would describe skills belonging to connections this pool no longer
         // holds, and a later read against it could route to a detached

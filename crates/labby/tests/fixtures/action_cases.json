@@ -108,7 +108,7 @@
     "scenario_id": "live_invoke::browser::browser_pairing_approve",
     "minimum_evidence": "live_error_path",
     "setup_ref": "disposable-home",
-    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"pairing_id": "$fixture.pairing_id"}},
+    "fixture_params": {"fixture": "isolated_browser_workflow", "parameters": {"pairing_id": "$fixture.pairing_id", "pairing_fingerprint": "$fixture.pairing_fingerprint"}},
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
@@ -1660,6 +1660,34 @@
     "exclusion_reason": null,
     "persistence_class": "durable",
     "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.oauth.authorize",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "default",
+      "gateway-host"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::gateway::gateway_oauth_authorize",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {
+        "upstream": "$fixture.upstream"
+      }
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "ephemeral",
+    "scenario_owner": "optional_external_runner"
   },
   {
     "service": "gateway",

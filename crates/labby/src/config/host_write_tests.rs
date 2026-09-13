@@ -37,6 +37,18 @@ fn separate_process_writer_preserves_update_made_while_waiting() {
 }
 
 #[test]
+fn root_hands_files_in_another_accounts_directory_to_that_account() {
+    use super::host_write::ownership_handoff;
+    // `sudo labby setup host-service install` writing /home/labby/.labby.
+    assert_eq!(Some((998, 997)), ownership_handoff((998, 997), (0, 0)));
+    // Root writing its own directory, or a user writing theirs: unchanged.
+    assert_eq!(None, ownership_handoff((0, 0), (0, 0)));
+    assert_eq!(None, ownership_handoff((1000, 1000), (1000, 1000)));
+    // A non-root process never owns a root-owned file it just created.
+    assert_eq!(None, ownership_handoff((1000, 1000), (1000, 100)));
+}
+
+#[test]
 fn startup_rejects_oversized_configuration_before_deserialization() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");

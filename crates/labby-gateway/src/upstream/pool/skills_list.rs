@@ -6,7 +6,7 @@
 //!   resource listings it is a documented exception to the per-upstream permit
 //!   and keeps partial-result semantics.
 //! - `skills/get` is a **single-target, caller-attributed** call, so it goes
-//!   through [`timed_capability_call_str`] like any other direct access.
+//!   through [`super::capability_call::timed_capability_call_str`] like any other direct access.
 //!
 //! # Why the pagination loop is hand-written
 //!
@@ -51,9 +51,47 @@ pub(super) struct SkillResourceBinding {
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call_str;
+use super::capability_call::{
+    CapabilityCallError, timed_capability_call, timed_capability_call_with_timeout,
+};
 use super::helpers::redact_resource_uri_for_logging;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
+
+/// Stable typed failures from the upstream Agent Skills path. Arbitrary peer
+/// text remains attached to the nested capability error for local diagnostics,
+/// while public Display output is bounded and non-secret.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UpstreamSkillsError {
+    #[error("upstream skills capability request failed")]
+    Capability(#[source] CapabilityCallError),
+    #[error("upstream skills pagination changed cache scope")]
+    CacheScopeChanged,
+    #[error("upstream skill manifest failed validation: {reason}")]
+    InvalidManifest { reason: &'static str },
+    #[error("upstream skills peer is unavailable")]
+    Unavailable,
+    #[error("upstream skills cache was invalidated during refresh")]
+    Invalidated,
+    #[error("upstream skills cache entry disappeared during direct retrieval")]
+    CacheMissing,
+    #[error("upstream skill URI is invalid")]
+    InvalidUri,
+    #[error("upstream skill response did not match the requested identity")]
+    IdentityMismatch,
+    #[error("upstream skill collides with existing manifest ownership")]
+    Collision,
+    #[error("upstream direct skill cache exceeded its bounded capacity")]
+    LimitExceeded,
+}
+
+impl UpstreamSkillsError {
+    pub(super) fn capability(&self) -> Option<&CapabilityCallError> {
+        match self {
+            Self::Capability(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// One upstream's validated skills plus what was dropped getting there.
 #[derive(Debug, Clone, Default)]
@@ -95,24 +133,17 @@ impl UpstreamSkills {
     }
 }
 
-/// Whether an error string is an upstream's `-32602 Invalid params` answer.
+/// Whether a capability failure is the upstream's structured
+/// `-32602 Invalid params` answer for `skills/get`.
 ///
-/// The capability call flattens the structured error into a formatted string
-/// before we see it, so this matches the code only where an error renderer put
-/// it. A looser match — a bare `-32602`, or the words "invalid params" anywhere
-/// — also fires on an upstream's *nested* error text (a proxying upstream
-/// relaying an inner error, or a chained Labby serializing a `ToolError`),
-/// silently reclassifying a real transport or auth failure as a definitive
-/// "this skill does not exist".
-///
-/// Both renderings are accepted because rmcp emits `Mcp error:` for a peer's
-/// error response and `JSON-RPC error:` elsewhere; anchoring on only one is how
-/// this check silently stops matching.
-fn is_invalid_params_error(message: &str) -> bool {
-    const INVALID_PARAMS: i32 = -32602;
-    ["Mcp error: ", "JSON-RPC error: "]
-        .iter()
-        .any(|prefix| message.contains(&format!("{prefix}{INVALID_PARAMS}")))
+/// Keep this typed all the way through the pool boundary: matching rendered
+/// error text can mistake a nested/proxied `-32602` for authoritative absence.
+fn is_invalid_params_error(error: &CapabilityCallError) -> bool {
+    matches!(
+        error,
+        CapabilityCallError::Mcp { data, .. }
+            if data.code == rmcp::model::ErrorCode::INVALID_PARAMS
+    )
 }
 
 /// True when the upstream declared the skills extension in its handshake.
@@ -207,7 +238,7 @@ impl UpstreamPool {
         &self,
         upstream_name: &str,
         peer: &Peer<RoleClient>,
-    ) -> Result<UpstreamSkills, String> {
+    ) -> Result<UpstreamSkills, UpstreamSkillsError> {
         let mut out = UpstreamSkills::default();
         let mut cursor: Option<String> = None;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
@@ -229,19 +260,37 @@ impl UpstreamPool {
             let request =
                 ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
 
-            let result: SkillsListResult = peer
-                .send_request_as(request)
-                .await
-                .map_err(|error| skills_list_error(&error))?;
+            let page_start = Instant::now();
+            let remaining = deadline.saturating_duration_since(page_start);
+            let event = UpstreamRequestLog::skills_list(upstream_name, false);
+            log_upstream_request_start(event);
+            let result: SkillsListResult = timed_capability_call_with_timeout(
+                self,
+                remaining,
+                upstream_name,
+                UpstreamCapability::Skills,
+                event,
+                page_start,
+                peer.send_request_as(request),
+                |_| 0,
+                None,
+                |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
+                format!(
+                    "upstream `{upstream_name}` skills/list exceeded the {}ms traversal budget",
+                    limits::SKILLS_LIST_TIMEOUT.as_millis()
+                ),
+                None,
+            )
+            .await
+            .map_err(UpstreamSkillsError::Capability)?;
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
             match (&out.cache_scope, &result.cache_scope) {
                 (None, scope) => out.cache_scope = scope.clone(),
                 (Some(first), Some(next)) if first != next => {
-                    return Err(format!(
-                        "skills/list changed cacheScope from `{first}` to `{next}` mid-pagination"
-                    ));
+                    let _ = (first, next);
+                    return Err(UpstreamSkillsError::CacheScopeChanged);
                 }
                 _ => {}
             }
@@ -311,7 +360,7 @@ impl UpstreamPool {
         peer: &Peer<RoleClient>,
         uri: &str,
         subject: Option<&str>,
-    ) -> Result<Option<ValidatedSkill>, String> {
+    ) -> Result<Option<ValidatedSkill>, UpstreamSkillsError> {
         let start = Instant::now();
         // Redacted before it reaches a log line, like every other URI-shaped
         // item on this path.
@@ -324,7 +373,7 @@ impl UpstreamPool {
             Some(json!({ "uri": uri })),
         ));
         let timeout_ms = self.request_timeout.as_millis();
-        let result = timed_capability_call_str(
+        let result = timed_capability_call(
             self,
             upstream_name,
             UpstreamCapability::Skills,
@@ -340,34 +389,14 @@ impl UpstreamPool {
 
         let parsed = match result {
             Ok(result) => result,
-            Err(message) => {
-                // -32602 is the spec's answer for "not a skill this server
-                // serves". Treating it as a transport failure would open the
-                // circuit for an upstream that answered correctly.
-                //
-                // Matched on the rendered JSON-RPC prefix rather than a bare
-                // `-32602` substring or the phrase "invalid params". Those
-                // appear inside *any* upstream's nested error text — a proxying
-                // upstream relaying an inner error, or a chained Labby
-                // serializing a `ToolError` — and would convert a genuine
-                // transport or auth failure into `Ok(None)`, which this
-                // function's callers read as an authoritative "no such skill".
-                // A false negative here makes a client drop a skill that
-                // exists; the ambiguous case must fail toward the error.
-                if is_invalid_params_error(&message) {
-                    return Ok(None);
-                }
-                return Err(message);
-            }
+            Err(error) if is_invalid_params_error(&error) => return Ok(None),
+            Err(error) => return Err(UpstreamSkillsError::Capability(error)),
         };
 
         validate_skill_entry(&parsed.skill)
             .map(Some)
-            .map_err(|reason| {
-                format!(
-                    "upstream `{upstream_name}` served an unusable skill for `{uri}`: {}",
-                    reason.as_str()
-                )
+            .map_err(|reason| UpstreamSkillsError::InvalidManifest {
+                reason: reason.as_str(),
             })
     }
 }

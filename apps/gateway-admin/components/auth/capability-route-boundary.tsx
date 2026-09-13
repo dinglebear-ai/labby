@@ -3,7 +3,7 @@
 import { usePathname } from 'next/navigation'
 
 import { AURORA_COMPACT_TITLE, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
-import { capabilityForPath } from '@/components/console/nav-model'
+import { allowsProjectBoundSessionFallback, capabilityForPath } from '@/components/console/nav-model'
 import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
 
 export function CapabilityRouteBoundary({ children }: { children: React.ReactNode }) {
@@ -11,13 +11,15 @@ export function CapabilityRouteBoundary({ children }: { children: React.ReactNod
   const session = useBrowserSession()
   if (session.status !== 'authenticated') return children
   const required = capabilityForPath(pathname)
-  const allowed = required === null || (required !== undefined && session.authority?.capabilities.includes(required))
+  const projectBoundFallback = !session.authority && Boolean(session.projectId) && allowsProjectBoundSessionFallback(pathname)
+  const allowed = required === null || projectBoundFallback || (required !== undefined && session.authority?.capabilities.includes(required))
   if (allowed) {
-    // Remounting on the shared authority identity discards page state that was
-    // loaded under a previous workspace, principal, or capability set. A
-    // missing projection is its own identity, so gaining or losing one also
-    // remounts.
-    return <div className="contents" key={authorityIdentity(session.authority)}>{children}</div>
+    // Remounting on the shared authority/project identity discards page state
+    // loaded under a previous workspace, principal, capability set, or
+    // project-bound session. The backend remains the final authorization
+    // boundary when the durable authority projection is unavailable.
+    const contextKey = `${session.user.sub}:${session.projectId ?? ''}:${authorityIdentity(session.authority)}`
+    return <div className="contents" key={contextKey}>{children}</div>
   }
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-xl items-center px-6">

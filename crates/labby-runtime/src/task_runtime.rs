@@ -121,6 +121,7 @@ where
     let binding = LeaseResourceBinding::Task {
         task_id: task.task_id.clone(),
     };
+    let settlement_cancellation = cancellation.clone();
     match execute_agent_bound(
         authority,
         executor,
@@ -132,6 +133,12 @@ where
     .await
     {
         Ok(output) => {
+            if settlement_cancellation.is_cancelled() {
+                ledger
+                    .settle(&task, TaskState::Cancelled, None, Some("cancelled"))
+                    .await?;
+                return Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled));
+            }
             // Settlement is Task's durable success commit, distinct from the
             // executor's output commit. Revalidate immediately at this owning
             // boundary so a revoked result is never recorded as successful.
@@ -146,6 +153,12 @@ where
                     .map_err(AgentRuntimeError::Lease),
                 Err(error) => Err(error),
             };
+            if settlement_cancellation.is_cancelled() {
+                ledger
+                    .settle(&task, TaskState::Cancelled, None, Some("cancelled"))
+                    .await?;
+                return Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled));
+            }
             match authority_outcome {
                 Ok(()) => {
                     ledger
@@ -322,6 +335,23 @@ mod tests {
             1
         }
     }
+    struct CancelDuringFinalAuthorityRead {
+        reads: AtomicUsize,
+        epochs: AuthorityEpochVector,
+        cancellation: Cancellation,
+    }
+    impl AgentAuthority for CancelDuringFinalAuthorityRead {
+        async fn current_epochs(&self) -> Result<AuthorityEpochVector, AgentRuntimeError> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == 2 {
+                self.cancellation.cancel();
+            }
+            Ok(self.epochs.clone())
+        }
+        fn now_millis(&self) -> u64 {
+            1
+        }
+    }
+
     struct UnavailableBeforeSettlement {
         reads: AtomicUsize,
         initial: AuthorityEpochVector,
@@ -488,6 +518,34 @@ mod tests {
         assert_eq!(
             ledger.last.lock().unwrap().clone(),
             Some((TaskState::Failed, Some("authority_binding_rejected".into())))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_task_settlement_authority_read_wins_before_commit() {
+        let ledger = Ledger::new();
+        let cancellation = Cancellation::new();
+        let authority = CancelDuringFinalAuthorityRead {
+            reads: AtomicUsize::new(0),
+            epochs: epochs(),
+            cancellation: cancellation.clone(),
+        };
+        assert!(matches!(
+            execute_task(
+                &TaskScheduler::new(1).unwrap(),
+                &ledger,
+                &authority,
+                &ExecWithoutCheck,
+                task(),
+                cancellation,
+                1,
+            )
+            .await,
+            Err(TaskRuntimeError::Agent(AgentRuntimeError::Cancelled))
+        ));
+        assert_eq!(
+            ledger.last.lock().unwrap().clone(),
+            Some((TaskState::Cancelled, Some("cancelled".into())))
         );
     }
 

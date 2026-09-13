@@ -20,7 +20,6 @@ use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
-    ResultType,
 };
 use rmcp::service::RequestContext;
 
@@ -55,6 +54,17 @@ fn classified_resource_fetch_error(
 }
 
 impl LabMcpServer {
+    /// Warm only regular resource upstreams before taking a listing snapshot.
+    /// Relay and OAuth peers are separate and must not become global discovery.
+    pub(crate) async fn ensure_resource_upstreams_ready(&self, pool: &Arc<UpstreamPool>) {
+        let Some(manager) = &self.gateway_manager else {
+            return;
+        };
+        manager
+            .ensure_resource_upstreams_ready(pool, self.route_scope.allowed_upstreams())
+            .await;
+    }
+
     /// Gateway-synthetic resource branch (`lab://gateway/...`). Returns
     /// unconditionally; the caller invokes this only when the URI prefix
     /// matches.
@@ -489,12 +499,7 @@ impl LabMcpServer {
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
-            Some(Ok(mut result)) => {
-                // Older upstream revisions legitimately omit the SEP-2322
-                // discriminator. Labby negotiated the current revision with
-                // its downstream peer, so its response must restore the
-                // required complete marker at this protocol boundary.
-                result.result_type.get_or_insert(ResultType::COMPLETE);
+            Some(Ok(result)) => {
                 tracing::info!(
                     surface = "mcp",
                     service = "labby",

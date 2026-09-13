@@ -63,6 +63,7 @@ pub mod process;
 pub mod proxy;
 #[allow(unreachable_pub)]
 pub mod registry;
+mod self_update;
 #[cfg(feature = "skills")]
 pub(crate) mod skills;
 mod stdio_sandbox;

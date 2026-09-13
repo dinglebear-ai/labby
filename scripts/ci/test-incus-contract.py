@@ -21,12 +21,166 @@ class IncusContract(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
+    def test_bootstrap_copies_backups_when_private_parent_is_initially_absent(self):
+        bootstrap = self.text("scripts/incus-bootstrap.sh")
+        commands = [line.strip() for line in bootstrap.splitlines()
+                    if line.strip().startswith('incus exec "$NAME" -- sh -c ')
+                    and "cp -a /home/labby/.labby" in line]
+        self.assertEqual(len(commands), 2, "exercise both owned-state and web-assets captures")
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                source = root / "source"
+                (source / "web-assets").mkdir(parents=True)
+                (source / ".env").write_text("private fixture\n")
+                (source / ".env").chmod(0o600)
+                (source / "web-assets/index.html").write_text("previous web assets\n")
+                parent = root / "backup-parent"
+                mapped = command.replace("/home/labby/.labby", str(source)).replace("/var/lib/labby", str(parent))
+                harness = ("set -eu\nNAME=fixture\n"
+                           + f"state_backup='{parent}/.bootstrap-state-fixture'\n"
+                           + "quote() { printf \"'%s'\" \"$1\"; }\n"
+                           + 'incus() { shift 3; "$@"; }\n' + mapped)
+                result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+                backups = list(parent.iterdir())
+                self.assertEqual(len(backups), 1)
+                if "bootstrap-web" in command:
+                    self.assertEqual((backups[0] / "index.html").read_text(), "previous web assets\n")
+                else:
+                    self.assertEqual((backups[0] / ".env").read_text(), "private fixture\n")
+                    self.assertEqual(stat.S_IMODE((backups[0] / ".env").stat().st_mode), 0o600)
+                self.assertTrue((source / "web-assets/index.html").is_file())
+
     def test_incus_sources_are_https(self):
         text = self.text("config/incus/labby-image.yaml")
         self.assertNotIn("url: http://", text)
         self.assertNotIn("mirror: http://", text)
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
+
+    def incus_apt_repository(self):
+        image = self.text("config/incus/labby-image.yaml")
+        repositories = image.split("  repositories:\n", 1)[1].split("  sets:\n", 1)[0]
+        names = re.findall(r"^    - name: (.+)$", repositories, re.MULTILINE)
+        self.assertEqual(names, ["sources.list"])
+        release = re.search(r"^  release: (\S+)$", image, re.MULTILINE).group(1)
+        sources = [line.strip().replace("{{ image.release }}", release)
+                   for line in repositories.splitlines() if line.strip().startswith("deb ")]
+        return sources
+
+    def test_incus_apt_repository_replaces_bootstrap_sources_with_all_pinned_suites(self):
+        self.assertEqual(self.incus_apt_repository(), [
+            "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z resolute main restricted universe multiverse",
+            "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z resolute-updates main restricted universe multiverse",
+            "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20260904T000000Z resolute-security main restricted universe multiverse",
+        ])
+
+    def test_apt_accepts_replacement_but_rejects_duplicate_snapshot_options(self):
+        apt_get = shutil.which("apt-get")
+        if apt_get is None:
+            if sys.platform.startswith("linux"):
+                self.fail("Linux Incus contract tests require apt-get for source validation")
+            self.skipTest("apt-get is unavailable on this non-Linux host")
+        sources = "\n".join(self.incus_apt_repository()) + "\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            apt = root / "etc/apt"
+            for path in [apt / "sources.list.d", apt / "apt.conf.d",
+                         root / "state/lists/partial", root / "cache/archives/partial", root / "log"]:
+                path.mkdir(parents=True)
+            config = apt / "apt.conf"
+            config.write_text("")
+            status = root / "state/status"
+            status.write_text("")
+            command = [apt_get, "-o", f"Dir={root}", "-o", f"Dir::Etc={apt}",
+                       "-o", "Dir::Etc::main=apt.conf", "-o", "Dir::Etc::parts=apt.conf.d",
+                       "-o", "Dir::Etc::sourcelist=sources.list",
+                       "-o", "Dir::Etc::sourceparts=sources.list.d",
+                       "-o", f"Dir::State={root / 'state'}", "-o", f"Dir::State::status={status}",
+                       "-o", f"Dir::Cache={root / 'cache'}", "-o", f"Dir::Log={root / 'log'}",
+                       "indextargets"]
+            env = dict(os.environ, APT_CONFIG=str(config), LC_ALL="C")
+            # Reproduce debootstrap's base entry plus distrobuilder's former ubuntu.list.
+            baseline = apt / "sources.list"
+            baseline.write_text("deb https://snapshot.ubuntu.com/ubuntu/20260904T000000Z resolute main\n")
+            duplicate = apt / "sources.list.d/ubuntu.list"
+            duplicate.write_text(sources)
+            broken = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(broken.returncode, 100, broken.stderr)
+            self.assertIn("Conflicting values set for option Check-Valid-Until", broken.stderr)
+            # distrobuilder's special sources.list name replaces the baseline file.
+            duplicate.unlink()
+            baseline.write_text(sources)
+            fixed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(fixed.returncode, 0, fixed.stderr)
+            self.assertNotIn("Conflicting values", fixed.stderr)
+
+    def test_every_image_action_has_valid_bash_syntax(self):
+        image = self.text("config/incus/labby-image.yaml")
+        actions = image.split("\nactions:\n", 1)[1].split("\nfiles:\n", 1)[0]
+        lines = actions.splitlines()
+        triggers = [line for line in lines if line.startswith("  - trigger:")]
+        scripts = []
+        for index, line in enumerate(lines):
+            if line.startswith("    action:"):
+                self.assertEqual(line, "    action: |-")
+                body = []
+                for content in lines[index + 1:]:
+                    if content and not content.startswith("      "):
+                        break
+                    body.append(content[6:] if content else "")
+                scripts.append("\n".join(body) + "\n")
+        self.assertGreater(len(triggers), 0, "the image must contain provision actions")
+        self.assertEqual(len(scripts), len(triggers), "every action must be syntax checked")
+        self.assertTrue(any("# LABBY_PROVISION_ACTION: crgx" in script for script in scripts))
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "bash is required to validate image actions")
+        # bash -n parses only: it must never execute provisioning or downloads.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")}
+        for index, script in enumerate(scripts):
+            marker = re.search(r"^# LABBY_(?:PROVISION|IMAGE)_ACTION: (.+)$", script, re.MULTILINE)
+            self.assertIsNotNone(marker, f"missing action identity in script {index}")
+            with self.subTest(action=marker.group(1)):
+                self.assertTrue(script.startswith("#!/usr/bin/env bash\n"))
+                result = subprocess.run([bash, "--noprofile", "--norc", "-n"],
+                                        input=script, env=env, capture_output=True,
+                                        text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_tailscale_consumers_pass_pinned_version_to_installer(self):
+        image = self.text("config/incus/labby-image.yaml")
+        install_lines = [line.strip() for line in image.splitlines()
+                         if 'sh "$tmp/install.sh"' in line]
+        self.assertEqual(len(install_lines), 1)
+        bootstrap = self.text("scripts/incus-bootstrap.sh")
+        self.assertIn('TAILSCALE_INSTALL_VERSION="1.102.3"', bootstrap)
+        self.assertIn('run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh', bootstrap)
+        # Execute only the image's installer invocation against a shell-function
+        # stub: observe its environment without running the downloaded installer.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("TAILSCALE_VERSION", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")}
+        harness = ("tmp=/fixture\n"
+                   "sh() { printf '%s\\n' \"${TAILSCALE_VERSION-unset}\" \"$@\"; }\n"
+                   + install_lines[0] + "\n")
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-c", harness],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["1.102.3", "/fixture/install.sh"])
+
+    def test_image_preflight_lint_runs_before_release(self):
+        command = "shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh"
+        ci = self.text(".github/workflows/ci.yml")
+        incus_job = ci.split("  incus-contract:", 1)[1].split("\n  desktop-web:", 1)[0]
+        self.assertIn(command, incus_job)
+        self.assertIn(command, self.text(".github/workflows/build-incus-image.yml"))
+
+    def test_mise_installer_uses_versioned_release(self):
+        image = self.text("config/incus/labby-image.yaml")
+        self.assertNotIn("https://mise.run", image)
+        self.assertIn("https://github.com/jdx/mise/releases/download/v2026.9.1/install.sh", image)
 
     def test_operator_install_guidance_never_executes_mutable_urls(self):
         paths = ["README.md", "docs/PLUGINS.md", "docs/runtime/INCUS.md", "scripts/install.sh"]
@@ -213,8 +367,18 @@ class IncusContract(unittest.TestCase):
             git.write_text("""#!/usr/bin/env bash
 set -euo pipefail
 case $1 in
+  fetch)
+    spec=${!#}; object=${spec%%:*}; ref=${spec#*:}
+    test "$object" = "$(cat "$FAKE_REMOTE")"
+    [[ $ref == refs/labby-release-rollback/* ]]
+    printf '%s\\n' "$object" >"$FAKE_RECOVERY"
+    printf '%s\\n' "$ref" >"$FAKE_RECOVERY_NAME" ;;
+  rev-parse)
+    test "$2" = "$(cat "$FAKE_RECOVERY_NAME")"
+    cat "$FAKE_RECOVERY" ;;
+  show) printf '[workspace.package]\\nversion = "%s"\\n' "${FAKE_PREVIOUS_VERSION:-1.2.2}" ;;
   ls-remote) test ! -s "$FAKE_REMOTE" || printf '%s\\trefs/tags/labby-incus-latest\\n' "$(<"$FAKE_REMOTE")" ;;
-  tag) printf '%s\\n' "$4" >"$FAKE_LOCAL" ;;
+  update-ref) test "$2" = refs/tags/labby-incus-latest; printf '%s\\n' "$3" >"$FAKE_LOCAL" ;;
   push)
     expected=; ref=${!#}
     for arg in "$@"; do case $arg in --force-with-lease=*) expected=${arg##*:};; esac; done
@@ -240,6 +404,7 @@ exit 64
             env = {
                 **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
                 "FAKE_REMOTE": str(remote), "FAKE_LOCAL": str(local),
+                "FAKE_RECOVERY": str(root / "recovery-object"), "FAKE_RECOVERY_NAME": str(root / "recovery-ref"),
                 "FAKE_FIXTURE": str(fixture), "GH_BIN": str(gh), "GH_TOKEN": "test",
                 "GITHUB_REPOSITORY": "example/labby", "GITHUB_SHA": "b" * 40,
                 "RELEASE_TAG": "v1.2.3", "INCUS_POINTER_RECEIPT": str(receipt),
@@ -248,6 +413,13 @@ exit 64
             subprocess.run([script, "promote"], env=env, check=True)
             self.assertEqual((receipt / "state").read_text().strip(), "promoted")
             self.assertEqual(remote.read_text().strip(), "b" * 40)
+            self.assertEqual((receipt / "previous-ref").read_text().strip(), "refs/labby-release-rollback/v1.2.3")
+            self.assertEqual((root / "recovery-object").read_text().strip(), "a" * 40)
+            # A corrupt retained object must not be used for rollback.
+            (root / "recovery-object").write_text("c" * 40)
+            self.assertNotEqual(subprocess.run([script, "rollback"], env=env, capture_output=True).returncode, 0)
+            self.assertEqual(remote.read_text().strip(), "b" * 40)
+            (root / "recovery-object").write_text("a" * 40)
             subprocess.run([script, "rollback"], env=env, check=True)
             self.assertEqual((receipt / "state").read_text().strip(), "rolled-back")
             self.assertEqual(remote.read_text().strip(), "a" * 40)
@@ -255,6 +427,21 @@ exit 64
             (receipt / "state").write_text("prepared\n")
             subprocess.run([script, "rollback"], env=env, check=True)
             self.assertEqual(remote.read_text().strip(), "a" * 40)
+
+            # Stable generation checks must reject a stale or invalid candidate
+            # before changing the remote pointer or creating a prepared receipt.
+            for candidate, previous in [("v1.2.3", "1.2.4"), ("v1.2.3-rc.1", "1.2.2"), ("v1.2.3", "invalid")]:
+                with self.subTest(candidate=candidate, previous=previous):
+                    rejected_receipt = root / f"rejected-{candidate}-{previous}"
+                    rejected = subprocess.run(
+                        [script, "promote"],
+                        env={**env, "RELEASE_TAG": candidate, "FAKE_PREVIOUS_VERSION": previous,
+                             "INCUS_POINTER_RECEIPT": str(rejected_receipt)},
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertEqual(remote.read_text().strip(), "a" * 40)
+                    self.assertFalse((rejected_receipt / "state").exists())
 
             # A crash after the CAS but before the final receipt write must
             # still be recognized as a partial promotion and rolled back.
