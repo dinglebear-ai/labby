@@ -42,12 +42,12 @@ else: raise SystemExit(2)
         self.env = {**os.environ, "NPM_BIN": str(fake), "TEST_TAGS": str(self.tags), "TEST_FAIL": str(self.fail)}
 
     def command(self, mode, version="2.0.0"):
-        return subprocess.run([sys.executable, str(ROOT / "scripts/ci/promote-npm-pointer.py"), mode, "--package", "@test/pkg", "--version", version, "--receipt", str(self.root / "receipt.json")], env=self.env, capture_output=True, text=True)
+        return subprocess.run([sys.executable, "-c", "import runpy,sys,time; time.sleep=lambda _: None; sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')", str(ROOT / "scripts/ci/promote-npm-pointer.py"), mode, "--package", "@test/pkg", "--version", version, "--receipt", str(self.root / "receipt.json")], env=self.env, capture_output=True, text=True)
 
-    def test_successful_write_failed_verification_restores_previous(self):
+    def test_successful_write_transient_verification_failure_converges(self):
         self.assertEqual(self.command("prepare").returncode, 0)
         self.fail.write_text("armed")
-        self.assertNotEqual(self.command("promote").returncode, 0)
+        self.assertEqual(self.command("promote").returncode, 0)
         self.assertEqual(json.loads(self.tags.read_text())["latest"], "2.0.0")
         self.assertEqual(self.command("rollback").returncode, 0)
         self.assertEqual(json.loads(self.tags.read_text())["latest"], "1.0.0")

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 
 
 def version(value):
@@ -16,13 +17,30 @@ def version(value):
 
 
 def run(*args):
-    return subprocess.check_output([os.environ.get("NPM_BIN", "npm"), *args], text=True).strip()
+    return subprocess.check_output([os.environ.get("NPM_BIN", "npm"), *args], text=True, timeout=30).strip()
 
 
 def latest(package):
     # A failed registry read is not evidence that the pointer is absent.
-    tags = json.loads(run("dist-tag", "ls", package, "--json"))
+    tags = json.loads(run("dist-tag", "ls", package, "--json", "--prefer-online", "--fetch-retries=0", "--fetch-timeout=20000"))
     return tags.get("latest")
+
+
+
+def verify_latest(package, expected):
+    """Allow bounded registry propagation after one pointer mutation."""
+    for attempt in range(20):
+        try:
+            observed = latest(package)
+            if observed == expected:
+                return
+            detail = f"observed {observed!r}"
+        except (subprocess.SubprocessError, json.JSONDecodeError):
+            detail = "registry lookup failed"
+        print(f"npm latest verification {attempt + 1}/20: {detail}", flush=True)
+        if attempt < 19:
+            time.sleep(5)
+    raise ValueError("npm stable pointer verification timed out")
 
 
 def save(path, record):
@@ -57,8 +75,7 @@ def main():
         record["state"] = "promoting"
         save(args.receipt, record)
         run("dist-tag", "add", f"{args.package}@{args.version}", "latest")
-        if latest(args.package) != args.version:
-            raise ValueError("npm stable promotion verification failed")
+        verify_latest(args.package, args.version)
         record["state"] = "promoted"
     else:
         if current == record["previous"] == args.version:
@@ -72,8 +89,7 @@ def main():
                 run("dist-tag", "rm", args.package, "latest")
             else:
                 run("dist-tag", "add", f'{args.package}@{record["previous"]}', "latest")
-            if latest(args.package) != record["previous"]:
-                raise ValueError("npm stable rollback verification failed")
+            verify_latest(args.package, record["previous"])
         elif current != record["previous"]:
             raise ValueError("npm stable pointer changed; refusing stale rollback")
         record["state"] = "rolled-back"

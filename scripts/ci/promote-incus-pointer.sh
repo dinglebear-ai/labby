@@ -16,7 +16,7 @@ write_state() {
 remote_target() { git ls-remote origin "refs/tags/$rolling_tag" | awk '{print $1}'; }
 push_with_lease() {
   local target=$1 expected=$2
-  git tag -f "$rolling_tag" "$target"
+  git update-ref "refs/tags/$rolling_tag" "$target"
   git push --force-with-lease="refs/tags/$rolling_tag:$expected" "$remote" "refs/tags/$rolling_tag:refs/tags/$rolling_tag"
   [[ $(remote_target) == "$target" ]] || { echo "rolling tag remote verification failed" >&2; return 1; }
 }
@@ -45,7 +45,12 @@ case "$mode" in
     # failed. The caller serializes stable promotion across release tags.
     previous=$(<"$receipt/previous-target")
     if [[ -n "$previous" ]]; then
-      git fetch --no-tags origin "$previous"
+      # Retain the exact object under a dedicated ref before changing the
+      # remote pointer. FETCH_HEAD alone is overwritten by later fetches.
+      rollback_ref="refs/labby-release-rollback/$release_tag"
+      git fetch --no-tags origin "$previous:$rollback_ref"
+      [[ $(git rev-parse "$rollback_ref") == "$previous" ]]
+      printf '%s\n' "$rollback_ref" >"$receipt/previous-ref"
       previous_version=$(git show "$previous:Cargo.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
       python3 - "$release_tag" "$previous_version" <<'PYVERSION'
 import re, sys
@@ -85,6 +90,10 @@ PYVERSION
     fi
     [[ ($state == prepared || $state == promoted) && $current == "$GITHUB_SHA" ]] || { echo "rolling pointer changed after promotion; refusing stale rollback" >&2; exit 75; }
     if [[ -n $previous ]]; then
+      rollback_ref=$(<"$receipt/previous-ref")
+      [[ $(git rev-parse "$rollback_ref") == "$previous" ]] || {
+        echo "rollback object no longer matches receipt" >&2; exit 75;
+      }
       push_with_lease "$previous" "$GITHUB_SHA"
     else
       git push --force-with-lease="refs/tags/$rolling_tag:$GITHUB_SHA" "$remote" ":refs/tags/$rolling_tag"
