@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 import yaml
@@ -728,6 +730,7 @@ incus() {
     fi
 }
 curl() {
+    [[ "$*" == *"/ready"* ]] && return 0
     # The candidate accepts its current credential; continuity must be
     # enforced before curl, rather than relying on an authentication failure.
     if [[ "$*" == *"Authorization: Bearer original-fixture-token"* ]]; then
@@ -757,6 +760,42 @@ if authenticated_action; then exit 93; fi
                 self.assertEqual("original\noriginal\n", (work / "fixture.env.calls").read_text())
                 self.assertNotIn("original-fixture-token", result.stdout + result.stderr)
                 self.assertNotIn("replacement-fixture-token", result.stdout + result.stderr)
+
+    def test_service_adapters_wait_for_delayed_http_listener(self) -> None:
+        class ReadyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        for adapter in ("host-service", "incus"):
+            with self.subTest(adapter=adapter):
+                server = HTTPServer(("127.0.0.1", 0), ReadyHandler, bind_and_activate=False)
+                server.server_bind()
+                server.timeout = 5
+                ready_url = f"http://127.0.0.1:{server.server_address[1]}/ready"
+                def serve():
+                    threading.Event().wait(0.2)
+                    server.server_activate()
+                    server.handle_request()
+                thread = threading.Thread(target=serve)
+                thread.start()
+                text = self.text(f"scripts/ci/n-minus-one/{adapter}")
+                helper = text[text.index("wait_ready() {"):text.index("authenticated_action() {")]
+                helper = helper.replace("http://127.0.0.1:8765/ready", ready_url)
+                try:
+                    result = subprocess.run(
+                        ["bash", "-c", 'set -eu; name=fixture; incus() { "${@:4}"; }; '
+                         + helper + "wait_ready"],
+                        text=True, capture_output=True, timeout=10,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                finally:
+                    thread.join(timeout=6)
+                    server.server_close()
+                self.assertFalse(thread.is_alive())
 
     def test_baseline_credential_capture_is_private_and_rejects_ambiguous_input(self) -> None:
         helper = ROOT / "scripts/ci/n-minus-one-token.sh"
