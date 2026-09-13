@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 
-import { ConsoleShellProvider } from '@/components/console/console-shell-context'
+import { ConsoleShellProvider, useConsoleShell } from '@/components/console/console-shell-context'
 import { ConsoleSidebar } from '@/components/console/console-sidebar'
 import { ConsoleGlobalTools } from '@/components/console/console-global-tools'
 import { ConsoleTopbar } from '@/components/console/console-topbar'
@@ -16,6 +16,15 @@ import { ConsoleTopbar } from '@/components/console/console-topbar'
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   return (
     <ConsoleShellProvider>
+      <ConsoleShellFrame>{children}</ConsoleShellFrame>
+    </ConsoleShellProvider>
+  )
+}
+
+function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
+  const { phoenixDocked } = useConsoleShell()
+
+  return (
       <div
         className="console-root"
         data-screen-label="Gateway Console"
@@ -32,9 +41,13 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         <ConsoleSidebar />
 
         <div
+          data-console-main-column="1"
+          data-phoenix-docked={phoenixDocked ? 'right' : 'float'}
+          className={phoenixDocked ? 'sm:mr-[min(420px,36vw)]' : undefined}
           style={{
             flex: 1,
             minWidth: 0,
+            transition: 'margin-right var(--motion-duration-medium) var(--motion-ease-in-out)',
             display: 'flex',
             flexDirection: 'column',
             background:
@@ -61,6 +74,5 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
           <ConsoleGlobalTools />
         </div>
       </div>
-    </ConsoleShellProvider>
   )
 }

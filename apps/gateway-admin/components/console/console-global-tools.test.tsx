@@ -37,6 +37,43 @@ test('Phoenix opens an explicit unavailable session panel without simulated send
   } finally { await view.unmount() }
 })
 
+test('Phoenix uses one control to dock right and return to a draggable resizable window', async () => {
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  const [{ PhoenixAvailability }, { ConsoleShellProvider, useConsoleShell }, { renderClient }] = await Promise.all([
+    import('./console-global-tools.tsx'),
+    import('./console-shell-context.tsx'),
+    import('../../lib/testing/dom-test-utils.tsx'),
+  ])
+  function DockState() {
+    const { phoenixDocked } = useConsoleShell()
+    return <output data-phoenix-reserved-space={phoenixDocked ? 'right' : 'none'} />
+  }
+  const view = await renderClient(<ConsoleShellProvider><PhoenixAvailability/><DockState/></ConsoleShellProvider>)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    const panel = document.querySelector<HTMLElement>('[aria-label="Phoenix session"]'); assert.ok(panel)
+    assert.equal(panel.getAttribute('data-dock'), 'float')
+    assert.equal(panel.classList.contains('sm:resize'), true)
+    assert.equal(panel.querySelectorAll('button[aria-label="Dock Phoenix right"]').length, 1)
+    assert.equal(panel.querySelector('button[aria-label="Dock Phoenix left"]'), null)
+
+    const header = panel.firstElementChild as HTMLElement
+    await act(async () => header.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 30 })))
+    await act(async () => window.dispatchEvent(new window.PointerEvent('pointermove', { bubbles: true, clientX: 55, clientY: 70 })))
+    assert.equal(panel.style.translate, '35px 40px')
+
+    await act(async () => panel.querySelector<HTMLButtonElement>('button[aria-label="Dock Phoenix right"]')!.click())
+    assert.equal(panel.getAttribute('data-dock'), 'right')
+    assert.equal(view.container.querySelector('output')?.getAttribute('data-phoenix-reserved-space'), 'right')
+    const float = panel.querySelector<HTMLButtonElement>('button[aria-label="Float Phoenix panel"]'); assert.ok(float)
+    assert.equal(panel.querySelectorAll('button[aria-label="Float Phoenix panel"]').length, 1)
+
+    await act(async () => float.click())
+    assert.equal(panel.getAttribute('data-dock'), 'float')
+    assert.equal(view.container.querySelector('output')?.getAttribute('data-phoenix-reserved-space'), 'none')
+  } finally { await view.unmount() }
+})
+
 test('Phoenix sends a real turn through the container-local service and renders the reply', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
   const originalFetch = globalThis.fetch
