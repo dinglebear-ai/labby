@@ -331,7 +331,7 @@ capture_owned_state() {
         *) fail "cannot transactionally capture labby.service ActiveState=$labby_active" ;;
     esac
     if incus exec "$NAME" -- test -e /home/labby/.labby; then
-        incus exec "$NAME" -- sh -c "rm -rf $(quote "$state_backup"); cp -a /home/labby/.labby $(quote "$state_backup")"
+        incus exec "$NAME" -- sh -c "mkdir -p -m 0700 /var/lib/labby && rm -rf $(quote "$state_backup") && cp -a /home/labby/.labby $(quote "$state_backup")"
         if [ "$labby_active" = active ]; then
             record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "systemctl stop labby.service; rm -rf /home/labby/.labby; cp -a $state_backup /home/labby/.labby; rm -rf $state_backup; systemctl start labby.service")"
         else
@@ -767,7 +767,7 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
     fi
     if [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -e /home/labby/.labby/web-assets; then
         WEB_ASSETS_BACKUP="/var/lib/labby/.bootstrap-web-$$"
-        incus exec "$NAME" -- sh -c "rm -rf /var/lib/labby/.bootstrap-web-$$; cp -a /home/labby/.labby/web-assets /var/lib/labby/.bootstrap-web-$$"
+        incus exec "$NAME" -- sh -c "mkdir -p -m 0700 /var/lib/labby && rm -rf /var/lib/labby/.bootstrap-web-$$ && cp -a /home/labby/.labby/web-assets /var/lib/labby/.bootstrap-web-$$"
         record_rollback "incus exec $(quote "$NAME") -- sh -c $(quote "rm -rf /home/labby/.labby/web-assets; cp -a /var/lib/labby/.bootstrap-web-$$ /home/labby/.labby/web-assets; rm -rf /var/lib/labby/.bootstrap-web-$$")"
     else
         record_rollback "incus exec $(quote "$NAME") -- rm -rf /home/labby/.labby/web-assets"
@@ -809,7 +809,7 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
 		curl -fsSL --connect-timeout 10 --max-time 300 -o "$tailscale_installer" "$TAILSCALE_INSTALL_URL"
 		printf '%s  %s\n' "$TAILSCALE_INSTALL_SHA256" "$tailscale_installer" | sha256sum --check --strict
 		run incus file push "$tailscale_installer" "$NAME/tmp/labby-tailscale-install.sh"
-		run incus exec "$NAME" -- sh /tmp/labby-tailscale-install.sh
+		run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh
 		run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
 		incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
 	fi

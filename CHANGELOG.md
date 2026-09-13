@@ -82,6 +82,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.17.3](https://github.com/dinglebear-ai/labby/compare/v1.17.2...v1.17.3) (2026-09-13)
+
+
+### Fixed
+
+* **release:** qualify Incus provisioning and hardened service startup ([#618](https://github.com/dinglebear-ai/labby/issues/618)) ([7768738](https://github.com/dinglebear-ai/labby/commit/77687388383af1c6cc3cfbb7944d182ce0151dd4))
+
 ## [1.17.2](https://github.com/dinglebear-ai/labby/compare/v1.17.1...v1.17.2) (2026-09-13)
 
 
