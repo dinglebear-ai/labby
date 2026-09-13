@@ -817,6 +817,31 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE", adapter, name)
             self.assertIn("verify-provenance", adapter, name)
 
+    def test_host_service_resets_start_budget_only_after_rollback_proof(self) -> None:
+        text = self.text("scripts/ci/n-minus-one/host-service")
+        helper = text[text.index("begin_candidate_phase() {"):text.index("require_fixture() {")]
+        for failure in ("", "version", "state", "auth", "reset"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                harness = r'''set -eu
+LABBY_PREVIOUS_VERSION=v1.13.3
+record() { printf '%s\n' "$1" >>"$CALLS"; test "$FAILURE" != "$1"; }
+version() { test "$1" = v1.13.3; record version; }
+customized_state() { record state; }
+authenticated_action() { record auth; }
+sudo() { test "$*" = 'systemctl reset-failed labby.service'; record reset; }
+'''
+                result = subprocess.run(["bash", "-c", harness + helper + "begin_candidate_phase"],
+                                        env={**os.environ, "CALLS": str(calls), "FAILURE": failure},
+                                        capture_output=True, text=True, timeout=10)
+                expected = ["version", "state", "auth", "reset"]
+                if failure:
+                    expected = expected[:expected.index(failure) + 1]
+                self.assertEqual(calls.read_text().splitlines(), expected)
+                self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
+        upgrade = next(line for line in text.splitlines() if line.startswith("  upgrade)"))
+        self.assertIn('fi; begin_candidate_phase; "$repo_root/scripts/ci/verify-and-activate-release.sh"', upgrade)
+
     def test_baseline_credentials_survive_formatting_but_reject_rotation(self) -> None:
         for adapter in ("host-service", "incus"):
             with self.subTest(adapter=adapter), tempfile.TemporaryDirectory() as tmp:
