@@ -240,13 +240,80 @@ EOF
             fail "crash injection at $boundary unexpectedly succeeded"
         fi
         /bin/rm -f "$fake_bin/mv" "$fixtures/releases/v2.0.0/lab-x86_64-unknown-linux-gnu.tar.gz"
-        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 \
-            >"$case_root/recovery.out" 2>"$case_root/recovery.err"; then
-            fail "post-recovery unavailable release unexpectedly succeeded"
-        fi
+        run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/recovery-downloads" \
+            >"$case_root/recovery.out" 2>"$case_root/recovery.err"
+        [ ! -e "$case_root/recovery-downloads" ] || fail "recovery-only attempted network access"
         [ "$("$home/bin/labby")" = release-v1 ] || fail "recovery at $boundary did not restore binary"
         cmp "$case_root/receipt.before" "$home/bin/.labby-install/receipt" || fail "recovery at $boundary did not restore receipt"
         [ ! -e "$home/bin/.labby-install/activation-journal" ] || fail "recovery at $boundary retained completed journal"
+    done
+}
+
+
+test_interrupted_journal_cleanup_preserves_committed_files() {
+    local mode
+    for mode in recovery activation; do
+        local case_root="$test_root/journal-cleanup-$mode"
+        local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" case_home="$case_root/home"
+        local journal="$case_home/bin/.labby-install/activation-journal"
+        mkdir -p "$fixtures" "$case_home"
+        make_release "$fixtures" v1.0.0 release-v1
+        make_release "$fixtures" v2.0.0 release-v2
+        make_fake_tools "$fake_bin" "$fixtures"
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+        if [ "$mode" = recovery ]; then
+            mkdir "$journal"
+            cp "$case_home/bin/labby" "$journal/old-binary"
+            cp "$case_home/bin/.labby-install/receipt" "$journal/old-receipt"
+            : >"$journal/old-binary.present"
+            : >"$journal/old-receipt.present"
+            printf 'binary-activated\n' >"$journal/state"
+            printf '#!/bin/sh\necho interrupted\n' >"$case_home/bin/labby"
+        fi
+        cat >"$fake_bin/rm" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "$*" = "-rf $LABBY_TEST_JOURNAL" ]; then
+    # Interrupt recursive cleanup after deleting one backup-presence marker.
+    # The durable state marker must already be retired before this starts.
+    /bin/rm -f "$LABBY_TEST_JOURNAL/old-binary.present"
+    kill -9 "$PPID"
+    exit 137
+fi
+exec /bin/rm "$@"
+EOF
+        chmod 755 "$fake_bin/rm"
+        if [ "$mode" = recovery ]; then
+            if run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+                LABBY_TEST_JOURNAL="$journal" >"$case_root/out" 2>"$case_root/err"; then
+                fail "recovery cleanup crash injection did not interrupt installer"
+            fi
+        elif run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 \
+            LABBY_TEST_JOURNAL="$journal" >"$case_root/out" 2>"$case_root/err"; then
+            fail "activation cleanup crash injection did not interrupt installer"
+        fi
+        /bin/rm -f "$fake_bin/rm"
+        [ ! -e "$journal/state" ] || fail "cleanup began before retiring recovery marker"
+        cp "$case_home/bin/labby" "$case_root/binary.committed"
+        cp "$case_home/bin/.labby-install/receipt" "$case_root/receipt.committed"
+        if [ "$mode" = activation ]; then
+            cp "$case_home/bin/.labby-install/previous-receipt" "$case_root/previous.committed"
+        fi
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/downloads" >/dev/null 2>&1
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/downloads" >/dev/null 2>&1
+        cmp "$case_root/binary.committed" "$case_home/bin/labby" || fail "residual cleanup changed binary"
+        cmp "$case_root/receipt.committed" "$case_home/bin/.labby-install/receipt" || fail "residual cleanup changed receipt"
+        if [ "$mode" = activation ]; then
+            cmp "$case_root/previous.committed" "$case_home/bin/.labby-install/previous-receipt" || fail "residual cleanup changed previous receipt"
+            [ "$("$case_home/bin/labby")" = release-v2 ] || fail "committed activation was reverted"
+        else
+            [ "$("$case_home/bin/labby")" = release-v1 ] || fail "committed recovery was reverted"
+        fi
+        [ ! -e "$journal" ] || fail "residual journal retained after recovery"
+        [ ! -e "$case_root/downloads" ] || fail "repeated recovery-only accessed network"
     done
 }
 
@@ -699,6 +766,39 @@ EOF
     fi
 }
 
+test_failed_journal_retirement_preserves_backups() {
+    local case_root="$test_root/retirement-failure"
+    local fixtures fake_bin case_home
+    fixtures="$case_root/fixtures"
+    fake_bin="$case_root/tools"
+    case_home="$case_root/home"
+    mkdir -p "$fixtures" "$case_home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_release "$fixtures" v2.0.0 release-v2
+    make_fake_tools "$fake_bin" "$fixtures"
+    run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+    cat > "$fake_bin/rm" <<'SH'
+#!/bin/sh
+if [ "$*" = "-f $LABBY_TEST_JOURNAL/state" ]; then
+  exit 1
+fi
+if [ "$*" = "-rf $LABBY_TEST_JOURNAL" ]; then
+  touch "$LABBY_TEST_CALLED"
+  exit 1
+fi
+exec /bin/rm "$@"
+SH
+    chmod 755 "$fake_bin/rm"
+    if run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 LABBY_TEST_JOURNAL="$case_home/bin/.labby-install/activation-journal" LABBY_TEST_CALLED="$case_root/recursive-called" > "$case_root/out" 2>&1; then
+        fail "retirement failure unexpectedly succeeded"
+    fi
+    if [ -e "$case_root/recursive-called" ]; then
+        fail "recursive journal deletion was attempted after state retirement failed"
+    fi
+    [ -f "$case_home/bin/.labby-install/activation-journal/old-binary.present" ] || fail "retirement failure lost rollback backup"
+}
+
+test_failed_journal_retirement_preserves_backups
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
 test_latest_api_failure_never_uses_mutable_latest_download
@@ -709,6 +809,7 @@ test_local_candidate_requires_and_records_exact_digest
 test_local_candidate_stages_once_before_verification
 test_activation_failure_restores_binary_and_both_receipts
 test_crash_recovery_restores_every_activation_boundary
+test_interrupted_journal_cleanup_preserves_committed_files
 test_recovery_failure_is_reported_and_journal_is_retained
 test_unprepared_journal_never_changes_live_installation
 test_launchd_uses_stable_labby_home_not_installer_working_directory
