@@ -45,7 +45,7 @@ export function SettingsRail(): React.ReactElement {
   const router = useRouter()
   const session = useBrowserSession()
   const entries = session.status === 'authenticated' && session.isAdmin
-    ? [...ENTRIES, { href: '/settings/depot/', label: 'Depot', icon: Warehouse }]
+    ? [...ENTRIES, { href: '/settings/depot/', label: 'Labby', icon: Warehouse }]
     : ENTRIES
   const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''

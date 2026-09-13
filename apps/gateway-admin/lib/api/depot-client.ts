@@ -139,17 +139,17 @@ export type DepotStatus = z.infer<typeof depotStatusSchema>
 
 async function parse(response: Response): Promise<unknown> {
   let body: unknown
-  try { body = await response.json() } catch { throw new Error(`Depot returned invalid JSON (${response.status})`) }
+  try { body = await response.json() } catch { throw new Error(`Labby catalog returned invalid JSON (${response.status})`) }
   if (!response.ok) {
     const error = body && typeof body === 'object' ? body as Record<string, unknown> : {}
-    const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Depot request failed (${response.status})`
+    const summary = typeof error.error === 'string' ? error.error : typeof error.message === 'string' ? error.message : `Labby catalog request failed (${response.status})`
     throw new Error(safeDepotError(summary, response.status))
   }
   return body
 }
 
 function safeDepotError(value: string, status: number): string {
-  return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Depot request failed (${status}, ${value})` : `Depot request failed (${status})`
+  return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Labby catalog request failed (${status}, ${value})` : `Labby catalog request failed (${status})`
 }
 
 function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
@@ -157,7 +157,7 @@ function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown
   if (result.success) return result.data
   const issue = result.error.issues[0]
   const path = issue?.path.length ? ` at ${issue.path.join('.')}` : ''
-  throw new Error(`Depot returned an incompatible ${label}${path}: ${issue?.message ?? 'invalid response'}`)
+  throw new Error(`Labby catalog returned an incompatible ${label}${path}: ${issue?.message ?? 'invalid response'}`)
 }
 
 export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
@@ -322,11 +322,11 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
     const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
     const requestId = response.headers.get('x-request-id') ?? undefined
     let body: unknown
-    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }
+    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Labby catalog returned invalid JSON (${response.status})`, undefined, requestId) }
     if (epoch !== getBrowserSessionEpoch()) throw new DepotSessionChangedError('Session changed')
     if (!response.ok) {
       const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)
-      throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Depot request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
+      throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Labby catalog request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
     }
     return validate(schema, body, label)
   }
@@ -356,15 +356,15 @@ export async function listArtifacts(input: { provider?: string; query?: string; 
   const provider = input.provider ?? 'all'
   if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
   const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, kind, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
-  if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
-  if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
-  if (kind && page.items.some(item => (item.kind ?? item.descriptor?.kind) !== kind)) throw new Error('Depot returned an artifact of the wrong kind')
+  if (page.scope !== provider) throw new Error('Labby catalog returned the wrong discovery scope')
+  if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Labby catalog returned an artifact from the wrong provider')
+  if (kind && page.items.some(item => (item.kind ?? item.descriptor?.kind) !== kind)) throw new Error('Labby catalog returned an artifact of the wrong kind')
   return page
 }
 
 export async function getArtifact(providerId: string, artifactId: string, signal?: AbortSignal) {
   const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response', 'retry-once')
-  if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Depot returned the wrong artifact identity')
+  if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Labby catalog returned the wrong artifact identity')
   return value
 }
 

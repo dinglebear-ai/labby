@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 
 /**
- * Unified Labby + Depot information architecture. Depot owns Discover,
+ * Unified Labby information architecture. Labby owns Discover,
  * Create, and Library; Loadouts and Snippets are Library tabs rather than
  * parallel sidebar products. Workspace collects the agent-facing execution
  * surfaces. Logs and distributed request traces live in a dedicated
@@ -114,14 +114,14 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
   },
   {
     id: 'Depot',
-    label: 'Depot',
+    label: 'Labby',
     items: [
       {
         id: 'Discover',
         label: 'Discover',
         href: '/depot',
         icon: SearchCode,
-        tooltipDetail: 'search the Depot Bazaar',
+        tooltipDetail: 'search the Labby catalog',
         capability: 'scope.read',
       },
       {
@@ -145,7 +145,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         label: 'Administration',
         href: '/administration',
         icon: ShieldCheck,
-        tooltipDetail: 'Depot authority and canonical operations',
+        tooltipDetail: 'Labby authority and canonical operations',
         capability: 'platform.manage',
       },
     ],

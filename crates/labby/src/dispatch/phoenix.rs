@@ -119,6 +119,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
 struct Message {
     role: &'static str,
     text: String,
+    created_at_ms: u64,
 }
 
 #[derive(Clone)]
@@ -427,6 +428,7 @@ impl PhoenixRuntime {
             state.messages.push(Message {
                 role: "user",
                 text: input.to_owned(),
+                created_at_ms: now_millis(),
             });
             (
                 state.runtime.clone(),
@@ -496,6 +498,7 @@ impl PhoenixRuntime {
         state.messages.push(Message {
             role: "assistant",
             text: result.output,
+            created_at_ms: now_millis(),
         });
         if state.messages.len() > MAX_MESSAGES {
             let excess = state.messages.len() - MAX_MESSAGES;
@@ -656,11 +659,20 @@ fn render_session(session_id: &str, session: &Session) -> Value {
         "messages": session.messages.iter().map(|message| json!({
             "role": message.role,
             "text": message.text,
+            "created_at_ms": message.created_at_ms,
         })).collect::<Vec<_>>(),
         "events": session.events,
         "model": session.model,
         "effort": session.effort,
     })
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn render_session_summary(session_id: &str, session: &Session) -> Value {

@@ -569,7 +569,7 @@ export function SnippetsPageContent() {
   return (
     <>
       <AppHeader
-        breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Snippets' }]}
+        breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }, { label: 'Snippets' }]}
       />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={`${AURORA_PAGE_FRAME} gap-3.5`}>

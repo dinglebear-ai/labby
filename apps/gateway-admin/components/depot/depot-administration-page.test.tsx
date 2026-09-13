@@ -6,7 +6,7 @@ import { DepotAdministrationPage, OperationGrid } from './depot-administration-p
 
 test('administration uses compact attached workspace navigation and visible header actions', () => {
   const html = renderToStaticMarkup(<DepotAdministrationPage />)
-  const nav = html.match(/<nav aria-label="Depot administration workspaces"[\s\S]*?<\/nav>/)?.[0]
+  const nav = html.match(/<nav aria-label="Labby administration workspaces"[\s\S]*?<\/nav>/)?.[0]
   assert.ok(nav)
   assert.match(nav, /aurora-scrollbar/)
   assert.match(nav, /h-\[38px\]/)

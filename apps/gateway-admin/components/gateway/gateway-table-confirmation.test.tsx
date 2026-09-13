@@ -110,16 +110,16 @@ const gateway: Gateway = {
 test('column keyboard and drag moves persist while responsive hiding retains all columns', async () => {
   installDom()
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
-  window.localStorage.setItem('labby-gateway-col-order-v2', JSON.stringify(['endpoint', 'endpoint', 'unknown']))
+  window.localStorage.setItem('labby-gateway-col-order-v3', JSON.stringify(['exposed', 'endpoint', 'uptime']))
   const { GatewayTable } = await import('./gateway-table')
   const view = await renderClient(<GatewayTable gateways={[gateway]} density="comfortable" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}}/>)
   const columns = () => [...view.container.querySelectorAll('[data-gateway-column]')].map(node => node.getAttribute('data-gateway-column'))
   try {
-    assert.deepEqual(columns(), ['endpoint', 'exposed', 'uptime'])
+    assert.deepEqual(columns(), ['exposed', 'endpoint', 'uptime'])
     const handle = view.container.querySelector('[aria-label="Reorder endpoint column"]')!
     await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
-    assert.deepEqual(columns(), ['exposed', 'endpoint', 'uptime'])
-    assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-gateway-col-order-v2')!), columns())
+    assert.deepEqual(columns(), ['exposed', 'uptime', 'endpoint'])
+    assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-gateway-col-order-v3')!), columns())
     const source = view.container.querySelector('[aria-label="Reorder endpoint column"]')!
     await act(async () => { source.dispatchEvent(new Event('dragstart', { bubbles: true })) })
     await act(async () => { view.container.querySelector('[data-gateway-column="exposed"]')!.dispatchEvent(new Event('drop', { bubbles: true })) })

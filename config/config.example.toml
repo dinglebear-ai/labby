@@ -389,6 +389,24 @@
 [depot]
 public_enabled = true
 
+# When the authoritative catalog runs beside Labby in the same Incus system
+# container, bind the reserved public provider to that loopback service. This
+# replaces the anonymous public catalog; it does not add a second copy whose
+# totals would be summed with the authoritative index.
+# read_project_id = "replace-with-bound-project-id"
+#
+# [depot.public_read_binding]
+# endpoint = "http://127.0.0.1:4101/"
+# bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+# deployment_id = "catalog-depot"
+#
+# [[artifacts.sources]]
+# id = "public"
+# kind = "depot"
+# endpoint = "https://depot.example.com/api/artifacts/exact"
+# control_plane_url = "https://depot.example.com"
+# bearer_token_env = "LABBY_DEPOT_CATALOG_READ_TOKEN"
+
 # [[depot.providers]]
 # id = "team"
 # name = "Team Depot"

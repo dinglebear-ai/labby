@@ -33,6 +33,7 @@ export interface PhoenixStatus {
 export interface PhoenixMessage {
   role: 'user' | 'assistant'
   text: string
+  created_at_ms?: number
 }
 
 export interface PhoenixSession {

@@ -39,7 +39,7 @@ export function DiscoverArtifactCard({ artifact, compact, selected, href, now, d
     return Number.isSafeInteger(value) && value! >= 0
   })
 
-  const spacing = density === 'compact' ? 'gap-[9px] px-3.5 pt-2.5 pb-[9px]' : density === 'comfortable' ? 'gap-3 p-5' : 'gap-[9px] px-4 pt-3.5 pb-[13px]'
+  const spacing = density === 'compact' ? 'gap-1 px-3 py-2' : density === 'comfortable' ? 'gap-4 p-6' : 'gap-[9px] px-4 pt-3.5 pb-[13px]'
   return <article data-density={density} style={{ background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))' }}
     className={`@container/discover-card relative flex min-w-0 flex-col rounded-aurora-2 border ${selected ? 'border-aurora-accent-primary' : 'border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))]'} bg-aurora-panel-medium shadow-[var(--aurora-shadow-medium)]`}>
     <span aria-hidden="true" data-kind-stripe className="pointer-events-none absolute bottom-3.5 left-0 top-3.5 w-0.5" style={{ background: `color-mix(in srgb, ${tone} 60%, transparent)` }} />

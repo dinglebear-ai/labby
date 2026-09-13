@@ -152,10 +152,10 @@ test('active navigation uses the page token and inactive links omit aria-current
   await view.unmount()
 })
 
-test('the realm badge distinguishes Depot routes and reflects team workspace context', async () => {
+test('the realm badge keeps Labby branding and reflects workspace context', async () => {
   const depot = await mountSidebar(fullAuthority, '0', '/library')
   const depotBadge = depot.view.container.querySelector<HTMLElement>('[data-realm-badge]')
-  assert.equal(depotBadge?.textContent, 'DEPOT')
+  assert.equal(depotBadge?.textContent, 'LABBY')
   assert.equal(depotBadge?.style.color, 'var(--aurora-accent-strong)')
   await depot.view.unmount()
   const team = await mountSidebar(fullAuthority, '0', '/agents')

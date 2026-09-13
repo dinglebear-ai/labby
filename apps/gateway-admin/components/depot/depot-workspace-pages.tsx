@@ -55,9 +55,9 @@ function PageFrame({ children }: { children: React.ReactNode }) {
 }
 
 export function LibraryPage() {
-  return <><AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} /><PageFrame>
+  return <><AppHeader breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }]} /><PageFrame>
     <LibraryTabs active="artifacts" />
-    <ConsoleHero eyebrow="Depot · Library" title="Library" pulse={{ color: 'var(--aurora-warn)', label: 'preview layout' }} actions={<div className="flex gap-2"><Button variant="outline">Backup all</Button><Button><CirclePlus />New loadout</Button></div>} stats={[
+    <ConsoleHero eyebrow="Labby · Library" title="Library" pulse={{ color: 'var(--aurora-warn)', label: 'preview layout' }} actions={<div className="flex gap-2"><Button variant="outline">Backup all</Button><Button><CirclePlus />New loadout</Button></div>} stats={[
       { label: 'Artifacts', value: '102,745', icon: <Box size={12}/> },
       { label: 'Loadouts', value: '4', icon: <Layers3 size={12}/> },
       { label: 'Snippets', value: '6', icon: <FileCode2 size={12}/> },

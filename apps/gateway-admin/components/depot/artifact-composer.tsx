@@ -3,7 +3,7 @@
 import * as React from 'react'
 import {
   Clipboard, Download, ShieldCheck, Upload,
-  MoreHorizontal, RotateCcw, Settings2, CircleHelp, PencilLine, X,
+  MoreHorizontal, RotateCcw, Settings2, CircleHelp, PencilLine, X, Code2, Eye,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -68,6 +68,16 @@ type StoredCreateDraft = {
   bundleEntries: Record<string, string>
 }
 const CREATE_DRAFT_PREFIX = 'labby:create-draft:v1:'
+
+function HighlightedArtifactSource({ content }: { content: string }) {
+  const lines = content.split('\n')
+  return <>{lines.map((line, index) => {
+    const heading = /^(#{1,6}\s+)(.*)$/.exec(line)
+    const list = /^(\s*(?:[-*]|\d+\.)\s+)(.*)$/.exec(line)
+    const frontmatter = /^(\s*[a-zA-Z][\w-]*:)(.*)$/.exec(line)
+    return <React.Fragment key={index}>{heading ? <><span className="text-aurora-accent-pink">{heading[1]}</span><span className="font-semibold text-aurora-text-primary">{heading[2]}</span></> : list ? <><span className="text-aurora-accent-primary">{list[1]}</span><span>{list[2]}</span></> : frontmatter ? <><span className="text-aurora-accent-primary">{frontmatter[1]}</span><span className="text-aurora-warn">{frontmatter[2]}</span></> : line}{index < lines.length - 1 ? '\n' : null}</React.Fragment>
+  })}</>
+}
 const CREATE_DRAFT_SAVE_DELAY_MS = 120
 
 export function createDraftStorageKey(contextIdentity: string) {
@@ -129,8 +139,10 @@ export function ArtifactComposer() {
   const [tagInput, setTagInput] = React.useState('')
   const contentRef = React.useRef<HTMLTextAreaElement>(null)
   const gutterRef = React.useRef<HTMLDivElement>(null)
+  const highlightRef = React.useRef<HTMLPreElement>(null)
   const [documentView, setDocumentView] = React.useState<'source' | 'preview'>('source')
   const [frontmatterOpen, setFrontmatterOpen] = React.useState(false)
+  const [renaming, setRenaming] = React.useState(false)
   const [tipsOpen, setTipsOpen] = React.useState(true)
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('artifact')
   const [bundleEntries, setBundleEntries] = React.useState<Record<string, string>>({})
@@ -248,12 +260,12 @@ export function ArtifactComposer() {
     try {
       const receipt = await publishDepotSkill(metadata.name, source)
       if (submittingSessionEpoch !== getBrowserSessionEpoch()) return
-      const message = `Publishing accepted. Job ${receipt.jobId}: ${receipt.status}. Check Depot jobs for the final result.`
+      const message = `Publishing accepted. Job ${receipt.jobId}: ${receipt.status}. Check catalog jobs for the final result.`
       setPublishMessage(message)
-      toast.success('Skill submitted to Team Depot')
+      toast.success('Skill submitted to team catalog')
     } catch (error) {
       if (submittingSessionEpoch === getBrowserSessionEpoch()) {
-        setPublishError(error instanceof Error ? error.message : 'Publishing failed. Check Depot jobs before retrying.')
+        setPublishError(error instanceof Error ? error.message : 'Publishing failed. Check catalog jobs before retrying.')
       }
     } finally {
       publishingRef.current = false
@@ -309,7 +321,7 @@ export function ArtifactComposer() {
             : 'Local draft'
 
   const headerActions = <div className="flex flex-wrap items-center gap-[7px]">
-        <Button asChild variant="outline" className="h-9 gap-[7px] rounded-[10px] px-[13px] text-[12.5px] font-[650]" data-visible-label="1"><a href="/administration/" title="Depot operations — Administration"><ShieldCheck className="size-[13px]" />Depot Operations</a></Button>
+        <Button asChild variant="outline" className="h-9 gap-[7px] rounded-[10px] px-[13px] text-[12.5px] font-[650]" data-visible-label="1"><a href="/administration/" title="Catalog operations — Administration"><ShieldCheck className="size-[13px]" />Catalog Operations</a></Button>
         <DropdownMenu>
           <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="outline" className="size-9 rounded-[10px]" aria-label="More artifact actions"><MoreHorizontal className="size-[15px]" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent sideOffset={7}>More actions</TooltipContent></Tooltip>
           <DropdownMenuContent align="end" className="min-w-52 border-aurora-border-strong bg-aurora-panel-strong">
@@ -329,14 +341,14 @@ export function ArtifactComposer() {
   return <>
     {publishError || ownerLinkPending || publishMessage || unavailableReason ? (
       <div className="px-space-5 py-space-2 text-sm text-aurora-text-muted" aria-live="polite">
-        {publishError ? <p role="alert" className="text-aurora-error">{publishError}</p> : ownerLinkPending ? <div className="flex flex-wrap items-center gap-space-4"><p>An operator approved linking this signed-in account to the existing team owner. Existing owner logins will be preserved.</p><Button variant="outline" size="sm" disabled={linkingOwner} onClick={() => void confirmOwnerLink()}>{linkingOwner ? 'Confirming owner link…' : 'Confirm owner link'}</Button></div> : publishMessage ? <p>{publishMessage} <a className="underline" href="/administration/">Open Depot operations</a></p> : <p>{unavailableReason}</p>}
+        {publishError ? <p role="alert" className="text-aurora-error">{publishError}</p> : ownerLinkPending ? <div className="flex flex-wrap items-center gap-space-4"><p>An operator approved linking this signed-in account to the existing team owner. Existing owner logins will be preserved.</p><Button variant="outline" size="sm" disabled={linkingOwner} onClick={() => void confirmOwnerLink()}>{linkingOwner ? 'Confirming owner link…' : 'Confirm owner link'}</Button></div> : publishMessage ? <p>{publishMessage} <a className="underline" href="/administration/">Open catalog operations</a></p> : <p>{unavailableReason}</p>}
       </div>
     ) : null}
     <AppHeader icon={<PencilLine className="size-[18px] text-aurora-accent-pink" />} breadcrumbs={[{ label: 'Create' }]} />
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={cn(AURORA_PAGE_FRAME, 'min-h-[calc(100vh-5.5rem)] gap-3.5')}>
       <ConsoleHero
         variant="authoring"
-        eyebrow="Depot · Authoring"
+        eyebrow="Labby · Authoring"
         title="Create"
         icon={<PencilLine className="size-[21px] text-aurora-accent-pink" />}
         description="Author an artifact in one document. Validation updates as you type. Skill publishing is available when your session permits it."
@@ -353,15 +365,14 @@ export function ArtifactComposer() {
           <section className="min-w-0 overflow-hidden rounded-aurora-3 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-aurora-strong">
             <div aria-label="Document controls" className="flex flex-wrap items-center gap-2 border-b border-aurora-border-default/55 bg-[var(--gw0-0_38)] py-[9px] pl-3.5 pr-3">
               <ArtifactKindPicker value={kind} onChange={value => { markDraftDirty(); setKind(value) }} />
+              {renaming ? <input autoFocus aria-label="Artifact name" value={metadata.name} onChange={event => updateMetadata('name')(event.target.value)} onBlur={() => setRenaming(false)} onKeyDown={event => { if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); setRenaming(false) } }} className="h-8 min-w-0 flex-1 rounded-lg border border-aurora-accent-primary bg-aurora-control-surface px-2 font-display text-base font-bold text-aurora-text-primary outline-none shadow-[var(--aurora-focus-ring-strong)]" /> : <button type="button" aria-label="Show artifact metadata" title="Click for metadata · double-click to rename" onClick={() => setFrontmatterOpen(open => !open)} onDoubleClick={() => { setFrontmatterOpen(false); setRenaming(true) }} className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-left font-display text-base font-bold text-aurora-text-primary hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{metadata.name || 'untitled-artifact'}</button>}
               <span aria-label="Draft save status" aria-live="polite" className={cn('ml-auto text-[11px]', draftStatus === 'error' || draftStatus === 'credential' ? 'text-aurora-warn' : 'text-aurora-text-muted')} title="Drafts are stored only in this browser and only for the current authenticated authority workspace.">{draftStatusText}</span>
             <div role="group" aria-label="Document view" className="flex w-fit shrink-0 gap-0.5 rounded-lg border border-aurora-border-default/55 bg-[var(--gw0-0_40)] p-0.5">
-              {(['source', 'preview'] as const).map(mode => <button key={mode} type="button" aria-pressed={documentView === mode} onClick={() => setDocumentView(mode)} className={cn('h-[22px] rounded-md px-2.5 text-[10.5px] font-[650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary', documentView === mode ? 'bg-aurora-selected-bg text-aurora-accent-strong' : 'text-aurora-text-muted hover:text-aurora-text-primary')}>{mode === 'source' ? 'Source' : 'Preview'}</button>)}
+              {([['source', Code2], ['preview', Eye]] as const).map(([mode, Icon]) => <button key={mode} type="button" aria-label={mode === 'source' ? 'Source' : 'Preview'} title={mode === 'source' ? 'Source' : 'Preview'} aria-pressed={documentView === mode} onClick={() => setDocumentView(mode)} className={cn('grid size-7 place-items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary', documentView === mode ? 'bg-aurora-selected-bg text-aurora-accent-strong' : 'text-aurora-text-muted hover:text-aurora-text-primary')}><Icon className="size-3.5" /></button>)}
             </div>
             </div>
-            <div className="px-5 pb-[22px] pt-[26px] sm:px-[34px]">
+            {frontmatterOpen ? <div aria-label="Artifact metadata" className="border-b border-aurora-border-subtle bg-aurora-panel-low px-5 py-4 sm:px-[34px]">
             <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3">
-            <ArtifactFieldIndicator field="name" issues={issues} className="mt-[18px]" />
-            <input aria-label="Artifact name" placeholder="untitled-artifact" spellCheck={false} value={metadata.name} onChange={(event)=>updateMetadata('name')(event.target.value)} className="-mx-1.5 h-12 w-[calc(100%+12px)] rounded-t-lg border border-transparent border-b-aurora-border-strong bg-transparent px-1.5 py-1 font-display text-[28px] font-extrabold tracking-[-.015em] text-aurora-text-primary outline-none transition-colors [border-bottom-style:dotted] hover:bg-aurora-hover-bg focus:rounded-lg focus:border-aurora-accent-primary focus:bg-aurora-control-surface focus:shadow-[var(--aurora-focus-ring-strong)] focus:[border-bottom-style:solid]"/>
             <ArtifactFieldIndicator field="description" issues={issues} className="mt-[17px]" />
             <ArtifactDescriptionField value={metadata.description} onChange={updateMetadata('description')} />
             </div>
@@ -375,11 +386,11 @@ export function ArtifactComposer() {
                 }} onBlur={addTag} placeholder="add tag…" className="h-[18px] min-w-[80px] flex-1 bg-transparent px-0 py-0.5 text-[11.5px] text-aurora-text-primary outline-none placeholder:text-aurora-text-muted" />
               </div>
             </div>
-            {frontmatterOpen ? <fieldset className="mb-6 grid gap-3 rounded-lg border border-aurora-border-default bg-aurora-control-surface p-4">
+            <fieldset className="mt-4 grid gap-3 rounded-lg border border-aurora-border-default bg-aurora-control-surface p-4 sm:grid-cols-3">
               <legend className="px-1 text-xs font-semibold text-aurora-text-muted">Frontmatter fields</legend>
               {(['license', 'compatibility', 'allowedTools'] as const).map(field => <label key={field} className="grid gap-1 text-xs text-aurora-text-muted">{field === 'allowedTools' ? 'Allowed tools' : field === 'license' ? 'License' : 'Compatibility'}<input value={metadata[field]} onChange={event => updateMetadata(field)(event.target.value)} className="h-8 rounded border border-aurora-border-default bg-aurora-page-bg px-2 text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary" /></label>)}
-            </fieldset> : null}
-            </div>
+            </fieldset>
+            </div> : null}
             <div data-artifact-source="1" hidden={documentView !== 'source'} className="border-t border-aurora-border-subtle [&[hidden]]:hidden">
             {artifactLanguage(kind) === 'markdown' ? <ArtifactFormattingToolbar indicator={<ArtifactFieldIndicator field="content" issues={issues} className="mr-2" />} onSection={section => append(`## ${section}`)} onFormat={format => {
               const editor = contentRef.current
@@ -391,7 +402,8 @@ export function ArtifactComposer() {
             }} /> : null}
             <div className="relative min-w-0 bg-aurora-control-surface pl-11">
               <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-11 select-none overflow-hidden border-r border-aurora-border-subtle bg-aurora-page-bg text-right font-mono text-[12.5px] leading-[1.7] tabular-nums text-aurora-text-muted"><div ref={gutterRef} className="whitespace-pre py-3.5 pr-2.5 opacity-70">{Array.from({ length: content.split('\n').length }, (_, index) => index + 1).join('\n')}</div></div>
-              <textarea ref={contentRef} aria-label="Artifact content" wrap="off" spellCheck={false} placeholder="Write the instructions…" value={content} onScroll={event => { if (gutterRef.current) gutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)` }} onKeyDown={event => {
+              <pre ref={highlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 ml-11 overflow-hidden whitespace-pre py-3.5 pl-3.5 pr-[18px] font-mono text-[12.5px] leading-[1.7] text-aurora-text-primary"><HighlightedArtifactSource content={content} /></pre>
+              <textarea ref={contentRef} aria-label="Artifact content" wrap="off" spellCheck={false} placeholder="Write the instructions…" value={content} onScroll={event => { if (gutterRef.current) gutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`; if (highlightRef.current) highlightRef.current.style.transform = `translate(${-event.currentTarget.scrollLeft}px, ${-event.currentTarget.scrollTop}px)` }} onKeyDown={event => {
                 if (event.key !== 'Tab') return
                 event.preventDefault()
                 const start = event.currentTarget.selectionStart
@@ -399,7 +411,7 @@ export function ArtifactComposer() {
                 markDraftDirty()
                 setContent(`${content.slice(0, start)}  ${content.slice(end)}`)
                 requestAnimationFrame(() => { contentRef.current?.focus(); contentRef.current?.setSelectionRange(start + 2, start + 2) })
-              }} onChange={(event)=>{ markDraftDirty(); setContent(event.target.value) }} className="aurora-scrollbar block min-h-[360px] w-full resize-y overflow-x-auto whitespace-pre bg-transparent pb-[18px] pl-3.5 pr-[18px] pt-3.5 font-mono text-[12.5px] leading-[1.7] text-aurora-text-primary outline-none [tab-size:2]"/>
+              }} onChange={(event)=>{ markDraftDirty(); setContent(event.target.value) }} className="aurora-scrollbar relative block min-h-[360px] w-full resize-y overflow-x-auto whitespace-pre bg-transparent pb-[18px] pl-3.5 pr-[18px] pt-3.5 font-mono text-[12.5px] leading-[1.7] text-transparent caret-aurora-text-primary outline-none [tab-size:2] selection:bg-aurora-accent-primary/30"/>
             </div>
             </div>
             {documentView === 'preview' ? <div aria-label="Artifact preview" title="Double-click to edit source" onDoubleClick={() => { setDocumentView('source'); requestAnimationFrame(() => contentRef.current?.focus()) }} className="min-h-[360px] cursor-text border-t border-aurora-border-subtle px-5 pb-[26px] pt-[22px] sm:px-[34px]">{artifactLanguage(kind) === 'markdown' ? <SafeMarkdown text={content} className="max-w-[78ch] text-sm leading-[1.65]" /> : <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6">{content}</pre>}</div> : null}

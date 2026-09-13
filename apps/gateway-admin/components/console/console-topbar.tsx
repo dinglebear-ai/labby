@@ -80,8 +80,6 @@ export function ConsoleTopbar() {
           flexShrink: 0,
         }}
       />
-      <ConsoleStatusStrip state={status} />
-
       <div style={{ flex: 1 }} />
 
       <button
@@ -94,6 +92,9 @@ export function ConsoleTopbar() {
         style={{
           flex: '0 1 auto',
           maxWidth: 340,
+          position: 'absolute',
+          left: '50%',
+          transform: 'translateX(-50%)',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -181,6 +182,7 @@ export function ConsoleTopbar() {
           gap: 5,
         }}
       />
+      <ConsoleStatusStrip state={status} />
       <ConsoleNotifications state={status} />
       <AccountMenu placement="topbar" />
     </header>

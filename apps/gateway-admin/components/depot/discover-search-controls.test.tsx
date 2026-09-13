@@ -35,3 +35,19 @@ test('provider brands require an unambiguous returned source origin', async () =
   ] as FederatedArtifact[])
   assert.deepEqual([...observed], [['source', 'gemini']])
 })
+
+test('visibility is offered after search and remains a loaded-result filter', async () => {
+  const window = installTestDom()
+  for (const name of ['Event', 'NodeFilter', 'HTMLInputElement'] as const) Object.defineProperty(globalThis, name, { value: window[name], configurable: true })
+  const { DiscoverSearchControls } = await import('./discover-search-controls')
+  let visibility = 'all'
+  const view = await renderClient(<DiscoverSearchControls query="gateway" onQuery={() => {}} providers={providers} artifacts={[]} kind="all" selectedProvider="all" onFilter={() => {}} onVisibility={value => { visibility = value }} />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Kind and source filters"]')!.click())
+    const team = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Team')!
+    assert.ok(team)
+    await act(async () => team.click())
+    assert.equal(visibility, 'team')
+    assert.match(document.body.textContent ?? '', /reported by each source/)
+  } finally { await view.unmount(); await window.happyDOM.close() }
+})

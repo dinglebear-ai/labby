@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import Link from 'next/link'
+import { Bot, Server, Wrench } from 'lucide-react'
 import { useBrowserSession } from '@/lib/auth/session'
 import { authorityIdentity } from '@/lib/auth/authority'
 
@@ -87,6 +88,7 @@ function Metric({
   color,
   title,
   href,
+  icon: Icon,
 }: {
   value: React.ReactNode
   label: string
@@ -94,6 +96,7 @@ function Metric({
   /** Explains an unavailable value; also exposed as the accessible name. */
   title?: string
   href: string
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>
 }) {
   return (
     <Link
@@ -117,6 +120,7 @@ function Metric({
         whiteSpace: 'nowrap',
       }}
     >
+      <Icon size={13} strokeWidth={1.8} />
       <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
       <span>{label}</span>
     </Link>
@@ -151,6 +155,7 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
             href="/gateways"
             label="up"
             color={upstreamMetricColor(state.snapshot)}
+            icon={Server}
           />
           {state.snapshot.sessions !== undefined ? (
             <Metric
@@ -158,6 +163,7 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
               href="/agents"
               label="sessions"
               color="var(--aurora-accent-pink)"
+              icon={Bot}
             />
           ) : state.snapshot.sessionsUnavailable ? (
             <Metric
@@ -166,6 +172,7 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
               label="sessions"
               color="var(--aurora-text-muted)"
               title={`Session count is unavailable: ${state.snapshot.sessionsUnavailable}`}
+              icon={Bot}
             />
           ) : null}
           <Metric
@@ -173,6 +180,7 @@ export function ConsoleStatusContent({ state }: { state: ConsoleStatusState }): 
             href="/tools"
             label="tools"
             color="var(--aurora-accent-strong)"
+            icon={Wrench}
           />
         </>
       )

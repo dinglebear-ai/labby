@@ -11,9 +11,7 @@ import {
   ChevronRight,
   LogOut,
   Moon,
-  Palette,
   Pin,
-  ScrollText,
   Settings,
   Sun,
 } from 'lucide-react'
@@ -453,47 +451,6 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
                 <Settings size={14} strokeWidth={1.7} />
               </span>
               <span style={{ flex: 1, whiteSpace: 'nowrap' }}>Settings</span>
-            </Link>
-            {/* Docs and the Aurora gallery are reference surfaces, not console
-                destinations — the mock keeps its nav to the four working
-                sections, so these live here rather than in the sidebar list. */}
-            <Link
-              href="/docs"
-              data-menurow="1"
-              onClick={() => setOpen(false)}
-              style={{ ...menuRowStyle, textDecoration: 'none' }}
-            >
-              <span
-                style={{
-                  flexShrink: 0,
-                  display: 'grid',
-                  placeItems: 'center',
-                  width: 16,
-                  height: 16,
-                }}
-              >
-                <ScrollText size={14} strokeWidth={1.7} />
-              </span>
-              <span style={{ flex: 1, whiteSpace: 'nowrap' }}>Documentation</span>
-            </Link>
-            <Link
-              href="/design-system"
-              data-menurow="1"
-              onClick={() => setOpen(false)}
-              style={{ ...menuRowStyle, textDecoration: 'none' }}
-            >
-              <span
-                style={{
-                  flexShrink: 0,
-                  display: 'grid',
-                  placeItems: 'center',
-                  width: 16,
-                  height: 16,
-                }}
-              >
-                <Palette size={14} strokeWidth={1.7} />
-              </span>
-              <span style={{ flex: 1, whiteSpace: 'nowrap' }}>Design System</span>
             </Link>
           </div>
 
@@ -957,7 +914,7 @@ export function ConsoleSidebar() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                De<span style={{ color: 'var(--aurora-accent-strong)' }}>pot</span>
+                Lab<span style={{ color: 'var(--aurora-accent-strong)' }}>by</span>
               </div>
               <span
                 data-realm-badge="1"
@@ -975,44 +932,11 @@ export function ConsoleSidebar() {
                   color: realmColor,
                 }}
               >
-                {depotRoute ? 'DEPOT' : 'LABBY'}
+                LABBY
               </span>
             </div>
           )}
         </Link>
-
-        {/* Workspace switcher */}
-        <div data-scopemenu="1" style={{ position: 'relative', flexShrink: 0, padding: '8px 8px 4px' }}>
-          <button
-            type="button"
-            aria-label="Switch workspace"
-            aria-expanded={workspaceOpen}
-            onClick={() => {
-              // The menu only has room on the expanded rail, so open the rail first.
-              if (visuallyCollapsed) { toggleCollapsed(); setWorkspaceOpen(true); return }
-              setWorkspaceOpen((value) => !value)
-            }}
-            style={{
-              width: '100%', height: 38, borderRadius: 11,
-              border: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-              background: 'var(--gw0-0_40)',
-              color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 9,
-              padding: visuallyCollapsed ? 0 : '0 10px 0 6px', justifyContent: visuallyCollapsed ? 'center' : 'flex-start',
-              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
-            }}
-          >
-            <span style={{ width: 24, height: 24, borderRadius: 8, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 34%,transparent)', color: 'var(--aurora-accent-strong)', fontSize: 9, fontWeight: 700 }}>
-              {authority?.activeOwner.kind === 'team' ? authority.activeOwner.id.slice(0, 2).toUpperCase() : <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
-            </span>
-            {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}><small style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--console-workspace-label)' }}>WORKSPACE</small><strong style={{ fontSize: 12, fontWeight: 650, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 2 }}>{authority?.activeOwner.kind === 'personal' ? 'Personal' : authority?.projects.find(project => project.id === authority.activeOwner.id)?.name ?? authority?.activeOwner.id ?? 'No workspace'}</strong></span><ChevronsUpDown size={12} strokeWidth={1.8} color="var(--aurora-text-muted)"/></>}
-          </button>
-          {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 'calc(100% + 4px)', left: 8, right: 8, minWidth: 210, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
-            <button type="button" data-menurow="1" disabled={!authority} aria-disabled={!authority} title={authority ? undefined : 'Workspace selection is unavailable until the server projects your authority.'} onClick={() => { if (switchWorkspace({})) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority?.activeOwner.kind === 'personal' ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: authority ? 'pointer' : 'not-allowed', opacity: authority ? 1 : 0.55 }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your private workspace</small></span>{authority?.activeOwner.kind === 'personal' ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>
-            {authority && authority.teams.length === 0 ? <p className="px-2 py-2 text-[11px] text-aurora-text-muted">You are not currently a member of a Team.</p> : null}
-            {authority?.teams.map((team) => <button key={team.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ teamId: team.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeTeamId === team.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>{team.id.slice(0,2).toUpperCase()}</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>{team.id}</strong><small style={{ color: 'var(--aurora-text-muted)' }}>{team.role}</small></span>{authority.activeTeamId === team.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
-            {authority?.projects.map((project) => <button key={project.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ projectId: project.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeProjectId === project.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-accent-primary) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 30%,transparent)', color: 'var(--aurora-accent-primary)', fontSize: 10 }}>PR</span><span style={{ minWidth: 0 }}><strong style={{ display: 'block', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name ?? project.id}</strong><small style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>{project.name ? `${project.id} · ` : ''}{project.role} · project</small></span>{authority.activeProjectId === project.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
-          </div> : null}
-        </div>
 
         {/* Nav */}
         <nav
@@ -1137,6 +1061,40 @@ export function ConsoleSidebar() {
 
           <div style={{ flex: 1 }} />
         </nav>
+
+        {/* Workspace switcher */}
+        <div data-scopemenu="1" style={{ position: 'relative', flexShrink: 0, padding: '8px 8px 4px' }}>
+          <button
+            type="button"
+            aria-label="Switch workspace"
+            aria-expanded={workspaceOpen}
+            onClick={() => {
+              // The menu only has room on the expanded rail, so open the rail first.
+              if (visuallyCollapsed) { toggleCollapsed(); setWorkspaceOpen(true); return }
+              setWorkspaceOpen((value) => !value)
+            }}
+            style={{
+              width: '100%', height: 38, borderRadius: 11,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+              background: 'var(--gw0-0_40)',
+              color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 9,
+              padding: visuallyCollapsed ? 0 : '0 10px 0 6px', justifyContent: visuallyCollapsed ? 'center' : 'flex-start',
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+            }}
+          >
+            <span style={{ width: 24, height: 24, borderRadius: 8, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 34%,transparent)', color: 'var(--aurora-accent-strong)', fontSize: 9, fontWeight: 700 }}>
+              {authority?.activeOwner.kind === 'team' ? authority.activeOwner.id.slice(0, 2).toUpperCase() : <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
+            </span>
+            {visuallyCollapsed ? null : <><span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}><small style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--console-workspace-label)' }}>WORKSPACE</small><strong style={{ fontSize: 12, fontWeight: 650, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 2 }}>{authority?.activeOwner.kind === 'personal' ? 'Personal' : authority?.projects.find(project => project.id === authority.activeOwner.id)?.name ?? authority?.activeOwner.id ?? 'No workspace'}</strong></span><ChevronsUpDown size={12} strokeWidth={1.8} color="var(--aurora-text-muted)"/></>}
+          </button>
+          {workspaceOpen && !visuallyCollapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, bottom: 'calc(100% + 4px)', left: 8, right: 8, minWidth: 210, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
+            <button type="button" data-menurow="1" disabled={!authority} aria-disabled={!authority} title={authority ? undefined : 'Workspace selection is unavailable until the server projects your authority.'} onClick={() => { if (switchWorkspace({})) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority?.activeOwner.kind === 'personal' ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: authority ? 'pointer' : 'not-allowed', opacity: authority ? 1 : 0.55 }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your private workspace</small></span>{authority?.activeOwner.kind === 'personal' ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>
+            {authority && authority.teams.length === 0 ? <p className="px-2 py-2 text-[11px] text-aurora-text-muted">You are not currently a member of a Team.</p> : null}
+            {authority?.teams.map((team) => <button key={team.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ teamId: team.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeTeamId === team.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>{team.id.slice(0,2).toUpperCase()}</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>{team.id}</strong><small style={{ color: 'var(--aurora-text-muted)' }}>{team.role}</small></span>{authority.activeTeamId === team.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
+            {authority?.projects.map((project) => <button key={project.id} type="button" data-menurow="1" onClick={() => { if (switchWorkspace({ projectId: project.id })) { setWorkspaceOpen(false); router.push('/') } }} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: authority.activeProjectId === project.id ? 'var(--aurora-selected-bg)' : 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-accent-primary) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 30%,transparent)', color: 'var(--aurora-accent-primary)', fontSize: 10 }}>PR</span><span style={{ minWidth: 0 }}><strong style={{ display: 'block', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name ?? project.id}</strong><small style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>{project.name ? `${project.id} · ` : ''}{project.role} · project</small></span>{authority.activeProjectId === project.id ? <Check size={14} color="var(--aurora-accent-strong)"/> : null}</button>)}
+          </div> : null}
+        </div>
+
 
       </div>
     </aside>

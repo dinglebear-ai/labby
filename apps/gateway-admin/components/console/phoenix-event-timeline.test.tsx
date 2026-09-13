@@ -11,10 +11,9 @@ test('Phoenix renders only recognized App Server events without dumping raw prot
     { method: 'thread/tokenUsage/updated', params: { tokenUsage: { inputTokens: 1200, outputTokens: 42 } } },
     { method: 'future/unknown', params: { text: 'internal protocol detail' } },
   ]}/>)
-  assert.match(html, /Reasoning/)
-  assert.match(html, /Checked gateway health/)
-  assert.match(html, /Using labby\.gateway/)
-  assert.match(html, /1,200 in · 42 out/)
+  assert.match(html, /1 tool call · 1 reasoning step/)
+  assert.match(html, /aria-expanded="false"/)
+  assert.doesNotMatch(html, /Checked gateway health|Using labby\.gateway|1,200 in · 42 out/)
   assert.doesNotMatch(html, /do-not-render|internal protocol detail|future\/unknown/)
 })
 
@@ -44,8 +43,8 @@ test('Phoenix summarizes streamed text and nested token usage without exposing r
     { method: 'item/agentMessage/delta', params: { delta: 'Shipping the answer' } },
     { method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { inputTokens: 1200, cachedInputTokens: 800, outputTokens: 42 } } } },
   ]}/>)
-  assert.match(html, /Response streaming/)
-  assert.match(html, /Shipping the answer/)
-  assert.match(html, /1,200 in · 800 cached · 42 out/)
+  assert.match(html, /2 updates/)
+  assert.match(html, /aria-expanded="false"/)
+  assert.doesNotMatch(html, /Shipping the answer|1,200 in · 800 cached · 42 out/)
   assert.doesNotMatch(html, /inputTokens/)
 })

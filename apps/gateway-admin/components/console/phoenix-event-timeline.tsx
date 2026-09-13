@@ -85,7 +85,7 @@ const styles = {
 } as const
 
 export function PhoenixEventTimeline({ events }: { events: PhoenixEvent[] }) {
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(false)
   const visible = events.map(summarize).filter((event): event is EventView => event !== undefined)
   if (visible.length === 0) return null
   const toolCount = visible.filter((event) => event.kind === 'tool').length

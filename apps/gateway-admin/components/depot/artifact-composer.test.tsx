@@ -37,33 +37,25 @@ function setControlValue(window: ReturnType<typeof installTestDom>, control: HTM
   control.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
 }
 
-test('artifact title is editable inline without enabling publishing', () => {
+test('artifact title and metadata live in the document header without enabling publishing', () => {
   const html = renderToStaticMarkup(<ArtifactComposer />)
-  const name = html.match(/<input[^>]*aria-label="Artifact name"[^>]*>/)?.[0]
-  assert.ok(name)
-  assert.match(name, /placeholder="untitled-artifact"/)
-  assert.match(name, /spellCheck="false"/i)
-  assert.match(name, /text-\[28px\]/)
-  assert.match(name, /border-bottom-style:dotted/)
-  assert.match(name, /focus:border-aurora-accent-primary/)
-  assert.match(name, /value="repo-triage"/)
+  assert.match(html, /aria-label="Show artifact metadata"/)
+  assert.match(html, /Click for metadata · double-click to rename/)
+  assert.doesNotMatch(html, /aria-label="Artifact metadata"/)
   assert.match(html, /<button[^>]*aria-label="Publish skill"[^>]*disabled=""[^>]*bg-aurora-accent-pink[^>]*><svg[^>]*lucide-upload[^>]*>.*<\/svg>Publish<\/button>/)
   assert.match(html, /aria-label="Change artifact kind: Skill" data-visible-label="1"/)
   assert.doesNotMatch(html, /mx-auto mt-4 max-w-5xl/)
   assert.match(html, /grid items-start gap-3 lg:grid-cols/)
   assert.match(html, /data-console-hero-variant="authoring"/)
-  assert.match(html, /Depot · Authoring/)
+  assert.match(html, /Labby · Authoring/)
   assert.doesNotMatch(html, /Creation toolbar/)
   assert.doesNotMatch(html, /compiles to every install format/)
-  assert.ok(html.indexOf('Depot Operations') < html.indexOf('aria-label="More artifact actions"'))
+  assert.ok(html.indexOf('Catalog Operations') < html.indexOf('aria-label="More artifact actions"'))
   assert.ok(html.indexOf('aria-label="More artifact actions"') < html.indexOf('aria-label="Publish skill"'))
   assert.doesNotMatch(html, /aria-label="Artifact type:/)
   assert.match(html, /aurora-accent-pink-deep/)
-  const description = html.match(/<textarea[^>]*aria-label="Artifact description"[^>]*>/)?.[0]
-  assert.ok(description)
-  assert.match(description, /rows="1"/)
-  assert.match(description, /border-bottom-style:dotted/)
-  assert.match(description, /focus:border-aurora-accent-primary/)
+  assert.match(html, /aria-label="Source"/)
+  assert.match(html, /aria-label="Preview"/)
   assert.match(html, /aria-label="Insert a section"/)
   assert.ok(html.indexOf('aria-label="Italic"') < html.indexOf('aria-label="Inline code"'))
   assert.ok(html.indexOf('aria-label="Inline code"') < html.indexOf('aria-label="Bulleted list"'))
@@ -109,6 +101,13 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     const chrome = view.container.querySelector('[aria-label="Document controls"]')!
     assert.ok(chrome.querySelector('[aria-label="Change artifact kind: Skill"]'))
     assert.ok(chrome.querySelector('[aria-label="Document view"]'))
+    const title = chrome.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')!
+    assert.ok(title)
+    assert.equal(view.container.querySelector('[aria-label="Artifact metadata"]'), null)
+    await act(async () => title.click())
+    assert.ok(view.container.querySelector('[aria-label="Artifact metadata"]'))
+    await act(async () => title.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }) as unknown as Event))
+    assert.ok(chrome.querySelector<HTMLInputElement>('[aria-label="Artifact name"]'))
     assert.match(chrome.textContent!, /authenticated workspace required/)
     assert.equal(chrome.parentElement, editor.closest('section'))
     const draft = editor.value
@@ -127,8 +126,8 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     await toggleTips()
     assert.equal(tips.hidden, false)
     assert.equal(editor.value, draft)
-    const preview = Array.from(view.container.querySelectorAll<HTMLButtonElement>('[aria-label="Document view"] button')).find(button => button.textContent === 'Preview')!
-    const source = Array.from(view.container.querySelectorAll<HTMLButtonElement>('[aria-label="Document view"] button')).find(button => button.textContent === 'Source')!
+    const preview = view.container.querySelector<HTMLButtonElement>('[aria-label="Document view"] button[aria-label="Preview"]')!
+    const source = view.container.querySelector<HTMLButtonElement>('[aria-label="Document view"] button[aria-label="Source"]')!
     await act(async () => preview.dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
     assert.equal(preview.getAttribute('aria-pressed'), 'true')
     assert.equal(editor.closest<HTMLElement>('[data-artifact-source]')!.hidden, true)
@@ -186,6 +185,7 @@ test('clean drafts restore only inside the same authority workspace and secret d
   const key = createDraftStorageKey(getBrowserSessionContextIdentity())
   let view = await renderClient(<ArtifactComposer />)
   try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')!.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }) as unknown as Event))
     const name = view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')!
     await act(async () => { setControlValue(window, name, 'workspace-a-draft'); await new Promise(resolve => setTimeout(resolve, 0)) })
     await act(async () => { await waitForAutosave() })
@@ -194,12 +194,12 @@ test('clean drafts restore only inside the same authority workspace and secret d
     await view.unmount()
 
     view = await renderClient(<ArtifactComposer />)
-    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')?.value, 'workspace-a-draft')
+    assert.equal(view.container.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')?.textContent, 'workspace-a-draft')
     await view.unmount()
 
     authenticate('operator-b', 'project-b')
     view = await renderClient(<ArtifactComposer />)
-    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')?.value, 'repo-triage')
+    assert.equal(view.container.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')?.textContent, 'repo-triage')
     await view.unmount()
 
     authenticate()
@@ -229,6 +229,7 @@ test('draft controls support tag keyboard editing, editor indentation, and truth
   const storage = window.localStorage
   const originalSetItem = storage.setItem.bind(storage)
   try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')!.click())
     const tags = view.container.querySelector<HTMLInputElement>('[aria-label="Add a tag"]')!
     await act(async () => { setControlValue(window, tags, 'operations'); await new Promise(resolve => setTimeout(resolve, 0)) })
     await act(async () => tags.dispatchEvent(new window.KeyboardEvent('keydown', { key: ' ', bubbles: true }) as unknown as Event))
@@ -246,6 +247,7 @@ test('draft controls support tag keyboard editing, editor indentation, and truth
     assert.equal(content.selectionStart, 2)
 
     Object.defineProperty(storage, 'setItem', { configurable: true, value: () => { throw new DOMException('quota', 'QuotaExceededError') } })
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Show artifact metadata"]')!.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }) as unknown as Event))
     const name = view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')!
     await act(async () => { setControlValue(window, name, 'quota-failure'); await new Promise(resolve => setTimeout(resolve, 0)) })
     await act(async () => { await waitForAutosave() })

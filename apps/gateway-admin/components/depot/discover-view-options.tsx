@@ -1,12 +1,12 @@
 'use client'
 
-import { Check, Grid2X2, List, ListCollapse, Rows2, Rows3, SlidersHorizontal } from 'lucide-react'
+import { Check, Grid2X2, List, ListCollapse, Rows2, Rows3, SlidersHorizontal, Table2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { DiscoverySort } from './discover-model'
 
 export type DiscoveryDensity = 'compact' | 'default' | 'comfortable'
-export type DiscoveryLayout = 'cards' | 'list'
+export type DiscoveryLayout = 'cards' | 'list' | 'table'
 
 export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density, setDensity }: {
   sort: DiscoverySort
@@ -40,7 +40,7 @@ export function DiscoverViewOptions({ sort, setSort, layout, setLayout, density,
       <div role="group" aria-label="Layout" className="flex items-center gap-2 px-2">
         <span className="flex-1 text-[9px] font-bold uppercase tracking-[0.13em] text-aurora-text-muted">Layout</span>
         <div className="flex gap-[3px] rounded-[9px] border border-aurora-border-default bg-aurora-control-surface p-[3px]">
-          {([['cards', 'Cards', Grid2X2], ['list', 'List', List]] as const).map(([value, label, Icon]) => <Button
+          {([['cards', 'Cards', Grid2X2], ['list', 'List', List], ['table', 'Table', Table2]] as const).map(([value, label, Icon]) => <Button
             key={value} size="icon-sm" className="h-[22px] w-7 rounded-[6px]"
             variant={layout === value ? 'secondary' : 'ghost'} aria-label={label} title={label}
             aria-pressed={layout === value} onClick={() => setLayout(value)}

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 
 const CARDS = [
   { workspace: 'catalog', title: 'Catalog lifecycle', description: 'Discovery, canonical artifacts, sources, durable jobs, uploads, bundles, and publication share one workspace.', action: 'Open Catalog' },
-  { workspace: 'access', title: 'Access & governance', description: 'Token administration and publication policy use Depot’s canonical schemas and Labby’s admin guard.', action: 'Open Access' },
+  { workspace: 'access', title: 'Access & governance', description: 'Token administration and publication policy use Labby’s canonical schemas and Labby’s admin guard.', action: 'Open Access' },
   { workspace: 'operations', title: 'System operations', description: 'Status, CAS audits, maintenance, and migrations remain explicit, reviewable operations.', action: 'Open Operations' },
 ] as const
 

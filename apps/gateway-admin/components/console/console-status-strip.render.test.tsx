@@ -21,7 +21,7 @@ test('status strip metrics reflect health and omit sessions when clients were no
   assert.match(healthy, />3\/3<\/span><span>up</)
   assert.match(healthy, /color:var\(--aurora-success\)[^>]*>3\/3</)
   assert.match(healthy, />2<\/span><span>sessions</)
-  assert.match(healthy, /href="\/agents"[^>]*><span[^>]*>2<\/span><span>sessions</)
+  assert.match(healthy, /href="\/agents"[\s\S]*?>2<\/span><span>sessions</)
   assert.match(healthy, />41<\/span><span>tools</)
   const degraded = renderToStaticMarkup(<ConsoleStatusContent state={{ kind: 'ready', snapshot: { connected: 1, total: 3, tools: 4 } }} />)
   assert.match(degraded, /color:var\(--aurora-warn\)[^>]*>1\/3</)
