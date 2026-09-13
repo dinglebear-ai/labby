@@ -713,10 +713,13 @@ async fn pair_and_authenticate(
     let pairing_id = pending["pairing_id"]
         .as_str()
         .ok_or_else(|| "pairing response omitted id".to_string())?;
+    let pairing_fingerprint = pending["pairing_fingerprint"]
+        .as_str()
+        .ok_or_else(|| "pairing response omitted fingerprint".to_string())?;
     let response = client
         .post(format!("{base}/v1/browser"))
         .bearer_auth(token)
-        .json(&json!({"action":"browser.pairing.approve","params":{"pairing_id":pairing_id}}))
+        .json(&json!({"action":"browser.pairing.approve","params":{"pairing_id":pairing_id,"pairing_fingerprint":pairing_fingerprint}}))
         .send()
         .await
         .map_err(|error| error.to_string())?;

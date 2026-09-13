@@ -8,7 +8,7 @@ use verify_loom::{
     ConcurrencyBackend, EngineLimits, LoomLimits, ShuttleLimits, raise_counterexample, run_loom,
     run_shuttle,
 };
-use verify_scenario::{OriginKind, Scenario, ValidatedScenario};
+use verify_scenario::{Expectation, Origin, OriginKind, Scenario, Status, ValidatedScenario};
 
 const INVARIANT: &str = "TEST-REQ-001";
 
@@ -54,21 +54,31 @@ fn counterexample(
         .into_iter()
         .map(|action| serde_json::json!({"action": action}))
         .collect::<Vec<_>>();
-    Scenario::from_json(
-        &serde_json::json!({
-            "schema": 1,
-            "project": "verify-loom-fixture",
-            "model": "request",
-            "invariant": INVARIANT,
-            "origin": {"kind": engine, "tool_version": version, "seed": seed},
-            "bounds": {},
-            "initial": {"state": "active", "terminal_writes": 0},
-            "steps": steps,
-            "expect": "invariant_violated",
-            "status": "active"
-        })
-        .to_string(),
-    )
+    // Build typed evidence directly: JSON encode/decode on Loom's small
+    // coroutine stack can overflow before the negative control is reported.
+    Scenario {
+        schema: 1,
+        project: "verify-loom-fixture".into(),
+        model: "request".into(),
+        invariant: InvariantId::try_from(INVARIANT.to_owned()).unwrap(),
+        origin: Origin {
+            kind: engine,
+            tool_version: Some(version.into()),
+            discovered_at: None,
+            seed,
+            reference: None,
+        },
+        bounds: BTreeMap::new(),
+        initial: serde_json::Map::from_iter([
+            ("state".into(), "active".into()),
+            ("terminal_writes".into(), 0.into()),
+        ]),
+        steps,
+        expect: Expectation::InvariantViolated,
+        status: Status::Active,
+        fingerprint: None,
+    }
+    .validate()
     .unwrap()
 }
 

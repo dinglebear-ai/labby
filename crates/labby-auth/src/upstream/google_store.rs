@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use dashmap::DashMap;
 use oauth2::{AccessToken, RefreshToken, Scope, TokenResponse as _, basic::BasicTokenType};
 use rmcp::transport::auth::{
     AuthError, CredentialRefreshGuard, CredentialStore, OAuthTokenResponse, StoredCredentials,
     VendorExtraTokenFields,
 };
 use rmcp_client as rmcp;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -23,16 +23,10 @@ use crate::upstream::types::OauthError;
 use crate::util::fingerprint;
 
 const GOOGLE_ISSUER: &str = "https://accounts.google.com";
-const MAX_REFRESH_OPERATION_LOCKS: usize = 2_048;
+const REFRESH_OPERATION_LOCK_STRIPES: usize = 2_048;
 
-#[derive(Default)]
-struct RefreshOperationLocks {
-    locks: DashMap<String, Arc<Mutex<()>>>,
-    overflow: Arc<Mutex<()>>,
-    maintenance: std::sync::Mutex<()>,
-}
-
-static REFRESH_OPERATION_LOCKS: OnceLock<RefreshOperationLocks> = OnceLock::new();
+static REFRESH_OPERATION_LOCKS: OnceLock<[Arc<Mutex<()>>; REFRESH_OPERATION_LOCK_STRIPES]> =
+    OnceLock::new();
 
 /// Return the process-wide refresh-operation mutex for one stable credential.
 ///
@@ -41,32 +35,16 @@ static REFRESH_OPERATION_LOCKS: OnceLock<RefreshOperationLocks> = OnceLock::new(
 /// persistence lock. Using the same mutex for both would deadlock during save.
 /// SQLite CAS and revocation fencing reject stale cross-process persistence,
 /// but do not serialize rotating-token exchanges across processes.
+/// Fixed stripes keep memory bounded without changing an active identity's
+/// mutex when capacity changes. Hash collisions serialize unrelated refreshes;
+/// they never share credential data or change store/provider/subject checks.
 pub(super) fn refresh_operation_lock(credential_identity: &str) -> Arc<Mutex<()>> {
-    let registry = REFRESH_OPERATION_LOCKS.get_or_init(RefreshOperationLocks::default);
-    let _maintenance = registry
-        .maintenance
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = registry.locks.get(credential_identity) {
-        return existing.value().clone();
-    }
-    if registry.locks.len() >= MAX_REFRESH_OPERATION_LOCKS {
-        let idle = registry
-            .locks
-            .iter()
-            .find(|entry| Arc::strong_count(entry.value()) == 1)
-            .map(|entry| entry.key().clone());
-        if let Some(idle) = idle {
-            registry.locks.remove(&idle);
-        } else {
-            return Arc::clone(&registry.overflow);
-        }
-    }
-    registry
-        .locks
-        .entry(credential_identity.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+    let locks =
+        REFRESH_OPERATION_LOCKS.get_or_init(|| std::array::from_fn(|_| Arc::new(Mutex::new(()))));
+    let digest = Sha256::digest(credential_identity.as_bytes());
+    let stripe =
+        usize::from(u16::from_be_bytes([digest[0], digest[1]])) % REFRESH_OPERATION_LOCK_STRIPES;
+    Arc::clone(&locks[stripe])
 }
 
 #[derive(Clone)]
@@ -519,6 +497,43 @@ pub fn missing_scopes(required: &[String], granted: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn refresh_operation_identity_survives_capacity_recovery() {
+        let mut retained: Vec<_> = (0..REFRESH_OPERATION_LOCK_STRIPES)
+            .map(|index| refresh_operation_lock(&format!("capacity-fixture:{index}")))
+            .collect();
+        let first = refresh_operation_lock("capacity-fixture:overflow");
+        let guard = Arc::clone(&first).try_lock_owned().unwrap();
+
+        // Release a formerly occupied registry slot while the overflow caller
+        // still owns its guard. Another lookup must retain the same lock.
+        drop(retained.pop());
+        let second = refresh_operation_lock("capacity-fixture:overflow");
+        assert!(
+            Arc::clone(&second).try_lock_owned().is_err(),
+            "capacity recovery must not split one credential across two locks"
+        );
+        assert!(Arc::ptr_eq(&first, &second));
+        drop(guard);
+        assert!(second.try_lock_owned().is_ok());
+    }
+
+    #[test]
+    fn refresh_operation_hash_collisions_only_serialize_callers() {
+        let mut seen = std::collections::HashMap::new();
+        let (first, second) = (0..=REFRESH_OPERATION_LOCK_STRIPES)
+            .find_map(|index| {
+                let lock = refresh_operation_lock(&format!("collision-fixture:{index}"));
+                seen.insert(Arc::as_ptr(&lock), Arc::clone(&lock))
+                    .map(|previous| (previous, lock))
+            })
+            .expect("more identities than stripes must include a collision");
+        let guard = first.try_lock_owned().unwrap();
+        assert!(Arc::clone(&second).try_lock_owned().is_err());
+        drop(guard);
+        assert!(second.try_lock_owned().is_ok());
+    }
+
     async fn test_store() -> SqliteStore {
         let path = tempfile::tempdir().unwrap().keep().join("auth.db");
         SqliteStore::open_with_key(
@@ -701,7 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_guards_serialize_same_identity_but_not_different_identities() {
+    async fn refresh_guards_serialize_same_identity_but_not_distinct_stripes() {
         let first_store = test_store().await;
         insert_bundle(&first_store, vec!["openid".to_string()]).await;
         let first = GoogleProviderCredentialStore::new(
@@ -757,7 +772,7 @@ mod tests {
             CredentialStore::acquire_refresh_guard(&other),
         )
         .await
-        .expect("a different credential identity must not be serialized")
+        .expect("credentials on distinct stripes must not be serialized")
         .unwrap()
         .unwrap();
         drop(other_guard);

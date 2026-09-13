@@ -1177,7 +1177,7 @@ mod tests {
         );
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();
@@ -1298,7 +1298,7 @@ mod tests {
         );
         let projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let initial = projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();
@@ -1560,7 +1560,7 @@ mod tests {
         assert_eq!(store.library_snapshot().unwrap().version, 1);
         let reopened_projection: Arc<
             dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
+        > = Arc::new(ArtifactFirstPartyProjection::default());
         let reopened_initial = reopened_projection
             .prepare(&store, &store.library_snapshot().unwrap(), None)
             .unwrap();

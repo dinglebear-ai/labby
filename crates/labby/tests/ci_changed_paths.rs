@@ -598,11 +598,9 @@ fn verification_workspace_uses_its_own_advisory_lane() {
         &["scripts/ci/test_verification_workflow.py"],
     );
     assert_eq!(out["workflow"], "true");
-    let workflow: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(include_str!("../../../.github/workflows/verification.yml"))
-            .expect("parse verification workflow");
+    let workflow = ci_workflow_yaml(include_str!("../../../.github/workflows/verification.yml"));
     let paths = workflow["on"]["pull_request"]["paths"]
-        .as_sequence()
+        .as_array()
         .expect("path triggers");
     assert!(paths.iter().any(|path| path == "verification/**"));
     assert_eq!(workflow["jobs"]["core"]["timeout-minutes"], 15);
