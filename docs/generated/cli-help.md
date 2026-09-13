@@ -10,6 +10,7 @@ Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, 
 Usage: labby [OPTIONS] <COMMAND>
 
 Commands:
+  login        Sign in to an explicit remote Labby server with your operator account
   serve        Start the MCP server (stdio or HTTP transport)
   mcp          Start the MCP server over stdio
   doctor       Audit configured services and report problems
@@ -46,6 +47,45 @@ Options:
 
   -V, --version
           Print version
+```
+
+## `labby login`
+
+```text
+Sign in to an explicit remote Labby server with your operator account
+
+Usage: login [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --server <SERVER>
+          HTTPS server origin. Defaults to LABBY_SERVER_URL
+
+      --client-metadata-url <CLIENT_METADATA_URL>
+          Public HTTPS client metadata document for servers that require CIMD
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --client-id <CLIENT_ID>
+          Client identifier registered with the server in advance
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --client-secret-env <CLIENT_SECRET_ENV>
+          Environment variable containing the preregistered client secret
+
+      --dynamic-registration
+          Use server-advertised dynamic registration instead of a saved selection
+
+  -h, --help
+          Print help
 ```
 
 ## `labby serve`

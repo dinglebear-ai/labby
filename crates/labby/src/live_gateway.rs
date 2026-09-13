@@ -257,11 +257,26 @@ pub async fn detect(
             return Err(error);
         }
     };
-    let token = token_for_target_from(
+    let mut token = token_for_target_from(
         &targets,
         std::env::var("CLAUDE_PLUGIN_OPTION_API_TOKEN").ok(),
         std::env::var("LABBY_MCP_HTTP_TOKEN").ok(),
     );
+    if token.is_none()
+        && let TargetSet::Explicit {
+            base_url,
+            source: ExplicitSource::Operator,
+        } = &targets
+    {
+        // Keep the OAuth refresh future out of every CLI command's stack frame.
+        token = Box::pin(crate::oauth::cli_session::token(base_url))
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "auth_failed".to_owned(),
+                message: "Saved CLI sign-in is unavailable; run labby login for this server"
+                    .to_owned(),
+            })?;
+    }
     detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await
 }
 

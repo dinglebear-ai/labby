@@ -8,8 +8,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 use super::{
-    AUTH_REQUEST_TTL_SECS, NATIVE_SUCCESS_PAGE, RemoteAddr, create_admitted_browser_session,
-    remote_ip, sanitize_return_to,
+    AUTH_REQUEST_TTL_SECS, RemoteAddr, create_admitted_browser_session, remote_ip,
+    sanitize_return_to,
 };
 use crate::{
     error::AuthError,
@@ -67,9 +67,12 @@ pub(super) async fn complete_provider_callback(
             bound.binding,
         )
         .await?;
-    Ok(Some(no_store(
-        axum::response::Html(NATIVE_SUCCESS_PAGE).into_response(),
-    )))
+    Ok(Some(no_store(crate::pages::response(
+        StatusCode::OK,
+        crate::pages::OAuthPage::Success,
+        "Signed In to Labby",
+        "You can close this tab and return to the app.",
+    ))))
 }
 
 fn digest(value: &str) -> String {

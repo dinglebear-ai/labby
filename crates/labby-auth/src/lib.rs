@@ -73,3 +73,6 @@ pub use types::ProjectSessionBinding;
 
 #[cfg(test)]
 pub mod test_support;
+
+#[cfg(feature = "http-axum")]
+pub mod pages;
