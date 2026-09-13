@@ -536,31 +536,47 @@ impl LiveLabbyGuard {
     /// reference it. The binding is host-custodied metadata; the daemon stores
     /// no secret for it, and the bearer stays inside this guard.
     pub(crate) async fn bind_team_gateway_credential(&self, upstream: &str) -> Result<(), String> {
-        let response = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .no_proxy()
             .build()
-            .map_err(|error| error.to_string())?
-            .post(format!("{}/v1/access/admin", self.descriptor.base_url))
-            .bearer_auth(&self.credential_canary)
-            .header("content-type", "application/json")
-            .json(&serde_json::json!({
-                "action": "access.gateway_credential.bind",
-                "params": {
-                    "team_id": Self::HARNESS_TEAM_ID,
-                    "upstream_name": upstream,
-                    "binding_id": format!("{upstream}-binding"),
-                },
-            }))
-            .send()
-            .await
             .map_err(|error| error.to_string())?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "team credential binding for {upstream} failed: {}",
-                response.status()
-            ))
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = client
+                .post(format!("{}/v1/access/admin", self.descriptor.base_url))
+                .bearer_auth(&self.credential_canary)
+                .header("content-type", "application/json")
+                .json(&serde_json::json!({
+                    "action": "access.gateway_credential.bind",
+                    "params": {
+                        "team_id": Self::HARNESS_TEAM_ID,
+                        "upstream_name": upstream,
+                        "binding_id": format!("{upstream}-binding"),
+                    },
+                }))
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.status().is_success() {
+                return Ok(());
+            }
+            let status = response.status();
+            let body = response
+                .bytes()
+                .await
+                .map(|body| {
+                    let body = &body[..body.len().min(16 * 1024)];
+                    sanitize(&String::from_utf8_lossy(body))
+                })
+                .unwrap_or_else(|error| format!("<response body unavailable: {error}>"));
+            if status != reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || tokio::time::Instant::now() >= deadline
+            {
+                return Err(format!(
+                    "team credential binding for {upstream} failed: {status}: {body}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 

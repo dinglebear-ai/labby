@@ -10,6 +10,12 @@ const LABEL: &str = "net.labby.auto-update";
 const ASSET: &str = "lab-aarch64-apple-darwin.tar.gz";
 const REPO: &str = "dinglebear-ai/labby";
 const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
+const INSTALL_CONTROL_VARIABLES: &[&str] = &[
+    "LABBY_INSTALL_RECOVER_ONLY",
+    "LABBY_INSTALL_ROLLBACK",
+    "LABBY_INSTALL_LOCAL_BINARY",
+    "LABBY_INSTALL_LOCAL_SHA256",
+];
 
 #[derive(Deserialize)]
 struct Asset {
@@ -72,12 +78,26 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
             command.env_remove(key);
         }
     }
+    for key in INSTALL_CONTROL_VARIABLES {
+        command.env_remove(key);
+    }
     command
         .env("LABBY_INSTALL_VERSION", tag)
         .env("LABBY_INSTALL_DIR", directory)
         .env("LABBY_INSTALL_REPO", REPO)
         .env("LABBY_ALLOW_SOURCE_FALLBACK", "0");
     command
+}
+
+/// Run the same pinned, sanitized and mutually-exclusive installer used by
+/// automatic updates for an operator-requested release.
+pub(crate) async fn install_requested_release(tag: &str, directory: &Path) -> Result<()> {
+    fs::create_dir_all(directory)?;
+    let lock = acquire_update_lock(directory)?;
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("install.sh");
+    fs::write(&script, INSTALL_SCRIPT)?;
+    install_release(&script, tag, directory, lock).await
 }
 
 // Keep exclusion ownership until cancellation has killed and reaped the
@@ -349,8 +369,11 @@ pub(crate) async fn server_update_loop() {
 }
 
 #[cfg(unix)]
-async fn wait_for_installed_update<F, Fut>(mut check: F, initial: Duration, interval: Duration)
-where
+pub(crate) async fn wait_for_installed_update<F, Fut>(
+    mut check: F,
+    initial: Duration,
+    interval: Duration,
+) where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<Value>>,
 {
