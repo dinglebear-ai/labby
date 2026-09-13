@@ -537,7 +537,7 @@ is ever stringified-and-reparsed beyond the marker itself:
 - **Envelope budget (always on, default path):** when the response exceeds
   `max_response_bytes`/`max_response_tokens`, the final `result` is replaced
   with an **object** marker carrying `truncated: true`, `original_size`,
-  `original_tokens`, a bounded `preview`, `artifacts`, `next_action`, and an executable `resource_read_example`.
+  `original_tokens`, a bounded `preview`, `artifacts`, `next_action`, and, when the budget permits, an executable `resource_read_example`. Small budgets use concise recovery prose instead of the example and discard preview bytes first.
   Structured `calls[]` metadata survives verbatim. Logs are trimmed
   oldest-first after result truncation if needed.
 - **Shaping policy `truncate` (opt-in, non-`Off` policy only):** the final

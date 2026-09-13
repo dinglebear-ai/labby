@@ -34,21 +34,41 @@ pub(crate) fn truncate_execution_response(
     // calls[] carries lightweight metadata only (no result payloads), so there
     // is nothing per-call to truncate. Cap the FINAL result first — but only
     // when doing so actually shrinks the envelope. The marker has a ~1 KB
-    // preview floor, so markering an already-small result (e.g. `{"ok":true}`)
+    // preview, so markering an already-small result (e.g. `{"ok":true}`)
     // would *grow* it; in a logs-dominant response the result is innocent and
-    // must be left intact so log trimming can do the work.
     if let Some(result) = response.result.as_ref() {
         let original_len = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
-        let marker = truncation_marker(result, token_estimate_divisor, &response.artifacts);
-        let marker_len = serde_json::to_string(&marker).map(|s| s.len()).unwrap_or(0);
-        if marker_len < original_len {
-            response.result = Some(marker);
-            response.result_shaping = None;
+        // Prefer the complete example, then trade preview bytes for guidance.
+        // Small valid envelopes may require concise prose instead of the example.
+        for (preview_bytes, compact) in [(1024, false), (512, false), (0, false), (0, true)] {
+            let marker = truncation_marker(
+                result,
+                token_estimate_divisor,
+                &response.artifacts,
+                preview_bytes,
+                compact,
+            );
+            let marker_len = serde_json::to_vec(&marker).map_or(usize::MAX, |s| s.len());
+            if marker_len >= original_len {
+                continue;
+            }
+            let mut candidate = response.clone();
+            candidate.result = Some(marker);
+            candidate.result_shaping = None;
+            let fits = response_within_budget(
+                &candidate,
+                max_response_bytes,
+                max_response_tokens,
+                token_estimate_divisor,
+            );
+            if fits || compact {
+                response = candidate;
+                break;
+            }
         }
     }
 
-    // The result marker has a fixed ~1 KB preview floor, so a logs-dominant
-    // response can still exceed budget after capping the result. Trim `logs`
+    // A logs-dominant response can still exceed budget after capping the result. Trim `logs`
     // oldest-first until within budget, keeping the newest lines that fit and
     // prepending a sentinel that records how many were dropped. Best-effort:
     // `calls[]` metadata alone can dominate a high fan-out run and is not
@@ -200,7 +220,10 @@ pub(crate) const RESOURCE_READ_EXAMPLE: &str = r#"async () => {
   const uri = "REPLACE_WITH_DISCOVERED_RESOURCE_URI";
   const offset = 0, length = 1000;
   const serialized = JSON.stringify(await codemode.readResource(uri));
-  const chunk = serialized.slice(offset, offset + length);
+  let end = Math.min(offset + Math.max(2, length), serialized.length);
+  const last = serialized.charCodeAt(end - 1);
+  if (end < serialized.length && last >= 0xD800 && last <= 0xDBFF) end--;
+  const chunk = serialized.slice(offset, end);
   const next_offset = offset + chunk.length;
   return {chunk, next_offset, total: serialized.length, done: next_offset >= serialized.length};
 }"#;
@@ -209,10 +232,12 @@ fn truncation_marker(
     value: &Value,
     token_estimate_divisor: u32,
     artifacts: &[CodeModeArtifactReceipt],
+    preview_bytes: usize,
+    compact: bool,
 ) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-    let preview = utf8_prefix_by_bytes(&serialized, 1024).to_string();
-    json!({
+    let preview = utf8_prefix_by_bytes(&serialized, preview_bytes).to_string();
+    let mut marker = json!({
         "truncated": true,
         "original_size": serialized.len(),
         "original_tokens": estimated_tokens(serialized.len(), token_estimate_divisor),
@@ -220,7 +245,17 @@ fn truncation_marker(
         "artifacts": artifacts,
         "next_action": TRUNCATION_RECOVERY,
         "resource_read_example": RESOURCE_READ_EXAMPLE
-    })
+    });
+    if compact {
+        marker
+            .as_object_mut()
+            .unwrap()
+            .remove("resource_read_example");
+        marker["next_action"] = json!(
+            "Output only; execution already ran. Do not replay mutations. Omitted output is not cached. Use artifact receipts or a read-only query. For a stable resource, read its exact discovered URI, JSON.stringify the envelope, and return small slices without splitting UTF-16 surrogate pairs. Advance the offset by the returned chunk length until the total length is reached; lower the chunk size if needed."
+        );
+    }
+    marker
 }
 
 fn utf8_prefix_by_bytes(value: &str, max_bytes: usize) -> &str {
