@@ -121,10 +121,10 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 ];
 
 // Reviewed union: five multi-user service routes plus four desktop handoff
-// routes, owner-link consume, and the GET/POST Depot publish pair.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 132;
+// routes, owner-link consume, the GET/POST Depot publish pair, and native CLI metadata.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 133;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "e4937cc97989c4c4bc47c3e81be3361a9cf960e053470457409befbeb33f9298";
+    "9d51842b2d889d0319491703c6a2ed0b7c9104d356bbd0953a831581dd8c6382";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {

@@ -1085,6 +1085,7 @@ mod tests {
                 "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
                 "LABBY_AUTH_CODE_TTL_SECS",
                 "LABBY_AUTH_DESKTOP_ORIGIN",
+                "LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION",
                 "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
                 "LABBY_AUTH_KEY_PATH",
                 "LABBY_AUTH_MACHINE_CLIENTS_JSON",

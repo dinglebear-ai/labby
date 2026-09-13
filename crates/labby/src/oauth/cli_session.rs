@@ -322,30 +322,42 @@ async fn login_locked(
             .map_err(Into::into),
         Err(error) => Err(error.into()),
     };
+    finish_login(
+        path,
+        &runtime.sqlite,
+        SessionProfile {
+            registration: selection,
+            upstream_name: config.name,
+        },
+        previous,
+        authorization,
+    )
+    .await
+}
+
+async fn finish_login(
+    path: &Path,
+    sqlite: &labby_auth::sqlite::SqliteStore,
+    staged: SessionProfile,
+    previous: Option<SessionProfile>,
+    authorization: Result<()>,
+) -> Result<()> {
     if let Err(error) = authorization {
         drop(
-            runtime
-                .sqlite
-                .delete_upstream_oauth_credentials(&config.name, SUBJECT)
+            sqlite
+                .clear_upstream_oauth_identity(&staged.upstream_name, SUBJECT)
                 .await,
         );
         return Err(error);
     }
-    publish_profile(
-        path,
-        &SessionProfile {
-            registration: selection,
-            upstream_name: config.name.clone(),
-        },
-    )?;
+    publish_profile(path, &staged)?;
     if let Some(previous) = previous
-        && runtime
-            .sqlite
-            .delete_upstream_oauth_credentials(&previous.upstream_name, SUBJECT)
+        && sqlite
+            .clear_upstream_oauth_identity(&previous.upstream_name, SUBJECT)
             .await
             .is_err()
     {
-        tracing::warn!("signed in; old encrypted CLI credential cleanup deferred");
+        tracing::warn!("signed in; old encrypted CLI identity cleanup deferred");
     }
     Ok(())
 }
@@ -517,6 +529,96 @@ mod tests {
         assert_eq!(row.client_id, "working-client");
         assert_eq!(row.token_blob, [17, 29, 41]);
         assert!(row.refresh_token_present);
+    }
+
+    #[tokio::test]
+    async fn login_completion_cleans_retired_identity_and_preserves_active_session() {
+        for authorized in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store =
+                labby_auth::sqlite::SqliteStore::open_with_key(dir.path().join("oauth.db"), None)
+                    .await
+                    .unwrap();
+            let profile = |name: &str| SessionProfile {
+                registration: UpstreamOauthRegistration::Dynamic,
+                upstream_name: name.into(),
+            };
+            publish_profile(dir.path(), &profile("operator-server-active")).unwrap();
+            for name in ["operator-server-active", "operator-server-staged"] {
+                store
+                    .save_dynamic_client_registration(name, SUBJECT, name)
+                    .await
+                    .unwrap();
+                store
+                    .upsert_upstream_oauth_credentials(
+                        labby_auth::types::UpstreamOauthCredentialRow {
+                            upstream_name: name.into(),
+                            subject: SUBJECT.into(),
+                            client_id: name.into(),
+                            granted_scopes_json: "[]".into(),
+                            token_blob: vec![17, 29, 41],
+                            token_blob_nonce: vec![0; 12],
+                            token_received_at: 100,
+                            access_token_expires_at: 200,
+                            refresh_token_present: true,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let result = finish_login(
+                dir.path(),
+                &store,
+                profile("operator-server-staged"),
+                Some(profile("operator-server-active")),
+                if authorized {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("authorization denied"))
+                },
+            )
+            .await;
+            assert_eq!(result.is_ok(), authorized);
+            let (active, retired) = if authorized {
+                ("operator-server-staged", "operator-server-active")
+            } else {
+                ("operator-server-active", "operator-server-staged")
+            };
+            assert_eq!(
+                read_profile(dir.path()).unwrap().unwrap().upstream_name,
+                active
+            );
+            assert!(
+                store
+                    .find_upstream_oauth_credentials(active, SUBJECT)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                store
+                    .find_dynamic_client_registration(active, SUBJECT)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(active)
+            );
+            assert!(
+                store
+                    .find_upstream_oauth_credentials(retired, SUBJECT)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .find_dynamic_client_registration(retired, SUBJECT)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "retired dynamic registration must be removed (authorized={authorized})"
+            );
+        }
     }
 
     #[test]
