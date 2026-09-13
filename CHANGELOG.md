@@ -82,6 +82,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.18.1](https://github.com/dinglebear-ai/labby/compare/v1.18.0...v1.18.1) (2026-09-13)
+
+
+### Fixed
+
+* complete automatic update and reconnect lifecycle recovery ([#628](https://github.com/dinglebear-ai/labby/issues/628)) ([903bec9](https://github.com/dinglebear-ai/labby/commit/903bec96c0b39ba73dd6735900abacc7a7afa791))
+* make release PR refreshes atomic ([#627](https://github.com/dinglebear-ai/labby/issues/627)) ([d4ce107](https://github.com/dinglebear-ai/labby/commit/d4ce107c581888430346cf31652dd4fb01280e08))
+* **oauth:** support personal upstream authorization without admin escalation ([#623](https://github.com/dinglebear-ai/labby/issues/623)) ([d5e328c](https://github.com/dinglebear-ai/labby/commit/d5e328c308d1f09d987e7af2cd4b76fc89ae3b1e))
+* tolerate release PR head propagation ([#631](https://github.com/dinglebear-ai/labby/issues/631)) ([f2bc51e](https://github.com/dinglebear-ai/labby/commit/f2bc51ed3131c55ac99e9a196542a465b2b05025))
+
 ## [1.18.0](https://github.com/dinglebear-ai/labby/compare/v1.17.3...v1.18.0) (2026-09-13)
 
 
