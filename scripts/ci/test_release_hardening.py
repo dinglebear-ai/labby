@@ -1093,6 +1093,9 @@ if authenticated_action; then exit 93; fi
         verification = sync.index("Verify the remote release head and restore auto-merge")
         self.assertLess(sync.index("git push origin"), verification)
         self.assertIn("headRefOid", sync[verification:])
+        self.assertIn("for attempt in {1..12}", sync[verification:])
+        self.assertIn("sleep 5", sync[verification:])
+        self.assertIn("did not converge after metadata sync", sync[verification:])
         self.assertIn('--match-head-commit "$observed"', sync[verification:])
         self.assertIn('"$RELEASE_PLEASE_RESULT" == success', sync[verification:])
 
