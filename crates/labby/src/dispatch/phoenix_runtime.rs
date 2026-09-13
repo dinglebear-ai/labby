@@ -102,11 +102,21 @@ impl AppServerRuntime {
                 } else if value.get("method").is_some()
                     && let Some(id) = value.get("id").cloned()
                 {
+                    let method = value
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let category = request_category(method);
+                    drop(reader_events.send(AppServerEvent(json!({
+                        "method":"phoenix/serverRequestDeclined",
+                        "params":{"requestMethod":method,"category":category,"decision":"declined"}
+                    }))));
                     let rejection = json!({
                         "id": id,
                         "error": {
-                            "code": -32601,
-                            "message": "Phoenix does not permit interactive App Server requests"
+                            "code": -32001,
+                            "message": "Phoenix declined this App Server request under its read-only, never-approval policy",
+                            "data":{"category":category,"decision":"declined"}
                         }
                     });
                     if let Ok(mut bytes) = serde_json::to_vec(&rejection) {
@@ -181,6 +191,19 @@ impl AppServerRuntime {
     }
 }
 
+fn request_category(method: &str) -> &'static str {
+    let lower = method.to_ascii_lowercase();
+    if lower.contains("approval") || lower.contains("permission") {
+        "approval"
+    } else if lower.contains("elicitation") || lower.contains("userinput") {
+        "user_input"
+    } else if lower.contains("tool") {
+        "tool"
+    } else {
+        "interactive"
+    }
+}
+
 fn protocol_error() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "decode_error".into(),
@@ -228,6 +251,9 @@ while read request; do
       printf '%s\n' '{{"method":"item/started","params":{{"turnId":"turn-1"}}}}'
       printf '{{"id":%s,"result":{{"turn":{{"id":"turn-1"}}}}}}\n' "$id" ;;
     *turn/interrupt*) printf '{{"id":%s,"result":{{}}}}\n' "$id" ;;
+    *trigger/request*)
+      printf '%s\n' '{{"id":"server-1","method":"item/commandExecution/requestApproval","params":{{"command":"rm -rf /"}}}}'
+      printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id" ;;
     *) printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id" ;;
   esac
 done
@@ -254,6 +280,10 @@ done
         assert_eq!(second.unwrap()["turn"]["id"], "turn-1");
         assert_eq!(events.recv().await.unwrap().0["method"], "item/started");
         runtime.interrupt("thread-1", "turn-1").await.unwrap();
+        runtime.request("trigger/request", json!({})).await.unwrap();
+        let declined = events.recv().await.unwrap().0;
+        assert_eq!(declined["method"], "phoenix/serverRequestDeclined");
+        assert_eq!(declined["params"]["category"], "approval");
         drop(runtime);
         let requests = fs::read_to_string(capture).unwrap();
         assert_eq!(requests.matches("turn/start").count(), 1);

@@ -25,3 +25,27 @@ test('Phoenix runtime summary truthfully distinguishes configured and unavailabl
   const unavailable = renderToStaticMarkup(<PhoenixRuntimeSummary protocol="0.147.0-v2" mcpConfigured={false}/> )
   assert.match(unavailable, /MCP unavailable/)
 })
+
+test('Phoenix shows the detected runtime and an inspectable capability count', () => {
+  const html = renderToStaticMarkup(<PhoenixRuntimeSummary
+    protocol="v2"
+    runtimeVersion="codex-cli 0.147.0"
+    mcpConfigured
+    capabilities={['start', 'interrupt', 'text']}
+    unsupported={['realtime']}
+  />)
+  assert.match(html, /codex-cli 0\.147\.0/)
+  assert.match(html, /3 capabilities/)
+  assert.match(html, /Unavailable: realtime/)
+})
+
+test('Phoenix summarizes streamed text and nested token usage without exposing raw JSON', () => {
+  const html = renderToStaticMarkup(<PhoenixEventTimeline events={[
+    { method: 'item/agentMessage/delta', params: { delta: 'Shipping the answer' } },
+    { method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: { inputTokens: 1200, cachedInputTokens: 800, outputTokens: 42 } } } },
+  ]}/>)
+  assert.match(html, /Response streaming/)
+  assert.match(html, /Shipping the answer/)
+  assert.match(html, /1,200 in · 800 cached · 42 out/)
+  assert.doesNotMatch(html, /inputTokens/)
+})

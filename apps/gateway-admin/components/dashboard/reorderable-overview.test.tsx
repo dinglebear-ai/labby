@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils'
-import { ReorderableOverview, nearestOverviewDrop, normalizeOverviewOrder, normalizeOverviewWidths, normalizeOverviewLayout, overviewMasonrySpan, placeOverviewCard } from './reorderable-overview'
+import { ReorderableOverview, nearestOverviewDrop, normalizeOverviewOrder, normalizeOverviewWidths, normalizeOverviewLayout, overviewMasonrySpan, placeOverviewCard, planOverviewPacking } from './reorderable-overview'
 
 installTestDom()
 const key = 'labby:overview-layout:v2'
@@ -19,6 +19,37 @@ test('masonry row spans compact unequal cards without invalid measurements', () 
   assert.equal(overviewMasonrySpan(212, 4, 12), 14)
   assert.equal(overviewMasonrySpan(0), 1)
   assert.equal(overviewMasonrySpan(Number.NaN), 1)
+})
+
+test('desktop packing fills the shortest available column before flowing lower', () => {
+  assert.deepEqual(planOverviewPacking([
+    { id: 'volume', span: 30, wide: true },
+    { id: 'targets', span: 70, wide: false },
+    { id: 'outcomes', span: 15, wide: false },
+    { id: 'clients', span: 20, wide: false },
+    { id: 'least', span: 25, wide: false },
+  ]), [
+    { id: 'volume', column: 1, row: 1, span: 30, columns: 2 },
+    { id: 'targets', column: 3, row: 1, span: 70, columns: 1 },
+    { id: 'outcomes', column: 1, row: 31, span: 15, columns: 1 },
+    { id: 'clients', column: 2, row: 31, span: 20, columns: 1 },
+    { id: 'least', column: 1, row: 46, span: 25, columns: 1 },
+  ])
+})
+
+test('packing uses every desktop column and degrades safely to one column', () => {
+  const packed = planOverviewPacking([
+    { id: 'a', span: 40, wide: false },
+    { id: 'b', span: 10, wide: false },
+    { id: 'c', span: 20, wide: false },
+    { id: 'd', span: 5, wide: false },
+  ])
+  assert.deepEqual(packed.map(item => [item.id, item.column, item.row]), [
+    ['a', 1, 1], ['b', 2, 1], ['c', 3, 1], ['d', 2, 11],
+  ])
+  assert.deepEqual(planOverviewPacking([{ id: 'wide', span: 0, wide: true }], 1), [
+    { id: 'wide', column: 1, row: 1, span: 1, columns: 1 },
+  ])
 })
 
 test('width preferences accept only known boolean entries', () => {

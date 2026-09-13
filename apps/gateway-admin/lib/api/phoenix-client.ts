@@ -8,6 +8,7 @@ export interface PhoenixStatus {
   sandbox: 'read-only'
   protocol?: {
     schema: string
+    runtime_version?: string | null
     adapter: number
     experimental_api: boolean
   }
@@ -23,6 +24,8 @@ export interface PhoenixStatus {
     turn_lifecycle: string[]
     preserved_events: string[]
     inputs: string[]
+    operations?: string[]
+    diagnostics?: string[]
     unsupported: string[]
   }
 }
@@ -61,6 +64,34 @@ export interface PhoenixEvent {
   params: unknown
 }
 
+export interface PhoenixDiagnostics {
+  account?: unknown
+  rate_limits?: unknown
+  usage?: unknown
+  config?: unknown
+  mcp_servers?: unknown
+}
+
+export interface PhoenixTurnControl {
+  session_id: string
+  status: 'interrupting' | 'steered'
+  turn_id?: string
+  turn?: unknown
+}
+
+export interface PhoenixReview {
+  session_id: string
+  status: 'reviewing'
+  review: unknown
+}
+
+export function phoenixSupports(status: PhoenixStatus | undefined, capability: string): boolean {
+  if (!status?.capabilities) return false
+  return Object.values(status.capabilities).some((values) =>
+    Array.isArray(values) && values.includes(capability),
+  ) && !status.capabilities.unsupported?.includes(capability)
+}
+
 export class PhoenixApiError extends Error implements ServiceActionError {
   constructor(public status: number, message: string, public code?: string) {
     super(message)
@@ -89,5 +120,10 @@ export const phoenixApi = {
   send: (sessionId: string, input: string, attachments: PhoenixAttachment[] = [], signal?: AbortSignal) =>
     action<PhoenixSession>('phoenix.turn.send', { session_id: sessionId, input, attachments }, signal),
   interrupt: (sessionId: string, signal?: AbortSignal) =>
-    action<PhoenixSession>('phoenix.turn.interrupt', { session_id: sessionId }, signal),
+    action<PhoenixTurnControl>('phoenix.turn.interrupt', { session_id: sessionId }, signal),
+  steer: (sessionId: string, input: string, attachments: PhoenixAttachment[] = [], signal?: AbortSignal) =>
+    action<PhoenixTurnControl>('phoenix.turn.steer', { session_id: sessionId, input, attachments }, signal),
+  review: (sessionId: string, targetType: string, target?: string, signal?: AbortSignal) =>
+    action<PhoenixReview>('phoenix.review.start', { session_id: sessionId, target_type: targetType, target }, signal),
+  diagnostics: (signal?: AbortSignal) => action<PhoenixDiagnostics>('phoenix.diagnostics.read', {}, signal),
 }

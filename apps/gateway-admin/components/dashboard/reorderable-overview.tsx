@@ -10,6 +10,8 @@ export type OverviewLayout = { order: string[]; widths: Record<string, boolean>;
 type DropTarget = { id: string | null; lane: Lane; after: boolean }
 type Drag = { id: string; x: number; y: number }
 type PendingDrag = { id: string; x: number; y: number; pointerId: number; active: boolean; target: HTMLButtonElement }
+type PackingItem = { id: string; span: number; wide: boolean }
+export type OverviewPackingPosition = { id: string; column: number; row: number; span: number; columns: number }
 const LAYOUT_KEY = 'labby:overview-layout:v2'
 const MASONRY_ROW_HEIGHT = 1
 
@@ -17,6 +19,32 @@ const MASONRY_ROW_HEIGHT = 1
 export function overviewMasonrySpan(height: number, rowHeight = MASONRY_ROW_HEIGHT, gap = 12): number {
   if (!Number.isFinite(height) || height <= 0) return 1
   return Math.max(1, Math.ceil((height + gap) / (rowHeight + gap)))
+}
+
+/**
+ * Place each desktop card at the earliest available row. Wide cards reserve two
+ * adjacent columns; regular cards always choose the shortest column. Explicit
+ * positions avoid browser auto-placement cursors leaving an open column when
+ * the cards originate in separate logical lane wrappers.
+ */
+export function planOverviewPacking(items: readonly PackingItem[], columnCount = 3): OverviewPackingPosition[] {
+  const count = Math.max(1, Math.floor(columnCount))
+  const ends = Array.from({ length: count }, () => 1)
+  return items.map(item => {
+    const width = item.wide && count > 1 ? Math.min(2, count) : 1
+    let column = 0
+    let row = Number.POSITIVE_INFINITY
+    for (let candidate = 0; candidate <= count - width; candidate += 1) {
+      const candidateRow = Math.max(...ends.slice(candidate, candidate + width))
+      if (candidateRow < row) {
+        column = candidate
+        row = candidateRow
+      }
+    }
+    const span = Math.max(1, Math.floor(item.span))
+    for (let index = column; index < column + width; index += 1) ends[index] = row + span
+    return { id: item.id, column: column + 1, row, span, columns: width }
+  })
 }
 
 function releasePointer(source: PendingDrag) {
@@ -73,6 +101,8 @@ export function placeOverviewCard(layout: OverviewLayout, id: string, target: Dr
 export function ReorderableOverview({ cards }: { cards: Card[] }) {
   const [layout, setLayout] = useState<OverviewLayout>(() => ({ order: cards.map(card => card.id), widths: {}, lanes: {} }))
   const layoutRef = useRef(layout)
+  const cardsRef = useRef(cards)
+  cardsRef.current = cards
   const root = useRef<HTMLElement>(null)
   const pending = useRef<PendingDrag | null>(null)
   const pointer = useRef({ x: 0, y: 0 })
@@ -124,11 +154,37 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
       const styles = getComputedStyle(packingGrid)
       const rowHeight = Number.parseFloat(styles.gridAutoRows) || MASONRY_ROW_HEIGHT
       const gap = Number.parseFloat(styles.rowGap) || 12
-      for (const card of columns.querySelectorAll<HTMLElement>('[data-overview-card]')) card.style.gridRowEnd = 'auto'
+      const allCards = [...columns.querySelectorAll<HTMLElement>('[data-overview-card]')]
+      for (const card of allCards) {
+        card.style.gridColumn = ''
+        card.style.gridRowStart = ''
+        card.style.gridRowEnd = 'auto'
+      }
       const selector = unified ? '[data-overview-card]' : '[data-overview-lane="telemetry"] > [data-overview-card]'
-      for (const card of columns.querySelectorAll<HTMLElement>(selector)) {
+      const packingCards = [...columns.querySelectorAll<HTMLElement>(selector)]
+      for (const card of packingCards) {
         card.style.gridRowEnd = 'auto'
         card.style.gridRowEnd = `span ${overviewMasonrySpan(card.getBoundingClientRect().height, rowHeight, gap)}`
+      }
+      if (unified) {
+        const byId = new Map(allCards.map(card => [card.dataset.overviewCard!, card]))
+        const positions = planOverviewPacking(layoutRef.current.order.flatMap(id => {
+          const card = byId.get(id)
+          if (!card) return []
+          return [{
+            id,
+            span: Number.parseInt(card.style.gridRowEnd.replace('span ', ''), 10) || 1,
+            wide: (layoutRef.current.widths[id] ?? Boolean(cardsRef.current.find(item => item.id === id)?.wide))
+              && (layoutRef.current.lanes[id] ?? (cardsRef.current.find(item => item.id === id)?.rail ? 'insights' : 'telemetry')) === 'telemetry',
+          }]
+        }))
+        for (const position of positions) {
+          const card = byId.get(position.id)
+          if (!card) continue
+          card.style.gridColumn = `${position.column} / span ${position.columns}`
+          card.style.gridRowStart = String(position.row)
+          card.style.gridRowEnd = `span ${position.span}`
+        }
       }
     }
     const schedule = () => {

@@ -83,6 +83,29 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         "Interrupt the active turn in a caller-scoped Phoenix session",
         &[param("session_id", true)],
     ),
+    action(
+        "phoenix.turn.steer",
+        "Add caller input to the active Phoenix turn",
+        &[
+            param("session_id", true),
+            param("input", true),
+            param("attachments", false),
+        ],
+    ),
+    action(
+        "phoenix.review.start",
+        "Start a read-only review in a caller-scoped Phoenix session",
+        &[
+            param("session_id", true),
+            param("target_type", true),
+            param("target", false),
+        ],
+    ),
+    action(
+        "phoenix.diagnostics.read",
+        "Read safe container-local Codex diagnostics",
+        &[],
+    ),
 ];
 
 #[derive(Clone, Debug)]
@@ -155,6 +178,22 @@ impl PhoenixRuntime {
                 self.interrupt(owner, &required(&params, "session_id")?)
                     .await
             }
+            "phoenix.turn.steer" => {
+                let session_id = required(&params, "session_id")?;
+                let input = required(&params, "input")?;
+                self.steer(owner, &session_id, &input, params.get("attachments"))
+                    .await
+            }
+            "phoenix.review.start" => {
+                self.review(
+                    owner,
+                    &required(&params, "session_id")?,
+                    &required(&params, "target_type")?,
+                    optional(&params, "target"),
+                )
+                .await
+            }
+            "phoenix.diagnostics.read" => self.diagnostics().await,
             _ => Err(ToolError::UnknownAction {
                 message: format!("unknown action: `{name}`"),
                 valid: ACTIONS
@@ -206,15 +245,19 @@ impl PhoenixRuntime {
                 "configured": std::env::var_os(LOCAL_MCP_TOKEN_ENV).is_some(),
             },
             "capabilities": {
-                "session_lifecycle": ["start", "resume", "read", "close"],
-                "turn_lifecycle": ["start", "interrupt", "completed"],
+                "session_lifecycle": ["start", "read", "close"],
+                "turn_lifecycle": ["start", "steer", "interrupt", "completed"],
+                "operations": ["review"],
+                "review": ["uncommitted_changes", "base_branch", "commit", "custom"],
+                "diagnostics": ["account", "rate_limits", "usage", "config", "mcp_server_status"],
+                "server_requests": ["deterministic_decline", "audit_event"],
                 "preserved_events": [
                     "items", "agent_message", "reasoning", "plan", "diff",
                     "token_usage", "mcp_status", "mcp_tool_progress", "warnings", "errors"
                 ],
                 "inputs": ["text", "image_data_url", "audio_data_url"],
                 "unsupported": [
-                    "steer", "review", "approvals", "elicitation",
+                    "approvals", "elicitation_response",
                     "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
                     "remote_control"
                 ],
@@ -441,6 +484,102 @@ impl PhoenixRuntime {
         };
         runtime.interrupt(&thread_id, &turn_id).await?;
         Ok(json!({"session_id":session_id,"status":"interrupting","turn_id":turn_id}))
+    }
+
+    async fn steer(
+        &self,
+        owner: &str,
+        session_id: &str,
+        input: &str,
+        attachments: Option<&Value>,
+    ) -> Result<Value, ToolError> {
+        if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
+            return Err(invalid("input", "input must contain 1-32768 bytes"));
+        }
+        let protocol_inputs = turn_inputs(input, attachments)?;
+        let session = self.session(owner, session_id).await?;
+        let (runtime, thread_id, turn_id) = {
+            let state = session.lock().await;
+            let turn_id = state
+                .active_turn_id
+                .clone()
+                .ok_or_else(|| invalid("session_id", "Phoenix session has no active turn"))?;
+            (state.runtime.clone(), state.thread_id.clone(), turn_id)
+        };
+        let response = runtime
+            .request(
+                "turn/steer",
+                json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":protocol_inputs}),
+            )
+            .await?;
+        Ok(json!({"session_id":session_id,"status":"steered","turn":safe_value(&response)}))
+    }
+
+    async fn review(
+        &self,
+        owner: &str,
+        session_id: &str,
+        target_type: &str,
+        target: Option<String>,
+    ) -> Result<Value, ToolError> {
+        let session = self.session(owner, session_id).await?;
+        let (runtime, thread_id) = {
+            let state = session.lock().await;
+            if state.turn_in_progress {
+                return Err(unavailable("Phoenix session already has an active turn"));
+            }
+            (state.runtime.clone(), state.thread_id.clone())
+        };
+        let review_target = match target_type {
+            "uncommitted_changes" | "uncommittedChanges" => json!({"type":"uncommittedChanges"}),
+            "base_branch" => json!({"type":"baseBranch","branch":required_target(target)?}),
+            "commit" => json!({"type":"commit","sha":required_target(target)?}),
+            "custom" => json!({"type":"custom","instructions":required_target(target)?}),
+            _ => return Err(invalid("target_type", "unsupported review target")),
+        };
+        let response = runtime
+            .request(
+                "review/start",
+                json!({"threadId":thread_id,"target":review_target,"delivery":"inline"}),
+            )
+            .await?;
+        Ok(json!({"session_id":session_id,"status":"reviewing","review":safe_value(&response)}))
+    }
+
+    async fn diagnostics(&self) -> Result<Value, ToolError> {
+        self.require_available()?;
+        let runtime = initialized_app_server(&self.config).await?;
+        let workspace_root = self
+            .config
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| unavailable("Phoenix workspace is not configured"))?;
+        let account = runtime
+            .request("account/read", json!({"refreshToken":false}))
+            .await?;
+        let rate_limits = runtime
+            .request("account/rateLimits/read", json!({}))
+            .await?;
+        let usage = runtime.request("account/usage/read", json!({})).await?;
+        let config = runtime
+            .request(
+                "config/read",
+                json!({"cwd":workspace_root,"includeLayers":false}),
+            )
+            .await?;
+        let mcp_servers = runtime
+            .request(
+                "mcpServerStatus/list",
+                json!({"limit":100,"detail":"toolsAndAuthOnly"}),
+            )
+            .await?;
+        Ok(json!({
+            "account": safe_account(&account),
+            "rate_limits": safe_value(&rate_limits),
+            "usage": safe_value(&usage),
+            "config": safe_config(&config),
+            "mcp_servers": safe_value(&mcp_servers),
+        }))
     }
 
     async fn session(
@@ -712,13 +851,91 @@ fn sanitized_event(event: &Value) -> Option<Value> {
     let Some(method) = event.get("method").and_then(Value::as_str) else {
         return None;
     };
+    if !matches!(
+        method,
+        "thread/started"
+            | "thread/status/changed"
+            | "thread/tokenUsage/updated"
+            | "turn/started"
+            | "turn/completed"
+            | "turn/plan/updated"
+            | "turn/diff/updated"
+            | "item/started"
+            | "item/completed"
+            | "item/agentMessage/delta"
+            | "item/reasoning/summaryTextDelta"
+            | "item/reasoning/summaryPartAdded"
+            | "item/mcpToolCall/progress"
+            | "mcpServer/status/updated"
+            | "account/rateLimits/updated"
+            | "error"
+            | "warning"
+            | "phoenix/serverRequestDeclined"
+    ) {
+        return None;
+    }
     let candidate = json!({
         "method": method,
-        "params": event.get("params").cloned().unwrap_or(Value::Null),
+        "params": safe_value(event.get("params").unwrap_or(&Value::Null)),
     });
     serde_json::to_vec(&candidate)
         .is_ok_and(|bytes| bytes.len() <= MAX_OUTPUT_BYTES)
         .then_some(candidate)
+}
+
+fn required_target(target: Option<String>) -> Result<String, ToolError> {
+    let target = target.filter(|value| !value.trim().is_empty() && value.len() <= MAX_INPUT_BYTES);
+    target.ok_or_else(|| invalid("target", "this review target requires a bounded value"))
+}
+
+fn safe_account(value: &Value) -> Value {
+    json!({
+        "requiresOpenaiAuth": value.get("requiresOpenaiAuth").cloned().unwrap_or(Value::Null),
+        "account": value.get("account").map(|account| json!({
+            "type": account.get("type").cloned().unwrap_or(Value::Null),
+            "planType": account.get("planType").cloned().unwrap_or(Value::Null),
+        })).unwrap_or(Value::Null),
+    })
+}
+
+fn safe_config(value: &Value) -> Value {
+    let config = value.get("config").unwrap_or(&Value::Null);
+    json!({
+        "model": config.get("model").cloned().unwrap_or(Value::Null),
+        "model_provider": config.get("model_provider").cloned().unwrap_or(Value::Null),
+        "model_reasoning_effort": config.get("model_reasoning_effort").cloned().unwrap_or(Value::Null),
+        "sandbox_mode": config.get("sandbox_mode").cloned().unwrap_or(Value::Null),
+        "service_tier": config.get("service_tier").cloned().unwrap_or(Value::Null),
+        "web_search": config.get("web_search").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn safe_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !sensitive_key(key))
+                .map(|(key, value)| (key.clone(), safe_value(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(safe_value).collect()),
+        Value::String(value) => Value::String(bounded(value)),
+        other => other.clone(),
+    }
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    normalized == "token"
+        || normalized.ends_with("accesstoken")
+        || normalized.ends_with("refreshtoken")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("authorization")
+        || normalized.contains("apikey")
+        || normalized.contains("bearer")
+        || normalized == "email"
 }
 
 fn required(params: &Value, name: &str) -> Result<String, ToolError> {
@@ -974,7 +1191,42 @@ done
         );
         assert_eq!(
             status["capabilities"]["turn_lifecycle"],
-            json!(["start", "interrupt", "completed"])
+            json!(["start", "steer", "interrupt", "completed"])
         );
+        assert_eq!(status["capabilities"]["operations"], json!(["review"]));
+        assert_eq!(
+            status["capabilities"]["session_lifecycle"],
+            json!(["start", "read", "close"])
+        );
+    }
+
+    #[test]
+    fn retained_events_are_whitelisted_bounded_and_redacted() {
+        assert!(
+            sanitized_event(&json!({
+                "method":"unknown/private",
+                "params":{"authorization":"secret"}
+            }))
+            .is_none()
+        );
+        let event = sanitized_event(&json!({
+            "method":"item/completed",
+            "params": {
+                "threadId":"thread-1",
+                "item":{"type":"mcpToolCall","access_token":"secret","tokenUsage":12},
+                "email":"private@example.test"
+            }
+        }))
+        .unwrap();
+        assert!(event.pointer("/params/item/access_token").is_none());
+        assert!(event.pointer("/params/email").is_none());
+        assert_eq!(event.pointer("/params/item/tokenUsage"), Some(&json!(12)));
+    }
+
+    #[test]
+    fn review_targets_are_explicit_and_bounded() {
+        assert_eq!(required_target(Some("main".into())).unwrap(), "main");
+        assert!(required_target(None).is_err());
+        assert!(required_target(Some("".into())).is_err());
     }
 }

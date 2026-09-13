@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ArrowUpRight, Bot, Box, Check, Clipboard, Paperclip, PanelLeft, PanelRight, Pencil, RefreshCw, Send, ShieldCheck, Square, X } from 'lucide-react'
+import { Activity, ArrowUpRight, Bot, Box, Check, Clipboard, FileSearch, Paperclip, PanelLeft, PanelRight, Pencil, RefreshCw, Send, ShieldCheck, Square, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { useBrowserSession } from '@/lib/auth/session'
@@ -11,7 +11,7 @@ import { authorityIdentity } from '@/lib/auth/authority'
 import { skillLibrary } from '@/lib/api/skill-library-client'
 import { gatewayApi, gatewayAction } from '@/lib/api/gateway-client'
 import { snippetsApi } from '@/lib/api/snippets-client'
-import { phoenixApi, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixStatus } from '@/lib/api/phoenix-client'
+import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
 import { deriveConsoleStatus } from './console-status-strip'
@@ -84,6 +84,9 @@ export function PhoenixAvailability() {
   const [error, setError] = useState<string>()
   const [sending, setSending] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
+  const [steering, setSteering] = useState(false)
+  const [workflowNotice, setWorkflowNotice] = useState<string>()
+  const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
   const [copiedIndex, setCopiedIndex] = useState<number>()
   const [title, setTitle] = useState('Phoenix')
   const [editingTitle, setEditingTitle] = useState(false)
@@ -202,7 +205,58 @@ export function PhoenixAvailability() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    void sendTurn(input)
+    if (sending && phoenixSupports(status, 'steer')) void steerTurn()
+    else void sendTurn(input)
+  }
+
+  const steerTurn = async () => {
+    const text = input.trim()
+    if (!sessionId || !text || steering) return
+    setSteering(true)
+    setError(undefined)
+    setInput('')
+    try {
+      const updated = await phoenixApi.steer(sessionId, text, attachments)
+      setAttachments([])
+      setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
+    } catch (reason) {
+      setInput(text)
+      setError(reason instanceof Error ? reason.message : 'Phoenix could not steer the active turn')
+    } finally {
+      setSteering(false)
+    }
+  }
+
+  const startReview = async () => {
+    if (!sessionId || sending) return
+    setSending(true)
+    setError(undefined)
+    try {
+      const updated = await phoenixApi.review(sessionId, 'uncommittedChanges')
+      setWorkflowNotice(updated.status === 'reviewing' ? 'Review started for uncommitted changes' : undefined)
+      const current = await phoenixApi.read(sessionId)
+      setMessages(current.messages)
+      setEvents(current.events ?? [])
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Phoenix could not start the review')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const readDiagnostics = async () => {
+    if (loadingDiagnostics) return
+    setLoadingDiagnostics(true)
+    setError(undefined)
+    try {
+      const result = await phoenixApi.diagnostics()
+      const available = Object.entries(result).filter(([, value]) => value !== null && value !== undefined).map(([key]) => key.replaceAll('_', ' '))
+      setWorkflowNotice(available.length ? `Diagnostics ready: ${available.join(', ')}` : 'No diagnostics were reported')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Phoenix diagnostics are unavailable')
+    } finally {
+      setLoadingDiagnostics(false)
+    }
   }
 
   const addAttachments = async (files: FileList | null) => {
@@ -237,8 +291,7 @@ export function PhoenixAvailability() {
     setError(undefined)
     try {
       const updated = await phoenixApi.interrupt(sessionId)
-      setMessages(updated.messages)
-      setEvents(updated.events ?? [])
+      setWorkflowNotice(updated.status === 'interrupting' ? 'Stopping the active turn' : undefined)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Phoenix could not stop the turn')
     } finally {
@@ -261,10 +314,20 @@ export function PhoenixAvailability() {
   }
 
   const available = session.status === 'authenticated' && status?.available === true
-  const canInterrupt = status?.capabilities?.turn_lifecycle.includes('interrupt') === true
+  const canInterrupt = status?.capabilities?.turn_lifecycle?.includes('interrupt') === true
+  const canSteer = phoenixSupports(status, 'steer')
+  const canReview = phoenixSupports(status, 'review')
+  const canReadDiagnostics = Boolean(status?.capabilities?.diagnostics?.length)
   const connecting = session.status === 'authenticated' && status === undefined && error === undefined
   const suggestions = ['Summarize gateway health', 'Show what needs attention', 'Explain the latest failures']
   const selectedModel = models.find((entry) => entry.model === model)
+  const advertisedCapabilities = status?.capabilities ? [
+    ...(status.capabilities.session_lifecycle ?? []),
+    ...(status.capabilities.turn_lifecycle ?? []),
+    ...(status.capabilities.inputs ?? []),
+    ...(status.capabilities.operations ?? []),
+    ...(status.capabilities.diagnostics ?? []),
+  ].filter((value, index, values) => values.indexOf(value) === index && !status.capabilities?.unsupported?.includes(value)) : undefined
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger asChild><button type="button" aria-label={open ? 'Close Phoenix' : 'Ask Phoenix'} title={open ? 'Close Phoenix' : 'Ask Phoenix'} className="fixed bottom-[50px] right-3 z-40 grid size-11 place-items-center rounded-full border border-aurora-border-strong bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] text-aurora-accent-pink shadow-[0_14px_34px_-12px_rgba(2,10,16,.66),inset_0_1px_0_rgba(255,255,255,.05)] transition-[transform,background-color,color] duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-pink data-[state=open]:bg-aurora-accent-pink data-[state=open]:text-[#2a0f18] data-[state=open]:bg-none sm:bottom-[26px] sm:right-[22px] sm:size-[52px]"><PhoenixMark/></button></PopoverTrigger>
     <PopoverContent data-phoenix-panel data-dock={dock} style={dock === 'float' ? { translate: `${floatOffset.x}px ${floatOffset.y}px` } : undefined} side="top" align="end" sideOffset={14} collisionPadding={8} aria-label="Phoenix session" className={`aurora-scrollbar flex w-[min(420px,calc(100vw-16px))] flex-col overflow-hidden border-aurora-border-strong bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] p-0 text-aurora-text-primary shadow-[0_24px_60px_-12px_rgba(2,10,16,.72),0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_16%,transparent)] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200 ${dock === 'float' ? 'h-[min(560px,calc(100dvh-112px))] origin-bottom-right rounded-[16px] motion-safe:slide-in-from-bottom-2' : `!fixed !inset-y-0 h-dvh !translate-x-0 !translate-y-0 rounded-none ${dock === 'left' ? '!left-0 !right-auto border-r' : '!left-auto !right-0 border-l'}`}`}>
@@ -274,6 +337,7 @@ export function PhoenixAvailability() {
           {messages.length === 0 && <div className="flex shrink-0 flex-col gap-[9px] px-0.5 py-1.5"><p className="text-[12.5px] leading-[1.6] text-aurora-text-muted">Attached to the container-local session. Ask a question, or start with one of these.</p>{suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => void sendTurn(suggestion)} className="w-full rounded-[10px] border border-aurora-border-default/45 bg-[var(--gw0-0_40)] px-[11px] py-[9px] text-left text-xs font-semibold text-aurora-text-primary transition-colors hover:border-aurora-accent-pink/50 hover:bg-aurora-accent-pink/[.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-pink">{suggestion}</button>)}</div>}
           {messages.map((message, index) => message.role === 'user' ? <div data-phoenix-message="user" key={`${message.role}-${index}`} className="group flex shrink-0 flex-col items-end gap-[3px]"><div className="max-w-[84%] whitespace-pre-wrap rounded-[12px_12px_3px_12px] border border-aurora-accent-pink/30 bg-[color-mix(in_srgb,var(--aurora-accent-pink)_12%,var(--aurora-control-surface))] px-3 py-[9px] text-[12.5px] leading-[1.6] text-aurora-text-primary">{message.text}</div><div className="flex min-h-5 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"><button type="button" onClick={() => { setInput(message.text); setMessages(messages.slice(0, index)) }} aria-label="Edit message" className="grid size-5 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"><Pencil size={11}/></button><button type="button" onClick={() => retryFrom(index)} aria-label="Retry from here" className="grid size-5 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-accent-pink"><RefreshCw size={11}/></button><button type="button" onClick={() => void copyMessage(message.text, index)} aria-label="Copy message" className="grid size-5 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary">{copiedIndex === index ? <Check size={11}/> : <Clipboard size={11}/>}</button></div></div> : <div data-phoenix-message="assistant" key={`${message.role}-${index}`} className="group flex min-w-0 shrink-0 gap-[9px]"><span className="grid size-[26px] shrink-0 place-items-center rounded-[9px] border border-aurora-accent-pink/40 bg-aurora-accent-pink/10 text-aurora-accent-pink"><PhoenixMark/></span><div className="min-w-0 flex-1"><div className="whitespace-pre-wrap text-[12.5px] font-semibold leading-[1.68] text-aurora-text-primary">{message.text}</div><div className="flex min-h-5 gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"><button type="button" onClick={() => retryFrom(index)} aria-label="Regenerate" className="grid size-5 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-accent-pink"><RefreshCw size={11}/></button><button type="button" onClick={() => void copyMessage(message.text, index)} aria-label="Copy answer" className="grid size-5 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary">{copiedIndex === index ? <Check size={11}/> : <Clipboard size={11}/>}</button></div></div></div>)}
           <PhoenixEventTimeline events={events}/>
+          {workflowNotice && <p role="status" className="shrink-0 rounded-[9px] border border-aurora-accent-primary/25 bg-aurora-accent-primary/[.06] px-2.5 py-2 text-[10.5px] font-semibold text-aurora-accent-strong">{workflowNotice}</p>}
           {sending && <div role="status" className="flex shrink-0 items-center gap-[9px] rounded-[11px] border border-aurora-accent-pink/30 bg-aurora-accent-pink/[.06] px-[11px] py-2"><span className="text-aurora-accent-pink motion-safe:animate-pulse"><PhoenixMark/></span><span className="text-[11.5px] font-bold text-aurora-accent-pink">Working</span><span className="flex gap-[3px]">{[0, 1, 2].map((dot) => <span key={dot} className="size-1 rounded-full bg-aurora-accent-pink motion-safe:animate-[phoenixDot_1.1s_ease-in-out_infinite]" style={{ animationDelay: `${dot * .18}s` }}/>)}</span></div>}
         </div>
         <form onSubmit={submit} className="relative shrink-0 border-t border-aurora-border-default/60 bg-[linear-gradient(180deg,var(--gw0-0_38),color-mix(in_srgb,var(--aurora-accent-pink)_4%,var(--gw0-0_38)))] px-[11px] pb-[11px] pt-3 before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-[linear-gradient(90deg,transparent,color-mix(in_srgb,var(--aurora-accent-pink)_30%,transparent),transparent)]">
@@ -283,8 +347,8 @@ export function PhoenixAvailability() {
             <select aria-label="Phoenix reasoning effort" value={effort} disabled={Boolean(sessionId)} onChange={(event) => setEffort(event.target.value)} className="w-[92px] rounded-md border border-aurora-border-default bg-aurora-control-surface px-2 py-1 text-[10px] font-semibold text-aurora-text-primary disabled:opacity-70">{selectedModel?.supportedReasoningEfforts.map((option) => <option key={option.reasoningEffort} value={option.reasoningEffort}>{option.reasoningEffort}</option>)}</select>
           </div>}
           {attachments.length > 0 && <div aria-label="Phoenix attachments" className="mb-2 flex gap-1 overflow-x-auto">{attachments.map((attachment, index) => <button type="button" title="Remove attachment" key={`${attachment.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="max-w-[150px] truncate rounded-md border border-aurora-accent-pink/30 bg-aurora-accent-pink/[.07] px-2 py-1 text-[9.5px] text-aurora-text-primary">{attachment.name} ×</button>)}</div>}
-          <div className="mb-2 flex min-w-0 items-center gap-1.5"><PhoenixRuntimeSummary mcpConfigured={status?.mcp?.configured} protocol={status?.protocol?.schema}/><span className="flex-1"/><span className="hidden shrink-0 text-[9.5px] font-semibold text-aurora-text-muted sm:inline">Enter to send · Shift Enter for line break</span></div>
-          <div className="flex items-end gap-2"><label title="Attach image or audio" className="grid size-11 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-aurora-border-default bg-aurora-control-surface text-aurora-text-muted hover:border-aurora-accent-pink/50 hover:text-aurora-accent-pink sm:size-[34px]"><Paperclip size={14}/><input aria-label="Attach image or audio" type="file" accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/webm" multiple className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.currentTarget.value = '' }}/></label><div className="flex min-w-0 flex-1 items-end rounded-[13px] border border-aurora-border-strong bg-aurora-control-surface px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-shadow focus-within:border-aurora-accent-pink/70 focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_45%,transparent)]"><Textarea aria-label="Message Phoenix" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} disabled={sending} placeholder={sending ? 'Working…' : 'Ask Phoenix anything'} className="min-h-[34px] max-h-[132px] resize-none border-0 bg-transparent px-1 py-[7px] text-[12.5px] font-medium leading-[1.5] shadow-none focus-visible:ring-0"/></div>{sending && canInterrupt ? <Button type="button" size="icon" className="size-11 min-w-11 rounded-[10px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] hover:bg-aurora-accent-pink/90 disabled:opacity-60 sm:size-[34px] sm:min-w-[34px]" disabled={!sessionId || interrupting} aria-label={interrupting ? 'Stopping Phoenix' : 'Stop Phoenix'} onClick={() => void interruptTurn()}><Square size={12} fill="currentColor"/></Button> : <Button type="submit" size="icon" className="size-11 min-w-11 rounded-[10px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] hover:bg-aurora-accent-pink/90 disabled:border-aurora-border-strong/70 disabled:bg-aurora-control-surface disabled:text-aurora-text-muted disabled:shadow-none sm:size-[34px] sm:min-w-[34px]" disabled={sending || !input.trim()} aria-label="Send message"><Send size={14}/></Button>}</div>
+          <div className="mb-2 flex min-w-0 items-center gap-1.5"><PhoenixRuntimeSummary mcpConfigured={status?.mcp?.configured} protocol={status?.protocol?.schema} runtimeVersion={status?.protocol?.runtime_version} capabilities={advertisedCapabilities} unsupported={status?.capabilities?.unsupported}/>{canReadDiagnostics && <button type="button" aria-label="Read Phoenix diagnostics" title="Read safe App Server diagnostics" disabled={loadingDiagnostics} onClick={() => void readDiagnostics()} className="grid size-5 shrink-0 place-items-center rounded-md text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-accent-strong disabled:opacity-50"><Activity size={11}/></button>}<span className="flex-1"/><span className="hidden shrink-0 text-[9.5px] font-semibold text-aurora-text-muted sm:inline">Enter to send · Shift Enter for line break</span></div>
+          <div className="flex items-end gap-2"><label title="Attach image or audio" className="grid size-11 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-aurora-border-default bg-aurora-control-surface text-aurora-text-muted hover:border-aurora-accent-pink/50 hover:text-aurora-accent-pink sm:size-[34px]"><Paperclip size={14}/><input aria-label="Attach image or audio" type="file" accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/webm" multiple className="sr-only" onChange={(event) => { void addAttachments(event.target.files); event.currentTarget.value = '' }}/></label><div className="flex min-w-0 flex-1 items-end rounded-[13px] border border-aurora-border-strong bg-aurora-control-surface px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-shadow focus-within:border-aurora-accent-pink/70 focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--aurora-accent-pink)_45%,transparent)]"><Textarea aria-label="Message Phoenix" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} disabled={sending && !canSteer} placeholder={sending ? (canSteer ? 'Add guidance while Phoenix works…' : 'Working…') : 'Ask Phoenix anything'} className="min-h-[34px] max-h-[132px] resize-none border-0 bg-transparent px-1 py-[7px] text-[12.5px] font-medium leading-[1.5] shadow-none focus-visible:ring-0"/></div>{canReview && sessionId && !sending && <Button type="button" size="icon" title="Review uncommitted changes" aria-label="Review uncommitted changes" onClick={() => void startReview()} className="size-11 min-w-11 rounded-[10px] border border-aurora-border-default bg-aurora-control-surface text-aurora-text-muted hover:border-aurora-accent-pink/50 hover:text-aurora-accent-pink sm:size-[34px] sm:min-w-[34px]"><FileSearch size={14}/></Button>}{sending && canSteer && <Button type="submit" size="icon" aria-label="Steer Phoenix" disabled={!input.trim() || steering} className="size-11 min-w-11 rounded-[10px] border border-aurora-accent-primary/60 bg-aurora-control-surface text-aurora-accent-strong hover:bg-aurora-hover-bg sm:size-[34px] sm:min-w-[34px]"><Send size={14}/></Button>}{sending && canInterrupt ? <Button type="button" size="icon" className="size-11 min-w-11 rounded-[10px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] hover:bg-aurora-accent-pink/90 disabled:opacity-60 sm:size-[34px] sm:min-w-[34px]" disabled={!sessionId || interrupting} aria-label={interrupting ? 'Stopping Phoenix' : 'Stop Phoenix'} onClick={() => void interruptTurn()}><Square size={12} fill="currentColor"/></Button> : <Button type="submit" size="icon" className="size-11 min-w-11 rounded-[10px] border border-aurora-accent-pink/70 bg-aurora-accent-pink text-[#2a0f18] shadow-[0_4px_14px_-4px_color-mix(in_srgb,var(--aurora-accent-pink)_55%,transparent)] hover:bg-aurora-accent-pink/90 disabled:border-aurora-border-strong/70 disabled:bg-aurora-control-surface disabled:text-aurora-text-muted disabled:shadow-none sm:size-[34px] sm:min-w-[34px]" disabled={sending || !input.trim()} aria-label="Send message"><Send size={14}/></Button>}</div>
         </form>
       </> : <>
         <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-8"><h3 className="font-display text-lg font-bold">Session execution is unavailable</h3><p className="text-[12.5px] leading-relaxed text-aurora-text-muted">{error ?? 'Phoenix needs the container-local Codex App Server and its isolated account to be configured by an operator.'}</p><Link href="/agents" onClick={() => setOpen(false)} className="inline-flex items-center gap-1 self-start rounded-md py-1 text-xs font-semibold text-aurora-accent-strong hover:underline focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">View agents<ArrowUpRight size={13}/></Link></div>
