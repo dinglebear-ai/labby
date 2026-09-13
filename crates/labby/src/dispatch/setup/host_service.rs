@@ -516,16 +516,47 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
         return commit_upgrade_journal_as_previous();
     }
     let retained = load_previous_host_release_at(journal)?;
-    restore_retained_generation_files_at(
-        &retained,
+    let live_unit_path = unit_path();
+    restore_executable(
         Path::new("/usr/local/bin/labby"),
-        &unit_path(),
-        Path::new("/etc/systemd/system/labby.service.d"),
+        retained.binary.as_deref(),
     )?;
+    retained
+        .dropins
+        .restore(Path::new("/etc/systemd/system/labby.service.d"))?;
+    if retained.unit.is_none() {
+        return recover_absent_retained_unit_with(
+            &live_unit_path,
+            journal,
+            Path::new(HOST_SERVICE_RESTORED_GARBAGE),
+            |args| async move {
+                let args: Vec<_> = args.iter().map(String::as_str).collect();
+                run_systemctl(&args).await.map(|output| output.stdout)
+            },
+        )
+        .await;
+    }
+    restore_optional(&live_unit_path, retained.unit.as_deref())?;
     run_systemctl(&["daemon-reload"]).await?;
     restore_captured_unit_file_state(SERVICE_NAME, retained.enabled).await?;
     restore_captured_active_state(SERVICE_NAME, retained.active).await?;
     retire_recovery_journal()
+}
+
+async fn recover_absent_retained_unit_with<F, Fut>(
+    path: &Path,
+    journal: &Path,
+    garbage: &Path,
+    mut run: F,
+) -> Result<(), ToolError>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<String, ToolError>>,
+{
+    settle_created_unit_with(SERVICE_NAME, path, &mut run).await?;
+    restore_optional(path, None)?;
+    run(vec!["daemon-reload".into()]).await?;
+    retire_recovery_journal_at(journal, garbage)
 }
 
 async fn prepare_host_service_mutation() -> Result<(), ToolError> {
@@ -3260,6 +3291,42 @@ mod tests {
             restore_optional(&path, None).unwrap();
             assert!(!path.exists());
         }
+    }
+
+    #[tokio::test]
+    async fn interrupted_first_install_settles_before_removal_reload_and_journal_retirement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(SERVICE_NAME);
+        let journal = root.path().join("journal");
+        let garbage = root.path().join("garbage");
+        std::fs::write(&path, "transaction-created unit").unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        std::fs::write(journal.join("manifest"), "recovery").unwrap();
+        let mut calls = Vec::new();
+        let mut enabled = true;
+        recover_absent_retained_unit_with(&path, &journal, &garbage, |args| {
+            if args[0] != "daemon-reload" {
+                assert!(
+                    path.exists(),
+                    "systemd settlement must precede unit removal"
+                );
+            } else {
+                assert!(!path.exists(), "daemon reload must follow unit removal");
+                assert!(!enabled, "enablement links must be removed before reload");
+            }
+            if args[0] == "disable" {
+                enabled = false;
+            }
+            let output = if args[0] == "show" { "inactive\n" } else { "" };
+            calls.push(args);
+            std::future::ready(Ok(output.into()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.last().unwrap(), &vec!["daemon-reload"]);
+        assert!(!path.exists());
+        assert!(!journal.exists());
+        assert!(!garbage.exists());
     }
 
     #[tokio::test]
