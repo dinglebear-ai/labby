@@ -82,6 +82,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.17.2](https://github.com/dinglebear-ai/labby/compare/v1.17.1...v1.17.2) (2026-09-13)
+
+
+### Fixed
+
+* **release:** qualify Incus image preflight before tagging ([#616](https://github.com/dinglebear-ai/labby/issues/616)) ([c74e4fc](https://github.com/dinglebear-ai/labby/commit/c74e4fc00c375b5a4db2902056fc60ddd4d36144))
+
 ## [1.17.1](https://github.com/dinglebear-ai/labby/compare/v1.17.0...v1.17.1) (2026-09-13)
 
 
