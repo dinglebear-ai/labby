@@ -440,6 +440,24 @@ for (const [authorityState, remediation] of [
   })
 }
 
+for (const [authorityState, available, expected] of [
+  ['transport', true, true],
+  ['transport', false, false],
+  ['unprovisioned', true, false],
+] as const) {
+  test(`owner bootstrap availability for ${authorityState} with server flag ${available} is ${expected}`, async () => {
+    __setBrowserSessionStateForTests({ status: 'loading' })
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({
+        ...noAuthoritySessionBody(authorityState, 'n/a'),
+        owner_bootstrap_available: available,
+      }), { status: 200 })) as FetchMock
+
+    const state = await loadBrowserSession()
+    assert.equal(state.status === 'authenticated' ? state.ownerBootstrapAvailable : undefined, expected)
+  })
+}
+
 test('a ready session parses the server projection shape', async () => {
   __setBrowserSessionStateForTests({ status: 'loading' })
   globalThis.fetch = (async () => new Response(JSON.stringify({

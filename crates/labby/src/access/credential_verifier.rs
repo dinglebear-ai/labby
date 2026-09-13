@@ -213,33 +213,43 @@ impl AccessCredentialAdapter {
         Ok(VerifiedProductBinding { source, bound })
     }
 
+    /// Refuse a verification attempt once the credential (or the whole
+    /// installation) has exhausted its failed-attempt budget. This is a
+    /// read-only check: successful verifications never consume the budget,
+    /// so a legitimate client is not throttled by its own traffic. Failures
+    /// are charged by [`Self::charge_failed_credential_attempt`].
     async fn admit_credential_attempt(
         &self,
         credential_id: &str,
     ) -> Result<(), ProductCredentialVerificationError> {
-        let now = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| ProductCredentialVerificationError::Unavailable)?
-                .as_secs(),
-        )
-        .map_err(|_| ProductCredentialVerificationError::Unavailable)?;
-        let global: [u8; 32] = Sha256::digest(b"labby-credential-global-v1").into();
-        let target: [u8; 32] = Sha256::digest(credential_id.as_bytes()).into();
-        let global_admitted = self
+        let now = unix_now_for_verification()?;
+        let target = credential_bucket(credential_id);
+        let global_exhausted = self
             .runtime
-            .admit_security_operation("credential_global".into(), global, now, 60, 64)
+            .security_operation_exhausted(
+                "credential_global".into(),
+                credential_global_bucket(),
+                now,
+                CREDENTIAL_FAILURE_WINDOW_SECONDS,
+                CREDENTIAL_GLOBAL_FAILURE_LIMIT,
+            )
             .await
             .map_err(|_| ProductCredentialVerificationError::Unavailable)?;
-        let target_admitted = self
+        let target_exhausted = self
             .runtime
-            .admit_security_operation("credential_peer".into(), target, now, 60, 16)
+            .security_operation_exhausted(
+                "credential_peer".into(),
+                target,
+                now,
+                CREDENTIAL_FAILURE_WINDOW_SECONDS,
+                CREDENTIAL_PEER_FAILURE_LIMIT,
+            )
             .await
             .map_err(|_| ProductCredentialVerificationError::Unavailable)?;
-        if global_admitted && target_admitted {
+        if !global_exhausted && !target_exhausted {
             return Ok(());
         }
-        let _ = self
+        if let Err(error) = self
             .runtime
             .record_security_event(
                 "credential_verify".into(),
@@ -249,8 +259,44 @@ impl AccessCredentialAdapter {
                 None,
                 now,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(error = ?error, reason = "rate_limited", "credential security event not recorded");
+        }
         Err(ProductCredentialVerificationError::Denied)
+    }
+
+    /// Charge one failed verification against the per-credential and
+    /// installation-wide budgets. Only denials are charged; an unavailable
+    /// store is an outage, not a guess.
+    async fn charge_failed_credential_attempt(&self, credential_id: &str) {
+        let Ok(now) = unix_now_for_verification() else {
+            return;
+        };
+        let target = credential_bucket(credential_id);
+        let charges = [
+            (
+                "credential_global",
+                credential_global_bucket(),
+                CREDENTIAL_GLOBAL_FAILURE_LIMIT,
+            ),
+            ("credential_peer", target, CREDENTIAL_PEER_FAILURE_LIMIT),
+        ];
+        for (class, bucket, limit) in charges {
+            if let Err(error) = self
+                .runtime
+                .admit_security_operation(
+                    class.into(),
+                    bucket,
+                    now,
+                    CREDENTIAL_FAILURE_WINDOW_SECONDS,
+                    limit,
+                )
+                .await
+            {
+                tracing::warn!(error = ?error, class, "failed credential attempt not charged");
+            }
+        }
     }
 
     async fn resolve_binding(
@@ -374,6 +420,29 @@ impl AccessCredentialAdapter {
     }
 }
 
+/// Failed product-credential verifications allowed per window.
+const CREDENTIAL_FAILURE_WINDOW_SECONDS: i64 = 60;
+const CREDENTIAL_PEER_FAILURE_LIMIT: i64 = 16;
+const CREDENTIAL_GLOBAL_FAILURE_LIMIT: i64 = 64;
+
+fn credential_global_bucket() -> [u8; 32] {
+    Sha256::digest(b"labby-credential-global-v1").into()
+}
+
+fn credential_bucket(credential_id: &str) -> [u8; 32] {
+    Sha256::digest(credential_id.as_bytes()).into()
+}
+
+fn unix_now_for_verification() -> Result<i64, ProductCredentialVerificationError> {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProductCredentialVerificationError::Unavailable)?
+            .as_secs(),
+    )
+    .map_err(|_| ProductCredentialVerificationError::Unavailable)
+}
+
 fn live_matches(live: &LiveAuthoritySnapshot, stored: &StoredBinding) -> bool {
     live.loadout_id == stored.loadout_id
         && live.loadout_generation == stored.loadout_generation
@@ -404,9 +473,19 @@ impl ProductCredentialVerifier for AccessCredentialAdapter {
             let digest = credential_digest(credential);
             self.admit_credential_attempt(credential.credential_id())
                 .await?;
-            let bound = self
+            let bound = match self
                 .resolve_binding(credential.credential_id().to_owned(), Some(digest))
-                .await?;
+                .await
+            {
+                Ok(bound) => bound,
+                Err(error) => {
+                    if error == ProductCredentialVerificationError::Denied {
+                        self.charge_failed_credential_attempt(credential.credential_id())
+                            .await;
+                    }
+                    return Err(error);
+                }
+            };
             Ok(ProductCredentialGrant {
                 issuer: bound.issuer,
                 subject: bound.subject,
@@ -720,6 +799,35 @@ mod tests {
             .unwrap();
         assert_eq!(attempts, 16);
         assert_eq!(rate_limited_events, 1);
+    }
+
+    /// PERF-C1: the admission check runs before every verification, so it
+    /// must never consume the budget itself; only denials are charged.
+    #[tokio::test]
+    async fn admission_checks_never_consume_the_failure_budget() {
+        let (_directory, runtime) = ready_runtime().await;
+        let live: Arc<dyn LiveAuthority> = Arc::new(DeniedLiveAuthority);
+        let adapter = AccessCredentialAdapter::new(runtime.clone(), live);
+
+        for _ in 0..(CREDENTIAL_GLOBAL_FAILURE_LIMIT * 2) {
+            adapter
+                .admit_credential_attempt("busy-but-valid-credential")
+                .await
+                .unwrap();
+        }
+
+        let store = runtime.store().await.unwrap();
+        let buckets: i64 = store
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM access_admission_buckets", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(super::super::store::map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(buckets, 0, "admission checks must be read-only");
     }
 
     #[tokio::test]

@@ -11,10 +11,13 @@ import {
   AURORA_STRONG_PANEL,
 } from '../aurora/tokens.ts'
 import { bootstrapOwner, describeOwnerBootstrapError } from '../../lib/auth/owner-bootstrap.ts'
+import { LogoutRevocationError, logoutBrowserSession } from '../../lib/auth/session.ts'
 import { cn } from '../../lib/utils.ts'
 
 type OwnerSetupScreenProps = {
   authorityState: 'transport' | 'unprovisioned'
+  /** Server-declared: no owner exists yet and this caller may claim ownership. */
+  bootstrapAvailable: boolean
   remediation?: string
   email?: string | null
 }
@@ -33,17 +36,49 @@ const FIELD_INPUT = cn(
   'focus-visible:ring-aurora-accent-primary/34 focus-visible:ring-[3px]',
 )
 
-const FALLBACK_REMEDIATION: Record<OwnerSetupScreenProps['authorityState'], string> = {
-  transport: 'Durable access authority is not initialized yet. Complete owner bootstrap to finish setup.',
-  unprovisioned: 'This identity is signed in but has no access yet. Ask an administrator to add it to a team, or complete owner bootstrap.',
+const BOOTSTRAP_REMEDIATION =
+  'Durable access authority is not initialized yet. Complete owner bootstrap to finish setup.'
+const NO_ACCESS_REMEDIATION: Record<OwnerSetupScreenProps['authorityState'], string> = {
+  transport: 'This Labby has not been set up yet. Only its configured owner account can finish setup.',
+  unprovisioned: 'This identity is signed in but has no access yet. Ask an administrator to add it to a team.',
 }
 
 /**
  * Shown while the server reports a signed-in session without durable access
- * authority. It is the browser surface for `POST /v1/access/bootstrap-owner`;
- * the server enforces every eligibility gate.
+ * authority. Only when the server declares `owner_bootstrap_available` does
+ * it render the form for `POST /v1/access/bootstrap-owner`; every other
+ * caller sees a no-access notice. The server still enforces every gate.
  */
-export function OwnerSetupScreen({ authorityState, remediation, email }: OwnerSetupScreenProps) {
+export function OwnerSetupScreen({ authorityState, bootstrapAvailable, remediation, email }: OwnerSetupScreenProps) {
+  const heading = bootstrapAvailable ? 'Finish setting up Labby' : 'No access yet'
+  // The transport remediation from the server describes bootstrap; only an
+  // eligible caller should see it.
+  const message = bootstrapAvailable
+    ? remediation || BOOTSTRAP_REMEDIATION
+    : (authorityState === 'unprovisioned' && remediation) || NO_ACCESS_REMEDIATION[authorityState]
+
+  return (
+    <div className={cn(AURORA_PAGE_SHELL, 'flex min-h-screen items-center justify-center px-6')}>
+      <div className={cn(AURORA_STRONG_PANEL, 'w-full max-w-md p-8')}>
+        <div className="mb-6 flex items-center gap-3">
+          <LabbyIcon size={40} />
+          <span className="text-xl font-bold text-aurora-text-primary">Labby</span>
+        </div>
+        <p className={AURORA_MUTED_LABEL}>{bootstrapAvailable ? 'Owner setup' : 'Access'}</p>
+        <h1 className={cn(AURORA_DISPLAY_1, 'mt-3 text-aurora-text-primary')}>{heading}</h1>
+        <p className="mt-3 text-sm leading-[1.55] text-aurora-text-muted">{message}</p>
+        {email ? (
+          <p className="mt-2 text-sm text-aurora-text-muted">
+            Signed in as <span className="text-aurora-text-primary">{email}</span>
+          </p>
+        ) : null}
+        {bootstrapAvailable ? <OwnerBootstrapForm /> : <SignOutButton />}
+      </div>
+    </div>
+  )
+}
+
+function OwnerBootstrapForm() {
   const [organizationName, setOrganizationName] = React.useState('')
   const [projectName, setProjectName] = React.useState('')
   const [pending, setPending] = React.useState(false)
@@ -64,69 +99,80 @@ export function OwnerSetupScreen({ authorityState, remediation, email }: OwnerSe
   }
 
   return (
-    <div className={cn(AURORA_PAGE_SHELL, 'flex min-h-screen items-center justify-center px-6')}>
-      <div className={cn(AURORA_STRONG_PANEL, 'w-full max-w-md p-8')}>
-        <div className="mb-6 flex items-center gap-3">
-          <LabbyIcon size={40} />
-          <span className="text-xl font-bold text-aurora-text-primary">Labby</span>
-        </div>
-        <p className={AURORA_MUTED_LABEL}>Owner setup</p>
-        <h1 className={cn(AURORA_DISPLAY_1, 'mt-3 text-aurora-text-primary')}>
-          {authorityState === 'transport' ? 'Finish setting up Labby' : 'No access yet'}
-        </h1>
-        <p className="mt-3 text-sm leading-[1.55] text-aurora-text-muted">
-          {remediation || FALLBACK_REMEDIATION[authorityState]}
-        </p>
-        {email ? (
-          <p className="mt-2 text-sm text-aurora-text-muted">
-            Signed in as <span className="text-aurora-text-primary">{email}</span>
-          </p>
-        ) : null}
-        <form className="mt-6" onSubmit={handleSubmit}>
-          <p className="text-sm leading-[1.55] text-aurora-text-muted">
-            If this Labby was set up before, enter the organization and project names from that setup.
-          </p>
-          <label className="mt-4 block text-sm font-medium text-aurora-text-primary" htmlFor="owner-setup-organization">
-            Organization name
-          </label>
-          <input
-            autoComplete="off"
-            className={FIELD_INPUT}
-            id="owner-setup-organization"
-            maxLength={128}
-            name="organization_name"
-            onChange={(event) => setOrganizationName(event.target.value)}
-            placeholder="Local"
-            required
-            value={organizationName}
-          />
-          <label className="mt-4 block text-sm font-medium text-aurora-text-primary" htmlFor="owner-setup-project">
-            Project name
-          </label>
-          <input
-            autoComplete="off"
-            className={FIELD_INPUT}
-            id="owner-setup-project"
-            maxLength={128}
-            name="project_name"
-            onChange={(event) => setProjectName(event.target.value)}
-            placeholder="Default"
-            required
-            value={projectName}
-          />
-          {error ? (
-            <div
-              className="mt-4 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/10 px-4 py-3 text-sm text-aurora-warn"
-              role="alert"
-            >
-              {error}
-            </div>
-          ) : null}
-          <button className={PRIMARY_BUTTON} disabled={pending} type="submit">
-            {pending ? 'Completing owner bootstrap…' : 'Complete owner bootstrap'}
-          </button>
-        </form>
-      </div>
+    <form className="mt-6" onSubmit={handleSubmit}>
+      <p className="text-sm leading-[1.55] text-aurora-text-muted">
+        If this Labby was set up before, enter the organization and project names from that setup.
+      </p>
+      <label className="mt-4 block text-sm font-medium text-aurora-text-primary" htmlFor="owner-setup-organization">
+        Organization name
+      </label>
+      <input
+        autoComplete="off"
+        className={FIELD_INPUT}
+        id="owner-setup-organization"
+        maxLength={128}
+        name="organization_name"
+        onChange={(event) => setOrganizationName(event.target.value)}
+        placeholder="Local"
+        required
+        value={organizationName}
+      />
+      <label className="mt-4 block text-sm font-medium text-aurora-text-primary" htmlFor="owner-setup-project">
+        Project name
+      </label>
+      <input
+        autoComplete="off"
+        className={FIELD_INPUT}
+        id="owner-setup-project"
+        maxLength={128}
+        name="project_name"
+        onChange={(event) => setProjectName(event.target.value)}
+        placeholder="Default"
+        required
+        value={projectName}
+      />
+      {error ? <ErrorNotice message={error} /> : null}
+      <button className={PRIMARY_BUTTON} disabled={pending} type="submit">
+        {pending ? 'Completing owner bootstrap…' : 'Complete owner bootstrap'}
+      </button>
+    </form>
+  )
+}
+
+function SignOutButton() {
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  async function handleSignOut() {
+    setPending(true)
+    setError(null)
+    try {
+      await logoutBrowserSession()
+    } catch (reason) {
+      // Local sign-out already completed; only server revocation failed.
+      setError(reason instanceof LogoutRevocationError ? reason.message : 'Sign-out could not be confirmed by the server.')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <>
+      {error ? <ErrorNotice message={error} /> : null}
+      <button className={PRIMARY_BUTTON} disabled={pending} onClick={handleSignOut} type="button">
+        {pending ? 'Signing out…' : 'Sign out'}
+      </button>
+    </>
+  )
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  return (
+    <div
+      className="mt-4 rounded-aurora-2 border border-aurora-warn/30 bg-aurora-warn/10 px-4 py-3 text-sm text-aurora-warn"
+      role="alert"
+    >
+      {message}
     </div>
   )
 }
