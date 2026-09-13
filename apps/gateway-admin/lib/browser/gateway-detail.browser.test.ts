@@ -950,6 +950,10 @@ test('Discover kind searches reject stale pagination and restore query context f
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  // This flow intentionally exercises several debounced searches and history
+  // transitions. Shared CI runners can take longer than Playwright's default
+  // 30-second locator timeout while the complete browser suite runs in parallel.
+  page.setDefaultTimeout(60_000)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(() => {

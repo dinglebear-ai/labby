@@ -19,6 +19,7 @@ use crate::config::AgentHarnessConfig;
 
 const CANCELLATION_POLL: Duration = Duration::from_millis(100);
 const REVOCATION_POLL: Duration = Duration::from_secs(1);
+#[cfg(unix)]
 const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
 pub(crate) enum AgentExecutorBackend {
@@ -353,7 +354,7 @@ impl ProcessTreeGuard {
         }
         #[cfg(windows)]
         if let Some(job) = self.job.take() {
-            drop(job.close());
+            let _ = job.close();
         }
     }
 }
@@ -377,7 +378,7 @@ async fn terminate_process_tree(child: &mut Child, guard: &mut ProcessTreeGuard)
     drop(child.wait().await);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use labby_primitives::{

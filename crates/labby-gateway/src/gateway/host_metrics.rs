@@ -445,7 +445,7 @@ mod tests {
     fn host_metrics_parsers_preserve_units_and_exclude_loopback() {
         assert_eq!(
             memory_total("MemTotal: 1000 kB\nMemAvailable: 400 kB\n"),
-            Some(1024000)
+            Some(1_024_000)
         );
         assert_eq!(
             network("header\nheader\nlo: 99 0 0 0 0 0 0 0 88\neth0: 120 0 0 0 0 0 0 0 340"),

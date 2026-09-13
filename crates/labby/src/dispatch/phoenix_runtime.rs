@@ -204,12 +204,11 @@ fn app_server_error(error: &Value) -> ToolError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn multiplexes_requests_broadcasts_events_and_interrupts_without_restarting() {
         use std::os::unix::fs::PermissionsExt as _;

@@ -800,6 +800,7 @@ fn protocol_error() -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
 
     #[tokio::test]
