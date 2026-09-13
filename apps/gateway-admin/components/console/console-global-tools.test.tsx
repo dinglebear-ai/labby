@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { installTestDom } from '../../lib/testing/dom-install.ts'
+import { __setBrowserSessionStateForTests } from '../../lib/auth/session-store.ts'
 installTestDom()
 Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
 Object.defineProperty(globalThis, 'NodeFilter', { configurable: true, value: window.NodeFilter })
@@ -18,6 +19,7 @@ test('global library tray links real routes and distinguishes zero from unavaila
 })
 
 test('Phoenix opens an explicit unavailable session panel without simulated send actions', async () => {
+  __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   const { PhoenixAvailability } = await import('./console-global-tools.tsx')
   const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
   const view = await renderClient(<PhoenixAvailability />)
@@ -33,4 +35,40 @@ test('Phoenix opens an explicit unavailable session panel without simulated send
     await act(async () => { close.dispatchEvent(new window.MouseEvent('click', { bubbles: true }) as unknown as Event) })
     assert.equal(document.querySelector('[aria-label="Phoenix session"]'), null)
   } finally { await view.unmount() }
+})
+
+test('Phoenix sends a real turn through the container-local service and renders the reply', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { action: string }
+    actions.push(body.action)
+    if (body.action === 'phoenix.status') return new Response(JSON.stringify({ enabled: true, available: true, runtime: 'container_local', service: 'codex-app-server', sandbox: 'read-only' }), { status: 200 })
+    if (body.action === 'phoenix.session.start') return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [] }), { status: 200 })
+    return new Response(JSON.stringify({ session_id: 'phoenix-1', status: 'ready', messages: [{ role: 'user', text: 'Is Labby healthy?' }, { role: 'assistant', text: 'The gateway is healthy.' }] }), { status: 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')
+    assert.ok(input)
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(input, 'Is Labby healthy?')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'Is Labby healthy?' }) as unknown as Event)
+    })
+    await act(async () => input.form!.requestSubmit())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    assert.deepEqual(actions, ['phoenix.status', 'phoenix.session.start', 'phoenix.turn.send'])
+    assert.match(document.querySelector('[aria-label="Phoenix session"]')?.textContent ?? '', /The gateway is healthy/)
+    assert.equal(document.querySelector('[aria-label="Close Phoenix panel"]')?.classList.contains('size-11'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
 })

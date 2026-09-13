@@ -58,6 +58,7 @@ export function DetailTabBar({
 }: React.HTMLAttributes<HTMLDivElement> & { bleed?: number }) {
   return (
     <div
+      data-detail-tabbar="1"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -84,6 +85,7 @@ export function DetailTabsList({
 }: React.ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
+      data-detail-tabs-list="1"
       className={className}
       style={{
         flex: '1 1 0%',
@@ -482,6 +484,7 @@ export function DetailCapabilityCluster({
 
   return (
     <div
+      data-detail-capabilities="1"
       role="img"
       aria-label={clusterTitle}
       title={clusterTitle}
@@ -534,6 +537,7 @@ export function DetailStatStrip({
 }: React.HTMLAttributes<HTMLDivElement> & { cardCount: number; bleed?: number }) {
   return (
     <div
+      data-detail-stat-strip="1"
       style={{
         display: 'grid',
         gridTemplateColumns: `2fr repeat(${cardCount}, minmax(120px, 1fr))`,
@@ -588,6 +592,7 @@ export function DetailStripCard({
 }) {
   return (
     <div
+      data-detail-stat-card="1"
       title={title}
       style={{
         minWidth: 0,
@@ -652,6 +657,7 @@ export function DetailExposureCell({
 }) {
   return (
     <button
+      data-detail-exposure="1"
       type="button"
       onClick={onClick}
       aria-label={ariaLabel}

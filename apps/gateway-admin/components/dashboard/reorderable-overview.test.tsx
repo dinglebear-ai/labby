@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils'
-import { ReorderableOverview, nearestOverviewDrop, normalizeOverviewOrder, normalizeOverviewWidths, normalizeOverviewLayout, placeOverviewCard } from './reorderable-overview'
+import { ReorderableOverview, nearestOverviewDrop, normalizeOverviewOrder, normalizeOverviewWidths, normalizeOverviewLayout, overviewMasonrySpan, placeOverviewCard } from './reorderable-overview'
 
 installTestDom()
 const key = 'labby:overview-layout:v2'
@@ -13,6 +13,13 @@ const cards = [
   { id: 's', rail: true, content: <span data-card="s">S</span> },
 ]
 const lane = (name: string) => [...document.querySelectorAll(`[data-overview-lane="${name}"] [data-card]`)].map(node => node.getAttribute('data-card'))
+
+test('masonry row spans compact unequal cards without invalid measurements', () => {
+  assert.equal(overviewMasonrySpan(100, 4, 12), 7)
+  assert.equal(overviewMasonrySpan(212, 4, 12), 14)
+  assert.equal(overviewMasonrySpan(0), 1)
+  assert.equal(overviewMasonrySpan(Number.NaN), 1)
+})
 
 test('width preferences accept only known boolean entries', () => {
   assert.deepEqual(normalizeOverviewWidths({ a: false, b: true, unknown: true, r: 'true' }, ['a', 'b', 'r']), { a: false, b: true })
@@ -35,6 +42,19 @@ test('width control changes only the selected main card and survives a remount',
     assert.equal(toggle().getAttribute('aria-pressed'), 'true')
     await act(async () => toggle().click())
     assert.equal(toggle().getAttribute('aria-pressed'), 'false')
+  } finally { await view.unmount(); window.localStorage.clear() }
+})
+
+test('telemetry lane uses dense measured packing while the insights rail stays a normal stack', async () => {
+  window.localStorage.clear()
+  const view = await renderClient(<ReorderableOverview cards={cards}/>)
+  try {
+    const telemetry = document.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')!
+    const insights = document.querySelector<HTMLElement>('[data-overview-lane="insights"]')!
+    assert.equal(telemetry.style.gridAutoFlow, 'row dense')
+    assert.equal(telemetry.style.gridAutoRows, '1px')
+    assert.equal(insights.style.gridAutoFlow, '')
+    assert.equal(insights.style.gridAutoRows, '')
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 

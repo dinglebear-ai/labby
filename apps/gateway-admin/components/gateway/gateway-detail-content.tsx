@@ -970,7 +970,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             padding="16px 20px 0"
             style={{ borderRadius: 'var(--radius-3)', overflow: 'hidden' }}
           >
-            <div className="flex items-start justify-between gap-4">
+            <div data-detail-heading="1" className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                   <span
@@ -1028,8 +1028,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               </div>
 
               {/* Meta lane — mock: transport, version, protocol, auth, status reason. */}
-              <div className="min-w-0 shrink-0 pt-1">
-                <div className="flex flex-wrap items-center justify-end gap-2.5 text-[11px] leading-none text-aurora-text-muted">
+              <div data-detail-meta="1" className="min-w-0 shrink-0 pt-1">
+                <div data-detail-meta-content="1" className="flex flex-wrap items-center justify-end gap-2.5 text-[11px] leading-none text-aurora-text-muted">
                   <HeaderMetaButton
                     onClick={async () => {
                       try {

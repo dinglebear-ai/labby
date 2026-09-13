@@ -45,8 +45,8 @@ function BreadcrumbTrail({ breadcrumbs, icon }: { breadcrumbs: AppBreadcrumb[]; 
     }
     const content = <>{mark ? <span aria-hidden className="grid shrink-0 place-items-center text-aurora-accent-strong">{mark}</span> : null}<span className="truncate">{crumb.label}</span></>
     return <Fragment key={`${crumb.label}-${index}`}>
-      {index > 0 ? <ChevronRight size={13} strokeWidth={1.7} className="shrink-0 text-aurora-text-muted" /> : null}
-      {crumb.href && !isLeaf ? <Link href={crumb.href} style={style}>{content}</Link> : <span data-crumbleaf={isLeaf ? '1' : undefined} style={style}>{content}</span>}
+      {index > 0 ? <ChevronRight data-crumb-separator="1" size={13} strokeWidth={1.7} className="shrink-0 text-aurora-text-muted" /> : null}
+      {crumb.href && !isLeaf ? <Link data-crumb-parent="1" href={crumb.href} style={style}>{content}</Link> : <span data-crumbleaf={isLeaf ? '1' : undefined} style={style}>{content}</span>}
     </Fragment>
   })}</>
 }

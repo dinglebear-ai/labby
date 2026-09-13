@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Wrench } from 'lucide-react'
+import { ChartNoAxesCombined, Layers, Sparkles, Wrench, Zap } from 'lucide-react'
 import { OverviewChartMenu } from '@/components/dashboard/chart-menu'
 import { ToolVolumeLegend } from '@/components/dashboard/tool-volume-chart'
 import { ConnectedClientsPanel, GatewayHostPanel, useOverviewRuntime } from '@/components/dashboard/runtime-panels'
@@ -21,6 +21,12 @@ import {
 } from '@/components/dashboard/activity-insight-panels'
 import {
   CallOutcomesPanel,
+  FailuresPanel,
+  HourlyHeatPanel,
+  LatencyPanel,
+  SurfacesPanel,
+  ThroughputPanel,
+  TokensByToolPanel,
   UpstreamsPanel,
 } from '@/components/dashboard/analysis-panels'
 import { DashboardPanel } from '@/components/dashboard/panel'
@@ -47,9 +53,6 @@ const ToolVolumeChart = dynamic(() =>
 )
 const TopToolsChart = dynamic(() =>
   import('@/components/dashboard/top-tools-chart').then((module) => module.TopToolsChart),
-)
-const AnalysisSection = dynamic(() =>
-  import('@/components/dashboard/analysis-section').then((module) => module.AnalysisSection),
 )
 const ToolDetailDrawer = dynamic(() =>
   import('@/components/dashboard/tool-detail-drawer').then((module) => module.ToolDetailDrawer),
@@ -84,6 +87,7 @@ export default function OverviewPage() {
   const serverVolume = useServerVolume(metrics)
   const live = buildLiveFleetStats(gateways ?? [])
   const warningsSig = warningsSignature(gateways ?? [])
+  const discoveredSkills = gateways?.reduce((sum, gateway) => sum + (gateway.status.discovered_skill_count ?? 0), 0) ?? 0
   const metricsState = metricsLoadState(metrics, metricsError, isMetricsLoading)
   const metricsLoading = metricsState === 'loading'
 
@@ -119,10 +123,23 @@ export default function OverviewPage() {
           />
         ) : null}
 
+        <div className="flex flex-col gap-3">
+          <Link
+            href="/skills/"
+            aria-label={`Browse ${discoveredSkills} discovered skills`}
+            title="Browse discovered skills"
+            className="inline-flex w-fit items-center gap-2 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface px-3 py-2 text-xs font-semibold text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"
+          >
+            <Sparkles aria-hidden="true" className="size-3.5 text-aurora-accent-strong" />
+            <span>{discoveredSkills} discovered skills</span>
+          </Link>
+          {!gatewaysLoading ? <WarningsBanner count={live.warnings} signature={warningsSig} /> : null}
+        </div>
+
         {/* Two-thirds telemetry canvas and one-third insights rail; each lane
             retains its own visible reorder sequence. */}
         <ReorderableOverview cards={[
-          { id: 'Call volume', wide: true, content: <DashboardPanel title="Upstream call volume" elevation="strong" headerStyle={{ padding: '12px 18px' }} bodyStyle={{ padding: '16px 18px 12px' }} titleControl={<OverviewChartMenu value={chartMode} onChange={setChartMode} />} meta={<span className="flex items-center gap-3">{chartMode === 'servers' ? <ServerVolumeLegend names={serverVolume.data?.names ?? []} /> : metrics ? <ToolVolumeLegend data={metrics.timeseries} mode={chartMode} /> : null}{WINDOW_LABELS[activeWindow]}</span>}>
+          { id: 'Call volume', wide: true, content: <DashboardPanel title="Upstream call volume" icon={<ChartNoAxesCombined />} elevation="strong" headerStyle={{ padding: '12px 18px' }} bodyStyle={{ padding: '16px 18px 12px' }} titleControl={<OverviewChartMenu value={chartMode} onChange={setChartMode} />} meta={<span className="flex items-center gap-3">{chartMode === 'servers' ? <ServerVolumeLegend names={serverVolume.data?.names ?? []} /> : metrics ? <ToolVolumeLegend data={metrics.timeseries} mode={chartMode} /> : null}{WINDOW_LABELS[activeWindow]}</span>}>
               {metrics && chartMode === 'servers' ? (
                 serverVolume.error ? <ErrorNotice message="Calls by server could not be reconciled for this window." onRetry={() => { reloadMetrics(); serverVolume.mutate() }} /> : serverVolume.data ? <ServerVolumeChart data={serverVolume.data} onSelectBucket={(from, to) => router.push(`/usage/?window=${activeWindow}&from=${Math.round(from)}&to=${Math.round(to)}`)} /> : <div role="status" className="grid h-[232px] place-items-center text-xs text-aurora-text-muted">Loading calls by server…</div>
               ) : metrics ? (
@@ -157,36 +174,28 @@ export default function OverviewPage() {
                   distinct={metrics.tools.distinct}
                   onSelect={(name) => setDrill({ type: 'tool', name })}
                 /> },
+              { id: 'Code Mode fan-out', content: <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} /> },
+              { id: 'Latency', content: <LatencyPanel latency={metrics.latency} onSelectMetric={(metric) => router.push(`/usage/?window=${activeWindow}&focus=latency&percentile=${metric}`)} onSelectTool={(name) => setDrill({ type: 'tool', name })} /> },
+              { id: 'Failures by kind', content: <FailuresPanel errors={metrics.errors} onSelect={(kind) => router.push(`/usage/?window=${activeWindow}&outcome=failed&error=${encodeURIComponent(kind)}`)} /> },
+              { id: 'By surface', content: metrics.collected.surfaces
+                ? <SurfacesPanel surfaces={metrics.surfaces} />
+                : <DashboardPanel title="By surface" icon={<Layers />}><p className="text-sm text-aurora-text-muted">Surface attribution is not collected.</p></DashboardPanel> },
+              { id: 'Tokens by tool', content: metrics.collected.tokens
+                ? <TokensByToolPanel tokens={metrics.tokens_by_tool} onSelect={(name) => setDrill({ type: 'tool', name })} />
+                : <DashboardPanel title="Tokens by tool" icon={<Zap />}><p className="text-sm text-aurora-text-muted">Token usage is not collected.</p></DashboardPanel> },
+              { id: 'Throughput', content: <ThroughputPanel throughput={metrics.throughput} agentsSeen={metrics.agents_seen} showAgents={metrics.collected.actor_kinds} onSelect={(metric) => router.push(`/usage/?window=${activeWindow}&focus=throughput&metric=${metric}`)} /> },
+              { id: 'Activity by hour', content: <HourlyHeatPanel hourly={metrics.hourly} busiestHour={metrics.throughput.busiest_hour} onSelectHour={(hour) => router.push(`/usage/?window=${activeWindow}&focus=hour&hour=${hour}`)} /> },
               { id: 'Most active', rail: true, content: <MostActivePanel actors={metrics.actors} window={activeWindow} actorKindsCollected={metrics.collected.actor_kinds} onSelectActor={(entry) => setDrill(actorDrillTarget(entry))}/> },
               { id: 'Upstreams', rail: true, content: <UpstreamsPanel upstreams={metrics.upstreams} onSelect={(name) => router.push(`/usage/?window=${activeWindow}&upstream=${encodeURIComponent(name)}`)}/> },
             ] : metricsLoading ? (
-              ['Call outcomes','Least used','Most active','Upstreams'].map((id) => ({ id, rail: id === 'Most active' || id === 'Upstreams', content: <Skeleton className="h-[176px] w-full rounded-aurora-2" /> }))
+              ['Call outcomes','Least used','Code Mode fan-out','Latency','Failures by kind','By surface','Tokens by tool','Throughput','Activity by hour','Most active','Upstreams'].map((id) => ({ id, rail: id === 'Most active' || id === 'Upstreams', content: <Skeleton className="h-[176px] w-full rounded-aurora-2" /> }))
             ) : (
-              ['Call outcomes','Least used','Most active','Upstreams'].map((id) => ({ id, rail: id === 'Most active' || id === 'Upstreams', content: <MetricsUnavailable message="Usage insights are unavailable." /> }))
+              ['Call outcomes','Least used','Code Mode fan-out','Latency','Failures by kind','By surface','Tokens by tool','Throughput','Activity by hour','Most active','Upstreams'].map((id) => ({ id, rail: id === 'Most active' || id === 'Upstreams', content: <MetricsUnavailable message="Usage insights are unavailable." /> }))
             )),
           { id: 'Connected clients', rail: true, content: <ConnectedClientsPanel clients={runtime.clients.data} unavailable={Boolean(runtime.clients.error)} loading={runtime.clients.isLoading} onRetry={() => runtime.clients.mutate()} /> },
           { id: 'Gateway host', rail: true, content: <GatewayHostPanel metrics={runtime.host.data} health={runtime.health.data} clients={runtime.clients.error ? undefined : runtime.clients.data} loading={runtime.host.isLoading} /> },
           { id: 'Recent servers', rail: true, content: <RecentServers gateways={gateways ?? []} loading={gatewaysLoading} error={Boolean(gatewaysError)}/> },
         ]} />
-
-        {/* ── Performance, cost & rhythm ─────────────────────────────── */}
-          <details className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium">
-            <summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-aurora-text-muted focus-visible:outline-2 focus-visible:outline-aurora-accent-primary">Performance, cost &amp; rhythm</summary>
-            <div className="flex flex-col gap-3 p-3 pt-0">
-              <Link href="/skills/" className="text-xs text-aurora-accent-strong">Browse {gateways?.reduce((sum, gateway) => sum + (gateway.status.discovered_skill_count ?? 0), 0) ?? 0} discovered skills</Link>
-              {!gatewaysLoading ? <WarningsBanner count={live.warnings} signature={warningsSig} /> : null}
-              {metrics ? <>
-              <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} />
-          <AnalysisSection
-            metrics={metrics}
-            onSelectTool={(name) => setDrill({ type: 'tool', name })}
-            onOpenUsage={(query) => router.push(`/usage/?window=${activeWindow}&${query}`)}
-          />
-              </> : null}
-            </div>
-          </details>
-
-
       </div>
 
       <ToolDetailDrawer

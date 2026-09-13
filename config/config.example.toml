@@ -141,6 +141,20 @@
 # cwd = "/srv/labby/agent-workspace"
 # inherit_env = ["OPENAI_API_KEY"]
 
+# ── Phoenix Assistant ────────────────────────────────────────────────────────
+#
+# Phoenix talks only to a Codex App Server launched inside the Labby runtime.
+# Keep this disabled until Codex and an isolated Codex home are provisioned in
+# the Incus container. Phoenix forces a read-only sandbox and never accepts
+# executable, home, or workspace paths from the browser.
+
+[phoenix]
+# enabled = true
+# command = "/home/labby/.local/bin/codex"
+# codex_home = "/home/labby/.codex"
+# workspace_root = "/home/labby"
+# model = "gpt-5.6-sol"
+
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #
 # The gateway only allows known-safe runtimes and transports (npx, uvx, docker,

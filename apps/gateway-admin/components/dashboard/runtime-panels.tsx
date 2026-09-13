@@ -3,7 +3,7 @@
 import useSWR from 'swr'
 import { useSyncExternalStore } from 'react'
 import { getBrowserSessionContextIdentity, getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
-import { Cable, ArrowDown, ArrowUp } from 'lucide-react'
+import { Cable, ArrowDown, ArrowUp, ServerCog } from 'lucide-react'
 import { gatewayAction } from '@/lib/api/gateway-client'
 import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { DashboardPanel } from './panel'
@@ -71,7 +71,7 @@ export function ConnectedClientsPanel({ clients, unavailable, loading, onRetry }
 }
 
 export function GatewayHostPanel({ health, clients, metrics, loading }: { health?: HostHealth; clients?: ConnectedClient[]; metrics?: HostMetrics; loading?: boolean }) {
-  return <DashboardPanel title="Gateway host" meta={[metrics?.hostname, metrics?.platform, health?.uptime_s == null ? undefined : `up ${connectionAge(health.uptime_s)}`].filter(Boolean).join(' · ') || undefined} headerStyle={{ padding: '11px 14px', background: 'none' }} bodyStyle={{ padding: '11px 14px' }}>
+  return <DashboardPanel title="Gateway host" icon={<ServerCog />} meta={[metrics?.hostname, metrics?.platform, health?.uptime_s == null ? undefined : `up ${connectionAge(health.uptime_s)}`].filter(Boolean).join(' · ') || undefined} headerStyle={{ padding: '11px 14px', background: 'none' }} bodyStyle={{ padding: '11px 14px' }}>
     <div className="flex flex-col gap-[9px]" aria-label="Host resource metrics" title={metrics?.scope}>
       {[
         { label: 'CPU', value: metrics?.cpu_percent, detail: loading ? 'Sampling…' : metrics?.cpu_percent == null ? 'Unavailable' : `${metrics.cpu_percent.toFixed(1)}%${metrics.cpu_cores ? ` · ${metrics.cpu_cores} cores` : ''}`, title: `Processes observed in both samples · ${metrics?.sample_ms ? (metrics.sample_ms / 1000).toFixed(1) : '—'}s average`, color: 'var(--aurora-accent-primary)' },

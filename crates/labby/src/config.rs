@@ -497,6 +497,9 @@ pub struct LabConfig {
     /// Explicitly approved local coding-agent harness subprocesses.
     #[serde(default)]
     pub agents: AgentPreferences,
+    /// Container-local Codex App Server used by the Phoenix assistant.
+    #[serde(default)]
+    pub phoenix: PhoenixPreferences,
     /// Operator-approved Dev Container image provisioning and build-network catalog.
     #[serde(default)]
     pub dev_containers: dev_containers::DevContainerPreferences,
@@ -572,6 +575,56 @@ pub struct AgentPreferences {
     /// digest matches one of these operator-owned descriptors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harnesses: Vec<AgentHarnessConfig>,
+}
+
+/// Operator-owned launch boundary for Phoenix.
+///
+/// Every path is resolved inside the Labby runtime environment. The browser
+/// never supplies an executable, Codex home, or workspace path.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhoenixPreferences {
+    /// Phoenix stays unavailable until an operator explicitly enables it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Absolute path to the Codex CLI installed in the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<PathBuf>,
+    /// Isolated Codex home owned by the Labby container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_home: Option<PathBuf>,
+    /// Read-only working directory visible to Phoenix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    /// Optional pinned model. Omission uses the container's Codex default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl PhoenixPreferences {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let paths = [&self.command, &self.codex_home, &self.workspace_root];
+        if paths
+            .iter()
+            .any(|path| path.as_ref().is_none_or(|path| !path.is_absolute()))
+        {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: "invalid [phoenix] configuration: enabled Phoenix requires absolute command, codex_home, and workspace_root paths".into(),
+            });
+        }
+        if self.model.as_ref().is_some_and(|model| {
+            model.is_empty() || model.len() > 128 || model.contains(char::is_whitespace)
+        }) {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: "invalid [phoenix] configuration: model must be a bounded identifier"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -898,6 +951,7 @@ impl LabConfig {
         }
         self.code_mode.validate()?;
         self.agents.validate()?;
+        self.phoenix.validate()?;
         self.dev_containers
             .validate()
             .map_err(|reason| ConfigError::InvalidProxyConfig {
@@ -3080,6 +3134,27 @@ mod tests {
         let future: LabConfig = toml::from_str("config_version = 999\n").unwrap();
         let error = future.validate().unwrap_err();
         assert!(error.to_string().contains("config_version 999"));
+    }
+
+    #[test]
+    fn phoenix_requires_operator_owned_absolute_paths_when_enabled() {
+        let disabled: LabConfig = toml::from_str("[phoenix]\nenabled = false\n").unwrap();
+        disabled.validate().unwrap();
+
+        let missing: LabConfig = toml::from_str("[phoenix]\nenabled = true\n").unwrap();
+        assert!(
+            missing
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("[phoenix]")
+        );
+
+        let configured: LabConfig = toml::from_str(
+            "[phoenix]\nenabled = true\ncommand = \"/home/labby/.local/bin/codex\"\ncodex_home = \"/home/labby/.codex\"\nworkspace_root = \"/home/labby\"\nmodel = \"gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+        configured.validate().unwrap();
     }
 
     #[test]

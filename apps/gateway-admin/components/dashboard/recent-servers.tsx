@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Server } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import type { Gateway } from '@/lib/types/gateway'
@@ -12,8 +12,11 @@ export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport' | 'enabled'
 
 export function RecentServers({ gateways, loading = false, error = false }: { gateways: RecentServer[]; loading?: boolean; error?: boolean }) {
   return <section aria-label="Recent servers" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium shadow-[var(--aurora-shadow-medium)]">
-    <header className="flex items-center justify-between border-b border-aurora-border-subtle px-[14px] py-[11px]">
-      <h2 className="text-[10px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">Recent Servers</h2>
+    <header className="flex items-center justify-between border-b border-aurora-border-subtle px-[14px] py-[10px]">
+      <div className="flex items-center gap-2">
+        <span aria-hidden="true" className="grid size-[22px] shrink-0 place-items-center rounded-[7px] border text-aurora-accent-primary" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) var(--aurora-tint-medium), transparent)', background: 'color-mix(in srgb, var(--aurora-accent-primary) var(--aurora-tint-subtle), transparent)' }}><Server className="size-3" /></span>
+        <h2 className="text-[10px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">Recent Servers</h2>
+      </div>
       <Link href="/gateways" className="inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">View All<ArrowRight aria-hidden="true" className="size-[11px]"/></Link>
     </header>
     {loading ? <div role="status" aria-label="Loading recent servers" className="space-y-2 px-[14px] py-2">{[0, 1, 2].map(index => <Skeleton key={index} className="h-5 w-full"/>)}</div>

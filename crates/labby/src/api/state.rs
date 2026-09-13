@@ -107,6 +107,8 @@ pub struct AppState {
     /// startup replaces it after resolving and observing the configured store.
     pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
     pub(crate) file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
+    /// Container-local Codex App Server adapter for Phoenix.
+    pub(crate) phoenix_runtime: Arc<crate::dispatch::phoenix::PhoenixRuntime>,
     /// Daemon-owned proof lifecycle orchestration. `None` fails closed and
     /// keeps the local bootstrap routes unavailable until startup wires L6.
     pub(crate) access_bootstrap_proof:
@@ -192,6 +194,7 @@ impl AppState {
             http_bind_host: None,
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
+            phoenix_runtime: Arc::new(crate::dispatch::phoenix::PhoenixRuntime::default()),
             access_bootstrap_proof: None,
             access_credential_adapter: None,
             #[cfg(feature = "skills")]
@@ -276,6 +279,9 @@ impl AppState {
             &config.depot,
             Default::default(),
             Default::default(),
+        ));
+        self.phoenix_runtime = Arc::new(crate::dispatch::phoenix::PhoenixRuntime::new(
+            config.phoenix.clone(),
         ));
         self.config = Arc::new(config);
         self

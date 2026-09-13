@@ -11,6 +11,13 @@ type DropTarget = { id: string | null; lane: Lane; after: boolean }
 type Drag = { id: string; x: number; y: number }
 type PendingDrag = { id: string; x: number; y: number; pointerId: number; active: boolean; target: HTMLButtonElement }
 const LAYOUT_KEY = 'labby:overview-layout:v2'
+const MASONRY_ROW_HEIGHT = 1
+
+/** CSS Grid row span used by the compact Overview masonry. */
+export function overviewMasonrySpan(height: number, rowHeight = MASONRY_ROW_HEIGHT, gap = 12): number {
+  if (!Number.isFinite(height) || height <= 0) return 1
+  return Math.max(1, Math.ceil((height + gap) / (rowHeight + gap)))
+}
 
 function releasePointer(source: PendingDrag) {
   try {
@@ -103,6 +110,34 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     if (!id) return
     focusAfterMove.current = null
     handles.current.get(id)?.focus()
+  }, [layout])
+
+  useLayoutEffect(() => {
+    const lane = root.current?.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')
+    if (!lane) return
+    let frame: number | null = null
+    const pack = () => {
+      frame = null
+      const styles = getComputedStyle(lane)
+      const rowHeight = Number.parseFloat(styles.gridAutoRows) || MASONRY_ROW_HEIGHT
+      const gap = Number.parseFloat(styles.rowGap) || 12
+      for (const card of lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')) {
+        card.style.gridRowEnd = 'auto'
+        card.style.gridRowEnd = `span ${overviewMasonrySpan(card.getBoundingClientRect().height, rowHeight, gap)}`
+      }
+    }
+    const schedule = () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(pack)
+    }
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    observer?.observe(lane)
+    for (const card of lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')) observer?.observe(card)
+    schedule()
+    return () => {
+      observer?.disconnect()
+      if (frame !== null) cancelAnimationFrame(frame)
+    }
   }, [layout])
 
   const commit = (next: OverviewLayout, message: string, restoreFocusTo?: string) => {
@@ -206,7 +241,16 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
       {(['telemetry', 'insights'] as const).map(lane => {
         const laneIds = layout.order.filter(id => laneOf(id) === lane)
-        return <div key={lane} data-overview-lane={lane} className={cn('grid min-h-16 min-w-0 content-start items-start gap-3 self-stretch rounded-aurora-2', lane === 'telemetry' && 'min-[700px]:grid-cols-2', drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary')}>
+        return <div
+          key={lane}
+          data-overview-lane={lane}
+          className={cn(
+            'grid min-h-16 min-w-0 content-start items-start self-stretch rounded-aurora-2',
+            lane === 'telemetry' ? 'gap-x-3 gap-y-1.5 min-[700px]:grid-cols-2' : 'gap-3',
+            drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary',
+          )}
+          style={lane === 'telemetry' ? { gridAutoFlow: 'row dense', gridAutoRows: `${MASONRY_ROW_HEIGHT}px` } : undefined}
+        >
           {laneIds.map((id, index) => {
             const card = cards.find(item => item.id === id)
             if (!card) return null

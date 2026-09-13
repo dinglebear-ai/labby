@@ -259,7 +259,7 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   await assert.doesNotReject(() => toolsStat.waitFor())
   assert.match(await totalStat.innerText(), /^5\s+Total$/i)
   assert.match(await toolsStat.innerText(), /^24\/39\s+Tools$/i)
-  assert.match(await page.locator('body').innerText(), /github-server[\s\S]*12/)
+  assert.match(await page.locator('body').innerText(), /Github Server[\s\S]*12/)
 
   const hasHorizontalOverflow = await page.evaluate(() => {
     const root = document.documentElement
@@ -466,8 +466,8 @@ test('clicking a server name from the gateway list loads its detail page', { con
   await page.evaluate(() => window.localStorage.clear())
   await page.reload({ waitUntil: 'networkidle' })
 
-  const githubRow = page.locator('[data-gwrow="1"]').filter({ hasText: 'github-server' }).first()
-  await githubRow.getByRole('link', { name: 'github-server', exact: true }).click()
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ hasText: 'Github Server' }).first()
+  await githubRow.getByRole('link', { name: 'Github Server', exact: true }).click()
   await page.waitForURL((url) => url.pathname === '/gateway/' && url.searchParams.get('id') === 'gw-2')
   await assert.doesNotReject(() => page.getByText('12/12').first().waitFor())
   await assert.doesNotReject(() => page.getByRole('tab', { name: /Catalog/ }).waitFor())
@@ -737,7 +737,7 @@ test('gateway list row action disable flow opens and completes successfully', { 
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  const githubRow = page.locator('[data-gwrow="1"]').filter({ has: page.getByText('github-server') }).first()
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ has: page.getByText('Github Server') }).first()
   await githubRow.getByRole('button', { name: 'More actions', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Disable server', exact: true }).click()
   await assert.doesNotReject(() => page.getByText('Disable server?').waitFor())
@@ -1099,6 +1099,20 @@ test('Overview drag handles reorder both directions across columns and persist a
   await page.goto(baseUrl, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: 'Drag Call outcomes', exact: true }).waitFor()
   const order = (lane: string) => page.locator(`[data-overview-lane="${lane}"] > [data-overview-card]`).evaluateAll(elements => elements.map(element => element.getAttribute('data-overview-card')))
+  const defaultTelemetry = ['Call volume', 'Top targets', 'Call outcomes', 'Least used', 'Code Mode fan-out', 'Latency', 'Failures by kind', 'By surface', 'Tokens by tool', 'Throughput', 'Activity by hour']
+  const assertCompact = async () => {
+    const interiorGaps = await page.locator('[data-overview-lane="telemetry"]').evaluate(lane => {
+      const laneBounds = lane.getBoundingClientRect()
+      const columnCenters = [laneBounds.left + laneBounds.width * 0.25, laneBounds.left + laneBounds.width * 0.75]
+      const cards = [...lane.querySelectorAll<HTMLElement>(':scope > [data-overview-card]')].map(card => card.getBoundingClientRect())
+      return columnCenters.flatMap(center => {
+        const stack = cards.filter(card => card.left <= center && card.right >= center).sort((a, b) => a.top - b.top)
+        return stack.slice(1).map((card, index) => Math.round(card.top - stack[index].bottom))
+      })
+    })
+    assert.ok(interiorGaps.length > 0)
+    assert.ok(interiorGaps.every(gap => gap >= 0 && gap <= 14), `Overview retained interior gaps or overlaps: ${interiorGaps.join(', ')}`)
+  }
   const drag = async (source: string, target: string, edge: 'before' | 'after') => {
     const handle = page.getByRole('button', { name: `Drag ${source}`, exact: true })
     await handle.scrollIntoViewIfNeeded()
@@ -1111,7 +1125,8 @@ test('Overview drag handles reorder both directions across columns and persist a
     await page.locator(`[data-overview-card="${target}"] [data-overview-insertion="${edge}"]`).waitFor()
     await page.mouse.up()
   }
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Call outcomes', 'Least used'])
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await assertCompact()
   const gapSource = page.getByRole('button', { name: 'Drag Call outcomes', exact: true })
   const gapFrom = await gapSource.boundingBox()
   const gapAbove = await page.locator('[data-overview-card="Call volume"]').boundingBox()
@@ -1122,19 +1137,21 @@ test('Overview drag handles reorder both directions across columns and persist a
   await page.mouse.move(gapBelow.x + gapBelow.width / 2, gapAbove.y + gapAbove.height + (gapBelow.y - gapAbove.y - gapAbove.height) * 0.75, { steps: 15 })
   await page.locator('[data-overview-card="Top targets"] [data-overview-insertion="before"]').waitFor()
   await page.mouse.up()
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Call outcomes', 'Top targets', 'Least used'])
+  assert.deepEqual(await order('telemetry'), ['Call volume', 'Call outcomes', 'Top targets', 'Least used', ...defaultTelemetry.slice(4)])
   await drag('Call outcomes', 'Top targets', 'after')
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Call outcomes', 'Least used'])
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
   await drag('Call outcomes', 'Least used', 'after')
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Least used', 'Call outcomes'])
+  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Least used', 'Call outcomes', ...defaultTelemetry.slice(4)])
   await drag('Call outcomes', 'Least used', 'before')
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Call outcomes', 'Least used'])
+  assert.deepEqual(await order('telemetry'), defaultTelemetry)
+  await assertCompact()
   await drag('Call outcomes', 'Most active', 'before')
   assert.deepEqual(await order('insights'), ['Call outcomes', 'Most active', 'Upstreams', 'Connected clients', 'Gateway host', 'Recent servers'])
-  assert.deepEqual(await order('telemetry'), ['Call volume', 'Top targets', 'Least used'])
+  assert.deepEqual(await order('telemetry'), defaultTelemetry.filter(id => id !== 'Call outcomes'))
   assert.equal(await page.locator('[data-overview-card][draggable]').count(), 0)
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal((await order('insights'))[0], 'Call outcomes')
+  await assertCompact()
   await page.getByRole('button', { name: 'Move Call outcomes to telemetry column', exact: true }).click()
   await page.getByRole('button', { name: 'Toggle Call outcomes full width', exact: true }).click()
   await page.reload({ waitUntil: 'networkidle' })

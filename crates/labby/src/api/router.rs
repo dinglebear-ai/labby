@@ -647,6 +647,7 @@ fn build_v1_router(
     if api_auth_configured {
         v1 = v1.nest("/access/admin", services::access::routes(state.clone()));
         v1 = v1.nest("/agents", services::agents::routes(state.clone()));
+        v1 = v1.nest("/phoenix", services::phoenix::routes(state.clone()));
         v1 = v1.nest("/tasks", services::tasks::routes(state.clone()));
         v1 = v1.nest("/projects", services::projects::routes(state.clone()));
         v1 = v1.nest(

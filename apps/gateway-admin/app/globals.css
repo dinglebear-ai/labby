@@ -974,7 +974,8 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   }
   [data-main-scroll] {
     padding: 12px !important;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+    /* Leave a clean landing zone above the persistent Phoenix affordance. */
+    padding-bottom: calc(72px + env(safe-area-inset-bottom)) !important;
   }
   header[data-topbar] {
     gap: 8px !important;
@@ -1059,9 +1060,40 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-hovercard]:hover {
     transform: none !important;
   }
+  [data-console-library-tray] a {
+    min-height: 44px;
+  }
 }
 
 @media (max-width: 520px) {
+  header[data-topbar]:has([data-actioncluster] > *) {
+    height: 104px !important;
+    padding-bottom: 48px !important;
+  }
+  header[data-topbar] [data-crumb-parent],
+  header[data-topbar] [data-crumb-separator] {
+    display: none !important;
+  }
+  header[data-topbar] [data-actioncluster] {
+    position: absolute;
+    inset: 56px 0 auto;
+    display: flex;
+    height: 48px;
+    max-width: none;
+    align-items: center;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding: 2px calc(10px + env(safe-area-inset-right)) 2px
+      calc(10px + env(safe-area-inset-left));
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg));
+    border-bottom: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+    background: var(--console-chrome-bg);
+  }
+  header[data-topbar] [data-actioncluster] > * {
+    flex-shrink: 0;
+  }
   [data-search-label],
   [data-search-notification] {
     display: none !important;
@@ -1137,6 +1169,58 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     flex-basis: 100%;
     max-width: none;
     min-width: 0;
+  }
+
+  /* Server detail starts as a desktop-dense control surface. On phones, keep
+     every datum visible instead of clipping a fixed five-column strip. */
+  [data-detail-heading] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: var(--space-4) !important;
+  }
+  [data-detail-meta] {
+    width: 100%;
+    padding-top: 0 !important;
+  }
+  [data-detail-meta-content] {
+    justify-content: flex-start !important;
+    gap: var(--space-2) !important;
+    line-height: var(--lh-dense) !important;
+  }
+  [data-detail-meta] button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  [data-detail-stat-strip] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  [data-detail-exposure] {
+    grid-column: 1 / -1;
+    min-height: 44px;
+  }
+  [data-detail-stat-card] {
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg));
+  }
+  [data-detail-stat-card]:nth-of-type(odd) {
+    border-left: 0 !important;
+  }
+  [data-detail-tabbar] {
+    display: block !important;
+    padding-top: 0 !important;
+  }
+  [data-detail-tabs-list] {
+    scroll-padding-inline: var(--space-5);
+  }
+  [data-detail-tabs-list] > button {
+    min-height: 44px;
+  }
+  [data-detail-capabilities] {
+    max-width: 100%;
+    padding-top: 6px;
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg));
+    scroll-padding-inline: var(--space-5);
   }
 }
 
