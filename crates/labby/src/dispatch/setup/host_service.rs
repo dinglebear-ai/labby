@@ -64,12 +64,20 @@ enum InstallerOwnerProbe {
     Unknown,
 }
 
+#[cfg(unix)]
 fn probe_installer_owner(pid: i32) -> InstallerOwnerProbe {
     match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
         Ok(()) => InstallerOwnerProbe::Alive,
         Err(nix::errno::Errno::ESRCH) => InstallerOwnerProbe::Dead,
         Err(_) => InstallerOwnerProbe::Unknown,
     }
+}
+
+#[cfg(not(unix))]
+fn probe_installer_owner(_pid: i32) -> InstallerOwnerProbe {
+    // The shared system installer path is Unix-specific. If this code is ever
+    // reached elsewhere, preserve the lock rather than guessing that it died.
+    InstallerOwnerProbe::Unknown
 }
 
 fn acquire_installer_transaction_lock_with(
