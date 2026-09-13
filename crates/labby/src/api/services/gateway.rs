@@ -853,22 +853,7 @@ mod tests {
         .await;
         let allowed = post_gateway_routes(personal, request()).await;
         assert_eq!(allowed.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(allowed.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-        let authorization = url::Url::parse(
-            payload["authorization_url"]
-                .as_str()
-                .expect("authorization url"),
-        )
-        .expect("authorization url parses");
-        let state = authorization
-            .query_pairs()
-            .find(|(key, _)| key == "state")
-            .expect("state parameter")
-            .1
-            .into_owned();
+        let state = authorization_state(allowed).await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -892,6 +877,15 @@ mod tests {
         .await;
         let platform_allowed = post_gateway_routes(platform, request()).await;
         assert_eq!(platform_allowed.status(), StatusCode::OK);
+        let platform_state = authorization_state(platform_allowed).await;
+        assert_ne!(platform_state, state);
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_owner(&platform_state, now)
+                .await
+                .expect("platform state owner"),
+            Some(("personal".into(), "platform-user".into()))
+        );
     }
 
     // ── Request helpers ──────────────────────────────────────────────────────
@@ -909,6 +903,25 @@ mod tests {
         )
         .await
         .expect("response")
+    }
+
+    async fn authorization_state(response: axum::response::Response) -> String {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let authorization = url::Url::parse(
+            payload["authorization_url"]
+                .as_str()
+                .expect("authorization url"),
+        )
+        .expect("authorization url parses");
+        authorization
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .expect("state parameter")
+            .1
+            .into_owned()
     }
 
     /// Post to /v1/gateway as admin (bearer token + lab:admin AuthContext injected).
