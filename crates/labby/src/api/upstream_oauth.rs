@@ -626,35 +626,15 @@ async fn callback(
         }
     };
 
+    // Personal grants require the browser to belong to the initiating MCP caller.
+    // The credential owner comes only from server-stored, expiring OAuth state.
     if state_subject != SHARED_GATEWAY_OAUTH_SUBJECT {
-        warn!(
-            surface = "api",
-            service = "upstream_oauth",
-            action = "callback",
-            upstream = %upstream,
-            state_subject = %state_subject,
-            expected_subject = SHARED_GATEWAY_OAUTH_SUBJECT,
-            "upstream oauth callback rejected: state subject mismatch"
-        );
-        return ApiError::new(ToolError::Sdk {
-            sdk_kind: "auth_failed".to_string(),
-            message: "OAuth state subject mismatch".to_string(),
-        })
-        .into_response();
-    }
-
-    // If a browser session is present, verify it matches the subject from state.
-    if let Ok(session_subject) = callback_subject(&state, auth.map(|e| e.0), &headers).await {
-        if session_subject != SHARED_GATEWAY_OAUTH_SUBJECT {
-            warn!(
-                surface = "api",
-                service = "upstream_oauth",
-                action = "callback",
-                upstream = %upstream,
-                oauth_subject = SHARED_GATEWAY_OAUTH_SUBJECT,
-                state_subject = %state_subject,
-                "upstream oauth callback: session subject mismatch"
-            );
+        let browser_subject = callback_subject(&state, auth.map(|e| e.0), &headers).await;
+        if !matches!(browser_subject, Ok(ref subject) if subject == &state_subject) {
+            return ApiError::new(ToolError::Sdk {
+                sdk_kind: "auth_failed".into(),
+                message: "Sign into the same Labby account that initiated personal OAuth authorization, then retry the callback".into(),
+            }).into_response();
         }
     }
 
@@ -716,7 +696,7 @@ async fn callback(
     let result = crate::dispatch::gateway::oauth::complete_authorization_callback_with_issuer(
         &manager,
         &upstream,
-        SHARED_GATEWAY_OAUTH_SUBJECT,
+        &state_subject,
         code,
         &query.state,
         query.iss.as_deref(),
@@ -743,8 +723,7 @@ async fn callback(
             surface = "api",
             service = "upstream_oauth",
             action = "callback",
-            subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
-            state_subject = %state_subject,
+            state_subject_id = %labby_auth::util::fingerprint(&state_subject),
             elapsed_ms = started.elapsed().as_millis(),
             upstream = %upstream,
             kind = error.kind(),
@@ -756,8 +735,7 @@ async fn callback(
             surface = "api",
             service = "upstream_oauth",
             action = "callback",
-            subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
-            state_subject = %state_subject,
+            state_subject_id = %labby_auth::util::fingerprint(&state_subject),
             elapsed_ms = started.elapsed().as_millis(),
             upstream = %upstream,
             "upstream oauth callback completed"
@@ -785,7 +763,7 @@ async fn result_page(Query(query): Query<ResultQuery>) -> axum::response::Respon
             labby_auth::pages::OAuthPage::Success,
             "Authorization Complete",
             format!(
-                "Authorization for {} completed. You can close this tab and return to the app.",
+                "Authorization for {} completed for the identity that started this flow. Personal authorization applies only to that caller; gateway controls manage the shared operator grant. Return to your connector and verify an upstream tool call. You can close this tab.",
                 query.upstream
             ),
         )
@@ -947,6 +925,167 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!html.contains("<script>alert(1)</script>"));
+    }
+
+    #[tokio::test]
+    async fn personal_authorization_completes_through_browser_callback() {
+        use labby_runtime::gateway_config::UpstreamConfig;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let (dir, store, _) = callback_test_state().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": format!("{}/mcp", server.uri()),
+            "authorization_endpoint": format!("{}/authorize", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()), "code_challenge_methods_supported":["S256"]
+        }))).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token":"fixture", "token_type":"Bearer", "expires_in":3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name":"personal", "enabled":true, "url":format!("{}/mcp", server.uri()),
+            "oauth":{"mode":"authorization_code_pkce", "registration":{"strategy":"preregistered", "client_id":"fixture"}}
+        })).unwrap();
+        let key = load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+            store.clone(),
+            key.clone(),
+            config.clone(),
+            "https://lab.example.com/auth/upstream/callback".into(),
+        );
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert("personal".into(), oauth.clone());
+        let manager = Arc::new(
+            test_gateway_manager(
+                dir.path().join("personal.toml"),
+                GatewayRuntimeHandle::default(),
+            )
+            .with_oauth_resources(
+                store.clone(),
+                key,
+                "https://lab.example.com/auth/upstream/callback".into(),
+            )
+            .with_upstream_oauth_managers(managers),
+        );
+        manager.replace_config_for_tests(vec![config]).await;
+        let result = crate::dispatch::gateway::dispatch_with_manager_scoped(
+            &manager,
+            "gateway.oauth.authorize",
+            serde_json::json!({"upstream":"personal"}),
+            crate::dispatch::gateway::GatewayEnrichmentScope {
+                oauth_subject: Some("personal-caller".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let url = url::Url::parse(result["authorization_url"].as_str().unwrap()).unwrap();
+        let csrf = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let state = AppState::new()
+            .with_auth_config(AuthConfig {
+                public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
+                ..Default::default()
+            })
+            .with_gateway_manager(manager);
+        let mut auth = test_auth_context();
+        auth.sub = "personal-caller".into();
+        auth.scopes = vec!["lab".into()];
+        let app = browser_routes(state.clone())
+            .router
+            .with_state(state)
+            .layer(Extension(auth));
+        let uri = format!("/auth/upstream/callback?state={csrf}&code=fixture-code");
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(
+            response.headers()[header::LOCATION]
+                .to_str()
+                .unwrap()
+                .contains("status=ok")
+        );
+        assert!(oauth.has_credentials("personal-caller").await.unwrap());
+        assert!(!oauth.has_credentials("other-caller").await.unwrap());
+        assert!(!oauth.has_credentials("gateway").await.unwrap());
+        let replay = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(replay.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn personal_callback_requires_matching_browser_and_consumes_denied_state() {
+        let (_dir, store, state) = callback_test_state().await;
+        let now = now_seconds();
+        store
+            .save_upstream_oauth_state(labby_auth::types::UpstreamOauthStateRow {
+                upstream_name: "fixture".into(),
+                subject: "personal-caller".into(),
+                csrf_token: "personal-state".into(),
+                pkce_verifier: "verifier".into(),
+                expected_issuer: None,
+                require_issuer: false,
+                requested_scopes: vec![],
+                created_at: now,
+                expires_at: now + 300,
+            })
+            .await
+            .unwrap();
+        for browser_subject in [None, Some("different-caller"), Some("personal-caller")] {
+            let mut app = browser_routes(state.clone())
+                .router
+                .with_state(state.clone());
+            if let Some(subject) = browser_subject {
+                let mut auth = test_auth_context();
+                auth.sub = subject.into();
+                auth.scopes = vec!["lab".into()];
+                app = app.layer(Extension(auth));
+            }
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/auth/upstream/callback?state=personal-state&error=access_denied")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if browser_subject == Some("personal-caller") {
+                assert_eq!(response.status(), StatusCode::SEE_OTHER);
+                assert!(
+                    store
+                        .find_upstream_oauth_state_owner("personal-state", now_seconds())
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            } else {
+                assert_ne!(response.status(), StatusCode::SEE_OTHER);
+                assert!(
+                    store
+                        .find_upstream_oauth_state_owner("personal-state", now_seconds())
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
     }
 
     #[tokio::test]

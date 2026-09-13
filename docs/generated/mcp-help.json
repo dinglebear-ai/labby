@@ -2756,6 +2756,22 @@
           "returns": "ProbeResult"
         },
         {
+          "name": "gateway.oauth.authorize",
+          "description": "Authorize an upstream for the authenticated non-admin caller. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "upstream",
+              "ty": "string",
+              "required": true,
+              "description": "Configured upstream name"
+            }
+          ],
+          "returns": "BeginAuthorization"
+        },
+        {
           "name": "gateway.oauth.start",
           "description": "Start the upstream OAuth flow for the shared gateway credential and return the browser authorization URL",
           "destructive": false,

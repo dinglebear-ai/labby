@@ -13,14 +13,14 @@ pub mod config_store;
 
 /// Team-scoped gateway policy actions (`gateway.loadout.*`,
 /// `gateway.protected_route.*`): every gateway action that is neither a
-/// discovery built-in nor installation-scoped platform administration. The
+/// discovery built-in, personal OAuth action, nor installation-scoped platform administration. The
 /// authority class table in `crate::access` is the single source; this
 /// predicate only names the complement so adapters never re-list actions.
 #[must_use]
 pub(crate) fn team_scoped_gateway_action(action: &str) -> bool {
     let bare = action.strip_prefix("gateway.").unwrap_or(action);
     action.starts_with("gateway.")
-        && !matches!(bare, "help" | "schema")
+        && !matches!(bare, "help" | "schema" | "oauth.authorize")
         && !crate::access::gateway_transport_requires_admin(action)
 }
 

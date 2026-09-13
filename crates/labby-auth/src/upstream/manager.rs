@@ -1456,7 +1456,7 @@ fn now_unix() -> Result<i64, OauthError> {
 
 fn missing_identity_message(upstream: &str, subject: &str, identity: &str) -> String {
     format!(
-        "no {identity} for upstream '{upstream}' actor '{}'",
+        "no {identity} for upstream '{upstream}' actor '{}'. Authorization is specific to the caller; authorization for a different identity does not authorize this caller. A successful browser flow may belong to a shared identity instead. Check the connector account and granted scopes before repeating authorization.",
         crate::util::fingerprint(subject)
     )
 }
@@ -1543,6 +1543,14 @@ mod url_tests {
         let message = missing_identity_message("calendar", sentinel, "stored credentials");
         assert!(!message.contains(sentinel));
         assert!(message.contains(&crate::util::fingerprint(sentinel)));
+    }
+
+    #[test]
+    fn missing_credentials_explain_caller_scope_without_granting_access() {
+        let message = missing_identity_message("linear", "personal-user", "stored credentials");
+        assert!(message.contains("Authorization is specific to the caller"));
+        assert!(message.contains("does not authorize this caller"));
+        assert!(!message.contains("personal-user"));
     }
 
     #[test]

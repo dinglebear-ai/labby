@@ -148,6 +148,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api |
+| `gateway` | `gateway.oauth.authorize` | false | false | false |  | `resource_capability` | `scope.manage` | `gateway` | `upstream*: string` | `BeginAuthorization` | mcp, api |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string` | `ok` | cli, mcp, api |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `url*: string` | `ProbeResult` | mcp, api |

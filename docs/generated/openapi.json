@@ -7205,6 +7205,7 @@
               "gateway.oauth.resource_lease.renew",
               "gateway.oauth.resource_lease.release",
               "gateway.oauth.probe",
+              "gateway.oauth.authorize",
               "gateway.oauth.start",
               "gateway.oauth.status",
               "gateway.oauth.clear",
@@ -7645,6 +7646,17 @@
             "type": "boolean"
           },
           "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayOauthAuthorizeParams": {
+        "type": "object",
+        "required": [
+          "upstream"
+        ],
+        "properties": {
+          "upstream": {
             "type": "string"
           }
         }
