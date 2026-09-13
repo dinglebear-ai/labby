@@ -344,8 +344,11 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
             ),
         });
     }
-    std::fs::remove_dir_all(root).map_err(io_error)?;
-    std::fs::remove_dir_all(HOST_SERVICE_ROLLBACK_JOURNAL).map_err(io_error)?;
+    atomic_write(
+        &Path::new(HOST_SERVICE_ROLLBACK_JOURNAL).join("committed"),
+        b"previous-generation-active\n",
+    )?;
+    finish_committed_host_service_rollback_at(Path::new(HOST_SERVICE_ROLLBACK_JOURNAL), root)?;
     Ok(HostServiceOutcome {
         ok: true,
         changed: true,
@@ -473,6 +476,12 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
     if !journal.exists() {
         return Ok(());
     }
+    if journal.join("committed").exists() {
+        return finish_committed_host_service_rollback_at(
+            journal,
+            Path::new(PREVIOUS_HOST_RELEASE_DIR),
+        );
+    }
     let retained = load_previous_host_release_at(journal)?;
     restore_retained_generation_files_at(
         &retained,
@@ -483,6 +492,18 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
     run_systemctl(&["daemon-reload"]).await?;
     restore_captured_unit_file_state(SERVICE_NAME, retained.enabled).await?;
     restore_captured_active_state(SERVICE_NAME, retained.active).await?;
+    std::fs::remove_dir_all(journal).map_err(io_error)
+}
+
+fn finish_committed_host_service_rollback_at(
+    journal: &Path,
+    previous: &Path,
+) -> Result<(), ToolError> {
+    match std::fs::remove_dir_all(previous) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error(error)),
+    }
     std::fs::remove_dir_all(journal).map_err(io_error)
 }
 
@@ -2337,6 +2358,34 @@ mod tests {
     }
 
     #[test]
+    fn committed_rollback_cleanup_resumes_between_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let previous = dir.path().join("previous");
+        std::fs::create_dir(&journal).unwrap();
+        atomic_write(&journal.join("committed"), b"previous-generation-active\n").unwrap();
+        // Simulate interruption after the previous generation was deleted but
+        // before the journal cleanup committed.
+        finish_committed_host_service_rollback_at(&journal, &previous).unwrap();
+        assert!(!journal.exists());
+        assert!(!previous.exists());
+    }
+
+    #[test]
+    fn committed_rollback_cleanup_failure_remains_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let previous = dir.path().join("previous");
+        std::fs::create_dir(&journal).unwrap();
+        atomic_write(&journal.join("committed"), b"previous-generation-active\n").unwrap();
+        // A non-directory at the cleanup target forces failure without losing
+        // the durable marker needed by the next mutating invocation.
+        std::fs::write(&previous, b"blocked cleanup").unwrap();
+        assert!(finish_committed_host_service_rollback_at(&journal, &previous).is_err());
+        assert!(journal.join("committed").exists());
+    }
+
+    #[test]
     fn restart_and_uninstall_join_the_host_service_transaction_boundary() {
         let source = include_str!("host_service.rs");
         for function in [
@@ -2393,6 +2442,48 @@ mod tests {
         assert_eq!(error.kind(), "host_service_upgrade_rolled_back");
         assert_eq!(std::fs::read(&destination).unwrap(), b"prior binary");
         assert_eq!(std::fs::read(&unit).unwrap(), b"prior service");
+    }
+
+    #[tokio::test]
+    async fn restart_install_self_failure_is_serialized_and_restores_prior_generation() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("host-service.lock");
+        let destination = dir.path().join("labby");
+        let unit = dir.path().join("labby.service");
+        std::fs::write(&destination, b"prior binary").unwrap();
+        std::fs::write(&unit, b"prior unit").unwrap();
+        let transaction = acquire_host_service_transaction_lock_at(&lock_path).unwrap();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let competing_path = lock_path.clone();
+        let competing = std::thread::spawn(move || {
+            let _guard = acquire_host_service_transaction_lock_at(&competing_path).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        let error = run_self_install_transaction(
+            &destination,
+            Some(b"prior binary"),
+            async {
+                restore_executable(&destination, Some(b"candidate binary"))?;
+                atomic_write(&unit, b"candidate unit")?;
+                Err(ToolError::Sdk {
+                    sdk_kind: "restart_failed".into(),
+                    message: "injected restart failure".into(),
+                })
+            },
+            || async { atomic_write(&unit, b"prior unit") },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "host_service_upgrade_rolled_back");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"prior binary");
+        assert_eq!(std::fs::read(&unit).unwrap(), b"prior unit");
+        assert!(acquired_rx.try_recv().is_err());
+        drop(transaction);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        competing.join().unwrap();
     }
 
     #[tokio::test]
