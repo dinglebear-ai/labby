@@ -9,14 +9,22 @@ baseline_token_path="${RUNNER_TEMP:?RUNNER_TEMP is required}/labby-n-minus-one/i
 source "$repo_root/scripts/ci/n-minus-one-token.sh"
 read_current_token() { incus exec "$name" -- sh -c "sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' /home/labby/.labby/.env" | tr -d '\r'; }
 version() { incus exec "$name" -- labby --version | grep -Fq "${1#v}"; }
+# Service-manager start/restart completion does not imply HTTP readiness.
+wait_ready() {
+  incus exec "$name" -- curl -fsS --connect-timeout 2 --max-time 5 \
+    --retry 30 --retry-connrefused --retry-delay 1 --retry-max-time 30 \
+    http://127.0.0.1:8765/ready >/dev/null
+}
 authenticated_action() {
   local token
   token=$(retained_token) || return
+  wait_ready || return
   incus exec "$name" -- curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data '{"action":"help","params":{}}' http://127.0.0.1:8765/v1/gateway >/dev/null
 }
 call() {
   local token
   token=$(retained_token) || return
+  wait_ready || return
   incus exec "$name" -- curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:8765/v1/$1"
 }
 customized_state() { incus exec "$name" -- python3 /var/lib/labby/n-minus-one-durable-state.py verify /home/labby/.labby; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -Fq 'preserved-state'; }
