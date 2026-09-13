@@ -1188,7 +1188,7 @@ done
         assert_eq!(initial_list["sessions"][0]["preview"], "No messages yet");
         assert_eq!(initial_list["sessions"][0]["message_count"], 0);
         assert_eq!(initial_list["sessions"][0]["turn_status"], "ready");
-        assert!(initial_list.to_string().find("thread-container").is_none());
+        assert!(!initial_list.to_string().contains("thread-container"));
         assert_eq!(
             runtime
                 .dispatch("principal-b", "phoenix.session.list", json!({}))

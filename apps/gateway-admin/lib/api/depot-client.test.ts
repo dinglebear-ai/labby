@@ -213,7 +213,7 @@ test('accepts the full operation catalog contract bound', async () => {
 
 test('does not surface privileged Depot rejection details', async () => {
   await withFetch(json({ error: 'depot_rejected', status: 422, detail: JSON.stringify({ message: 'CAS audit requires a repair token', token: 'not surfaced' }) }, 502), async () => {
-    await assert.rejects(depotCall('depot.maintenance.cas_audit', {}), (error: Error) => error.message === 'Depot request failed (502, depot_rejected)')
+    await assert.rejects(depotCall('depot.maintenance.cas_audit', {}), (error: Error) => error.message === 'Labby catalog request failed (502, depot_rejected)')
   })
   await withFetch(json({ error: 'depot_rejected', detail: { reason: 'migration is already running', secret: 'not surfaced' } }, 502), async () => {
     await assert.rejects(depotCall('depot.maintenance.migrate', {}), (error: Error) => !error.message.includes('migration'))
