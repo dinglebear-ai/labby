@@ -6,6 +6,7 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
@@ -24,6 +25,29 @@ const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const CAPTURE_BYTES: usize = 16 * 1024;
 const PREVIOUS_HOST_RELEASE_DIR: &str = "/var/lib/labby/host-service-previous";
+const HOST_SERVICE_TRANSACTION_LOCK: &str = "/var/lib/labby/host-service.transaction.lock";
+
+struct HostServiceTransactionLock(std::fs::File);
+
+fn acquire_host_service_transaction_lock() -> Result<HostServiceTransactionLock, ToolError> {
+    acquire_host_service_transaction_lock_at(Path::new(HOST_SERVICE_TRANSACTION_LOCK))
+}
+
+fn acquire_host_service_transaction_lock_at(
+    path: &Path,
+) -> Result<HostServiceTransactionLock, ToolError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(io_error)?;
+    file.lock().map_err(io_error)?;
+    Ok(HostServiceTransactionLock(file))
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct HostServiceStatus {
@@ -121,6 +145,7 @@ pub(crate) async fn unit() -> Result<String, ToolError> {
 }
 
 pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
+    let _transaction = acquire_host_service_transaction_lock()?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -192,7 +217,15 @@ fn persist_previous_host_release_with_checkpoint(
         after_binary_write()?;
         atomic_write(
             &manifest_path,
-            format!("active={}\nenabled={}\n", active.as_str(), enabled.as_str()).as_bytes(),
+            format!(
+                "active={}\nenabled={}\nbinary_sha256={}\nunit_sha256={}\ndropins_sha256={}\n",
+                active.as_str(),
+                enabled.as_str(),
+                sha256(binary),
+                sha256(unit),
+                dropins_sha256(dropins)?
+            )
+            .as_bytes(),
         )
     })();
     if let Err(primary) = publication {
@@ -234,20 +267,18 @@ fn persist_previous_host_release_with_checkpoint(
 }
 
 pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
+    let _transaction = acquire_host_service_transaction_lock()?;
     let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
-    let prior = std::fs::read(root.join("labby")).map_err(|error| ToolError::Sdk {
-        sdk_kind: "host_service_no_previous_release".into(),
-        message: format!("no retained previous host release is available: {error}"),
-    })?;
-    let (desired_active, desired_enabled) = parse_previous_host_manifest(
-        &std::fs::read_to_string(root.join("manifest")).map_err(io_error)?,
-    )?;
+    let retained = load_previous_host_release_at(root)?;
+    let prior = retained.binary;
+    let desired_active = retained.active;
+    let desired_enabled = retained.enabled;
     let destination = Path::new("/usr/local/bin/labby");
     let current = read_optional(destination)?;
     let unit_path = unit_path();
     let current_service = HostServiceSnapshot::capture(&unit_path).await?;
-    let prior_unit = std::fs::read(root.join("labby.service")).map_err(io_error)?;
-    let prior_dropins = DirectorySnapshot::capture(&root.join("labby.service.d"))?;
+    let prior_unit = retained.unit;
+    let prior_dropins = retained.dropins;
     restore_executable(destination, Some(&prior))?;
     let activation = async {
         atomic_write(&unit_path, &prior_unit)?;
@@ -291,9 +322,98 @@ fn parse_previous_host_manifest(
     ))
 }
 
+#[derive(Debug)]
+struct RetainedHostRelease {
+    binary: Vec<u8>,
+    unit: Vec<u8>,
+    dropins: DirectorySnapshot,
+    active: CapturedActiveState,
+    enabled: CapturedUnitFileState,
+}
+
+fn load_previous_host_release_at(root: &Path) -> Result<RetainedHostRelease, ToolError> {
+    let integrity_error = |message: String| ToolError::Sdk {
+        sdk_kind: "host_service_previous_generation_invalid".into(),
+        message,
+    };
+    let manifest = std::fs::read_to_string(root.join("manifest")).map_err(|error| {
+        integrity_error(format!(
+            "retained host-service manifest is unavailable: {error}"
+        ))
+    })?;
+    let props = manifest
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect::<BTreeMap<_, _>>();
+    let (active, enabled) = parse_previous_host_manifest(&manifest)?;
+    let binary = std::fs::read(root.join("labby")).map_err(|error| {
+        integrity_error(format!(
+            "retained host-service binary is unavailable: {error}"
+        ))
+    })?;
+    let unit = std::fs::read(root.join("labby.service")).map_err(|error| {
+        integrity_error(format!(
+            "retained host-service unit is unavailable: {error}"
+        ))
+    })?;
+    let dropins = DirectorySnapshot::capture(&root.join("labby.service.d"))?;
+    for (label, actual) in [
+        ("binary_sha256", sha256(&binary)),
+        ("unit_sha256", sha256(&unit)),
+        ("dropins_sha256", dropins_sha256(&dropins)?),
+    ] {
+        let expected = props.get(label).copied().ok_or_else(|| {
+            integrity_error(format!("retained host-service manifest is missing {label}"))
+        })?;
+        if expected != actual {
+            return Err(integrity_error(format!(
+                "retained host-service {label} mismatch: expected {expected}, found {actual}"
+            )));
+        }
+    }
+    Ok(RetainedHostRelease {
+        binary,
+        unit,
+        dropins,
+        active,
+        enabled,
+    })
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn dropins_sha256(snapshot: &DirectorySnapshot) -> Result<String, ToolError> {
+    let mut files = snapshot
+        .files
+        .iter()
+        .map(|(name, bytes)| {
+            name.to_str()
+                .map(|name| (name, bytes.as_slice()))
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "host_service_state_capture_failed".into(),
+                    message: "service drop-in name is not valid UTF-8".into(),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    files.sort_unstable_by_key(|(name, _)| *name);
+    let mut digest = Sha256::new();
+    digest.update([u8::from(snapshot.existed)]);
+    digest.update((files.len() as u64).to_be_bytes());
+    for (name, bytes) in files {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
 pub(crate) async fn install_self_transaction(
     source: &Path,
 ) -> Result<HostServiceOutcome, ToolError> {
+    let _transaction = acquire_host_service_transaction_lock()?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
     let text = unit_text();
@@ -514,6 +634,7 @@ struct HostServiceSnapshot {
     dropins: DirectorySnapshot,
 }
 
+#[derive(Debug)]
 struct DirectorySnapshot {
     existed: bool,
     files: Vec<(std::ffi::OsString, Vec<u8>)>,
@@ -2014,6 +2135,59 @@ mod tests {
             std::fs::read(root.join("labby.service.d/10-env.conf")).unwrap(),
             b"[Service]\nEnvironment=OLD=1\n"
         );
+        let retained = load_previous_host_release_at(&root).unwrap();
+        assert_eq!(retained.binary, b"prior binary");
+        assert_eq!(retained.unit, b"prior unit");
+    }
+
+    #[test]
+    fn retained_host_release_rejects_an_interrupted_mixed_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("previous");
+        let dropins = DirectorySnapshot {
+            existed: false,
+            files: Vec::new(),
+        };
+        persist_previous_host_release_at(
+            &root,
+            Some(b"prior binary"),
+            Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+            Some(b"prior unit"),
+            &dropins,
+        )
+        .unwrap();
+
+        std::fs::write(root.join("labby.service"), b"partial next generation").unwrap();
+        let error = load_previous_host_release_at(&root).unwrap_err();
+        assert_eq!(error.kind(), "host_service_previous_generation_invalid");
+        assert!(error.to_string().contains("unit_sha256 mismatch"));
+    }
+
+    #[test]
+    fn host_service_transactions_serialize_two_actors() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("host-service.lock");
+        let first = acquire_host_service_transaction_lock_at(&lock_path).unwrap();
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let second_path = lock_path.clone();
+        let second = std::thread::spawn(move || {
+            attempted_tx.send(()).unwrap();
+            let _second = acquire_host_service_transaction_lock_at(&second_path).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        attempted_rx.recv().unwrap();
+        assert!(
+            acquired_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        second.join().unwrap();
     }
 
     #[tokio::test]
