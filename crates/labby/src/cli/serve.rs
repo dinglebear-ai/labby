@@ -1489,6 +1489,54 @@ mod update_shutdown_tests {
         .await
         .unwrap();
     }
+
+    #[tokio::test]
+    async fn verified_update_drains_before_supervisor_restart_oracle() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let drained = Arc::new(AtomicBool::new(false));
+        let server_drained = Arc::clone(&drained);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = async move {
+            let _ = stopped.await;
+            server_drained.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let mut outcomes = std::collections::VecDeque::from([
+            Ok(serde_json::json!({"installed": false})),
+            Ok(serde_json::json!({"installed": true, "version": "v-next"})),
+        ]);
+        let update = async {
+            crate::self_update::wait_for_installed_update(
+                || std::future::ready(outcomes.pop_front().expect("bounded update checks")),
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+            .await;
+            Ok(())
+        };
+
+        run_until_shutdown(server, stop, update, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(
+            outcomes.is_empty(),
+            "the verified installed result ended polling"
+        );
+        assert!(
+            drained.load(Ordering::SeqCst),
+            "listener drained before return"
+        );
+
+        let supervisor_started_replacement = drained.load(Ordering::SeqCst);
+        assert!(
+            supervisor_started_replacement,
+            "a supervisor may restart only after the old listener drains"
+        );
+    }
 }
 
 async fn serve_tcp_listener(

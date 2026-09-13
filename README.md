@@ -172,6 +172,10 @@ binary or either receipt, the installer writes a recovery journal beneath
 `.labby-install/`; a later invocation restores the complete pre-install
 snapshot when it finds an interrupted activation. If restoration fails, the
 installer stops and retains the journal for diagnosis.
+All Unix installer entry points share a process-level transaction lock and
+flush journal boundaries before advancing them. Successful activation retains
+only the current artifact and the immediately previous artifact required for
+offline rollback.
 
 ### Automatic updates on macOS
 
