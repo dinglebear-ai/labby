@@ -43,11 +43,9 @@ function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
         <div
           data-console-main-column="1"
           data-phoenix-docked={phoenixDocked ? 'right' : 'float'}
-          className={phoenixDocked ? 'sm:mr-[min(420px,36vw)]' : undefined}
           style={{
             flex: 1,
             minWidth: 0,
-            transition: 'margin-right var(--motion-duration-medium) var(--motion-ease-in-out)',
             display: 'flex',
             flexDirection: 'column',
             background:
@@ -73,6 +71,13 @@ function ConsoleShellFrame({ children }: { children: React.ReactNode }) {
           </main>
           <ConsoleGlobalTools />
         </div>
+        {phoenixDocked ? (
+          <div
+            aria-hidden="true"
+            data-phoenix-dock-spacer="right"
+            className="hidden w-[min(420px,36vw)] shrink-0 sm:block"
+          />
+        ) : null}
       </div>
   )
 }
