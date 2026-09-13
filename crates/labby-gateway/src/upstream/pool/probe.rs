@@ -407,6 +407,53 @@ mod tests {
         pool.drain_for_swap("test.recovery_enable_wins").await;
     }
 
+    #[tokio::test]
+    async fn cancelled_cleanup_request_still_rearms_recovery() {
+        use crate::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_runtime::gateway_config::GatewayConfig;
+        use std::sync::Arc;
+
+        let name = "cancelled-cleanup-recovery";
+        let mut upstream = named_test_upstream_config(name);
+        upstream.command = None;
+        upstream.url = Some("http://127.0.0.1:9/mcp".to_string());
+        let mut cfg = GatewayConfig::default();
+        cfg.gateway.auto_reconnect = true;
+        cfg.upstream.push(upstream.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = GatewayRuntimeHandle::default();
+        let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+        manager.seed_config(cfg.clone()).await;
+        let pool = Arc::new(UpstreamPool::new().with_auto_reconnect(true));
+        pool.seed_lazy_upstreams(&cfg.upstream).await;
+        pool.ensure_probe_task(upstream).await;
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let original_task = pool.probe_tasks.read().await.get(name).unwrap().clone();
+        let connections = pool.connections.write().await;
+        let worker = manager.clone();
+        let cleanup =
+            tokio::spawn(async move { worker.reconcile_after_upstream_cleanup(name, false).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), original_task.cancelled())
+            .await
+            .expect("cleanup must cancel the original task before blocking on connections");
+        assert!(pool.probe_tasks.read().await.is_empty());
+        cleanup.abort();
+        assert!(cleanup.await.unwrap_err().is_cancelled());
+        drop(connections);
+        let rearmed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if pool.probe_tasks.read().await.contains_key(name) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        let _mutation_guard = manager.acquire_config_mutation().await.unwrap();
+        pool.drain_for_swap("test.cancelled_cleanup").await;
+        rearmed.expect("cleanup must finish rearming after its request is cancelled");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn disabling_recovery_cancels_an_active_probe() {
         let pool = UpstreamPool::new().with_auto_reconnect(true);
@@ -416,13 +463,24 @@ mod tests {
         let connections = pool.connections.write().await;
         let permits = pool.reprobe_semaphore.available_permits();
         pool.ensure_probe_task(config).await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_mins(1)).await;
-        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_mins(2), async {
+            while pool.reprobe_semaphore.available_permits() == permits {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        })
+        .await
+        .expect("the periodic probe must obtain its concurrency permit");
         assert_eq!(pool.reprobe_semaphore.available_permits(), permits - 1);
         pool.set_auto_reconnect(false);
         pool.ensure_recovery_tasks(&[]).await;
-        tokio::task::yield_now().await;
+        let released = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            pool.reprobe_semaphore.acquire_many(permits as u32),
+        )
+        .await
+        .expect("cancellation must release the active probe permit")
+        .unwrap();
+        drop(released);
         assert_eq!(pool.reprobe_semaphore.available_permits(), permits);
         assert!(pool.probe_tasks.read().await.is_empty());
         drop(connections);

@@ -17,6 +17,7 @@
 #   LABBY_INSTALL_REPO    owner/repo to fetch     (default: dinglebear-ai/labby)
 #   LABBY_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
 #   LABBY_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
+#   LABBY_INSTALL_RECOVER_ONLY settle a pending activation offline without installing (default: 0)
 #   LABBY_INSTALL_ROLLBACK restore the previous verified binary offline (default: 0)
 #   LABBY_INSTALL_LOCAL_BINARY install an exact local candidate (requires SHA-256)
 #   LABBY_INSTALL_LOCAL_SHA256 expected digest for LABBY_INSTALL_LOCAL_BINARY
@@ -28,6 +29,7 @@ INSTALL_DIR="${LABBY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LABBY_INSTALL_VERSION:-latest}"
 ALLOW_SOURCE_FALLBACK="${LABBY_ALLOW_SOURCE_FALLBACK:-0}"
 ROLLBACK="${LABBY_INSTALL_ROLLBACK:-0}"
+RECOVER_ONLY="${LABBY_INSTALL_RECOVER_ONLY:-0}"
 LOCAL_BINARY="${LABBY_INSTALL_LOCAL_BINARY:-}"
 LOCAL_SHA256="${LABBY_INSTALL_LOCAL_SHA256:-}"
 INSTALL_METADATA_DIR="$INSTALL_DIR/.labby-install"
@@ -214,6 +216,13 @@ recover_activation() {
         fi
     done
     [ "$recovery_failed" -eq 0 ] || return 1
+    # Retire the restore marker before deleting backups. Cancellation during
+    # cleanup must not make a later recovery interpret missing backups as files
+    # that were absent from the committed installation.
+    rm -f "$ACTIVATION_JOURNAL/state" || {
+        say "activation recovery FAILED retiring completed journal"
+        return 1
+    }
     rm -rf "$ACTIVATION_JOURNAL" || {
         say "activation recovery FAILED removing completed journal"
         return 1
@@ -274,6 +283,7 @@ install_binary_atomic() {
         return 1
     fi
     write_activation_state receipt-activated
+    rm -f "$ACTIVATION_JOURNAL/state" || fail "cannot retire activation journal; backups retained at $ACTIVATION_JOURNAL"
     rm -rf "$ACTIVATION_JOURNAL"
 }
 
@@ -371,6 +381,9 @@ install_from_source() {
 main() {
     if [ -d "$ACTIVATION_JOURNAL" ]; then
         recover_activation || fail "activation recovery FAILED; journal retained at $ACTIVATION_JOURNAL"
+    fi
+    if [ "$RECOVER_ONLY" = "1" ]; then
+        return 0
     fi
     if [ "$ROLLBACK" = "1" ]; then
         rollback_offline

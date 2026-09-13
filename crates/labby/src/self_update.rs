@@ -202,9 +202,12 @@ fn spawn_installer(
 }
 
 async fn install_release(script: &Path, tag: &str, directory: &Path, lock: fs::File) -> Result<()> {
+    run_installer(installer_command(script, tag, directory), lock).await
+}
+
+async fn run_installer(mut command: Command, lock: fs::File) -> Result<()> {
     use std::io::{Read, Seek};
     let mut stderr = tempfile::tempfile()?;
-    let mut command = installer_command(script, tag, directory);
     let mut process = InstallerProcess {
         child: spawn_installer(&mut command, &stderr, &lock)?,
         _lock: lock,
@@ -258,13 +261,10 @@ fn install_directory(binary: &Path) -> Result<&Path> {
 /// Check published releases and atomically install a newer verified host binary.
 pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
     require_macos()?;
-    let directory = install_directory(binary)?;
-    let lock = acquire_update_lock(directory)?;
-    let output = Command::new(binary).arg("--version").output()?;
-    if !output.status.success() {
-        bail!("Cannot read installed Labby version");
-    }
-    let current = version(std::str::from_utf8(&output.stdout)?)?;
+    automatic_with_catalog(binary, dry_run, fetch_releases()).await
+}
+
+async fn fetch_releases() -> Result<Vec<Release>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent("labby-auto-update")
@@ -284,7 +284,39 @@ pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
         }
         body.extend_from_slice(&chunk);
     }
-    let releases: Vec<Release> = serde_json::from_slice(&body)?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+async fn automatic_with_catalog(
+    binary: &Path,
+    dry_run: bool,
+    catalog: impl Future<Output = Result<Vec<Release>>>,
+) -> Result<Value> {
+    let directory = install_directory(binary)?;
+    let lock = acquire_update_lock(directory)?;
+    let journal = directory.join(".labby-install/activation-journal");
+    if journal.try_exists()? {
+        if dry_run {
+            return Ok(
+                json!({"installed": false, "dry_run": true, "recovery_required": true,
+                "reason": "Interrupted installation must be recovered before checking for updates"}),
+            );
+        }
+        // Recovery owns the transaction format. Run it before executing the
+        // published binary or polling the release catalog, including offline.
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("install.sh");
+        fs::write(&script, INSTALL_SCRIPT)?;
+        let mut command = installer_command(&script, "latest", directory);
+        command.env("LABBY_INSTALL_RECOVER_ONLY", "1");
+        run_installer(command, lock.try_clone()?).await?;
+    }
+    let output = Command::new(binary).arg("--version").output()?;
+    if !output.status.success() {
+        bail!("Cannot read installed Labby version");
+    }
+    let current = version(std::str::from_utf8(&output.stdout)?)?;
+    let releases = catalog.await?;
     let Some(tag) = select_release(&releases, current) else {
         return Ok(json!({"installed": false, "reason": "No newer stable Labby binary release"}));
     };
@@ -380,15 +412,21 @@ fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
 pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     require_macos()?;
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    let home = Path::new(&home);
+    schedule_for_paths(action, dry_run, Path::new(&home), &std::env::current_exe()?)
+}
+
+fn schedule_for_paths(action: &str, dry_run: bool, home: &Path, binary: &Path) -> Result<Value> {
     let plist = home
         .join("Library/LaunchAgents")
         .join(format!("{LABEL}.plist"));
-    let binary = std::env::current_exe()?;
     if dry_run {
         return Ok(json!({"action": action, "binary": binary, "plist": plist, "dry_run": true}));
     }
-    let _schedule_lock = acquire_schedule_lock(&plist)?;
+    let _schedule_lock = if action == "status" {
+        None
+    } else {
+        Some(acquire_schedule_lock(&plist)?)
+    };
     let uid = Command::new("id").arg("-u").output()?;
     if !uid.status.success() {
         bail!("Cannot determine launchd user ID");
@@ -432,7 +470,7 @@ pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     // Prepare the replacement before changing the working schedule.
     let log_dir = home.join("Library/Logs/Labby");
     let content = launch_agent(
-        &binary,
+        binary,
         &log_dir.join("auto-update.log"),
         &std::env::var("PATH")?,
     )?;
@@ -509,379 +547,4 @@ fn replace_schedule(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn schedule_lock_child() {
-        let Some(path) = std::env::var_os("LABBY_TEST_SCHEDULE_LOCK") else {
-            return;
-        };
-        assert!(acquire_schedule_lock(Path::new(&path)).is_err());
-    }
-
-    #[test]
-    fn schedule_lock_excludes_other_processes_and_survives_replacement() {
-        let dir = tempfile::tempdir().unwrap();
-        let plist = dir.path().join("updater.plist");
-        let lock = acquire_schedule_lock(&plist).unwrap();
-        fs::write(&plist, "first").unwrap();
-        fs::remove_file(&plist).unwrap();
-        fs::write(&plist, "replacement").unwrap();
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "self_update::tests::schedule_lock_child"])
-            .env("LABBY_TEST_SCHEDULE_LOCK", &plist)
-            .status()
-            .unwrap();
-        assert!(child.success());
-        drop(lock);
-        assert!(acquire_schedule_lock(&plist).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancelled_installer_is_reaped_before_unlocking_and_cannot_write_later() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("install.sh");
-        fs::write(
-            &script,
-            r#"
-mkdir -p "$LABBY_INSTALL_DIR/.labby-install/activation-journal"
-printf 'staged' > "$LABBY_INSTALL_DIR/.labby-install/activation-journal/state"
-(sleep 1; touch "$LABBY_INSTALL_DIR/late-write") &
-echo $$ > "$LABBY_INSTALL_DIR/installer.pid"
-wait
-"#,
-        )
-        .unwrap();
-        let lock = acquire_update_lock(dir.path()).unwrap();
-        let path = dir.path().to_owned();
-        let task =
-            tokio::spawn(async move { install_release(&script, "v1.17.0", &path, lock).await });
-        let pid_file = dir.path().join("installer.pid");
-        let pid = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(pid) = fs::read_to_string(&pid_file)
-                    .ok()
-                    .and_then(|text| text.trim().parse::<i32>().ok())
-                {
-                    break pid;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(acquire_update_lock(dir.path()).is_err());
-        task.abort();
-        assert!(
-            tokio::time::timeout(Duration::from_secs(2), task)
-                .await
-                .unwrap()
-                .unwrap_err()
-                .is_cancelled()
-        );
-        assert_eq!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
-            Err(nix::errno::Errno::ESRCH)
-        );
-        // Reaping the shell does not wait for its descendants to finish
-        // exiting after SIGKILL. Their inherited descriptors must keep the
-        // lock held until kernel cleanup completes.
-        let _next_owner = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                match acquire_update_lock(dir.path()) {
-                    Ok(lock) => break lock,
-                    Err(error)
-                        if matches!(
-                            error.downcast_ref::<fs::TryLockError>(),
-                            Some(fs::TryLockError::WouldBlock)
-                        ) =>
-                    {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                    Err(error) => panic!("cannot reacquire update lock: {error:#}"),
-                }
-            }
-        })
-        .await
-        .expect("cancelled installer descendants must release the update lock");
-        assert_eq!(
-            fs::read_to_string(dir.path().join(".labby-install/activation-journal/state")).unwrap(),
-            "staged"
-        );
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert!(!dir.path().join("late-write").exists());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_owner_child() {
-        let Some(path) = std::env::var_os("LABBY_TEST_UPDATE_SIGNAL") else {
-            return;
-        };
-        let path = Path::new(&path);
-        let lock = acquire_update_lock(path).unwrap();
-        if std::env::var_os("LABBY_TEST_LEGACY_UPDATE_OWNER").is_some() {
-            // Reproduce the reviewed implementation: the parent alone owns
-            // the lock while an ordinary subprocess performs installation.
-            let _lock = lock;
-            assert!(
-                installer_command(&path.join("install.sh"), "v1.17.0", path)
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
-        } else {
-            install_release(&path.join("install.sh"), "v1.17.0", path, lock)
-                .await
-                .unwrap();
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_keeps_exclusion_after_updater_is_killed() {
-        use nix::sys::signal::{Signal, kill, killpg};
-        use nix::unistd::Pid;
-        use std::os::unix::process::CommandExt;
-        struct GroupCleanup(Pid);
-        impl Drop for GroupCleanup {
-            fn drop(&mut self) {
-                let _ = killpg(self.0, Signal::SIGKILL);
-            }
-        }
-        for legacy in [true, false] {
-            let dir = tempfile::tempdir().unwrap();
-            fs::write(
-                dir.path().join("install.sh"),
-                r#"
-echo $$ > "$LABBY_INSTALL_DIR/installer.pid"
-sleep 120
-"#,
-            )
-            .unwrap();
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            command
-                .args(["--exact", "self_update::tests::installer_owner_child"])
-                .env("LABBY_TEST_UPDATE_SIGNAL", dir.path())
-                .process_group(0);
-            if legacy {
-                command.env("LABBY_TEST_LEGACY_UPDATE_OWNER", "1");
-            }
-            let mut updater = command.spawn().unwrap();
-            let updater_pid = Pid::from_raw(i32::try_from(updater.id()).unwrap());
-            let _updater_cleanup = GroupCleanup(updater_pid);
-            let pid = tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    if let Some(pid) = fs::read_to_string(dir.path().join("installer.pid"))
-                        .ok()
-                        .and_then(|text| text.trim().parse::<i32>().ok())
-                    {
-                        break Pid::from_raw(pid);
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let installer_group = if legacy { updater_pid } else { pid };
-            let _installer_cleanup = GroupCleanup(installer_group);
-            kill(updater_pid, Signal::SIGKILL).unwrap();
-            assert!(!updater.wait().unwrap().success());
-            // Baseline releases exclusion while the orphan is alive; the fixed
-            // child-local descriptor keeps a replacement updater excluded.
-            assert_eq!(acquire_update_lock(dir.path()).is_err(), !legacy);
-            killpg(installer_group, Signal::SIGKILL).unwrap();
-            tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    if acquire_update_lock(dir.path()).is_ok() {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn renamed_executable_cannot_report_an_update_to_another_binary() {
-        assert_eq!(
-            install_directory(Path::new("/opt/bin/labby")).unwrap(),
-            Path::new("/opt/bin")
-        );
-        assert!(install_directory(Path::new("/opt/bin/labby-preview")).is_err());
-    }
-
-    #[test]
-    fn failed_schedule_activation_restores_previous_job() {
-        let dir = tempfile::tempdir().unwrap();
-        let plist = dir.path().join("update.plist");
-        fs::write(&plist, "previous schedule").unwrap();
-        let mut calls = Vec::new();
-        let result = replace_schedule(&plist, b"new schedule", true, |operation| {
-            calls.push(operation.to_owned());
-            if calls.len() == 2 {
-                assert_eq!(fs::read_to_string(&plist).unwrap(), "new schedule");
-                bail!("bootstrap rejected");
-            }
-            if calls.len() == 3 {
-                assert_eq!(fs::read_to_string(&plist).unwrap(), "previous schedule");
-            }
-            Ok(())
-        });
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("previous schedule restored")
-        );
-        assert_eq!(calls, ["bootout", "bootstrap", "bootstrap"]);
-        assert_eq!(fs::read_to_string(plist).unwrap(), "previous schedule");
-    }
-
-    #[test]
-    fn failed_first_schedule_activation_removes_new_plist() {
-        let dir = tempfile::tempdir().unwrap();
-        let plist = dir.path().join("update.plist");
-        let result = replace_schedule(&plist, b"new schedule", false, |operation| {
-            assert_eq!(operation, "bootstrap");
-            bail!("bootstrap rejected")
-        });
-        assert!(result.is_err());
-        assert!(!plist.exists());
-    }
-
-    #[test]
-    fn missing_loaded_schedule_is_preserved_without_unloading() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = replace_schedule(&dir.path().join("missing.plist"), b"new", true, |_| {
-            panic!("must not unload a job without rollback data")
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn schedule_rollback_failure_is_reported() {
-        let dir = tempfile::tempdir().unwrap();
-        let plist = dir.path().join("update.plist");
-        fs::write(&plist, "previous schedule").unwrap();
-        let result = replace_schedule(&plist, b"new schedule", true, |operation| {
-            if operation == "bootstrap" {
-                bail!("bootstrap rejected");
-            }
-            Ok(())
-        });
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("restoration also failed")
-        );
-        assert_eq!(fs::read_to_string(plist).unwrap(), "previous schedule");
-    }
-
-    fn release(tag: &str) -> Release {
-        Release {
-            tag_name: tag.into(),
-            draft: false,
-            prerelease: false,
-            assets: vec![
-                Asset { name: ASSET.into() },
-                Asset {
-                    name: format!("{ASSET}.sha256"),
-                },
-            ],
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn server_restarts_only_after_successful_installation() {
-        let mut results = std::collections::VecDeque::from([
-            Err(anyhow::anyhow!("network failure")),
-            Ok(json!({"installed": false})),
-            Ok(json!({"installed": true, "version": "v1.17.0"})),
-        ]);
-        wait_for_installed_update(
-            || std::future::ready(results.pop_front().expect("unexpected extra check")),
-            Duration::ZERO,
-            Duration::ZERO,
-        )
-        .await;
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn selects_newest_stable_binary_without_downgrading() {
-        let mut draft = release("v9.0.0");
-        draft.draft = true;
-        let mut prerelease = release("v8.0.0");
-        prerelease.prerelease = true;
-        let mut missing = release("v7.0.0");
-        missing.assets.pop();
-        let releases = vec![
-            draft,
-            prerelease,
-            missing,
-            release("v2.0.0-rc.1"),
-            release("v1.9.0"),
-            release("v1.10.0"),
-        ];
-        assert_eq!(select_release(&releases, [1, 8, 0]), Some("v1.10.0"));
-        assert_eq!(select_release(&releases, [1, 10, 0]), None);
-        assert_eq!(select_release(&releases, [1, 16, 1]), None);
-    }
-
-    #[test]
-    fn unknown_versions_fail_closed() {
-        for invalid in ["labby dev", "1.2", "1.2.3-rc.1", "1.2.+3", "1.2.3.4"] {
-            assert!(version(invalid).is_err());
-        }
-        assert_eq!(version("labby 1.16.1\n").unwrap(), [1, 16, 1]);
-    }
-
-    #[test]
-    fn launchd_executes_native_binary_and_escapes_paths() {
-        let plist = launch_agent(
-            Path::new("/custom & bin/labby"),
-            Path::new("/logs/<update>"),
-            "/bin",
-        )
-        .unwrap();
-        assert!(plist.contains("<string>/custom &amp; bin/labby</string>"));
-        assert!(plist.contains("<string>update</string><string>--automatic</string>"));
-        assert!(plist.contains("<integer>86400</integer>"));
-        assert!(!plist.contains("python"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_failure_propagates_without_reporting_success() {
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("install.sh");
-        fs::write(&script, "echo 'attestation rejected' >&2; exit 7\n").unwrap();
-        let lock = acquire_update_lock(temp.path()).unwrap();
-        let error = install_release(&script, "v1.17.0", temp.path(), lock)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("attestation rejected"));
-    }
-
-    #[test]
-    fn installer_pins_release_and_disables_source_fallback() {
-        let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
-        let env: std::collections::HashMap<_, _> = command.get_envs().collect();
-        assert_eq!(
-            env[std::ffi::OsStr::new("LABBY_INSTALL_VERSION")],
-            Some(std::ffi::OsStr::new("v1.17.0"))
-        );
-        assert_eq!(
-            env[std::ffi::OsStr::new("LABBY_ALLOW_SOURCE_FALLBACK")],
-            Some(std::ffi::OsStr::new("0"))
-        );
-    }
-}
+mod tests;
