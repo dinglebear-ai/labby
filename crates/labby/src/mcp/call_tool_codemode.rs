@@ -314,10 +314,17 @@ Error handling:
 try {
   return await callTool(id, params);
 } catch (e) {
-  const error = JSON.parse(String(e.message));
+  let error;
+  try {
+    error = JSON.parse(String(e?.message ?? e));
+    if (!error || typeof error !== 'object' || Array.isArray(error)) throw e;
+  }
+  catch { error = { message: String(e?.message ?? e), side_effects: 'unknown' }; }
   // Inspect: kind, origin, recovery, side_effects, cause, evidence.
   // Follow recovery.guidance. Avoid unchanged retries when side_effects is
   // possible/unknown or recovery.same_arguments is discouraged/never.
+  // Without a structured contract, inspect the failure before retrying.
+  return { error };
 }
 ```
 A completed MCP tool failure uses `origin: \"tool_execution\"`; inspect its preserved \
@@ -350,8 +357,9 @@ to 2048. Extra tool calls reject with `call_budget_exceeded`.
 - Memory: 64 MiB heap limit enforced by the QuickJS runtime. Reduce the data \
 processed inside the sandbox if the runner exits with `server_error`.
 - Stack: QuickJS enforces a native stack depth limit; avoid deep recursion.
-- The only recoverable budget kind is `timeout` — retry with a smaller payload \
-or split into multiple `codemode` calls.
+- For `timeout`, `call_budget_exceeded`, or output-size limits, follow the returned \
+recovery guidance. Inspect completed work before starting a smaller run; never \
+replay a mutating batch merely to recover its missing output.
 
 Lab actions (`lab::*` tool IDs) are not available in Code Mode. For Lab built-in \
 actions, use the native Lab service tools instead of Code Mode.";
