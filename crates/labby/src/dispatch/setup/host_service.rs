@@ -30,10 +30,70 @@ const HOST_SERVICE_RESTORED_GARBAGE: &str = "/var/lib/labby/host-service-restore
 const HOST_SERVICE_PREVIOUS_GARBAGE: &str = "/var/lib/labby/host-service-previous-garbage";
 const UPGRADE_ACTIVATED_MARKER: &str = "upgrade-activated";
 const HOST_SERVICE_TRANSACTION_LOCK: &str = "/var/lib/labby/host-service.transaction.lock";
+const SYSTEM_INSTALLER_TRANSACTION_LOCK: &str = "/usr/local/bin/.labby-install/transaction-lock";
 
 #[derive(Debug)]
 struct HostServiceTransactionLock {
     _file: std::fs::File,
+}
+
+#[derive(Debug)]
+struct InstallerTransactionLock {
+    path: PathBuf,
+}
+
+impl Drop for InstallerTransactionLock {
+    fn drop(&mut self) {
+        drop(std::fs::remove_dir_all(&self.path));
+    }
+}
+
+fn acquire_installer_transaction_lock_at(
+    path: &Path,
+) -> Result<InstallerTransactionLock, ToolError> {
+    let parent = path.parent().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "host_service_transaction_lock_unsafe".into(),
+        message: format!(
+            "installer transaction lock has no parent: {}",
+            path.display()
+        ),
+    })?;
+    std::fs::create_dir_all(parent).map_err(io_error)?;
+    std::fs::create_dir(path).map_err(|error| ToolError::Sdk {
+        sdk_kind: "host_service_installer_transaction_busy".into(),
+        message: format!(
+            "another Labby installation owns `{}`: {error}",
+            path.display()
+        ),
+    })?;
+    if let Err(error) = std::fs::write(path.join("pid"), format!("{}\n", std::process::id())) {
+        drop(std::fs::remove_dir(path));
+        return Err(io_error(error));
+    }
+    let guard = InstallerTransactionLock {
+        path: path.to_path_buf(),
+    };
+    sync_parent_directory(path).map_err(io_error)?;
+    sync_parent_directory(parent).map_err(io_error)?;
+    Ok(guard)
+}
+
+fn acquire_binary_transaction_locks()
+-> Result<(InstallerTransactionLock, HostServiceTransactionLock), ToolError> {
+    acquire_binary_transaction_locks_at(
+        Path::new(SYSTEM_INSTALLER_TRANSACTION_LOCK),
+        Path::new(HOST_SERVICE_TRANSACTION_LOCK),
+    )
+}
+
+fn acquire_binary_transaction_locks_at(
+    installer: &Path,
+    host_service: &Path,
+) -> Result<(InstallerTransactionLock, HostServiceTransactionLock), ToolError> {
+    // The script knows only the installer lock, so always take it first.
+    let installer = acquire_installer_transaction_lock_at(installer)?;
+    let host_service = acquire_host_service_transaction_lock_at(host_service)?;
+    Ok((installer, host_service))
 }
 
 fn acquire_host_service_transaction_lock() -> Result<HostServiceTransactionLock, ToolError> {
@@ -362,7 +422,7 @@ fn persist_previous_host_release_with_checkpoint(
 }
 
 pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
-    let _transaction = acquire_host_service_transaction_lock()?;
+    let _transactions = acquire_binary_transaction_locks()?;
     prepare_host_service_mutation().await?;
     let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
     let full_retained = root.join("full-manifest").exists();
@@ -827,7 +887,7 @@ fn commit_upgrade_journal_as_previous_at(
 pub(crate) async fn install_self_transaction(
     source: &Path,
 ) -> Result<HostServiceOutcome, ToolError> {
-    let _transaction = acquire_host_service_transaction_lock()?;
+    let _transactions = acquire_binary_transaction_locks()?;
     prepare_host_service_mutation().await?;
     let port = preflight_port_available("install").await?;
     let path = unit_path();
@@ -2820,6 +2880,30 @@ mod tests {
         drop(first);
         acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         second.join().unwrap();
+    }
+
+    #[test]
+    fn system_binary_mutations_contend_with_the_script_installer_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let install_dir = dir.path().join("usr-local-bin");
+        let installer_lock = install_dir.join(".labby-install/transaction-lock");
+        let host_lock = dir.path().join("host-service.lock");
+        std::fs::create_dir_all(&installer_lock).unwrap();
+        std::fs::write(installer_lock.join("pid"), "4242\n").unwrap();
+
+        let error = acquire_binary_transaction_locks_at(&installer_lock, &host_lock).unwrap_err();
+        assert_eq!(error.kind(), "host_service_installer_transaction_busy");
+        assert!(
+            !host_lock.exists(),
+            "installer lock must always be acquired first"
+        );
+
+        std::fs::remove_dir_all(&installer_lock).unwrap();
+        let guards = acquire_binary_transaction_locks_at(&installer_lock, &host_lock).unwrap();
+        assert!(installer_lock.exists());
+        assert!(host_lock.exists());
+        drop(guards);
+        assert!(!installer_lock.exists());
     }
 
     #[cfg(unix)]
