@@ -90,20 +90,58 @@ test("document changes during discovery are rejected", async () => {
   assert.equal(await discoverCurrentDocument({id: 7}, scripting, {contains: async () => true}, [], false), null);
 });
 
-test("an unresponsive Chrome injection releases scan workers and stays bounded per tab", async () => {
+test("a timed-out Chrome injection can be replaced without accumulating per tab", async () => {
   const {discoverCurrentDocument} = await import("../src/scanning.js");
   let calls = 0;
   let release;
   const stalled = {executeScript: () => { calls++; return new Promise(resolve => { release = resolve; }); }};
   const permissions = {contains: async () => true};
   const started = Date.now();
-  assert.equal(await discoverCurrentDocument({id: 99}, stalled, permissions, [], false), null);
-  assert.ok(Date.now() - started < 4000);
-  assert.equal(await discoverCurrentDocument({id: 99}, stalled, permissions, [], false), null);
+  await assert.rejects(
+    discoverCurrentDocument({id: 99}, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.ok(Date.now() - started < 1000);
   assert.equal(calls, 1);
   const healthy = {executeScript: async options => options.world === "ISOLATED"
     ? [{documentId: "healthy", result: {url: "https://healthy.example/", title: "Healthy"}}]
     : [{documentId: "healthy", result: {supported: true, tools: [{name: "search"}]}}]};
-  assert.equal((await discoverCurrentDocument({id: 100}, healthy, permissions, [], false)).document_id, "healthy");
+  assert.equal(
+    (await discoverCurrentDocument({id: 99}, healthy, permissions, [], false, 10)).document_id,
+    "healthy"
+  );
+  assert.equal(calls, 1);
   release([]);
+});
+
+test("active and abandoned discovery limits bound injections for one tab", async () => {
+  const {discoverCurrentDocument} = await import("../src/scanning.js");
+  const releases = [];
+  let calls = 0;
+  const stalled = {executeScript: () => {
+    calls++;
+    return new Promise(resolve => { releases.push(resolve); });
+  }};
+  const tab = {id: 101};
+  const permissions = {contains: async () => true};
+
+  const first = discoverCurrentDocument(tab, stalled, permissions, [], false, 10);
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(first, /discovery_inconclusive/);
+
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.equal(calls, 2);
+
+  for (const release of releases) release([]);
 });

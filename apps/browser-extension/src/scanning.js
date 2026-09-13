@@ -124,26 +124,44 @@ export function ignoredObservationTabIds(observations, ignoredOrigins) {
  * @param {typeof chrome.permissions} permissions
  * @param {string[]} ignoredOrigins
  * @param {boolean} allowActiveTab
+ * @param {number} [timeoutMs]
  */
-export async function discoverCurrentDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab) {
-  if (tab.id === undefined || pendingDiscoveries.has(tab.id)) return null;
+export async function discoverCurrentDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab, timeoutMs = 3_000) {
+  if (tab.id === undefined) return null;
   const tabId = tab.id;
+  const outstanding = pendingDiscoveries.get(tabId) ?? new Set();
+  if (activeDiscoveries.has(tabId) || outstanding.size >= 2) throw new Error("discovery_inconclusive");
+  const generation = Symbol();
   const pending = discoverDocument(tab, scripting, permissions, ignoredOrigins, allowActiveTab);
-  pendingDiscoveries.add(tabId);
-  // Keep the slot until Chrome settles, even when the worker deadline wins.
-  // Repeated events cannot accumulate more injections for an unresponsive tab.
-  void pending.finally(() => pendingDiscoveries.delete(tabId)).catch(() => {});
+  outstanding.add(generation);
+  pendingDiscoveries.set(tabId, outstanding);
+  activeDiscoveries.set(tabId, generation);
+  // Keep timed-out work accounted for until Chrome settles. One replacement is
+  // allowed so a tab can recover, while the outstanding cap prevents an
+  // unresponsive tab from accumulating injections indefinitely.
+  void pending.finally(() => {
+    outstanding.delete(generation);
+    if (outstanding.size === 0) pendingDiscoveries.delete(tabId);
+    if (activeDiscoveries.get(tabId) === generation) activeDiscoveries.delete(tabId);
+  }).catch(() => {});
   let timer;
   try {
     return await Promise.race([
       pending,
-      new Promise(resolve => { timer = setTimeout(() => resolve(null), 3_000); })
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("discovery_inconclusive")), timeoutMs);
+      })
     ]);
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (activeDiscoveries.get(tabId) === generation) activeDiscoveries.delete(tabId);
+  }
 }
 
-/** @type {Set<number>} */
-const pendingDiscoveries = new Set();
+/** @type {Map<number, symbol>} */
+const activeDiscoveries = new Map();
+/** @type {Map<number, Set<symbol>>} */
+const pendingDiscoveries = new Map();
 
 /**
  * @param {chrome.tabs.Tab} tab

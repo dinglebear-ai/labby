@@ -678,7 +678,8 @@ function expectedScanError(error) {
     "No tab with id",
     "The tab was closed",
     "Frame with ID 0 was removed",
-    "The frame was removed"
+    "The frame was removed",
+    "discovery_inconclusive"
   ].some((expected) => message.includes(expected));
 }
 

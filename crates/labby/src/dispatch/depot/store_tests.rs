@@ -1,5 +1,6 @@
 use super::store::{Pair, Store, StoreError};
 use crate::config::host_write::HostConfigLock;
+use std::sync::mpsc;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -88,21 +89,12 @@ fn pair_read_holds_the_config_lock_while_waiting_for_the_environment_lock() {
     std::fs::write(&environment_path, "ENV=value\n").unwrap();
     let environment = HostConfigLock::acquire(&environment_path).unwrap();
 
-    let reader = std::thread::spawn(move || store.read_pair());
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match HostConfigLock::acquire_with_timeout(&config_path, Duration::from_millis(10)) {
-            Err(_) => break,
-            Ok(lock) => drop(lock),
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "pair reader never acquired its first lock"
-        );
-        // Leave a scheduling window for the reader instead of immediately
-        // reacquiring the lock and starving it on Windows under CI load.
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let (config_acquired, wait_for_config) = mpsc::sync_channel(0);
+    let reader = std::thread::spawn(move || store.read_pair_notifying(config_acquired));
+    wait_for_config
+        .recv_timeout(Duration::from_secs(5))
+        .expect("pair reader did not acquire the config lock");
+    assert!(HostConfigLock::acquire_with_timeout(&config_path, Duration::from_millis(10)).is_err());
     drop(environment);
     assert_eq!(
         reader.join().unwrap().unwrap(),

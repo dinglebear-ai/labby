@@ -13,12 +13,13 @@ function worker({
   setSettings = async () => {},
   removeSettings = async () => {},
   execute = async () => [],
+  discover = discoverCurrentDocument,
   identityManager = {ensure: async () => ({publicKey: "fixture-key"}), revoke: async () => {}}
 } = {}) {
   const listener = {addListener() {}};
   const storageWrites = [];
   const context = vm.createContext({
-    console, URL, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp, TabScanScheduler, discoverCurrentDocument, publishCurrentObservation,
+    console, URL, TextEncoder, setTimeout, clearTimeout, cancelWebMcp, invokeWebMcp, TabScanScheduler, discoverCurrentDocument: discover, publishCurrentObservation,
     verifiedPairingFingerprint: async (payload) => payload?.pairing_fingerprint,
     createIdentityManager: () => identityManager, IndexedDbIdentityStore: class {},
     indexedDB: {}, crypto: {subtle: {}}, bridgeFailureKind: (error) => error instanceof Error ? error.message : String(error),
@@ -237,4 +238,15 @@ test("worker overlap publishes only the latest document without closing a health
   assert.equal(messages[0].payload.observations[0].document_id, "latest-doc");
   assert.equal(handlers.observations.get(7).document_id, "latest-doc");
   assert.equal(injections, 4);
+});
+
+test("an inconclusive discovery keeps the current observation open", async () => {
+  const handlers = worker({discover: async () => { throw new Error("discovery_inconclusive"); }});
+  const messages = [];
+  handlers.setChannel({message: async (type, payload) => { messages.push({type, payload}); return {}; }});
+
+  await handlers.scanTab({id: 7, url: "https://page.example/"});
+
+  assert.deepEqual(messages, []);
+  assert.equal(handlers.observations.get(7).document_id, "doc");
 });
