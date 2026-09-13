@@ -61,6 +61,7 @@ export interface PhoenixModel {
   model: string
   displayName: string
   description: string
+  contextWindow?: number
   isDefault: boolean
   inputModalities?: Array<'text' | 'image' | 'audio'>
   defaultReasoningEffort: string
