@@ -82,6 +82,20 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.18.0](https://github.com/dinglebear-ai/labby/compare/v1.17.3...v1.18.0) (2026-09-13)
+
+
+### Added
+
+* **auth:** native operator login and Aurora OAuth screens ([#621](https://github.com/dinglebear-ai/labby/issues/621)) ([3190855](https://github.com/dinglebear-ai/labby/commit/3190855b291fc263c8aae2468cfaa16167339c37))
+
+
+### Fixed
+
+* **ci:** separate host-service qualification restart phases ([#620](https://github.com/dinglebear-ai/labby/issues/620)) ([c340a18](https://github.com/dinglebear-ai/labby/commit/c340a18597cef29dc5c043df841c252872809ac2))
+* give agents actionable and safe error recovery ([#625](https://github.com/dinglebear-ai/labby/issues/625)) ([9704cd3](https://github.com/dinglebear-ai/labby/commit/9704cd3e81975f8723d22a351fd5becebd6d4084))
+* **release:** make stable pointer verification and rollback durable ([#622](https://github.com/dinglebear-ai/labby/issues/622)) ([53d161e](https://github.com/dinglebear-ai/labby/commit/53d161ea159261866174fe3c0840d98ccbc0313b))
+
 ## [1.17.3](https://github.com/dinglebear-ai/labby/compare/v1.17.2...v1.17.3) (2026-09-13)
 
 
