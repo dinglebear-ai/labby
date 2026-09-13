@@ -834,7 +834,23 @@ impl AccessRuntime {
         let runtime = self.clone();
         tokio::spawn(async move { runtime.bootstrap_owner_owned(input).await })
             .await
-            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?
+            .map_err(|error| {
+                // A panic here must not become a silent 503-class failure.
+                if error.is_panic() {
+                    tracing::error!(
+                        subsystem = "access",
+                        phase = "bootstrap_owner",
+                        "access owner bootstrap task panicked"
+                    );
+                } else {
+                    tracing::warn!(
+                        subsystem = "access",
+                        phase = "bootstrap_owner",
+                        "access owner bootstrap task was cancelled"
+                    );
+                }
+                AccessRuntimeError::LifecycleUnavailable
+            })?
     }
 
     async fn bootstrap_owner_owned(
