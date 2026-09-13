@@ -148,6 +148,14 @@ fn network(text: &str) -> Option<(u64, u64)> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)]
+fn counter_rate(delta: u64, elapsed: std::time::Duration) -> f64 {
+    // Network rates are approximate telemetry. Preserve the full counter range;
+    // sub-byte precision is immaterial after division by the sampling interval.
+    delta as f64 / elapsed.as_secs_f64()
+}
+
+#[cfg(target_os = "linux")]
 fn memory_total(text: &str) -> Option<u64> {
     text.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -324,11 +332,15 @@ pub(super) async fn sample(data_path: &Path) -> HostMetrics {
                         return None;
                     }
                     let ticks = observed_ticks(before, after)?;
+                    let ticks = u32::try_from(ticks).ok()?;
+                    let ticks_per_second =
+                        u32::try_from(rustix::param::clock_ticks_per_second()).ok()?;
+                    let cores = u32::try_from(cores).ok()?;
                     Some(
-                        (ticks as f64
-                            / rustix::param::clock_ticks_per_second() as f64
+                        (f64::from(ticks)
+                            / f64::from(ticks_per_second)
                             / elapsed.as_secs_f64()
-                            / cores as f64
+                            / f64::from(cores)
                             * 100.0)
                             .clamp(0.0, 100.0),
                     )
@@ -347,8 +359,8 @@ pub(super) async fn sample(data_path: &Path) -> HostMetrics {
             let disk = rustix::fs::statvfs(&data_path).ok();
             let rates = before_net.zip(after_net).and_then(|(before, after)| {
                 Some((
-                    after.0.checked_sub(before.0)? as f64 / elapsed.as_secs_f64(),
-                    after.1.checked_sub(before.1)? as f64 / elapsed.as_secs_f64(),
+                    counter_rate(after.0.checked_sub(before.0)?, elapsed),
+                    counter_rate(after.1.checked_sub(before.1)?, elapsed),
                 ))
             });
             HostMetrics {
