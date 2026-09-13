@@ -223,7 +223,7 @@ actions:
       tmp="$(mktemp -d)"
       trap '\''rm -rf "$tmp"'\'' EXIT
       installer="$tmp/mise-install.sh"
-      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://mise.run
+      curl -fsSL --connect-timeout 10 --max-time 300 -o "$installer" https://github.com/jdx/mise/releases/download/v2026.9.1/install.sh
       echo "3731dfec59ffb0bc23df96ae19b4b51470db939c875c2fdf01cf6c25b1b1e039  $installer" | sha256sum --check --strict
       env MISE_VERSION=2026.9.1 MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh "$installer"
       '

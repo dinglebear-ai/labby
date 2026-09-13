@@ -1451,6 +1451,8 @@ jobs:
       - name: Validate Incus supply and rolling-pointer contracts
         run: |
           set -euo pipefail
+          # Match the image release job's lint severity before tagging.
+          shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
           scripts/ci/validate-supply-manifest.py
           python3 scripts/ci/test-incus-contract.py
 

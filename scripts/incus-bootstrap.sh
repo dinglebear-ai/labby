@@ -43,7 +43,9 @@ record_rollback() {
 
 checkpoint() {
     MUTATION_COUNT=$((MUTATION_COUNT + 1))
-    [ "${LABBY_INCUS_FAIL_AFTER:-}" != "$1" ] && [ "${LABBY_INCUS_FAIL_AFTER:-}" != "$MUTATION_COUNT" ] || fail "injected failure after $1"
+    if [ "${LABBY_INCUS_FAIL_AFTER:-}" = "$1" ] || [ "${LABBY_INCUS_FAIL_AFTER:-}" = "$MUTATION_COUNT" ]; then
+        fail "injected failure after $1"
+    fi
 }
 
 rollback_transaction() {
