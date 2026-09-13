@@ -1,6 +1,8 @@
 'use client'
 
 import * as React from 'react'
+import { SWRConfig } from 'swr'
+import { getBrowserSessionContextIdentity } from '../../lib/auth/session-store.ts'
 
 import { LoginScreen } from './login-screen.tsx'
 import { OwnerSetupScreen } from './owner-setup-screen.tsx'
@@ -62,5 +64,9 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     )
   }
 
-  return <>{children}</>
+  return (
+    <SWRConfig key={getBrowserSessionContextIdentity()} value={{ provider: () => new Map() }}>
+      {children}
+    </SWRConfig>
+  )
 }

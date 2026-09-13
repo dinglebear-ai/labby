@@ -31,3 +31,18 @@ The service is compiled by the `fs` feature. Builds without that feature do not 
 - [Configuration](../runtime/CONFIG.md)
 - [Errors](../dev/ERRORS.md)
 - [Service model](../dev/SERVICES.md)
+
+## HTTP workspace authority and bounds
+
+`GET /v1/fs/list` and `GET /v1/fs/preview` require installation administrator
+credentials (`lab:admin`). A project-scoped credential cannot read the host
+workspace. MCP discovery and listing retain their shared service contract.
+
+Directory enumeration inspects at most 10,000 entries, including hidden or
+denied names, and sorts only the collected batch. `truncated` also indicates
+incomplete enumeration after an individual entry error. Failure to open the
+requested directory returns an error instead of a successful empty listing.
+
+Preview opens do not follow symlinks or Windows reparse points. Windows pins
+ancestors while obtaining the verified file handle; Unix opens are nonblocking
+before rejecting non-regular files, so named pipes cannot strand preview workers.

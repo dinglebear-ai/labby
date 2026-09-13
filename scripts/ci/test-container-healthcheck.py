@@ -71,6 +71,22 @@ class ContainerHealthcheckTest(unittest.TestCase):
                 )
             self.assertLessEqual((state / "health-recovery.log").stat().st_size, 256)
 
+    def test_real_delays_fit_whole_healthcheck_deadline(self):
+        for count in range(3, 10):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                state, env = self.failing_environment(directory, LABBY_HEALTH_TEST_MODE="0")
+                state.mkdir()
+                (state / "health-failures").write_text(str(count - 1))
+                (pathlib.Path(directory) / "bin/curl").write_text("#!/bin/sh\nsleep 2\nexit 1\n")
+                # Only replace the final restart side effect. Real probe/delay
+                # timing and persistent state paths remain production code.
+                script = pathlib.Path(directory) / "healthcheck.sh"
+                script.write_text((ROOT / "scripts/ci/container-healthcheck.sh").read_text().replace("kill -TERM 1", 'printf restart >"$LABBY_HEALTH_STATE_DIR/restarted"'))
+                result = subprocess.run(["/bin/sh", str(script)], env=env, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual((state / "health-failures").read_text().strip(), str(count))
+                self.assertEqual((state / "restarted").exists(), count < 9)
+
     def test_keep_limit_is_clamped_to_maximum(self):
         with tempfile.TemporaryDirectory() as directory:
             state, env = self.failing_environment(
@@ -141,7 +157,7 @@ class ContainerHealthcheckTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertLess(time.monotonic() - started, 4)
             self.assertEqual((state / "health-failures").read_text().strip(), "3")
-            self.assertIn("restart_requested delay=1", (state / "health-recovery.log").read_text())
+            self.assertIn("restart_requested delay=0", (state / "health-recovery.log").read_text())
 
 
 if __name__ == "__main__":

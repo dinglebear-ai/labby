@@ -59,3 +59,89 @@ test("selects existing observations that must close when origins become ignored"
   assert.deepEqual(ignoredObservationTabIds(observations, ["https://ignored.example"]), [1, 3]);
   assert.deepEqual(ignoredObservationTabIds(observations, undefined), []);
 });
+
+
+test("queued tab snapshots cannot label another document or evade ignored origins", async () => {
+  const {discoverCurrentDocument} = await import("../src/scanning.js");
+  const tab = {id: 7, url: "https://old.example/page", title: "Old"};
+  const calls = [];
+  const scripting = {executeScript: async options => {
+    calls.push(options);
+    return options.world === "ISOLATED"
+      ? [{documentId: "new-document", result: {url: "https://new.example/page", title: "New"}}]
+      : [{documentId: "new-document", result: {supported: true, tools: [{name: "search"}]}}];
+  }};
+  const permissions = {contains: async ({origins}) => origins[0] === "https://new.example/*"};
+  assert.equal(await discoverCurrentDocument(tab, scripting, permissions, ["https://new.example"], false), null);
+  assert.equal(calls.length, 1);
+  calls.length = 0;
+  const observation = await discoverCurrentDocument(tab, scripting, permissions, [], false);
+  assert.equal(observation.url, "https://new.example/page");
+  assert.equal(observation.title, "New");
+  assert.equal(observation.document_id, "new-document");
+  assert.deepEqual(calls[1].target, {tabId: 7, documentIds: ["new-document"]});
+});
+
+test("document changes during discovery are rejected", async () => {
+  const {discoverCurrentDocument} = await import("../src/scanning.js");
+  const scripting = {executeScript: async options => options.world === "ISOLATED"
+    ? [{documentId: "first", result: {url: "https://page.example", title: "Page"}}]
+    : [{documentId: "second", result: {supported: true, tools: [{name: "search"}]}}]};
+  assert.equal(await discoverCurrentDocument({id: 7}, scripting, {contains: async () => true}, [], false), null);
+});
+
+test("a timed-out Chrome injection can be replaced without accumulating per tab", async () => {
+  const {discoverCurrentDocument} = await import("../src/scanning.js");
+  let calls = 0;
+  let release;
+  const stalled = {executeScript: () => { calls++; return new Promise(resolve => { release = resolve; }); }};
+  const permissions = {contains: async () => true};
+  const started = Date.now();
+  await assert.rejects(
+    discoverCurrentDocument({id: 99}, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(calls, 1);
+  const healthy = {executeScript: async options => options.world === "ISOLATED"
+    ? [{documentId: "healthy", result: {url: "https://healthy.example/", title: "Healthy"}}]
+    : [{documentId: "healthy", result: {supported: true, tools: [{name: "search"}]}}]};
+  assert.equal(
+    (await discoverCurrentDocument({id: 99}, healthy, permissions, [], false, 10)).document_id,
+    "healthy"
+  );
+  assert.equal(calls, 1);
+  release([]);
+});
+
+test("active and abandoned discovery limits bound injections for one tab", async () => {
+  const {discoverCurrentDocument} = await import("../src/scanning.js");
+  const releases = [];
+  let calls = 0;
+  const stalled = {executeScript: () => {
+    calls++;
+    return new Promise(resolve => { releases.push(resolve); });
+  }};
+  const tab = {id: 101};
+  const permissions = {contains: async () => true};
+
+  const first = discoverCurrentDocument(tab, stalled, permissions, [], false, 10);
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(first, /discovery_inconclusive/);
+
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  await assert.rejects(
+    discoverCurrentDocument(tab, stalled, permissions, [], false, 10),
+    /discovery_inconclusive/
+  );
+  assert.equal(calls, 2);
+
+  for (const release of releases) release([]);
+});

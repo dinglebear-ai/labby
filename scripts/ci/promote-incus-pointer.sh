@@ -41,6 +41,24 @@ case "$mode" in
   promote)
     mkdir -p "$receipt/candidate"
     remote_target >"$receipt/previous-target"
+    # Reject stale generations even when npm publication of a newer generation
+    # failed. The caller serializes stable promotion across release tags.
+    previous=$(<"$receipt/previous-target")
+    if [[ -n "$previous" ]]; then
+      git fetch --no-tags origin "$previous"
+      previous_version=$(git show "$previous:Cargo.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
+      python3 - "$release_tag" "$previous_version" <<'PYVERSION'
+import re, sys
+
+def version(value):
+    match = re.fullmatch(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value)
+    if not match:
+        raise SystemExit("invalid stable release version")
+    return tuple(map(int, match.groups()))
+if version(sys.argv[1]) < version(sys.argv[2]):
+    raise SystemExit("refusing to replace a newer Incus stable generation")
+PYVERSION
+    fi
     write_state "prepared"
     "$gh_bin" release download "$release_tag" --dir "$receipt/candidate"
     verify_generation "$receipt/candidate"

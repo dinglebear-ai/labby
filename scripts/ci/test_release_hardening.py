@@ -402,12 +402,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release = self.text(".github/workflows/release.yml")
         candidate = release.index('npm publish --access public --tag "candidate-$version"')
         promote = release.index("scripts/ci/promote-release.sh")
-        stable = release.index('npm dist-tag add "$package_name@$version" latest')
+        stable = release.index("scripts/ci/promote-npm-pointer.py promote")
         self.assertLess(candidate, promote)
         self.assertLess(promote, stable)
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn("[.tag_name, .draft] | @tsv", reminder)
         self.assertIn("draft release is missing release-manifest.json", reminder)
+
+    def test_stable_promotion_is_serialized_and_restored_before_redraft(self):
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        job = release["jobs"]["release"]
+        self.assertEqual(job["concurrency"]["group"], "labby-stable-release-promotion")
+        self.assertEqual(job["concurrency"]["cancel-in-progress"], "false")
+        rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
+        self.assertLess(rollback.index("promote-npm-pointer.py rollback"), rollback.index('gh release edit "$RELEASE_TAG" --draft=true'))
+        self.assertIn('if [[ "$npm_rc" != 0 || "$pointer_rc" != 0 ]]', rollback)
+        self.assertIn('refusing to replace a newer Incus stable generation', self.text("scripts/ci/promote-incus-pointer.sh"))
 
     def test_n_minus_one_uses_real_runtime_schema_not_probe_tables(self) -> None:
         helper = self.text("scripts/ci/n-minus-one-durable-state.py")
@@ -476,6 +486,31 @@ class ReleaseHelperTests(unittest.TestCase):
             command[command.index("--github-rc") + 1] = "0"
             self.assertEqual(0, subprocess.run(command, stdout=subprocess.DEVNULL).returncode)
             self.assertNotIn("image_registry", json.loads(output.read_text()))
+
+    def test_early_release_failure_retains_published_candidate_inventory(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        job = release["jobs"]["release"]
+        self.assertIn("npm-candidate", job["needs"])
+        rollback = next(step["run"] for step in job["steps"] if step.get("name") == "Roll back partial publication")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            output = work / "rollback.json"
+            # No local release steps have completed, so no receipts exist.
+            # Block external commands even if a future workflow edit calls one.
+            for name in ("gh", "npm", "node"):
+                stub = work / name
+                stub.write_text("#!/bin/sh\nexit 88\n")
+                stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", rollback.replace("/tmp/", "${TEST_RECEIPT_ROOT}/")],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{work}:{os.environ['PATH']}",
+                     "TEST_RECEIPT_ROOT": str(work), "ROLLBACK_STATUS_FILE": str(output)},
+            )
+            self.assertNotEqual(0, result.returncode)
+            receipt = json.loads(output.read_text())
+            self.assertEqual("manual_reconciliation_required", receipt["npm_candidate"]["status"])
+            self.assertEqual("manual_reconciliation_required", receipt["mcp_version"]["status"])
 
     def test_compound_rollback_never_hides_irreversible_registry_identity(self) -> None:
         helper = ROOT / "scripts/ci/compound-release-rollback.py"

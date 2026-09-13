@@ -85,7 +85,24 @@ export async function probeWebMcp() {
       if (encoded === undefined || encoded.length > maxBytes || encoder.encode(encoded).byteLength > maxBytes) throw new Error(kind);
       return cloned;
     };
-    const tools = await context.getTools();
+    // One outstanding catalog call per document, including after our deadline.
+    // A timed-out page promise must not accumulate on each rescan.
+    const probeState = /** @type {Document & {__labbyCatalogPending?: boolean}} */ (document);
+    if (probeState.__labbyCatalogPending) return {supported: false, tools: []};
+    probeState.__labbyCatalogPending = true;
+    let timer;
+    const pending = Promise.resolve().then(() => context.getTools()).finally(() => {
+      probeState.__labbyCatalogPending = false;
+    });
+    let tools;
+    try {
+      tools = await Promise.race([
+        pending,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("catalog_timeout")), 2_000); })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
     if (!Array.isArray(tools)) return {supported: false, tools: []};
     // Apply the catalog cap before copying/traversing page-controlled entries.
     // Array.from(tools).slice(...) still walks the entire source first.
