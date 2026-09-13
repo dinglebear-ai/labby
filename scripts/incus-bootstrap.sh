@@ -809,7 +809,7 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
 		curl -fsSL --connect-timeout 10 --max-time 300 -o "$tailscale_installer" "$TAILSCALE_INSTALL_URL"
 		printf '%s  %s\n' "$TAILSCALE_INSTALL_SHA256" "$tailscale_installer" | sha256sum --check --strict
 		run incus file push "$tailscale_installer" "$NAME/tmp/labby-tailscale-install.sh"
-		run incus exec "$NAME" -- sh /tmp/labby-tailscale-install.sh
+		run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh
 		run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
 		incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
 	fi
