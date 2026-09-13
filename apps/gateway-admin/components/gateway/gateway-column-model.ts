@@ -1,5 +1,5 @@
-export const GATEWAY_COLUMN_ORDER_KEY = 'labby-gateway-col-order-v2'
-export const GATEWAY_COLUMNS = ['endpoint', 'exposed', 'uptime'] as const
+export const GATEWAY_COLUMN_ORDER_KEY = 'labby-gateway-col-order-v3'
+export const GATEWAY_COLUMNS = ['exposed', 'endpoint', 'uptime'] as const
 export type GatewayColumn = typeof GATEWAY_COLUMNS[number]
 export const GATEWAY_COLUMN_WIDTH: Record<GatewayColumn, string> = { endpoint: 'minmax(140px,300px)', exposed: '170px', uptime: '130px' }
 export function normalizeGatewayColumns(value: unknown): GatewayColumn[] {

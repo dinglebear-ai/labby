@@ -456,7 +456,7 @@ export function GatewayTable({
     const displayName = gatewayDisplayName(gateway.name)
 
     const columnCells: Record<GatewayColumn, ReactNode> = {
-      endpoint: (<div className="min-w-0 max-w-full justify-self-center px-2.5">
+      endpoint: (<div className="min-w-0 w-full justify-self-start px-2.5 text-left">
           <button
             type="button"
             onClick={() => copyCommand(gateway, endpointPreview)}
@@ -917,7 +917,7 @@ export function GatewayTable({
               )}
             >
               <SortHeader label="Server" sort="name" align="start" />
-              {visibleColumns.map(column => <div key={column} data-gateway-column={column} className="group/column flex min-w-0 items-center justify-center gap-1" onDragOver={event => { if (draggedColumn.current) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (draggedColumn.current) moveColumn(draggedColumn.current, column); draggedColumn.current = null }}>
+              {visibleColumns.map(column => <div key={column} data-gateway-column={column} className={cn('group/column flex min-w-0 items-center gap-1', column === 'endpoint' ? 'justify-start pl-2.5' : 'justify-center')} onDragOver={event => { if (draggedColumn.current) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (draggedColumn.current) moveColumn(draggedColumn.current, column); draggedColumn.current = null }}>
                 <button type="button" draggable aria-label={`Reorder ${column === 'uptime' ? 'runtime age' : column} column`} title="Drag to reorder; use left/right arrow keys to move" onDragStart={() => { draggedColumn.current = column }} onDragEnd={() => { draggedColumn.current = null }} onKeyDown={event => {
                   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
                   event.preventDefault()

@@ -118,8 +118,11 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
   assert.ok(markup.indexOf('Neo4j Memory') < markup.indexOf('Zed Search'))
   assert.match(markup, /uvx neo4j-memory-mcp/)
   assert.match(markup, /Sort by server/)
+  assert.match(markup, /Sort by exposed[\s\S]*Sort by endpoint[\s\S]*Sort by uptime/)
   assert.match(markup, /Sort by uptime/)
   assert.match(markup, /aria-sort="none"[^>]*><span>Uptime<\/span>/)
+  assert.match(markup, /data-gateway-column="endpoint" class="[^"]*justify-start pl-2\.5/)
+  assert.match(markup, /w-full justify-self-start px-2\.5 text-left/)
 })
 
 test('gateway table presents a readable label while preserving the configured identifier', () => {

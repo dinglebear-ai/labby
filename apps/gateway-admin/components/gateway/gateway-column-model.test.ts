@@ -4,7 +4,9 @@ import { normalizeGatewayColumns, visibleGatewayColumns, moveGatewayColumn } fro
 
 test('persisted column order rejects duplicates unknown and invalid IDs and appends missing', () => {
   assert.deepEqual(normalizeGatewayColumns(['exposed', 'exposed', 1, null, 'unknown']), ['exposed', 'endpoint', 'uptime'])
-  for (const value of [null, {}, 'endpoint']) assert.deepEqual(normalizeGatewayColumns(value), ['endpoint', 'exposed', 'uptime'])
+  for (const value of [null, {}]) assert.deepEqual(normalizeGatewayColumns(value), ['exposed', 'endpoint', 'uptime'])
+  assert.deepEqual(normalizeGatewayColumns('endpoint'), ['exposed', 'endpoint', 'uptime'])
+  assert.deepEqual(normalizeGatewayColumns(['endpoint']), ['endpoint', 'exposed', 'uptime'])
 })
 test('responsive hiding never discards persisted column identities', () => {
   const order = normalizeGatewayColumns(['uptime', 'endpoint', 'exposed'])
