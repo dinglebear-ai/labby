@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      run_windows:
+        description: Run all Windows installer, workspace, and desktop checks
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '23 9 * * 1'
   push:
@@ -336,9 +342,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     needs: changes
-    # Retained for explicit Windows qualification without spending hosted
-    # Windows capacity on routine pull-request, push, or scheduled runs.
-    if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && (needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true') }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -353,15 +357,21 @@ jobs:
   macos-installer:
     name: macOS installer behavioral contracts
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: changes
-    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' || needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Run installer contracts on macOS
         run: scripts/tests/installers.sh
+      - name: Run macOS updater and recovery lifecycle tests
+        run: |
+          cargo test -p labby --all-features --locked self_update::tests
+          cargo test -p labby --all-features --locked --test gateway_auto_reconnect
 
   frontend-assets:
     name: Frontend assets
@@ -1231,9 +1241,9 @@ jobs:
     name: Test (Windows)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # Native Windows qualification is opt-in. WSL users exercise the Linux
-    # product path through the regular Linux jobs.
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.rust_test == 'true' }}
+    # Windows filesystem and process-containment behavior is platform-specific
+    # and runs only when explicitly selected from workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1525,8 +1535,9 @@ jobs:
     name: Labby desktop Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    # Advisory and explicitly dispatched only; excluded from ci-gate.
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.desktop == 'true' }}
+    # Advisory, excluded from ci-gate, and only runs when explicitly selected
+    # from workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && needs.changes.outputs.desktop == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.

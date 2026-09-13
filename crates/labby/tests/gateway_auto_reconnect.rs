@@ -1,6 +1,7 @@
 //! Background reconnect through an isolated compiled server and its public CLI.
 #![cfg(feature = "gateway")]
 #![allow(dead_code, clippy::panic)]
+#![cfg(feature = "proxy-testkit")]
 
 #[path = "support/evidence.rs"]
 mod evidence;
@@ -14,6 +15,12 @@ use std::sync::{
 };
 use std::time::Duration;
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+// These cases each launch a complete Labby gateway and bootstrap its access
+// owner. Running both bootstraps concurrently makes the process-level access
+// admission deliberately fail closed, so serialize only the two public
+// gateway lifecycle cases while leaving the support-unit tests parallel.
+static PUBLIC_GATEWAY_LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn cli(server: &live_labby::LiveLabbyGuard, args: &[&str]) -> Value {
     let home = server.root().join("client-home");
@@ -136,6 +143,7 @@ async fn call_recovered_tool(
 
 #[tokio::test]
 async fn public_gateway_recovers_without_requests_and_after_cleanup() {
+    let _lifecycle = PUBLIC_GATEWAY_LIFECYCLE.lock().await;
     let upstream = MockServer::start().await;
     let online = Arc::new(AtomicBool::new(true));
     let failed_requests = Arc::new(AtomicUsize::new(0));
@@ -222,6 +230,7 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
 #[cfg(all(unix, feature = "proxy-testkit"))]
 #[tokio::test]
 async fn public_gateway_replaces_dead_stdio_process_without_requests() {
+    let _lifecycle = PUBLIC_GATEWAY_LIFECYCLE.lock().await;
     let root = tempfile::tempdir().expect("owned stdio fixture root");
     let pid_file = root.path().join("fixture.pid");
     let command = env!("CARGO_BIN_EXE_stdio-mcp-fixture");

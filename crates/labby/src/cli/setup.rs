@@ -507,25 +507,6 @@ fn install_self() -> Result<PathBuf> {
     Ok(dest)
 }
 
-fn install_self_system() -> Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    let bin_dir = PathBuf::from("/usr/local/bin");
-    std::fs::create_dir_all(&bin_dir)?;
-    let dest = bin_dir.join("labby");
-    if dest == exe {
-        return Ok(dest);
-    }
-    let tmp = bin_dir.join(".labby.tmp");
-    std::fs::copy(&exe, &tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    }
-    std::fs::rename(&tmp, &dest)?;
-    Ok(dest)
-}
-
 pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
     if args.provision {
         return run_provision(args, format).await;
@@ -1355,7 +1336,12 @@ async fn run_host_service_command(args: HostServiceArgs, format: OutputFormat) -
         } => {
             require_host_service_confirmation("restart", yes)?;
             if install_self_flag {
-                install_self_system()?;
+                let source = std::env::current_exe()?;
+                run_host_service_logged("host_service.restart", format, || async move {
+                    crate::dispatch::setup::host_service::install_self_transaction(&source).await
+                })
+                .await?;
+                return Ok(());
             }
             run_host_service_logged(
                 "host_service.restart",
