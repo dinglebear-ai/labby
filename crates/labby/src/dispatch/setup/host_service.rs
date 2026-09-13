@@ -139,31 +139,46 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
 fn persist_previous_host_release(
     binary: Option<&[u8]>,
     state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+    service: &HostServiceSnapshot,
 ) -> Result<(), ToolError> {
-    persist_previous_host_release_at(Path::new(PREVIOUS_HOST_RELEASE_DIR), binary, state)
+    persist_previous_host_release_at(
+        Path::new(PREVIOUS_HOST_RELEASE_DIR),
+        binary,
+        state,
+        service.unit.as_deref(),
+        &service.dropins,
+    )
 }
 
 fn persist_previous_host_release_at(
     root: &Path,
     binary: Option<&[u8]>,
     state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+    unit: Option<&[u8]>,
+    dropins: &DirectorySnapshot,
 ) -> Result<(), ToolError> {
-    persist_previous_host_release_with_checkpoint(root, binary, state, || Ok(()))
+    persist_previous_host_release_with_checkpoint(root, binary, state, unit, dropins, || Ok(()))
 }
 
 fn persist_previous_host_release_with_checkpoint(
     root: &Path,
     binary: Option<&[u8]>,
     state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+    unit: Option<&[u8]>,
+    dropins: &DirectorySnapshot,
     after_binary_write: impl FnOnce() -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
-    let (Some(binary), Some((active, enabled))) = (binary, state) else {
+    let (Some(binary), Some((active, enabled)), Some(unit)) = (binary, state, unit) else {
         return Ok(());
     };
     let binary_path = root.join("labby");
     let manifest_path = root.join("manifest");
     let previous_binary = read_optional(&binary_path)?;
     let previous_manifest = read_optional(&manifest_path)?;
+    let unit_path = root.join("labby.service");
+    let previous_unit = read_optional(&unit_path)?;
+    let dropins_path = root.join("labby.service.d");
+    let previous_dropins = DirectorySnapshot::capture(&dropins_path)?;
     std::fs::create_dir_all(root).map_err(io_error)?;
     #[cfg(unix)]
     {
@@ -172,6 +187,8 @@ fn persist_previous_host_release_with_checkpoint(
     }
     let publication = (|| {
         restore_executable(&binary_path, Some(binary))?;
+        atomic_write(&unit_path, unit)?;
+        dropins.restore(&dropins_path)?;
         after_binary_write()?;
         atomic_write(
             &manifest_path,
@@ -191,6 +208,16 @@ fn persist_previous_host_release_with_checkpoint(
             &mut failures,
             "retained manifest",
             restore_optional(&manifest_path, previous_manifest.as_deref()),
+        );
+        collect_restore(
+            &mut failures,
+            "retained unit",
+            restore_optional(&unit_path, previous_unit.as_deref()),
+        );
+        collect_restore(
+            &mut failures,
+            "retained drop-ins",
+            previous_dropins.restore(&dropins_path),
         );
         if failures.is_empty() {
             return Err(primary);
@@ -217,21 +244,26 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
     )?;
     let destination = Path::new("/usr/local/bin/labby");
     let current = read_optional(destination)?;
-    let current_state = capture_systemd_state(SERVICE_NAME).await?;
+    let unit_path = unit_path();
+    let current_service = HostServiceSnapshot::capture(&unit_path).await?;
+    let prior_unit = std::fs::read(root.join("labby.service")).map_err(io_error)?;
+    let prior_dropins = DirectorySnapshot::capture(&root.join("labby.service.d"))?;
     restore_executable(destination, Some(&prior))?;
     let activation = async {
+        atomic_write(&unit_path, &prior_unit)?;
+        prior_dropins.restore(Path::new("/etc/systemd/system/labby.service.d"))?;
+        run_systemctl(&["daemon-reload"]).await?;
         restore_captured_unit_file_state(SERVICE_NAME, desired_enabled).await?;
         restore_captured_active_state(SERVICE_NAME, desired_active).await
     }
     .await;
     if let Err(primary) = activation {
         let binary_restore = restore_executable(destination, current.as_deref());
-        let enabled_restore = restore_captured_unit_file_state(SERVICE_NAME, current_state.1).await;
-        let active_restore = restore_captured_active_state(SERVICE_NAME, current_state.0).await;
+        let service_restore = current_service.rollback(&unit_path).await;
         return Err(ToolError::Sdk {
             sdk_kind: "host_service_release_rollback_failed".into(),
             message: format!(
-                "previous host release activation failed: {primary}; candidate restoration: binary={binary_restore:?}, enabled={enabled_restore:?}, active={active_restore:?}"
+                "previous host release activation failed: {primary}; candidate restoration: binary={binary_restore:?}, service={service_restore:?}"
             ),
         });
     }
@@ -240,7 +272,7 @@ pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, To
         ok: true,
         changed: true,
         message: "restored the retained previous host release".into(),
-        unit_path: unit_path(),
+        unit_path,
         stdout: String::new(),
         stderr: String::new(),
     })
@@ -280,7 +312,7 @@ pub(crate) async fn install_self_transaction(
         async {
             install_executable(source, destination)?;
             let outcome = install_commit(port, path.clone(), text, changed).await?;
-            persist_previous_host_release(prior_binary.as_deref(), prior_state)?;
+            persist_previous_host_release(prior_binary.as_deref(), prior_state, &snapshot)?;
             Ok(outcome)
         },
         || snapshot.rollback(&path),
@@ -1896,11 +1928,23 @@ mod tests {
                 std::fs::create_dir(&root).unwrap();
                 std::fs::write(root.join("labby"), b"older retained binary").unwrap();
                 std::fs::write(root.join("manifest"), old_manifest).unwrap();
+                std::fs::write(root.join("labby.service"), b"older retained unit").unwrap();
+                std::fs::create_dir(root.join("labby.service.d")).unwrap();
+                std::fs::write(
+                    root.join("labby.service.d/10-old.conf"),
+                    b"older retained drop-in",
+                )
+                .unwrap();
             }
             let error = persist_previous_host_release_with_checkpoint(
                 &root,
                 Some(b"newly retained binary"),
                 Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+                Some(b"newly retained unit"),
+                &DirectorySnapshot {
+                    existed: false,
+                    files: Vec::new(),
+                },
                 || {
                     assert_eq!(
                         std::fs::read(root.join("labby")).unwrap(),
@@ -1923,11 +1967,53 @@ mod tests {
                     b"older retained binary"
                 );
                 assert_eq!(std::fs::read(root.join("manifest")).unwrap(), old_manifest);
+                assert_eq!(
+                    std::fs::read(root.join("labby.service")).unwrap(),
+                    b"older retained unit"
+                );
+                assert_eq!(
+                    std::fs::read(root.join("labby.service.d/10-old.conf")).unwrap(),
+                    b"older retained drop-in"
+                );
             } else {
                 assert!(!root.join("labby").exists());
                 assert!(!root.join("manifest").exists());
+                assert!(!root.join("labby.service").exists());
+                assert!(!root.join("labby.service.d").exists());
             }
         }
+    }
+
+    #[test]
+    fn retained_host_release_includes_the_service_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("previous");
+        let dropins = DirectorySnapshot {
+            existed: true,
+            files: vec![(
+                "10-env.conf".into(),
+                b"[Service]\nEnvironment=OLD=1\n".to_vec(),
+            )],
+        };
+
+        persist_previous_host_release_at(
+            &root,
+            Some(b"prior binary"),
+            Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+            Some(b"prior unit"),
+            &dropins,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(root.join("labby")).unwrap(), b"prior binary");
+        assert_eq!(
+            std::fs::read(root.join("labby.service")).unwrap(),
+            b"prior unit"
+        );
+        assert_eq!(
+            std::fs::read(root.join("labby.service.d/10-env.conf")).unwrap(),
+            b"[Service]\nEnvironment=OLD=1\n"
+        );
     }
 
     #[tokio::test]
@@ -1953,6 +2039,11 @@ mod tests {
                     &retained,
                     Some(b"prior binary"),
                     Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+                    Some(b"prior service"),
+                    &DirectorySnapshot {
+                        existed: false,
+                        files: Vec::new(),
+                    },
                 )?;
                 panic!("retention must fail");
             },
