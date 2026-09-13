@@ -334,8 +334,13 @@ Scope: `codemode_read` accepts `lab:read`, `lab`, or `lab:admin`; `codemode` and
 
 Results are capped to the configured envelope budget (default 24 KB / 6000 tokens). \
 Oversized results are replaced with a truncation marker containing `truncated`, \
-`original_size`, `original_tokens`, `preview`, and `next_action`. Reduce data inside \
-the sandbox before returning — that is the point of Code Mode.
+`original_size`, `original_tokens`, `preview`, `next_action`, and `resource_read_example`. \
+Follow the returned recovery instructions: execution already happened, so do not \
+replay mutations to recover omitted output. For an embedded text resource, use \
+`resource_read_example` with the exact discovered URI and follow `next_offset` \
+until `done`, keeping the resource version stable between reads. Omitted bytes \
+are not automatically cached. When optional result shaping truncates output, \
+read `result_shaping.warning` for the same recovery guidance.
 
 Budget:
 - Time: a 30 s wall-clock timeout bounds the whole run. Split work across \
