@@ -530,6 +530,38 @@ impl HostServiceSnapshot {
 
     async fn rollback(&self, path: &Path) -> Result<(), ToolError> {
         let mut failures = Vec::new();
+        // Settle transaction-created units while their files are still present.
+        // An absent snapshot is not a disabled/inactive unit after daemon-reload.
+        for (unit, current_path, prior) in [
+            (
+                WATCHDOG_TIMER_NAME,
+                unit_dir().join(WATCHDOG_TIMER_NAME),
+                &self.watchdog_timer,
+            ),
+            (
+                WATCHDOG_SERVICE_NAME,
+                unit_dir().join(WATCHDOG_SERVICE_NAME),
+                &self.watchdog_service,
+            ),
+            (
+                WATCHDOG_ESCALATION_NAME,
+                unit_dir().join(WATCHDOG_ESCALATION_NAME),
+                &self.watchdog_escalation,
+            ),
+            (SERVICE_NAME, path.to_path_buf(), &self.unit),
+        ] {
+            if prior.is_none() {
+                collect_restore(
+                    &mut failures,
+                    unit,
+                    settle_created_unit_with(unit, &current_path, |args| async move {
+                        let args: Vec<_> = args.iter().map(String::as_str).collect();
+                        run_systemctl(&args).await.map(|output| output.stdout)
+                    })
+                    .await,
+                );
+            }
+        }
         collect_restore(
             &mut failures,
             "main unit",
@@ -588,28 +620,99 @@ impl HostServiceSnapshot {
             "daemon reload",
             run_systemctl(&["daemon-reload"]).await,
         );
-        collect_restore(
-            &mut failures,
-            "main enablement",
-            restore_captured_unit_file_state(SERVICE_NAME, self.enabled).await,
-        );
-        collect_restore(
-            &mut failures,
-            "main activity",
-            restore_captured_active_state(SERVICE_NAME, self.active).await,
-        );
-        collect_restore(
-            &mut failures,
-            "watchdog enablement",
-            restore_captured_unit_file_state(WATCHDOG_TIMER_NAME, self.watchdog_enabled).await,
-        );
-        collect_restore(
-            &mut failures,
-            "watchdog activity",
-            restore_captured_active_state(WATCHDOG_TIMER_NAME, self.watchdog_active).await,
-        );
+        if self.unit.is_some() {
+            collect_restore(
+                &mut failures,
+                "main enablement",
+                restore_captured_unit_file_state(SERVICE_NAME, self.enabled).await,
+            );
+            collect_restore(
+                &mut failures,
+                "main activity",
+                restore_captured_active_state(SERVICE_NAME, self.active).await,
+            );
+        }
+        if self.watchdog_timer.is_some() {
+            collect_restore(
+                &mut failures,
+                "watchdog enablement",
+                restore_captured_unit_file_state(WATCHDOG_TIMER_NAME, self.watchdog_enabled).await,
+            );
+            collect_restore(
+                &mut failures,
+                "watchdog activity",
+                restore_captured_active_state(WATCHDOG_TIMER_NAME, self.watchdog_active).await,
+            );
+        }
         rollback_result(failures)
     }
+}
+
+async fn settle_created_unit_with<F, Fut>(
+    unit: &str,
+    path: &Path,
+    mut run: F,
+) -> Result<(), ToolError>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<String, ToolError>>,
+{
+    // A newly written unit may not have been loaded yet; its file still needs
+    // cleanup. For an untouched unit, distinguish absence from a failed probe.
+    if !path.try_exists().map_err(io_error)? {
+        let state = run(vec![
+            "show".into(),
+            unit.into(),
+            "--property=LoadState".into(),
+            "--value".into(),
+            "--no-pager".into(),
+        ])
+        .await?;
+        if state.trim() == "not-found" {
+            return Ok(());
+        }
+        if state.trim().is_empty() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "host_service_state_capture_failed".into(),
+                message: format!("systemctl did not report LoadState for {unit}"),
+            });
+        }
+    }
+    let mut failures = Vec::new();
+    collect_restore(
+        &mut failures,
+        "stop",
+        run(vec!["stop".into(), unit.into()]).await.map(|_| ()),
+    );
+    // disable reloads systemd and can unload inactive units. Reset only a
+    // retained failed state, before disabling, rather than failing on an
+    // already inactive unit that systemd has garbage-collected.
+    let state = run(vec![
+        "show".into(),
+        unit.into(),
+        "--property=ActiveState".into(),
+        "--value".into(),
+        "--no-pager".into(),
+    ])
+    .await;
+    match state {
+        Ok(state) if state.trim() == "failed" => collect_restore(
+            &mut failures,
+            "reset-failed",
+            run(vec!["reset-failed".into(), unit.into()])
+                .await
+                .map(|_| ()),
+        ),
+        Ok(state) if state.trim() == "inactive" => {}
+        Ok(state) => failures.push(format!("unexpected activity after stop: {}", state.trim())),
+        Err(error) => failures.push(format!("activity probe: {error}")),
+    }
+    collect_restore(
+        &mut failures,
+        "disable",
+        run(vec!["disable".into(), unit.into()]).await.map(|_| ()),
+    );
+    rollback_result(failures)
 }
 
 async fn restore_captured_active_state(
@@ -1064,6 +1167,8 @@ Group=labby
 ExecStart=/usr/local/bin/labby serve
 WorkingDirectory=/home/labby
 Environment=HOME=/home/labby
+Environment=LABBY_HOME=/home/labby/.labby
+Environment=LABBY_LOG_DIR=/home/labby/.labby/logs
 Environment=XDG_CACHE_HOME=/home/labby/.cache
 Environment=XDG_CONFIG_HOME=/home/labby/.config
 Environment=XDG_DATA_HOME=/home/labby/.local/share
@@ -2264,6 +2369,161 @@ mod tests {
         assert!(message.contains("watchdog activity: exhausted"));
     }
 
+    #[tokio::test]
+    async fn absent_snapshot_skips_only_confirmed_missing_units() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(WATCHDOG_TIMER_NAME);
+        let mut calls = Vec::new();
+        settle_created_unit_with(WATCHDOG_TIMER_NAME, &path, |args| {
+            calls.push(args);
+            std::future::ready(Ok("not-found\n".into()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![vec![
+                "show",
+                "labby-watchdog.timer",
+                "--property=LoadState",
+                "--value",
+                "--no-pager",
+            ]]
+        );
+        for output in [
+            Ok(String::new()),
+            Err(io_error(std::io::Error::other("bus unavailable"))),
+        ] {
+            let mut result = Some(output);
+            let error = settle_created_unit_with(WATCHDOG_TIMER_NAME, &path, |_| {
+                std::future::ready(result.take().unwrap())
+            })
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("LoadState")
+                    || error.to_string().contains("bus unavailable")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_snapshot_settles_created_timer_and_first_install_main_before_removal() {
+        for unit in [WATCHDOG_TIMER_NAME, SERVICE_NAME] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join(unit);
+            std::fs::write(&path, "transaction-created unit").unwrap();
+            let mut calls = Vec::new();
+            let mut active = true;
+            let mut enabled = true;
+            settle_created_unit_with(unit, &path, |args| {
+                assert!(path.exists(), "settle the unit before removing its file");
+                match args[0].as_str() {
+                    "stop" => active = false,
+                    "disable" => enabled = false,
+                    "show" => assert!(!active),
+                    other => panic!("unexpected command: {other}"),
+                }
+                let output = if args[0] == "show" { "inactive\n" } else { "" };
+                calls.push(args);
+                std::future::ready(Ok(output.into()))
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                calls,
+                vec![
+                    vec!["stop", unit],
+                    vec![
+                        "show",
+                        unit,
+                        "--property=ActiveState",
+                        "--value",
+                        "--no-pager"
+                    ],
+                    vec!["disable", unit]
+                ]
+            );
+            assert!(!active && !enabled);
+            restore_optional(&path, None).unwrap();
+            assert!(!path.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_snapshot_keeps_real_stop_failures_and_attempts_other_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(SERVICE_NAME);
+        std::fs::write(&path, "transaction-created unit").unwrap();
+        let mut calls = Vec::new();
+        let error = settle_created_unit_with(SERVICE_NAME, &path, |args| {
+            let result = if args[0] == "stop" {
+                Err(io_error(std::io::Error::other("stop denied")))
+            } else if args[0] == "show" {
+                Ok("inactive\n".into())
+            } else {
+                Ok(String::new())
+            };
+            calls.push(args);
+            std::future::ready(result)
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("stop denied"));
+        assert_eq!(
+            calls,
+            vec![
+                vec!["stop", "labby.service"],
+                vec![
+                    "show",
+                    "labby.service",
+                    "--property=ActiveState",
+                    "--value",
+                    "--no-pager"
+                ],
+                vec!["disable", "labby.service"],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_snapshot_resets_failed_units_before_disable_and_preserves_errors() {
+        for failure in [None, Some("show"), Some("reset-failed"), Some("disable")] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join(SERVICE_NAME);
+            std::fs::write(&path, "transaction-created unit").unwrap();
+            let mut calls = Vec::new();
+            let result = settle_created_unit_with(SERVICE_NAME, &path, |args| {
+                let action = args[0].clone();
+                calls.push(action.clone());
+                std::future::ready(if failure == Some(action.as_str()) {
+                    Err(io_error(std::io::Error::other(format!("{action} denied"))))
+                } else if action == "show" {
+                    Ok("failed\n".into())
+                } else {
+                    Ok(String::new())
+                })
+            })
+            .await;
+            if let Some(action) = failure {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!("{action} denied"))
+                );
+            } else {
+                result.unwrap();
+            }
+            let expected = if failure == Some("show") {
+                vec!["stop", "show", "disable"]
+            } else {
+                vec!["stop", "show", "reset-failed", "disable"]
+            };
+            assert_eq!(calls, expected);
+        }
+    }
+
     #[test]
     fn unit_uses_hardened_system_binary_and_lab_env() {
         let unit = unit_text();
@@ -2280,6 +2540,38 @@ mod tests {
         assert!(unit.contains("EnvironmentFile=-/home/labby/.labby/.env"));
         assert!(unit.contains("WantedBy=multi-user.target"));
         assert!(!unit.contains("%h"));
+    }
+
+    #[test]
+    fn unit_keeps_rolling_logs_and_master_lock_inside_its_writable_state_directory() {
+        let unit = unit_text();
+        let log_dir = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=LABBY_LOG_DIR="))
+            .expect("hardened service must explicitly place its rolling logs");
+        assert_eq!(log_dir, "/home/labby/.labby/logs");
+        let writable = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ReadWritePaths="))
+            .expect("writable state directory");
+        assert_eq!(writable, "/home/labby/.labby");
+        assert!(Path::new(log_dir).starts_with(writable));
+        let labby_home = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=LABBY_HOME="))
+            .expect("hardened service must explicitly place its master lock");
+        assert_eq!(labby_home, "/home/labby/.labby");
+        assert!(
+            Path::new(labby_home)
+                .join(".local/state/labby")
+                .starts_with(writable)
+        );
+        assert!(unit.contains("Environment=HOME=/home/labby"));
+        assert!(unit.contains("Environment=XDG_CACHE_HOME=/home/labby/.cache"));
+        assert!(unit.contains("Environment=XDG_CONFIG_HOME=/home/labby/.config"));
+        assert!(unit.contains("Environment=XDG_DATA_HOME=/home/labby/.local/share"));
+        assert!(unit.contains("ProtectSystem=strict"));
+        assert!(unit.contains("ProtectHome=read-only"));
     }
 
     #[test]
