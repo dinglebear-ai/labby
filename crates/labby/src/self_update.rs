@@ -202,9 +202,12 @@ fn spawn_installer(
 }
 
 async fn install_release(script: &Path, tag: &str, directory: &Path, lock: fs::File) -> Result<()> {
+    run_installer(installer_command(script, tag, directory), lock).await
+}
+
+async fn run_installer(mut command: Command, lock: fs::File) -> Result<()> {
     use std::io::{Read, Seek};
     let mut stderr = tempfile::tempfile()?;
-    let mut command = installer_command(script, tag, directory);
     let mut process = InstallerProcess {
         child: spawn_installer(&mut command, &stderr, &lock)?,
         _lock: lock,
@@ -258,13 +261,10 @@ fn install_directory(binary: &Path) -> Result<&Path> {
 /// Check published releases and atomically install a newer verified host binary.
 pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
     require_macos()?;
-    let directory = install_directory(binary)?;
-    let lock = acquire_update_lock(directory)?;
-    let output = Command::new(binary).arg("--version").output()?;
-    if !output.status.success() {
-        bail!("Cannot read installed Labby version");
-    }
-    let current = version(std::str::from_utf8(&output.stdout)?)?;
+    automatic_with_catalog(binary, dry_run, fetch_releases()).await
+}
+
+async fn fetch_releases() -> Result<Vec<Release>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent("labby-auto-update")
@@ -284,7 +284,39 @@ pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
         }
         body.extend_from_slice(&chunk);
     }
-    let releases: Vec<Release> = serde_json::from_slice(&body)?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+async fn automatic_with_catalog(
+    binary: &Path,
+    dry_run: bool,
+    catalog: impl Future<Output = Result<Vec<Release>>>,
+) -> Result<Value> {
+    let directory = install_directory(binary)?;
+    let lock = acquire_update_lock(directory)?;
+    let journal = directory.join(".labby-install/activation-journal");
+    if journal.try_exists()? {
+        if dry_run {
+            return Ok(
+                json!({"installed": false, "dry_run": true, "recovery_required": true,
+                "reason": "Interrupted installation must be recovered before checking for updates"}),
+            );
+        }
+        // Recovery owns the transaction format. Run it before executing the
+        // published binary or polling the release catalog, including offline.
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("install.sh");
+        fs::write(&script, INSTALL_SCRIPT)?;
+        let mut command = installer_command(&script, "latest", directory);
+        command.env("LABBY_INSTALL_RECOVER_ONLY", "1");
+        run_installer(command, lock.try_clone()?).await?;
+    }
+    let output = Command::new(binary).arg("--version").output()?;
+    if !output.status.success() {
+        bail!("Cannot read installed Labby version");
+    }
+    let current = version(std::str::from_utf8(&output.stdout)?)?;
+    let releases = catalog.await?;
     let Some(tag) = select_release(&releases, current) else {
         return Ok(json!({"installed": false, "reason": "No newer stable Labby binary release"}));
     };
@@ -380,15 +412,21 @@ fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
 pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     require_macos()?;
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    let home = Path::new(&home);
+    schedule_for_paths(action, dry_run, Path::new(&home), &std::env::current_exe()?)
+}
+
+fn schedule_for_paths(action: &str, dry_run: bool, home: &Path, binary: &Path) -> Result<Value> {
     let plist = home
         .join("Library/LaunchAgents")
         .join(format!("{LABEL}.plist"));
-    let binary = std::env::current_exe()?;
     if dry_run {
         return Ok(json!({"action": action, "binary": binary, "plist": plist, "dry_run": true}));
     }
-    let _schedule_lock = acquire_schedule_lock(&plist)?;
+    let _schedule_lock = if action == "status" {
+        None
+    } else {
+        Some(acquire_schedule_lock(&plist)?)
+    };
     let uid = Command::new("id").arg("-u").output()?;
     if !uid.status.success() {
         bail!("Cannot determine launchd user ID");
@@ -432,7 +470,7 @@ pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
     // Prepare the replacement before changing the working schedule.
     let log_dir = home.join("Library/Logs/Labby");
     let content = launch_agent(
-        &binary,
+        binary,
         &log_dir.join("auto-update.log"),
         &std::env::var("PATH")?,
     )?;
@@ -511,6 +549,11 @@ fn replace_schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    mod feature;
+    #[cfg(unix)]
+    mod recovery;
 
     #[test]
     fn schedule_lock_child() {
