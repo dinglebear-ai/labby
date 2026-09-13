@@ -40,8 +40,11 @@ JSON Schema validation defaults to no HTTP/file resolution or TLS stack.
 
 `toolchain.toml` records exact external verifier identities and qualification
 status. Kani, Alloy, and TLC are enabled only after actual-tool positive and
-negative controls; their adapters authenticate the configured artifacts before
-execution. Apalache remains disabled with an immutable image pin because no
+negative controls. Alloy and TLC verify the configured jar hashes before execution.
+Kani enforces exact version output from an operator-trusted executable; it does
+not authenticate the driver or bundle by hash. Its recorded asset digest identifies
+the arm64 bundle used for historical qualification. Linux CI separately records
+the installed driver digest as provenance, without comparing it to that arm64 pin. Apalache remains disabled with an immutable image pin because no
 container runtime was available for qualification. A recorded version or pin
 is not evidence that a tool ran; T2/T3 retain separate execution artifacts.
 
@@ -120,6 +123,14 @@ The callable `verification-report.yml` can publish that retained Markdown as a
 PR comment only when a caller explicitly opts in with write permission; no
 caller enables it by default. It does not execute repository code, cannot publish
 for fork PRs, and bounds the comment input. Snapshot tests pin all four renderers.
+
+TLC performs exhaustive model checking of the registered module/configuration.
+Its adapter accepts only a positive `workers` bound and no seed; `depth` is
+rejected because TLC uses that option only for random simulation. A completed
+result is scoped to that specification's domain, with worker count and the
+enforced execution deadline recorded. It does not claim a universal product
+proof or an adapter-enforced state/depth cap. A nonterminating or oversized
+specification exhausts its deadline and returns `Incomplete`.
 
 ## Scenario Replay (M2)
 

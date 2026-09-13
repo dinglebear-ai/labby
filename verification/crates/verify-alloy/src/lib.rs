@@ -347,7 +347,8 @@ fn terminate_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{}", child.id())])
+            // A negative PGID must be an operand, not another signal option.
+            .args(["-KILL", "--", &format!("-{}", child.id())])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

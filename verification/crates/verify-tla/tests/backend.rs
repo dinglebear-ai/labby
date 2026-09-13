@@ -28,7 +28,7 @@ fn plan(timeout: u64) -> CheckPlan {
         invariant: InvariantId::try_from("LABBY-REQ-001".to_owned()).unwrap(),
         model: "browser".into(),
         handle: "safe".into(),
-        bounds: BTreeMap::from([("workers".into(), 1.into()), ("depth".into(), 10.into())]),
+        bounds: BTreeMap::from([("workers".into(), 1.into())]),
         seed: None,
         timeout_ms: NonZeroU64::new(timeout).unwrap(),
     }
@@ -77,7 +77,10 @@ fn bounded_success_and_violation_are_distinct() {
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) echo 'Error: Invariant SingleTerminal is violated.'; exit 12;; esac\n",
     );
     let report = backend.run(&plan(1000));
-    assert!(matches!(report.verdict, Verdict::Falsified { .. }));
+    assert!(
+        matches!(report.verdict, Verdict::Falsified { .. }),
+        "{report:?}"
+    );
     assert!(
         report.scenarios.is_empty(),
         "TLC trace is not projectable without a project parser"
@@ -151,10 +154,11 @@ fn timeout_reaps_descendants_and_rejects_unframed_violation_text() {
     let (_fixture, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-help*) echo 'TLC Version 2.19';; *) echo 'is violated'; exit 1;; esac\n",
     );
-    assert!(matches!(
-        backend.run(&plan(1000)).verdict,
-        Verdict::Error { .. }
-    ));
+    let report = backend.run(&plan(1000));
+    assert!(
+        matches!(report.verdict, Verdict::Error { .. }),
+        "{report:?}"
+    );
 }
 
 #[test]
@@ -182,4 +186,33 @@ fn duplicate_registration_preserves_the_original_harness() {
         backend.run(&plan(1000)).verdict,
         Verdict::Bounded { .. }
     ));
+}
+
+#[test]
+fn simulation_depth_is_rejected_before_probing() {
+    let (dir, backend) = fixture("#!/bin/sh\nexit 99\n");
+    // A nonexistent tool must not hide an invalid model-checking contract.
+    fs::remove_file(dir.path().join("java")).unwrap();
+    let mut request = plan(1000);
+    request.bounds.insert("depth".into(), 1.into());
+    let report = backend.run(&request);
+    assert!(
+        matches!(report.verdict, Verdict::Error { reason } if reason.contains("simulation-only"))
+    );
+    assert!(report.tool_version.is_none());
+}
+
+#[test]
+fn successful_scope_records_deadline_without_simulation_depth() {
+    let (_dir, backend) = fixture(
+        "#!/bin/sh\ncase \"$*\" in *-depth*) exit 99;; *-help*) echo 'TLC Version 2.19'; exit 1;; *) echo 'Model checking completed. No error has been found';; esac\n",
+    );
+    let report = backend.run(&plan(1000));
+    let Verdict::Bounded { bounds } = report.verdict else {
+        panic!("expected successful finite model result");
+    };
+    assert_eq!(bounds["scope"], "registered_module_and_config");
+    assert_eq!(bounds["timeout_ms"], 1000);
+    assert_eq!(bounds["workers"], 1);
+    assert!(!bounds.contains_key("depth"));
 }

@@ -6,12 +6,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+#[cfg(unix)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use verify_core::{
     Availability, Backend, BackendId, BackendReport, Bounds, Capabilities, CheckPlan, Kind, Verdict,
@@ -21,10 +26,13 @@ const BACKEND_ID: &str = "kani";
 const KANI_VERSION: &str = "0.67.0";
 const VERSION_OUTPUT_LIMIT: usize = 4 * 1024;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const READ_CHUNK_BYTES: usize = 4 * 1024;
 const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_UNWIND: u32 = 1_000_000;
+#[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+#[cfg(unix)]
 const TERMINATION_GRACE: Duration = Duration::from_millis(100);
 
 /// Metadata needed to invoke one project-owned proof harness.
@@ -407,16 +415,7 @@ struct ProcessOutput {
     output_limited: bool,
 }
 
-enum Stream {
-    Stdout,
-    Stderr,
-}
-
-enum ReadEvent {
-    Chunk(Stream, Vec<u8>),
-    Closed,
-}
-
+#[cfg(unix)]
 fn run_bounded<I, S>(
     executable: &Path,
     arguments: I,
@@ -447,72 +446,89 @@ where
             .map_err(|error| format!("construct Kani bundle PATH: {error}"))?;
         command.env("PATH", path);
     }
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    // Independent socket endpoints let the parent read without blocking while
+    // the verifier retains ordinary blocking output. No reader threads can be
+    // stranded by inherited descriptors after the process-group leader exits.
+    let (mut stdout, stdout_child) = UnixStream::pair().map_err(|error| error.to_string())?;
+    let (mut stderr, stderr_child) = UnixStream::pair().map_err(|error| error.to_string())?;
+    stdout
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    stderr
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
     command
         .args(arguments)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(OwnedFd::from(stdout_child)))
+        .stderr(Stdio::from(OwnedFd::from(stderr_child)));
     configure_process_group(&mut command);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stdout = child.stdout.take().ok_or("failed to capture Kani stdout")?;
-    let stderr = child.stderr.take().ok_or("failed to capture Kani stderr")?;
-    let (sender, receiver) = std::sync::mpsc::sync_channel(4);
-    let stdout_reader = spawn_reader(stdout, Stream::Stdout, sender.clone());
-    let stderr_reader = spawn_reader(stderr, Stream::Stderr, sender);
-
+    // Command retains configured output handles after spawn. Release the
+    // parent's copies so EOF reflects only handles held by child processes.
+    drop(command);
     let started = Instant::now();
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
-    let mut closed = 0_u8;
+    let mut stdout_closed = false;
+    let mut stderr_closed = false;
     let mut timed_out = false;
     let mut output_limited = false;
-    let status = loop {
-        drain_events(
-            &receiver,
+    let mut status = None;
+    let result = loop {
+        // Read at most one chunk per stream before checking time and output
+        // budgets; a continuously writing verifier cannot starve these checks.
+        if let Err(error) = read_chunk(
+            &mut stdout,
             &mut stdout_bytes,
-            &mut stderr_bytes,
-            &mut closed,
+            stderr_bytes.len(),
+            &mut stdout_closed,
             output_limit,
             &mut output_limited,
-        );
+        ) {
+            break Err(error);
+        }
+        if let Err(error) = read_chunk(
+            &mut stderr,
+            &mut stderr_bytes,
+            stdout_bytes.len(),
+            &mut stderr_closed,
+            output_limit,
+            &mut output_limited,
+        ) {
+            break Err(error);
+        }
         if output_limited || started.elapsed() >= timeout {
             timed_out = !output_limited;
-            terminate_process_group(&mut child);
-            break child.wait().map_err(|error| error.to_string())?;
+            break Ok(());
         }
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            cleanup_process_group(child.id());
-            break status;
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exited)) => {
+                    status = Some(exited);
+                    cleanup_process_group(child.id());
+                }
+                Ok(None) => {}
+                Err(error) => break Err(error.to_string()),
+            }
+        }
+        if status.is_some() && stdout_closed && stderr_closed {
+            break Ok(());
         }
         thread::sleep(POLL_INTERVAL);
     };
-
-    while closed < 2 {
-        match receiver.recv_timeout(POLL_INTERVAL) {
-            Ok(event) => apply_event(
-                event,
-                &mut stdout_bytes,
-                &mut stderr_bytes,
-                &mut closed,
-                output_limit,
-                &mut output_limited,
-            ),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if stdout_reader.is_finished() && stderr_reader.is_finished() {
-                    break;
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+    if status.is_none() {
+        terminate_process_group(&mut child);
+        status = Some(child.wait().map_err(|error| error.to_string())?);
     }
-    stdout_reader
-        .join()
-        .map_err(|_| "Kani stdout reader panicked".to_owned())??;
-    stderr_reader
-        .join()
-        .map_err(|_| "Kani stderr reader panicked".to_owned())??;
+    result?;
+    // Closing the receivers is bounded even when a detached descendant still
+    // holds output handles. Timeout reports no claim that such a child was reaped.
     Ok(ProcessOutput {
-        status,
+        status: status.expect("leader was reaped"),
         stdout: stdout_bytes,
         stderr: stderr_bytes,
         timed_out,
@@ -520,77 +536,43 @@ where
     })
 }
 
-fn spawn_reader(
-    mut reader: impl Read + Send + 'static,
-    stream: Stream,
-    sender: SyncSender<ReadEvent>,
-) -> thread::JoinHandle<Result<(), String>> {
-    thread::spawn(move || {
-        let mut buffer = vec![0_u8; READ_CHUNK_BYTES];
-        loop {
-            let read = reader
-                .read(&mut buffer)
-                .map_err(|error| error.to_string())?;
-            if read == 0 {
-                let _ = sender.send(ReadEvent::Closed);
-                return Ok(());
-            }
-            let chunk = buffer[..read].to_vec();
-            if sender
-                .send(ReadEvent::Chunk(
-                    match stream {
-                        Stream::Stdout => Stream::Stdout,
-                        Stream::Stderr => Stream::Stderr,
-                    },
-                    chunk,
-                ))
-                .is_err()
-            {
-                return Ok(());
-            }
-        }
-    })
-}
-
-fn drain_events(
-    receiver: &Receiver<ReadEvent>,
-    stdout: &mut Vec<u8>,
-    stderr: &mut Vec<u8>,
-    closed: &mut u8,
+#[cfg(unix)]
+fn read_chunk(
+    reader: &mut impl Read,
+    bytes: &mut Vec<u8>,
+    other_len: usize,
+    closed: &mut bool,
     limit: usize,
     output_limited: &mut bool,
-) {
-    loop {
-        match receiver.try_recv() {
-            Ok(event) => apply_event(event, stdout, stderr, closed, limit, output_limited),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
-        }
+) -> Result<(), String> {
+    if *closed {
+        return Ok(());
     }
+    let mut buffer = [0; READ_CHUNK_BYTES];
+    match reader.read(&mut buffer) {
+        Ok(0) => *closed = true,
+        Ok(count) => {
+            let remaining = limit.saturating_sub(bytes.len().saturating_add(other_len));
+            *output_limited |= count > remaining;
+            bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            ) => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(())
 }
 
-fn apply_event(
-    event: ReadEvent,
-    stdout: &mut Vec<u8>,
-    stderr: &mut Vec<u8>,
-    closed: &mut u8,
-    limit: usize,
-    output_limited: &mut bool,
-) {
-    match event {
-        ReadEvent::Closed => *closed = closed.saturating_add(1),
-        ReadEvent::Chunk(stream, chunk) => {
-            let used = stdout.len().saturating_add(stderr.len());
-            let remaining = limit.saturating_sub(used);
-            if chunk.len() > remaining {
-                *output_limited = true;
-            }
-            let retained = &chunk[..chunk.len().min(remaining)];
-            match stream {
-                Stream::Stdout => stdout.extend_from_slice(retained),
-                Stream::Stderr => stderr.extend_from_slice(retained),
-            }
-        }
-    }
+#[cfg(not(unix))]
+fn run_bounded<I, S>(_: &Path, _: I, _: Duration, _: usize) -> Result<ProcessOutput, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Err("bounded Kani subprocess execution requires Unix output descriptors".into())
 }
 
 fn display_status(status: ExitStatus) -> String {
@@ -605,9 +587,6 @@ fn configure_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     command.process_group(0);
 }
-
-#[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn terminate_process_group(child: &mut Child) {
@@ -632,19 +611,12 @@ fn cleanup_process_group(id: u32) {
 #[cfg(unix)]
 fn signal_process_group(signal: &str, group: &str) {
     let _ = Command::new("kill")
-        .args([signal, group])
+        // A negative PGID must be an operand, not another signal option.
+        .args([signal, "--", group])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 }
-
-#[cfg(not(unix))]
-fn terminate_process_group(child: &mut Child) {
-    let _ = child.kill();
-}
-
-#[cfg(not(unix))]
-fn cleanup_process_group(_id: u32) {}
 
 #[cfg(test)]
 mod tests {

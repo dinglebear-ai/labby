@@ -165,6 +165,28 @@ impl Backend for TlaBackend {
                 vec![],
             );
         };
+        // TLC's -depth controls random simulation, not model checking. Reject
+        // unsupported limits before probing so they cannot appear effective.
+        let Some(workers) = exact_positive(&plan.bounds, "workers") else {
+            return self.report(
+                plan,
+                Verdict::Error {
+                    reason: "TLC model checking requires exactly a positive workers bound".into(),
+                },
+                false,
+                vec![],
+            );
+        };
+        if plan.bounds.len() != 1 || plan.seed.is_some() {
+            return self.report(
+                plan,
+                Verdict::Error {
+                    reason: "TLC model checking accepts only workers and no seed; depth is a simulation-only option".into(),
+                },
+                false,
+                vec![],
+            );
+        }
         if let Err(reason) = self.probe(deadline.saturating_duration_since(Instant::now())) {
             if Instant::now() >= deadline {
                 return self.report(
@@ -179,44 +201,15 @@ impl Backend for TlaBackend {
             }
             return self.report(plan, Verdict::Skipped { reason }, false, vec![]);
         }
-        let Some(workers) = exact_positive(&plan.bounds, "workers") else {
-            return self.report(
-                plan,
-                Verdict::Error {
-                    reason: "bounds must contain exactly positive workers and depth".into(),
-                },
-                false,
-                vec![],
-            );
-        };
-        let Some(depth) = exact_positive(&plan.bounds, "depth") else {
-            return self.report(
-                plan,
-                Verdict::Error {
-                    reason: "bounds must contain exactly positive workers and depth".into(),
-                },
-                false,
-                vec![],
-            );
-        };
-        if plan.bounds.len() != 2 || plan.seed.is_some() {
-            return self.report(
-                plan,
-                Verdict::Error {
-                    reason: "TLC requires exactly workers/depth bounds and no seed".into(),
-                },
-                false,
-                vec![],
-            );
-        }
+        let mut execution_scope = plan.bounds.clone();
+        execution_scope.insert("timeout_ms".into(), plan.timeout_ms.get().into());
+        execution_scope.insert("scope".into(), "registered_module_and_config".into());
         let args = vec![
             "-cp".into(),
             self.jar.as_os_str().into(),
             "tlc2.TLC".into(),
             "-workers".into(),
             workers.to_string().into(),
-            "-depth".into(),
-            depth.to_string().into(),
             "-config".into(),
             harness.config.as_os_str().into(),
             harness.module.as_os_str().into(),
@@ -231,7 +224,7 @@ impl Backend for TlaBackend {
                 plan,
                 Verdict::Incomplete {
                     reason: "TLC deadline exceeded".into(),
-                    explored: plan.bounds.clone(),
+                    explored: execution_scope.clone(),
                 },
                 true,
                 vec![],
@@ -240,7 +233,7 @@ impl Backend for TlaBackend {
                 plan,
                 Verdict::Incomplete {
                     reason: format!("TLC output exceeded {MAX_OUTPUT} bytes"),
-                    explored: plan.bounds.clone(),
+                    explored: execution_scope.clone(),
                 },
                 true,
                 vec![],
@@ -271,7 +264,7 @@ impl Backend for TlaBackend {
                     self.report(
                         plan,
                         Verdict::Bounded {
-                            bounds: plan.bounds.clone(),
+                            bounds: execution_scope.clone(),
                         },
                         true,
                         vec![],
@@ -374,7 +367,8 @@ fn terminate_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{}", child.id())])
+            // A negative PGID must be an operand, not another signal option.
+            .args(["-KILL", "--", &format!("-{}", child.id())])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

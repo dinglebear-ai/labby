@@ -256,3 +256,53 @@ fn combined_output_limit_is_bounded_and_incomplete() {
     let report = backend(&script).run(&plan(500, 128));
     assert!(matches!(report.verdict, Verdict::Incomplete { .. }));
 }
+
+#[test]
+fn detached_descendant_output_handles_do_not_bypass_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("detached.py");
+    let pid_file = directory.path().join("detached.pid");
+    fs::write(
+        &fixture,
+        r#"import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    with open(sys.argv[1], "w") as marker:
+        marker.write(str(os.getpid()))
+    time.sleep(2)
+    os._exit(0)
+while not os.path.exists(sys.argv[1]):
+    time.sleep(0.005)
+print("VERIFICATION:- SUCCESSFUL", flush=True)
+"#,
+    )
+    .unwrap();
+    let script = executable(
+        &directory,
+        &format!(
+            "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\nexec python3 '{}' '{}'",
+            fixture.display(),
+            pid_file.display()
+        ),
+    );
+    let started = Instant::now();
+    let report = backend(&script).run(&plan(500, 4096));
+    let elapsed = started.elapsed();
+    // The adapter cannot reap an escaped descendant. The fixture owns cleanup.
+    if let Ok(pid) = fs::read_to_string(&pid_file) {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", pid.trim()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "deadline was bypassed: {elapsed:?}"
+    );
+    assert!(
+        matches!(report.verdict, Verdict::Incomplete { .. }),
+        "{report:?}"
+    );
+}
