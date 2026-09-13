@@ -114,9 +114,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/qualify-n-minus-one.sh", workflow)
         release = yaml.load(workflow, Loader=yaml.BaseLoader)
         matrix = release["jobs"]["upgrade-qualification"]["strategy"]["matrix"]["include"]
-        # macOS arm64 has never had a published release, so it has no N-1 to
-        # install yet. Add "macos" back here when the leg is restored.
-        self.assertEqual(["unix", "windows", "incus", "host-service"], [row["deployment"] for row in matrix])
+        self.assertEqual(["unix", "windows", "macos", "incus", "host-service"], [row["deployment"] for row in matrix])
         # Only host-service is advisory, until its v1.16 log-directory bug is fixed.
         self.assertEqual("${{ matrix.advisory == 'true' }}", release["jobs"]["upgrade-qualification"]["continue-on-error"])
         self.assertEqual({"host-service": "true"}, {row["deployment"]: row["advisory"] for row in matrix if "advisory" in row})
