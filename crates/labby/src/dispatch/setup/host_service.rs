@@ -704,22 +704,6 @@ async fn recover_interrupted_host_service_rollback() -> Result<(), ToolError> {
     retire_recovery_journal()
 }
 
-async fn recover_absent_retained_unit_with<F, Fut>(
-    path: &Path,
-    journal: &Path,
-    garbage: &Path,
-    mut run: F,
-) -> Result<(), ToolError>
-where
-    F: FnMut(Vec<String>) -> Fut,
-    Fut: Future<Output = Result<String, ToolError>>,
-{
-    settle_created_unit_with(SERVICE_NAME, path, &mut run).await?;
-    restore_optional(path, None)?;
-    run(vec!["daemon-reload".into()]).await?;
-    retire_recovery_journal_at(journal, garbage)
-}
-
 async fn prepare_host_service_mutation() -> Result<(), ToolError> {
     remove_directory_if_present(Path::new(HOST_SERVICE_RESTORED_GARBAGE))?;
     remove_directory_if_present(&recovery_journal_staging_path(Path::new(
@@ -3581,42 +3565,6 @@ mod tests {
             restore_optional(&path, None).unwrap();
             assert!(!path.exists());
         }
-    }
-
-    #[tokio::test]
-    async fn interrupted_first_install_settles_before_removal_reload_and_journal_retirement() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join(SERVICE_NAME);
-        let journal = root.path().join("journal");
-        let garbage = root.path().join("garbage");
-        std::fs::write(&path, "transaction-created unit").unwrap();
-        std::fs::create_dir(&journal).unwrap();
-        std::fs::write(journal.join("manifest"), "recovery").unwrap();
-        let mut calls = Vec::new();
-        let mut enabled = true;
-        recover_absent_retained_unit_with(&path, &journal, &garbage, |args| {
-            if args[0] != "daemon-reload" {
-                assert!(
-                    path.exists(),
-                    "systemd settlement must precede unit removal"
-                );
-            } else {
-                assert!(!path.exists(), "daemon reload must follow unit removal");
-                assert!(!enabled, "enablement links must be removed before reload");
-            }
-            if args[0] == "disable" {
-                enabled = false;
-            }
-            let output = if args[0] == "show" { "inactive\n" } else { "" };
-            calls.push(args);
-            std::future::ready(Ok(output.into()))
-        })
-        .await
-        .unwrap();
-        assert_eq!(calls.last().unwrap(), &vec!["daemon-reload"]);
-        assert!(!path.exists());
-        assert!(!journal.exists());
-        assert!(!garbage.exists());
     }
 
     #[tokio::test]
