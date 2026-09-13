@@ -73,13 +73,50 @@ test('Phoenix sends a real turn through the container-local service and renders 
     })
     await act(async () => input.form!.requestSubmit())
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
-    assert.deepEqual(actions, ['phoenix.status', 'phoenix.session.start', 'phoenix.turn.send'])
+    assert.deepEqual(actions, ['phoenix.status', 'phoenix.models.list', 'phoenix.session.start', 'phoenix.turn.send'])
     assert.match(panel.textContent ?? '', /The gateway is healthy/)
     assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 2)
     assert.ok(panel.querySelector('button[aria-label="Edit message"]'))
     assert.ok(panel.querySelector('button[aria-label="Regenerate"]'))
     assert.ok(panel.querySelector('button[aria-label="Copy answer"]'))
     assert.equal(document.querySelector('[aria-label="Close Phoenix panel"]')?.classList.contains('size-11'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('Phoenix exposes a Stop control that interrupts an in-flight turn', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  let resolveSend: ((response: Response) => void) | undefined
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { action: string }
+    actions.push(body.action)
+    if (body.action === 'phoenix.status') return new Response(JSON.stringify({ enabled: true, available: true, runtime: 'container_local', service: 'codex-app-server', sandbox: 'read-only', capabilities: { turn_lifecycle: ['start', 'completed', 'interrupt'] } }), { status: 200 })
+    if (body.action === 'phoenix.session.start') return new Response(JSON.stringify({ session_id: 'phoenix-stop', status: 'ready', messages: [] }), { status: 200 })
+    if (body.action === 'phoenix.turn.interrupt') return new Response(JSON.stringify({ session_id: 'phoenix-stop', status: 'ready', messages: [{ role: 'user', text: 'Keep working' }], events: [{ method: 'turn/interrupted', params: {} }] }), { status: 200 })
+    return new Promise<Response>((resolve) => { resolveSend = resolve })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]'); assert.ok(input)
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set?.call(input, 'Keep working')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'Keep working' }) as unknown as Event)
+    })
+    await act(async () => { input.form!.requestSubmit(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const stop = document.querySelector<HTMLButtonElement>('button[aria-label="Stop Phoenix"]'); assert.ok(stop)
+    await act(async () => { stop.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    assert.deepEqual(actions, ['phoenix.status', 'phoenix.models.list', 'phoenix.session.start', 'phoenix.turn.send', 'phoenix.turn.interrupt'])
+    resolveSend?.(new Response(JSON.stringify({ session_id: 'phoenix-stop', status: 'ready', messages: [{ role: 'user', text: 'Keep working' }, { role: 'assistant', text: 'Stopped.' }] }), { status: 200 }))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
   } finally {
     globalThis.fetch = originalFetch
     await view.unmount()

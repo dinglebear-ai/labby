@@ -1,21 +1,31 @@
 //! Container-local Codex App Server adapter for the Phoenix assistant.
 
-use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
+use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 
+use base64::Engine as _;
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
-    process::{ChildStdout, Command},
-    sync::Mutex,
-};
+use tokio::sync::Mutex;
 
-use crate::{config::PhoenixPreferences, dispatch::error::ToolError};
+use crate::{
+    config::PhoenixPreferences,
+    dispatch::{
+        error::ToolError,
+        phoenix_runtime::{AppServerRuntime, LaunchSpec},
+    },
+};
 
 const TURN_TIMEOUT: Duration = Duration::from_mins(5);
 const MAX_INPUT_BYTES: usize = 32 * 1024;
+const MAX_ATTACHMENTS: usize = 4;
+const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGES: usize = 100;
+const MAX_EVENTS: usize = 500;
+const MAX_SESSIONS: usize = 32;
+const APP_SERVER_PROTOCOL_SCHEMA: &str = "v2";
+const LOCAL_MCP_URL: &str = "http://127.0.0.1:8765/mcp";
+const LOCAL_MCP_TOKEN_ENV: &str = "LABBY_MCP_HTTP_TOKEN";
 
 const fn param(name: &'static str, required: bool) -> ParamSpec {
     ParamSpec {
@@ -43,10 +53,11 @@ const fn action(
 
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     action("phoenix.status", "Read Phoenix availability", &[]),
+    action("phoenix.models.list", "List selectable Codex models", &[]),
     action(
         "phoenix.session.start",
         "Start a caller-scoped Phoenix session",
-        &[],
+        &[param("model", false), param("effort", false)],
     ),
     action(
         "phoenix.session.read",
@@ -54,9 +65,23 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         &[param("session_id", true)],
     ),
     action(
+        "phoenix.session.close",
+        "Close a caller-scoped Phoenix session",
+        &[param("session_id", true)],
+    ),
+    action(
         "phoenix.turn.send",
         "Send a message to a caller-scoped Phoenix session",
-        &[param("session_id", true), param("input", true)],
+        &[
+            param("session_id", true),
+            param("input", true),
+            param("attachments", false),
+        ],
+    ),
+    action(
+        "phoenix.turn.interrupt",
+        "Interrupt the active turn in a caller-scoped Phoenix session",
+        &[param("session_id", true)],
     ),
 ];
 
@@ -66,17 +91,23 @@ struct Message {
     text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Session {
     owner: String,
-    thread_id: Option<String>,
+    thread_id: String,
+    turn_in_progress: bool,
+    active_turn_id: Option<String>,
+    runtime: AppServerRuntime,
     messages: Vec<Message>,
+    events: Vec<Value>,
+    model: Option<String>,
+    effort: Option<String>,
 }
 
 #[derive(Clone)]
 pub(crate) struct PhoenixRuntime {
     config: PhoenixPreferences,
-    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
 }
 
 impl PhoenixRuntime {
@@ -103,12 +134,26 @@ impl PhoenixRuntime {
         }
         match name {
             "phoenix.status" => Ok(self.status()),
-            "phoenix.session.start" => self.start(owner).await,
+            "phoenix.models.list" => self.models().await,
+            "phoenix.session.start" => {
+                self.start(
+                    owner,
+                    optional(&params, "model"),
+                    optional(&params, "effort"),
+                )
+                .await
+            }
             "phoenix.session.read" => self.read(owner, &required(&params, "session_id")?).await,
+            "phoenix.session.close" => self.close(owner, &required(&params, "session_id")?).await,
             "phoenix.turn.send" => {
                 let session_id = required(&params, "session_id")?;
                 let input = required(&params, "input")?;
-                self.send(owner, &session_id, &input).await
+                self.send(owner, &session_id, &input, params.get("attachments"))
+                    .await
+            }
+            "phoenix.turn.interrupt" => {
+                self.interrupt(owner, &required(&params, "session_id")?)
+                    .await
             }
             _ => Err(ToolError::UnknownAction {
                 message: format!("unknown action: `{name}`"),
@@ -147,56 +192,273 @@ impl PhoenixRuntime {
             "runtime": "container_local",
             "service": "codex-app-server",
             "sandbox": "read-only",
+            "protocol": {
+                "schema": APP_SERVER_PROTOCOL_SCHEMA,
+                "runtime_version": self.detected_version(),
+                "adapter": 2,
+                "experimental_api": true,
+            },
+            "mcp": {
+                "name": "labby",
+                "transport": "streamable_http",
+                "scope": "container_loopback",
+                "authentication": "bearer_token_env",
+                "configured": std::env::var_os(LOCAL_MCP_TOKEN_ENV).is_some(),
+            },
+            "capabilities": {
+                "session_lifecycle": ["start", "resume", "read", "close"],
+                "turn_lifecycle": ["start", "interrupt", "completed"],
+                "preserved_events": [
+                    "items", "agent_message", "reasoning", "plan", "diff",
+                    "token_usage", "mcp_status", "mcp_tool_progress", "warnings", "errors"
+                ],
+                "inputs": ["text", "image_data_url", "audio_data_url"],
+                "unsupported": [
+                    "steer", "review", "approvals", "elicitation",
+                    "realtime", "local_path_attachments", "account_mutation", "filesystem_mutation",
+                    "remote_control"
+                ],
+            },
         })
     }
 
-    async fn start(&self, owner: &str) -> Result<Value, ToolError> {
+    fn detected_version(&self) -> Option<String> {
+        let command = self.config.command.as_ref()?;
+        let output = std::process::Command::new(command)
+            .arg("--version")
+            .env_clear()
+            .env("PATH", command_path(command))
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let version = String::from_utf8(output.stdout).ok()?;
+        let version = version.trim();
+        (!version.is_empty() && version.len() <= 128).then(|| version.to_owned())
+    }
+
+    async fn models(&self) -> Result<Value, ToolError> {
         self.require_available()?;
+        let runtime = initialized_app_server(&self.config).await?;
+        let response = runtime
+            .request("model/list", json!({"limit":100,"includeHidden":false}))
+            .await?;
+        let models = response
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(protocol_error)?;
+        Ok(json!({"models": models}))
+    }
+
+    async fn start(
+        &self,
+        owner: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Value, ToolError> {
+        self.require_available()?;
+        if self.sessions.lock().await.len() >= MAX_SESSIONS {
+            return Err(unavailable(
+                "Phoenix has reached its 32-session limit; close a session before starting another",
+            ));
+        }
+        validate_selection("model", model.as_deref())?;
+        validate_selection("effort", effort.as_deref())?;
+        let runtime = initialized_app_server(&self.config).await?;
+        let workspace_root = self
+            .config
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| unavailable("Phoenix workspace is not configured"))?;
+        let mut params = json!({
+            "cwd": workspace_root,
+            "approvalPolicy": "never",
+            "sandbox": "read-only",
+            "serviceName": "labby-phoenix",
+            "threadSource": "appServer",
+            "developerInstructions": "You are Phoenix, Labby's concise operator assistant. You run only inside the Labby container. Treat the workspace as read-only, never request access to another machine or device, and explain any action that requires an operator.",
+        });
+        if let Some(model) = model.as_ref().or(self.config.model.as_ref()) {
+            params["model"] = Value::String(model.clone());
+        }
+        let started = runtime.request("thread/start", params).await?;
+        let thread_id = started
+            .pointer("/thread/id")
+            .and_then(Value::as_str)
+            .ok_or_else(protocol_error)?
+            .to_owned();
         let session_id = format!("phoenix-{}", uuid::Uuid::new_v4());
         self.sessions.lock().await.insert(
             session_id.clone(),
-            Session {
+            Arc::new(Mutex::new(Session {
                 owner: owner.to_owned(),
-                thread_id: None,
+                thread_id,
+                turn_in_progress: false,
+                active_turn_id: None,
+                runtime,
                 messages: Vec::new(),
-            },
+                events: Vec::new(),
+                model,
+                effort,
+            })),
         );
         Ok(json!({"session_id":session_id,"status":"ready","messages":[]}))
     }
 
     async fn read(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
-        let sessions = self.sessions.lock().await;
-        let session = authorized_session(&sessions, owner, session_id)?;
-        Ok(render_session(session_id, session))
+        let session = self.session(owner, session_id).await?;
+        let state = session.lock().await;
+        Ok(render_session(session_id, &state))
     }
 
-    async fn send(&self, owner: &str, session_id: &str, input: &str) -> Result<Value, ToolError> {
+    async fn close(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
+        let session = self.session(owner, session_id).await?;
+        let (runtime, thread_id) = {
+            let state = session.lock().await;
+            if state.turn_in_progress {
+                return Err(unavailable(
+                    "Phoenix cannot close a session with an active turn",
+                ));
+            }
+            (state.runtime.clone(), state.thread_id.clone())
+        };
+        runtime
+            .request("thread/close", json!({"threadId":thread_id}))
+            .await?;
+        self.sessions.lock().await.remove(session_id);
+        Ok(json!({"session_id":session_id,"status":"closed"}))
+    }
+
+    async fn send(
+        &self,
+        owner: &str,
+        session_id: &str,
+        input: &str,
+        attachments: Option<&Value>,
+    ) -> Result<Value, ToolError> {
         self.require_available()?;
         if input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
             return Err(invalid("input", "input must contain 1-32768 bytes"));
         }
-        let mut sessions = self.sessions.lock().await;
-        let session = authorized_session_mut(&mut sessions, owner, session_id)?;
+        let session = self.session(owner, session_id).await?;
+        let protocol_inputs = turn_inputs(input, attachments)?;
+        let (runtime, thread_id, model, effort) = {
+            let mut state = session.lock().await;
+            if state.turn_in_progress {
+                return Err(unavailable("Phoenix session already has an active turn"));
+            }
+            state.turn_in_progress = true;
+            state.messages.push(Message {
+                role: "user",
+                text: input.to_owned(),
+            });
+            (
+                state.runtime.clone(),
+                state.thread_id.clone(),
+                state.model.clone(),
+                state.effort.clone(),
+            )
+        };
+        let mut events = runtime.subscribe();
+        let started = runtime
+            .request("turn/start", {
+                let mut params = json!({
+                  "threadId":thread_id,
+                  "input":protocol_inputs
+                });
+                if let Some(model) = model {
+                    params["model"] = Value::String(model);
+                }
+                if let Some(effort) = effort {
+                    params["effort"] = Value::String(effort);
+                }
+                params
+            })
+            .await;
+        let started = match started {
+            Ok(started) => started,
+            Err(error) => {
+                session.lock().await.turn_in_progress = false;
+                return Err(error);
+            }
+        };
+        let turn_id = started
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(turn_id) = turn_id else {
+            session.lock().await.turn_in_progress = false;
+            return Err(protocol_error());
+        };
+        session.lock().await.active_turn_id = Some(turn_id.clone());
         let result = tokio::time::timeout(
             TURN_TIMEOUT,
-            run_codex_turn(&self.config, session.thread_id.as_deref(), input),
+            collect_turn(&mut events, &thread_id, &turn_id, &session),
         )
-        .await
-        .map_err(|_| unavailable("Phoenix turn exceeded the five minute runtime limit"))??;
-        session.thread_id = Some(result.thread_id);
-        session.messages.push(Message {
-            role: "user",
-            text: input.to_owned(),
-        });
-        session.messages.push(Message {
+        .await;
+        let result = match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                let mut state = session.lock().await;
+                state.turn_in_progress = false;
+                state.active_turn_id = None;
+                return Err(error);
+            }
+            Err(_) => {
+                drop(runtime.interrupt(&thread_id, &turn_id).await);
+                let mut state = session.lock().await;
+                state.turn_in_progress = false;
+                state.active_turn_id = None;
+                return Err(unavailable(
+                    "Phoenix turn exceeded the five minute runtime limit",
+                ));
+            }
+        };
+        let mut state = session.lock().await;
+        state.turn_in_progress = false;
+        state.active_turn_id = None;
+        state.messages.push(Message {
             role: "assistant",
             text: result.output,
         });
-        if session.messages.len() > MAX_MESSAGES {
-            let excess = session.messages.len() - MAX_MESSAGES;
-            session.messages.drain(..excess);
+        if state.messages.len() > MAX_MESSAGES {
+            let excess = state.messages.len() - MAX_MESSAGES;
+            state.messages.drain(..excess);
         }
-        Ok(render_session(session_id, session))
+        Ok(render_session(session_id, &state))
+    }
+
+    async fn interrupt(&self, owner: &str, session_id: &str) -> Result<Value, ToolError> {
+        let session = self.session(owner, session_id).await?;
+        let (runtime, thread_id, turn_id) = {
+            let state = session.lock().await;
+            let turn_id = state
+                .active_turn_id
+                .clone()
+                .ok_or_else(|| invalid("session_id", "Phoenix session has no active turn"))?;
+            (state.runtime.clone(), state.thread_id.clone(), turn_id)
+        };
+        runtime.interrupt(&thread_id, &turn_id).await?;
+        Ok(json!({"session_id":session_id,"status":"interrupting","turn_id":turn_id}))
+    }
+
+    async fn session(
+        &self,
+        owner: &str,
+        session_id: &str,
+    ) -> Result<Arc<Mutex<Session>>, ToolError> {
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(denied)?;
+        if session.lock().await.owner != owner {
+            return Err(denied());
+        }
+        Ok(session)
     }
 
     fn require_available(&self) -> Result<(), ToolError> {
@@ -216,28 +478,6 @@ impl Default for PhoenixRuntime {
     }
 }
 
-fn authorized_session<'a>(
-    sessions: &'a HashMap<String, Session>,
-    owner: &str,
-    session_id: &str,
-) -> Result<&'a Session, ToolError> {
-    sessions
-        .get(session_id)
-        .filter(|session| session.owner == owner)
-        .ok_or_else(denied)
-}
-
-fn authorized_session_mut<'a>(
-    sessions: &'a mut HashMap<String, Session>,
-    owner: &str,
-    session_id: &str,
-) -> Result<&'a mut Session, ToolError> {
-    sessions
-        .get_mut(session_id)
-        .filter(|session| session.owner == owner)
-        .ok_or_else(denied)
-}
-
 fn render_session(session_id: &str, session: &Session) -> Value {
     json!({
         "session_id": session_id,
@@ -246,19 +486,17 @@ fn render_session(session_id: &str, session: &Session) -> Value {
             "role": message.role,
             "text": message.text,
         })).collect::<Vec<_>>(),
+        "events": session.events,
+        "model": session.model,
+        "effort": session.effort,
     })
 }
 
 struct TurnResult {
-    thread_id: String,
     output: String,
 }
 
-async fn run_codex_turn(
-    config: &PhoenixPreferences,
-    existing_thread_id: Option<&str>,
-    input: &str,
-) -> Result<TurnResult, ToolError> {
+async fn launch_app_server(config: &PhoenixPreferences) -> Result<AppServerRuntime, ToolError> {
     let command = config
         .command
         .as_ref()
@@ -271,188 +509,216 @@ async fn run_codex_turn(
         .workspace_root
         .as_ref()
         .ok_or_else(|| unavailable("Phoenix workspace is not configured"))?;
-    let command_path = command.parent().map_or_else(
-        || "/usr/local/bin:/usr/bin:/bin".into(),
-        |directory| format!("{}:/usr/local/bin:/usr/bin:/bin", directory.display()),
-    );
-    let mut child = Command::new(command)
-        .args(["app-server", "--stdio"])
-        .env_clear()
-        .env("HOME", codex_home)
-        .env("CODEX_HOME", codex_home)
-        .env("PATH", command_path)
-        .env("LANG", "C.UTF-8")
-        .current_dir(workspace_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| unavailable("Container-local Codex App Server could not be started"))?;
-    let mut stdin = child.stdin.take().ok_or_else(protocol_error)?;
-    let stdout = child.stdout.take().ok_or_else(protocol_error)?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut env = vec![
+        (OsString::from("HOME"), codex_home.as_os_str().to_owned()),
+        (
+            OsString::from("CODEX_HOME"),
+            codex_home.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("PATH"),
+            OsString::from(command_path(command)),
+        ),
+        (OsString::from("LANG"), OsString::from("C.UTF-8")),
+    ];
+    if let Some(token) = std::env::var_os(LOCAL_MCP_TOKEN_ENV) {
+        env.push((OsString::from(LOCAL_MCP_TOKEN_ENV), token));
+    }
+    AppServerRuntime::launch(LaunchSpec {
+        command: command.clone(),
+        args: vec![
+            "app-server".into(),
+            "--stdio".into(),
+            "-c".into(),
+            format!("mcp_servers.labby.url=\\\"{LOCAL_MCP_URL}\\\"").into(),
+            "-c".into(),
+            format!("mcp_servers.labby.bearer_token_env_var=\\\"{LOCAL_MCP_TOKEN_ENV}\\\"").into(),
+        ],
+        env,
+        cwd: workspace_root.clone(),
+    })
+    .await
+}
 
-    write_message(&mut stdin, json!({
-        "method":"initialize","id":1,
-        "params":{"clientInfo":{"name":"labby_phoenix","title":"Labby Phoenix","version":env!("CARGO_PKG_VERSION")}}
+async fn initialized_app_server(
+    config: &PhoenixPreferences,
+) -> Result<AppServerRuntime, ToolError> {
+    let runtime = launch_app_server(config).await?;
+    runtime.request("initialize", json!({
+        "clientInfo":{"name":"labby_phoenix","title":"Labby Phoenix","version":env!("CARGO_PKG_VERSION")},
+        "capabilities":{"experimentalApi":true}
     })).await?;
-    response(&mut stdin, &mut lines, 1).await?;
-    write_message(&mut stdin, json!({"method":"initialized","params":{}})).await?;
+    runtime.notify("initialized", json!({})).await?;
+    Ok(runtime)
+}
 
-    let start_params = if let Some(thread_id) = existing_thread_id {
-        json!({
-            "threadId": thread_id,
-            "cwd": workspace_root,
-            "approvalPolicy": "never",
-            "sandbox": "read-only",
-        })
-    } else {
-        let mut params = json!({
-            "cwd": workspace_root,
-            "approvalPolicy": "never",
-            "sandbox": "read-only",
-            "serviceName": "labby-phoenix",
-            "threadSource": "appServer",
-            "developerInstructions": "You are Phoenix, Labby's concise operator assistant. You run only inside the Labby container. Treat the workspace as read-only, never request access to another machine or device, and explain any action that requires an operator.",
+fn optional(params: &Value, name: &str) -> Option<String> {
+    params.get(name).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn validate_selection(name: &str, value: Option<&str>) -> Result<(), ToolError> {
+    if value.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > 128
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+    }) {
+        return Err(invalid(
+            name,
+            &format!("{name} must be a valid advertised value"),
+        ));
+    }
+    Ok(())
+}
+
+fn turn_inputs(input: &str, attachments: Option<&Value>) -> Result<Vec<Value>, ToolError> {
+    let mut values = vec![json!({"type":"text","text":input,"text_elements":[]})];
+    let Some(attachments) = attachments else {
+        return Ok(values);
+    };
+    let attachments = attachments
+        .as_array()
+        .ok_or_else(|| invalid("attachments", "attachments must be an array"))?;
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(invalid("attachments", "at most 4 attachments are allowed"));
+    }
+    for attachment in attachments {
+        let kind = attachment
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("attachments", "attachment type is required"))?;
+        let url = attachment
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("attachments", "attachment data URL is required"))?;
+        let allowed = match kind {
+            "image" => [
+                "data:image/png;base64,",
+                "data:image/jpeg;base64,",
+                "data:image/webp;base64,",
+            ]
+            .iter()
+            .any(|prefix| url.starts_with(prefix)),
+            "audio" => [
+                "data:audio/mpeg;base64,",
+                "data:audio/wav;base64,",
+                "data:audio/mp4;base64,",
+                "data:audio/webm;base64,",
+            ]
+            .iter()
+            .any(|prefix| url.starts_with(prefix)),
+            _ => false,
+        };
+        let payload = url.split_once(',').map(|(_, payload)| payload);
+        let decoded = payload.and_then(|payload| {
+            base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .ok()
         });
-        if let Some(model) = &config.model {
-            params["model"] = Value::String(model.clone());
+        if !allowed
+            || decoded
+                .as_ref()
+                .is_none_or(|bytes| bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES)
+        {
+            return Err(invalid(
+                "attachments",
+                "attachments must be bounded PNG, JPEG, WebP, MP3, WAV, M4A, or WebM data URLs",
+            ));
         }
-        params
-    };
-    let method = if existing_thread_id.is_some() {
-        "thread/resume"
-    } else {
-        "thread/start"
-    };
-    write_message(
-        &mut stdin,
-        json!({"method":method,"id":2,"params":start_params}),
-    )
-    .await?;
-    let start = response(&mut stdin, &mut lines, 2).await?;
-    let thread_id = start
-        .pointer("/thread/id")
-        .and_then(Value::as_str)
-        .ok_or_else(protocol_error)?
-        .to_owned();
+        values.push(json!({"type":kind,"url":url}));
+    }
+    Ok(values)
+}
 
-    write_message(&mut stdin, json!({
-        "method":"turn/start","id":3,
-        "params":{"threadId":thread_id,"input":[{"type":"text","text":input,"text_elements":[]}]}
-    })).await?;
-
-    let mut turn_id = None;
+async fn collect_turn(
+    receiver: &mut tokio::sync::broadcast::Receiver<
+        crate::dispatch::phoenix_runtime::AppServerEvent,
+    >,
+    thread_id: &str,
+    turn_id: &str,
+    session: &Arc<Mutex<Session>>,
+) -> Result<TurnResult, ToolError> {
     let mut deltas = String::new();
     let mut completed_text = String::new();
-    let mut completed = None;
-    while completed.is_none() || turn_id.is_none() {
-        let value = next_message(&mut lines).await?;
-        if value.get("id").and_then(Value::as_u64) == Some(3) {
-            if let Some(error) = value.get("error") {
-                return Err(app_server_error(error));
+    loop {
+        let event = receiver
+            .recv()
+            .await
+            .map_err(|_| unavailable("Phoenix missed App Server turn events"))?
+            .0;
+        if event.pointer("/params/threadId").and_then(Value::as_str) != Some(thread_id) {
+            continue;
+        }
+        let event_turn_id = event
+            .pointer("/params/turnId")
+            .or_else(|| event.pointer("/params/turn/id"))
+            .and_then(Value::as_str);
+        if event_turn_id.is_some_and(|value| value != turn_id) {
+            continue;
+        }
+        if let Some(candidate) = sanitized_event(&event) {
+            let mut state = session.lock().await;
+            state.events.push(candidate);
+            if state.events.len() > MAX_EVENTS {
+                let excess = state.events.len() - MAX_EVENTS;
+                state.events.drain(..excess);
             }
-            turn_id = value
-                .pointer("/result/turn/id")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            continue;
         }
-        if value.get("id").is_some() && value.get("method").is_some() {
-            reject_server_request(&mut stdin, &value).await?;
-            continue;
-        }
-        match value.get("method").and_then(Value::as_str) {
+        match event.get("method").and_then(Value::as_str) {
             Some("item/agentMessage/delta") => {
-                if let Some(delta) = value.pointer("/params/delta").and_then(Value::as_str)
+                if let Some(delta) = event.pointer("/params/delta").and_then(Value::as_str)
                     && deltas.len().saturating_add(delta.len()) <= MAX_OUTPUT_BYTES
                 {
                     deltas.push_str(delta);
                 }
             }
             Some("item/completed") => {
-                if value.pointer("/params/item/type").and_then(Value::as_str)
+                if event.pointer("/params/item/type").and_then(Value::as_str)
                     == Some("agentMessage")
-                    && let Some(text) = value.pointer("/params/item/text").and_then(Value::as_str)
+                    && let Some(text) = event.pointer("/params/item/text").and_then(Value::as_str)
                 {
                     completed_text = bounded(text);
                 }
             }
-            Some("turn/completed") => completed = value.get("params").cloned(),
+            Some("turn/completed") => {
+                let status = event
+                    .pointer("/params/turn/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed");
+                if status != "completed" {
+                    let message = event
+                        .pointer("/params/turn/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex turn did not complete");
+                    return Err(unavailable(message));
+                }
+                let output = if completed_text.is_empty() {
+                    bounded(&deltas)
+                } else {
+                    completed_text
+                };
+                if output.is_empty() {
+                    return Err(protocol_error());
+                }
+                return Ok(TurnResult { output });
+            }
             _ => {}
         }
     }
-    let completed = completed.ok_or_else(protocol_error)?;
-    let status = completed
-        .pointer("/turn/status")
-        .and_then(Value::as_str)
-        .unwrap_or("failed");
-    if status != "completed" {
-        let message = completed
-            .pointer("/turn/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("Codex turn did not complete");
-        return Err(unavailable(message));
-    }
-    let output = if completed_text.is_empty() {
-        bounded(&deltas)
-    } else {
-        completed_text
+}
+
+fn sanitized_event(event: &Value) -> Option<Value> {
+    let Some(method) = event.get("method").and_then(Value::as_str) else {
+        return None;
     };
-    if output.is_empty() {
-        return Err(protocol_error());
-    }
-    drop(stdin);
-    drop(child.kill().await);
-    Ok(TurnResult { thread_id, output })
-}
-
-async fn write_message(
-    stdin: &mut tokio::process::ChildStdin,
-    value: Value,
-) -> Result<(), ToolError> {
-    let mut bytes = serde_json::to_vec(&value).map_err(|_| protocol_error())?;
-    bytes.push(b'\n');
-    stdin.write_all(&bytes).await.map_err(|_| protocol_error())
-}
-
-async fn next_message(lines: &mut Lines<BufReader<ChildStdout>>) -> Result<Value, ToolError> {
-    let line = lines
-        .next_line()
-        .await
-        .map_err(|_| protocol_error())?
-        .ok_or_else(protocol_error)?;
-    serde_json::from_str(&line).map_err(|_| protocol_error())
-}
-
-async fn response(
-    stdin: &mut tokio::process::ChildStdin,
-    lines: &mut Lines<BufReader<ChildStdout>>,
-    id: u64,
-) -> Result<Value, ToolError> {
-    loop {
-        let value = next_message(lines).await?;
-        if value.get("id").and_then(Value::as_u64) == Some(id) {
-            if let Some(error) = value.get("error") {
-                return Err(app_server_error(error));
-            }
-            return value.get("result").cloned().ok_or_else(protocol_error);
-        }
-        if value.get("id").is_some() && value.get("method").is_some() {
-            reject_server_request(stdin, &value).await?;
-        }
-    }
-}
-
-async fn reject_server_request(
-    stdin: &mut tokio::process::ChildStdin,
-    request: &Value,
-) -> Result<(), ToolError> {
-    write_message(stdin, json!({
-        "id": request.get("id"),
-        "error": {"code":-32601,"message":"Phoenix does not permit interactive App Server requests"}
-    })).await
+    let candidate = json!({
+        "method": method,
+        "params": event.get("params").cloned().unwrap_or(Value::Null),
+    });
+    serde_json::to_vec(&candidate)
+        .is_ok_and(|bytes| bytes.len() <= MAX_OUTPUT_BYTES)
+        .then_some(candidate)
 }
 
 fn required(params: &Value, name: &str) -> Result<String, ToolError> {
@@ -495,6 +761,14 @@ fn executable(path: &std::path::Path) -> bool {
     }
 }
 
+fn command_path(command: &std::path::Path) -> String {
+    let inherited =
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_owned());
+    command.parent().map_or(inherited.clone(), |directory| {
+        format!("{}:{inherited}", directory.display())
+    })
+}
+
 fn denied() -> ToolError {
     ToolError::Forbidden {
         message: "Phoenix session is not visible to this identity".into(),
@@ -521,14 +795,6 @@ fn protocol_error() -> ToolError {
         sdk_kind: "decode_error".into(),
         message: "Container-local Codex App Server returned an invalid protocol response".into(),
     }
-}
-
-fn app_server_error(error: &Value) -> ToolError {
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("Codex App Server request failed");
-    unavailable(message)
 }
 
 #[cfg(test)]
@@ -587,11 +853,15 @@ printf '%s\n' "$initialized" >> '{}'
 read thread
 printf '%s\n' "$thread" >> '{}'
 printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-container"}}}}}}'
-read turn
-printf '%s\n' "$turn" >> '{}'
-printf '%s\n' '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
-printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-container","turnId":"turn-1","itemId":"message-1","delta":"hello from container"}}}}'
-printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-container","turn":{{"id":"turn-1","status":"completed","items":[],"error":null}}}}}}'
+while read turn; do
+  printf '%s\n' "$turn" >> '{}'
+  id=$(printf '%s' "$turn" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  printf '{{"id":%s,"result":{{"turn":{{"id":"turn-1"}}}}}}\n' "$id"
+  printf '%s\n' '{{"method":"turn/plan/updated","params":{{"threadId":"thread-container","turnId":"turn-1","plan":[{{"step":"Inspect health","status":"completed"}}]}}}}'
+  printf '%s\n' '{{"method":"thread/tokenUsage/updated","params":{{"threadId":"thread-container","tokenUsage":{{"total":{{"totalTokens":42}}}}}}}}'
+  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-container","turnId":"turn-1","itemId":"message-1","delta":"hello from container"}}}}'
+  printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-container","turn":{{"id":"turn-1","status":"completed","items":[],"error":null}}}}}}'
+done
 "#,
             capture.display(),
             capture.display(),
@@ -621,6 +891,12 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-contain
             .await
             .unwrap();
         assert_eq!(completed["messages"][1]["text"], "hello from container");
+        assert_eq!(completed["events"][0]["method"], "turn/plan/updated");
+        assert_eq!(
+            completed["events"][1]["method"],
+            "thread/tokenUsage/updated"
+        );
+        assert_eq!(completed["events"][2]["method"], "item/agentMessage/delta");
         let resumed = runtime
             .dispatch(
                 "principal-a",
@@ -648,7 +924,56 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-contain
         assert!(requests.contains("\"sandbox\":\"read-only\""));
         assert!(requests.contains(&format!("\"cwd\":\"{}\"", root.path().display())));
         assert!(requests.contains("\"method\":\"turn/start\""));
-        assert!(requests.contains("\"method\":\"thread/resume\""));
         assert!(!requests.contains("excludeTurns"));
+        assert!(requests.contains("\"experimentalApi\":true"));
+    }
+
+    #[test]
+    fn turn_inputs_accept_only_bounded_inline_media() {
+        let inputs = turn_inputs(
+            "inspect",
+            Some(&json!([{
+                "type":"image", "url":"data:image/png;base64,aGVsbG8="
+            }])),
+        )
+        .unwrap();
+        assert_eq!(inputs[1]["type"], "image");
+        assert!(
+            turn_inputs(
+                "inspect",
+                Some(&json!([{
+                    "type":"image", "url":"file:///etc/passwd"
+                }]))
+            )
+            .is_err()
+        );
+        assert!(
+            turn_inputs(
+                "inspect",
+                Some(&json!([{
+                    "type":"audio", "url":"https://example.test/audio.mp3"
+                }]))
+            )
+            .is_err()
+        );
+        assert!(turn_inputs("inspect", Some(&json!([{}, {}, {}, {}, {}]))).is_err());
+    }
+
+    #[test]
+    fn status_reports_truthful_protocol_boundary_and_local_mcp_transport() {
+        let runtime = PhoenixRuntime::default();
+        let status = runtime.status();
+        assert_eq!(status["protocol"]["schema"], "v2");
+        assert_eq!(status["protocol"]["adapter"], 2);
+        assert_eq!(status["mcp"]["transport"], "streamable_http");
+        assert_eq!(status["mcp"]["scope"], "container_loopback");
+        assert_eq!(
+            status["capabilities"]["inputs"],
+            json!(["text", "image_data_url", "audio_data_url"])
+        );
+        assert_eq!(
+            status["capabilities"]["turn_lifecycle"],
+            json!(["start", "interrupt", "completed"])
+        );
     }
 }
