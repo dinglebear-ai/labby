@@ -201,17 +201,42 @@ fn persist_full_recovery_journal(
     binary: Option<&[u8]>,
     snapshot: &HostServiceSnapshot,
 ) -> Result<(), ToolError> {
+    persist_full_recovery_journal_with_checkpoint(root, binary, snapshot, |_| Ok(()))
+}
+
+fn recovery_journal_staging_path(root: &Path) -> PathBuf {
+    root.with_extension("staging")
+}
+
+fn persist_full_recovery_journal_with_checkpoint(
+    root: &Path,
+    binary: Option<&[u8]>,
+    snapshot: &HostServiceSnapshot,
+    mut checkpoint: impl FnMut(&str) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
+    if root.exists() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_recovery_journal_exists".into(),
+            message: format!(
+                "refusing to replace existing recovery journal `{}`",
+                root.display()
+            ),
+        });
+    }
+    let staging = recovery_journal_staging_path(root);
+    remove_directory_if_present(&staging)?;
     let state = snapshot
         .unit
         .as_ref()
         .map(|_| (snapshot.active, snapshot.enabled));
     persist_previous_host_release_at(
-        root,
+        &staging,
         binary,
         state,
         snapshot.unit.as_deref(),
         &snapshot.dropins,
     )?;
+    checkpoint("base-manifest")?;
     for (name, bytes) in [
         ("watchdog.service", snapshot.watchdog_service.as_deref()),
         ("watchdog.timer", snapshot.watchdog_timer.as_deref()),
@@ -221,7 +246,8 @@ fn persist_full_recovery_journal(
         ),
         ("service.env", snapshot.service_env.as_deref()),
     ] {
-        restore_optional(&root.join(name), bytes)?;
+        restore_optional(&staging.join(name), bytes)?;
+        checkpoint(name)?;
     }
     let backups = snapshot
         .env_backups
@@ -232,10 +258,11 @@ fn persist_full_recovery_journal(
         sdk_kind: "host_service_state_capture_failed".into(),
         message: format!("failed to encode service environment backups: {error}"),
     })?;
-    atomic_write(&root.join("env-backups.json"), &backups)?;
+    atomic_write(&staging.join("env-backups.json"), &backups)?;
+    checkpoint("env-backups.json")?;
     let optional_hash = |bytes: Option<&[u8]>| bytes.map(sha256).unwrap_or_default();
     atomic_write(
-        &root.join("full-manifest"),
+        &staging.join("full-manifest"),
         format!(
             "watchdog_service_present={}\nwatchdog_service_sha256={}\nwatchdog_timer_present={}\nwatchdog_timer_sha256={}\nwatchdog_escalation_present={}\nwatchdog_escalation_sha256={}\nwatchdog_active={}\nwatchdog_enabled={}\nservice_env_present={}\nservice_env_sha256={}\nenv_backups_sha256={}\n",
             snapshot.watchdog_service.is_some(), optional_hash(snapshot.watchdog_service.as_deref()),
@@ -244,7 +271,10 @@ fn persist_full_recovery_journal(
             snapshot.watchdog_active.as_str(), snapshot.watchdog_enabled.as_str(),
             snapshot.service_env.is_some(), optional_hash(snapshot.service_env.as_deref()), sha256(&backups),
         ).as_bytes(),
-    )
+    )?;
+    checkpoint("full-manifest")?;
+    sync_parent_directory(&staging).map_err(io_error)?;
+    rename_and_sync_parent(&staging, root)
 }
 
 fn persist_previous_host_release_with_checkpoint(
@@ -692,6 +722,9 @@ where
 
 async fn prepare_host_service_mutation() -> Result<(), ToolError> {
     remove_directory_if_present(Path::new(HOST_SERVICE_RESTORED_GARBAGE))?;
+    remove_directory_if_present(&recovery_journal_staging_path(Path::new(
+        HOST_SERVICE_ROLLBACK_JOURNAL,
+    )))?;
     recover_interrupted_host_service_rollback().await?;
     remove_directory_if_present(Path::new(HOST_SERVICE_PREVIOUS_GARBAGE))
 }
@@ -2654,6 +2687,105 @@ mod tests {
             assert!(recovery.service_env.is_none());
             assert!(recovery.env_backups.is_empty());
         }
+    }
+
+    #[test]
+    fn interrupted_full_journal_publication_never_exposes_a_partial_final() {
+        for fail_after in [
+            "base-manifest",
+            "watchdog.service",
+            "watchdog.timer",
+            "watchdog-escalation.service",
+            "service.env",
+            "env-backups.json",
+            "full-manifest",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let journal = dir.path().join("journal");
+            let snapshot = HostServiceSnapshot {
+                unit: None,
+                watchdog_service: Some(b"watchdog service".to_vec()),
+                watchdog_timer: Some(b"watchdog timer".to_vec()),
+                watchdog_escalation: Some(b"watchdog escalation".to_vec()),
+                active: CapturedActiveState::Inactive,
+                enabled: CapturedUnitFileState::Disabled,
+                watchdog_active: CapturedActiveState::Active,
+                watchdog_enabled: CapturedUnitFileState::Enabled,
+                service_env: Some(b"SECRET=preserved".to_vec()),
+                env_backups: BTreeSet::from([PathBuf::from("/home/labby/.labby/.env.bak.1")]),
+                dropins: DirectorySnapshot {
+                    existed: false,
+                    files: Vec::new(),
+                },
+            };
+            let error =
+                persist_full_recovery_journal_with_checkpoint(&journal, None, &snapshot, |label| {
+                    if label == fail_after {
+                        Err(io_error(std::io::Error::other(
+                            "injected publication interruption",
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected publication interruption")
+            );
+            assert!(!journal.exists());
+            assert!(recovery_journal_staging_path(&journal).exists());
+            remove_directory_if_present(&recovery_journal_staging_path(&journal)).unwrap();
+        }
+    }
+
+    #[test]
+    fn base_only_legacy_generation_is_not_treated_as_a_full_recovery_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        persist_previous_host_release_at(
+            &journal,
+            Some(b"legacy binary"),
+            None,
+            None,
+            &DirectorySnapshot {
+                existed: false,
+                files: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(load_previous_host_release_at(&journal).is_ok());
+        assert!(load_full_recovery_snapshot_at(&journal).is_err());
+    }
+
+    #[test]
+    fn full_journal_publication_preserves_an_existing_valid_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir(&journal).unwrap();
+        std::fs::write(journal.join("marker"), b"existing valid journal").unwrap();
+        let snapshot = HostServiceSnapshot {
+            unit: None,
+            watchdog_service: None,
+            watchdog_timer: None,
+            watchdog_escalation: None,
+            active: CapturedActiveState::Inactive,
+            enabled: CapturedUnitFileState::Disabled,
+            watchdog_active: CapturedActiveState::Inactive,
+            watchdog_enabled: CapturedUnitFileState::Disabled,
+            service_env: None,
+            env_backups: BTreeSet::new(),
+            dropins: DirectorySnapshot {
+                existed: false,
+                files: Vec::new(),
+            },
+        };
+        assert!(persist_full_recovery_journal(&journal, None, &snapshot).is_err());
+        assert_eq!(
+            std::fs::read(journal.join("marker")).unwrap(),
+            b"existing valid journal"
+        );
     }
 
     #[test]
