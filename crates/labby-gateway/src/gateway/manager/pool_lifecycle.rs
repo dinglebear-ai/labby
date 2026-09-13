@@ -143,6 +143,44 @@ pub struct GatewayReloadOutcome {
 }
 
 impl GatewayManager {
+    /// Reconcile cleanup against the current committed configuration, serialized
+    /// with reloads so an older cleanup cannot rearm a replaced pool or policy.
+    pub(crate) async fn reconcile_after_upstream_cleanup(
+        &self,
+        name: &str,
+        dry_run: bool,
+    ) -> Result<(), ToolError> {
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let manager = self.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            // Like configuration commits, cleanup owns its mutation lease until
+            // reconciliation and recovery rearming finish, even if its caller leaves.
+            let _mutation_guard = mutation_guard;
+            let cfg = manager.config.read().await.clone();
+            let current_pool = manager.runtime.current_pool().await;
+            if !dry_run && let Some(pool) = current_pool.as_deref() {
+                pool.reconcile_lazy_upstreams(
+                    &cfg.upstream,
+                    &HashSet::from([name]),
+                    "gateway.mcp.cleanup",
+                )
+                .await;
+                pool.ensure_recovery_tasks(&cfg.upstream).await;
+            }
+            manager
+                .reconcile_runtime_state(&cfg, current_pool.as_deref())
+                .await
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!(
+                "gateway cleanup reconciliation task failed: {error}"
+            ))
+        })?
+    }
+
     pub async fn reload_with_origin(
         &self,
         origin: Option<&str>,
