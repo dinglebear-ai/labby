@@ -456,6 +456,81 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("PSScriptAnalyzer", workflow)
         self.assertIn("Invoke-ScriptAnalyzer", workflow)
 
+class PromotionDurabilityTests(unittest.TestCase):
+    def npm_helper(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("npm_pointer", ROOT / "scripts/ci/promote-npm-pointer.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_npm_verification_tolerates_delay_and_transient_errors(self):
+        from unittest.mock import patch
+        helper = self.npm_helper()
+        with patch.object(helper, "latest", side_effect=["1.0.0", subprocess.CalledProcessError(1, "npm"), "1.1.0"]) as read, patch.object(helper.time, "sleep") as sleep:
+            helper.verify_latest("@example/pkg", "1.1.0")
+        self.assertEqual(3, read.call_count)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_npm_verification_exhausts_and_supports_removed_pointer(self):
+        from unittest.mock import patch
+        helper = self.npm_helper()
+        with patch.object(helper, "latest", return_value="1.0.0") as read, patch.object(helper.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                helper.verify_latest("@example/pkg", "1.1.0")
+        self.assertEqual(20, read.call_count)
+        self.assertEqual(19, sleep.call_count)
+        with patch.object(helper, "latest", side_effect=["1.1.0", None]), patch.object(helper.time, "sleep"):
+            helper.verify_latest("@example/pkg", None)
+
+    def test_incus_rollback_preserves_object_in_shallow_checkout(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "source"
+            remote = work / "remote.git"
+            checkout = work / "checkout"
+            def git(*args, cwd=source):
+                return subprocess.check_output(["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+            source.mkdir()
+            git("init", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.0.0"\n')
+            git("add", ".")
+            git("commit", "-m", "previous")
+            git("tag", "-a", "labby-incus-latest", "-m", "previous annotated target")
+            previous = git("rev-parse", "refs/tags/labby-incus-latest")
+            (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.1.0"\n')
+            git("commit", "-am", "candidate")
+            candidate = git("rev-parse", "HEAD")
+            git("clone", "--bare", str(source), str(remote))
+            git("clone", "--depth=1", "--no-tags", remote.as_uri(), str(checkout))
+            missing = subprocess.run(["git", "cat-file", "-e", previous], cwd=checkout, capture_output=True)
+            self.assertNotEqual(0, missing.returncode)
+            # Rewrite the script's authenticated URL only inside this disposable
+            # checkout. No production Git endpoint is contacted by this test.
+            git("config", f"url.{remote.as_uri()}.insteadOf", "https://x-access-token:test@github.com/example/repo.git", cwd=checkout)
+            assets = work / "assets"
+            assets.mkdir()
+            (assets / "image.tar.xz").write_bytes(b"qualified image")
+            manifest = {"subjects": [], "distributions": {"incus": {"asset": "image.tar.xz", "sha256": hashlib.sha256(b"qualified image").hexdigest()}}}
+            (assets / "release-manifest.json").write_text(json.dumps(manifest))
+            gh = work / "gh"
+            gh.write_text('#!/bin/sh\ncase "$*" in *--pattern*) exit 1;; esac\nif [ "$2" = download ]; then cp "$ASSETS/"* "$5/"; fi\n')
+            gh.chmod(0o755)
+            receipt = work / "receipt"
+            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG="v1.1.0", INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            command = ["bash", str(ROOT / "scripts/ci/promote-incus-pointer.sh")]
+            subprocess.run(command + ["promote"], cwd=checkout, env=env, check=True, capture_output=True)
+            self.assertEqual(candidate, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+            # Overwrite FETCH_HEAD; the durable local recovery ref must survive.
+            git("fetch", "origin", "main", cwd=checkout)
+            subprocess.run(command + ["rollback"], cwd=checkout, env=env, check=True, capture_output=True)
+            self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+            self.assertEqual("rolled-back", (receipt / "state").read_text().strip())
+
+
 class ReleaseHelperTests(unittest.TestCase):
     def text(self, relative: str) -> str:
         return (ROOT / relative).read_text()
