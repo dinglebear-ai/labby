@@ -11,6 +11,8 @@ use super::*;
 #[test]
 fn github_chat_cleanup_patterns_cover_uv_wrappers() {
     let upstream = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "github-chat".to_string(),
         url: None,
@@ -63,6 +65,8 @@ async fn cleanup_upstream_processes_invalidates_cached_upstream_catalog() {
     let runtime = GatewayRuntimeHandle::default();
     let manager = GatewayManager::new(path, runtime.clone());
     let upstream = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "cleanup-cached-catalog".to_string(),
         url: None,
@@ -126,6 +130,8 @@ async fn cleanup_upstream_processes_kills_matching_github_chat_runtime() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
