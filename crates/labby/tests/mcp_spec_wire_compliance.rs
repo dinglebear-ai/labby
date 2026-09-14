@@ -118,6 +118,14 @@ async fn rejected_request(
     let runner = TransportQualification::start(TransportKind::StreamableHttp, "wire-oracle-canary")
         .await
         .expect("real Labby MCP process");
+    let tools = runner
+        .discover_tools()
+        .await
+        .expect("forge upstream readiness");
+    assert!(
+        tools.contains_key("forge.safe"),
+        "ready forge upstream did not advertise forge.safe"
+    );
     runner
         .call_raw("forge.safe", json!({}))
         .await

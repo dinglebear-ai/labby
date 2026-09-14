@@ -281,6 +281,14 @@ async fn q4_stateless_http_cancellation_reaches_admitted_upstream() {
     let runner = TransportQualification::start(TransportKind::StreamableHttp, "q4-cancel-canary")
         .await
         .expect("real Labby MCP process");
+    let tools = runner
+        .discover_tools()
+        .await
+        .expect("forge upstream readiness");
+    assert!(
+        tools.contains_key("forge.safe"),
+        "ready forge upstream did not advertise forge.safe"
+    );
     runner
         .call_raw("forge.safe", serde_json::json!({}))
         .await
