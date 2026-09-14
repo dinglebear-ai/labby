@@ -150,6 +150,7 @@ async fn run_emulators(
 }
 
 #[tokio::test]
+#[ignore = "requires the pinned Playwright browser installed by the live E2E job"]
 async fn q4_real_resources_render_in_distinct_openai_and_anthropic_emulators() {
     let runner =
         TransportQualification::start(TransportKind::StreamableHttp, "q4-mcp-app-secret-canary")

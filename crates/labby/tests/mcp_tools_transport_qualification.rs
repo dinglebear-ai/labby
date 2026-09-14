@@ -35,7 +35,7 @@ fn qualify_transport(
         let transport = harness.kind();
 
         harness
-            .assert_exact_server_identity("labby", "1.16.1", "2026-07-28")
+            .assert_exact_server_identity("labby", env!("CARGO_PKG_VERSION"), "2026-07-28")
             .unwrap_or_else(|error| panic!("{transport:?} identity: {error}"));
 
         let gateway_call = harness

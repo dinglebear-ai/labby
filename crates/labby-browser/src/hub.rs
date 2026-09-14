@@ -1388,7 +1388,10 @@ mod tests {
             )
             .await;
             let pairing = if approve_replacement {
-                let signing = SigningKey::from_bytes(&[8; 32]);
+                // A replacement is another pairing for the same browser
+                // identity. Using a different key creates an independent
+                // browser and therefore must not disconnect this generation.
+                let signing = SigningKey::from_bytes(&[9; 32]);
                 let public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(signing.verifying_key().as_bytes());
                 Some(

@@ -382,6 +382,10 @@ fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
     assert!(script.contains("live-identity-protected-restart"));
     assert!(script.contains("live-http-observability"));
     assert!(script.contains("live-http-ipv6"));
+    assert!(script.contains("mcp-app-host) PLAYWRIGHT_BROWSERS_PATH="));
+    assert!(script.contains(
+        "--test mcp_apps_host_qualification --locked -- q4_real_resources_render_in_distinct_openai_and_anthropic_emulators --exact --ignored --test-threads=1"
+    ));
     assert!(script.contains("residual-audit.json"));
     assert!(!script.contains("\"signature\""));
     assert!(script.contains("child_root=\"$run_root/repeats/seed-$repeat_seed\""));
