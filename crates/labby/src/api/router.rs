@@ -854,7 +854,19 @@ pub(crate) fn build_router_with_external_auth(
         }
     }
     let static_token = bearer_token.map(Arc::<str>::from);
+    let static_browser_cookie_secure = state
+        .auth_config
+        .as_ref()
+        .and_then(|config| config.public_url.as_ref())
+        .is_some_and(|url| url.scheme() == "https");
     state = state.with_bearer_token(static_token.clone());
+    if static_token.is_some() {
+        state = state.with_static_browser_session_state(
+            labby_auth::static_session::StaticBrowserSessionState::new(
+                static_browser_cookie_secure,
+            ),
+        );
+    }
     let auth_state = auth_state.map(Arc::new);
     let credential_auth_configured = static_token.is_some() || auth_state.is_some();
     let protected_route_auth_configured = credential_auth_configured || external_auth_configured;
@@ -917,7 +929,9 @@ pub(crate) fn build_router_with_external_auth(
                 .into_response()
             })
             .with_allow_session_cookie(allow_session_cookie);
-        layer = layer.with_project_session_state(state.project_session_state.clone());
+        layer = layer
+            .with_project_session_state(state.project_session_state.clone())
+            .with_static_browser_session_state(state.static_browser_session_state.clone());
         if let Some(adapter) = state.access_credential_adapter.clone() {
             layer = layer
                 .with_product_credential_verifier(adapter.clone())
@@ -1043,6 +1057,16 @@ pub(crate) fn build_router_with_external_auth(
                     RouteAuth::BrowserSession,
                 ),
                 get(crate::api::browser_session::auth_session),
+            )
+            .route(
+                RouteDescriptor::new(
+                    "POST",
+                    "/auth/bearer-session",
+                    "auth_bearer_session",
+                    "oauth",
+                    RouteAuth::Public,
+                ),
+                post(crate::api::browser_session::auth_bearer_session),
             )
             .route(
                 RouteDescriptor::new(

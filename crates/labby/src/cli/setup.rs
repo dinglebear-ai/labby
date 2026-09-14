@@ -1,7 +1,8 @@
-//! `labby setup` — primary Incus bootstrap entry point.
+//! `labby setup` — role-aware Labby onboarding and deployment.
 //!
-//! Bare `labby setup` converges the supported Incus Labby gateway container.
-//! The web configuration flow remains available as `labby setup wizard`.
+//! Bare `labby setup` interactively configures a server or client, with native
+//! and Incus server backends where supported. The legacy web configuration flow
+//! remains available as `labby setup wizard`.
 //!
 //! The wizard is a thin CLI shim over the `setup` dispatch service. It detects
 //! first-run via `setup.state`, then prints either:
@@ -29,6 +30,8 @@ use serde_json::{Value, json};
 use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
+mod onboarding;
+
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
 
 #[derive(Debug, Args)]
@@ -48,6 +51,46 @@ pub struct SetupArgs {
     /// Skip runtime dependency installation and only converge user/service state.
     #[arg(long)]
     pub skip_deps: bool,
+
+    /// Configure this machine as a Labby server or as a client of another server.
+    #[arg(long, value_enum)]
+    pub role: Option<SetupRoleArg>,
+
+    /// Server deployment backend. Native is the fastest path; Incus is isolated.
+    #[arg(long, value_enum, requires = "role")]
+    pub deployment: Option<SetupDeploymentArg>,
+
+    /// Server listen address. Defaults to 127.0.0.1.
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Server listen or published port. Defaults to 8765.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Explicit Labby server URL for client mode.
+    #[arg(long)]
+    pub server_url: Option<String>,
+
+    /// Public browser/OAuth URL for the server.
+    #[arg(long)]
+    pub public_url: Option<String>,
+
+    /// Authentication provider to configure during setup. Bearer remains available as break-glass auth.
+    #[arg(long, value_enum)]
+    pub oauth: Option<SetupOauthArg>,
+
+    /// Install the Labby desktop app when a published package is available for this platform.
+    #[arg(long, conflicts_with = "no_desktop")]
+    pub desktop: bool,
+
+    /// Do not install the Labby desktop app.
+    #[arg(long, conflicts_with = "desktop")]
+    pub no_desktop: bool,
+
+    /// Internal setup-plan handoff used for privilege elevation.
+    #[arg(long, hide = true)]
+    pub apply_plan: Option<PathBuf>,
 
     /// Setup UI mode for `labby setup wizard`.
     #[arg(long, value_enum, default_value_t = SetupModeArg::Full, hide = true)]
@@ -69,6 +112,28 @@ pub struct SetupArgs {
 
     #[command(subcommand)]
     pub command: Option<SetupCommand>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupRoleArg {
+    Server,
+    Client,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupDeploymentArg {
+    Native,
+    Incus,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupOauthArg {
+    None,
+    Google,
+    Authelia,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -507,17 +572,19 @@ fn install_self() -> Result<PathBuf> {
     Ok(dest)
 }
 
-pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+pub async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+    if let Some(plan_path) = args.apply_plan.take() {
+        return onboarding::apply_plan_file(&plan_path, format).await;
+    }
     if args.provision {
         return run_provision(args, format).await;
     }
-    if let Some(command) = args.command {
+    if let Some(command) = args.command.take() {
         return run_command(command, format).await;
     }
     if setup_skip_requested()
         || args.smoke
         || args.no_setup
-        || args.no_browser
         || !matches!(args.mode, SetupModeArg::Full)
     {
         return run_wizard(
@@ -535,13 +602,7 @@ pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
         anyhow::bail!("--skip-deps is only valid with --provision");
     }
 
-    let incus_args = crate::cli::incus::IncusSetupArgs {
-        dry_run: args.dry_run,
-        yes: args.yes,
-        ..crate::cli::incus::IncusSetupArgs::default()
-    };
-    crate::cli::incus::run_setup(incus_args, format).await?;
-    Ok(ExitCode::SUCCESS)
+    onboarding::run(args, format).await
 }
 
 async fn run_wizard(args: WizardArgs, format: OutputFormat) -> Result<ExitCode> {

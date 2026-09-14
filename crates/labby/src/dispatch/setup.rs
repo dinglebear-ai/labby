@@ -32,9 +32,13 @@ pub use access_bootstrap::{
     cleanup_prepare, complete_prepare, consume_prepare, inspect_prepare, prepare_access_bootstrap,
     recover_prepare, revoke_prepare, status_prepare,
 };
-pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
+pub(crate) use bootstrap::bootstrap_at;
+pub use bootstrap::{
+    BootstrapOutcome, bootstrap, bootstrap_action, ensure_oauth_encryption_key_at, should_bootstrap,
+};
 pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
 pub use dispatch::dispatch;
+pub use token::generate_mcp_token;
 pub use types::{
     AccessBootstrapManifest, AccessBootstrapPrepare, AccessBootstrapPrepareOutcome, CommitOutcome,
     DraftEntry, PrepareJournal, PrepareJournalState, SECRET_SENTINEL, SetupClient, SetupSnapshot,

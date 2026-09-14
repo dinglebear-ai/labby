@@ -35,10 +35,14 @@ fn no_store_json(body: serde_json::Value) -> Response {
         .into_response()
 }
 
-fn unauthenticated_session_response(login_available: bool) -> Response {
+fn unauthenticated_session_response(
+    login_available: bool,
+    bearer_login_available: bool,
+) -> Response {
     no_store_json(serde_json::json!({
         "authenticated": false,
         "login_available": login_available,
+        "bearer_login_available": bearer_login_available,
     }))
 }
 
@@ -58,6 +62,15 @@ fn actor_key_for_session(
         .as_deref()
         .and_then(|deriver| deriver.derive_subject(&session.subject))
         .map(crate::observability::activity::ActorKey::into_arc)
+}
+
+fn static_browser_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<labby_auth::types::BrowserSessionRow> {
+    let session_state = state.static_browser_session_state.as_ref()?;
+    let session_id = labby_auth::session::read_cookie(headers, session_state.cookie_name())?;
+    session_state.find(&session_id)
 }
 
 async fn load_browser_session(
@@ -554,6 +567,127 @@ fn finish_session_get(
     }
 }
 
+fn bearer_exchange_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+    if state
+        .auth_config
+        .as_ref()
+        .and_then(|config| config.public_url.as_ref())
+        .is_some_and(|url| url.scheme() == "https")
+    {
+        return true;
+    }
+    let Some(authority) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Ok(url) = url::Url::parse(&format!("http://{authority}")) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Ipv4(value)) => value.is_loopback(),
+        Some(url::Host::Ipv6(value)) => value.is_loopback(),
+        Some(url::Host::Domain(value)) => value.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
+
+fn bearer_exchange_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [(header::CACHE_CONTROL, "private, no-store")],
+        Json(serde_json::json!({ "ok": false, "message": message })),
+    )
+        .into_response()
+}
+
+pub async fn auth_bearer_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let start = Instant::now();
+    let request_id = request_id(&headers).map(ToOwned::to_owned);
+    log_auth_dispatch_start("session.bearer_exchange", request_id.as_deref());
+
+    if !bearer_exchange_allowed(&state, &headers) {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("secure_transport_required"),
+            None,
+        );
+        return bearer_exchange_error(
+            StatusCode::BAD_REQUEST,
+            "bearer browser sign-in requires HTTPS or a loopback origin",
+        );
+    }
+    let Some(expected) = state.bearer_token.as_ref() else {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("not_configured"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    };
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(labby_auth::parse_bearer_token)
+    else {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("missing_credential"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    };
+    if !labby_auth::tokens_equal(&token, expected.as_ref()) {
+        log_auth_dispatch(
+            "session.bearer_exchange",
+            request_id.as_deref(),
+            start,
+            Some("invalid_credential"),
+            None,
+        );
+        return bearer_exchange_error(StatusCode::UNAUTHORIZED, "invalid bearer credential");
+    }
+    let Some(session_state) = state.static_browser_session_state.as_ref() else {
+        return bearer_exchange_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bearer browser sessions are unavailable",
+        );
+    };
+    let session = match session_state.create() {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(error = %error, "failed to create static bearer browser session");
+            return bearer_exchange_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to create browser session",
+            );
+        }
+    };
+    let mut response = no_store_json(serde_json::json!({ "ok": true }));
+    labby_auth::session::append_set_cookie(
+        &mut response,
+        &session_state.set_cookie(&session.session_id),
+    );
+    log_auth_dispatch(
+        "session.bearer_exchange",
+        request_id.as_deref(),
+        start,
+        None,
+        None,
+    );
+    response
+}
+
 pub async fn auth_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -609,6 +743,35 @@ pub async fn auth_session(
         Err(error) => {
             return finish_session_get(request_id.as_deref(), start, None, Err(error));
         }
+    }
+
+    if let Some(session) = static_browser_session(&state, &headers) {
+        let outcome = match labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        ) {
+            Ok(identity) => {
+                resolve_session_authority(&state, identity, true)
+                    .await
+                    .map(|authority| {
+                        authenticated_session_body(
+                            login_available,
+                            serde_json::json!({
+                                "sub": "static-bearer",
+                                "email": serde_json::Value::Null,
+                            }),
+                            None,
+                            serde_json::json!(session.expires_at),
+                            &session.csrf_token,
+                            &authority,
+                        )
+                    })
+            }
+            Err(_) => Err(ToolError::internal_message(
+                "authenticated identity is invalid",
+            )),
+        };
+        return finish_session_get(request_id.as_deref(), start, None, outcome);
     }
 
     if state.web_ui_auth_disabled {
@@ -672,7 +835,7 @@ pub async fn auth_session(
     }
 
     let Some(auth_state) = oauth_state(&state) else {
-        let response = unauthenticated_session_response(false);
+        let response = unauthenticated_session_response(false, state.bearer_token.is_some());
         log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
         return response;
     };
@@ -710,7 +873,8 @@ pub async fn auth_session(
             finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome)
         }
         Ok(None) => {
-            let response = unauthenticated_session_response(login_available);
+            let response =
+                unauthenticated_session_response(login_available, state.bearer_token.is_some());
             log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
             response
         }
@@ -800,6 +964,32 @@ pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> i
     let start = Instant::now();
     let request_id = request_id(&headers).map(ToOwned::to_owned);
     log_auth_dispatch_start("session.logout", request_id.as_deref());
+
+    if let Some(session_state) = state.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            labby_auth::session::read_cookie(&headers, session_state.cookie_name())
+    {
+        if let Some(session) = session_state.find(&session_id) {
+            let csrf = headers
+                .get(BROWSER_CSRF_HEADER_NAME)
+                .and_then(|value| value.to_str().ok());
+            if csrf != Some(session.csrf_token.as_str()) {
+                log_auth_dispatch(
+                    "session.logout",
+                    request_id.as_deref(),
+                    start,
+                    Some("validation_failed"),
+                    None,
+                );
+                return invalid_csrf_response();
+            }
+            session_state.revoke(&session_id);
+        }
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        labby_auth::session::append_set_cookie(&mut response, &session_state.clear_cookie());
+        log_auth_dispatch("session.logout", request_id.as_deref(), start, None, None);
+        return response;
+    }
 
     if state.web_ui_auth_disabled {
         let mut response = StatusCode::NO_CONTENT.into_response();
