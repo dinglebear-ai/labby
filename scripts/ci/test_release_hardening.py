@@ -229,6 +229,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('labby_home="$user_home/.labby"', unix)
         self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
         self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        self.assertIn('for _ in {1..100}; do', unix)
+        self.assertIn('kill -0 "$pid" 2>/dev/null || break', unix)
+        self.assertIn('service pid $pid did not stop and still owns lifecycle state', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
         self.assertEqual(1, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
@@ -250,6 +253,56 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
         self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
+
+    def test_unix_restart_waits_for_prior_daemon_exit_before_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            commands = runner_temp / "commands"
+            install.mkdir(parents=True)
+            commands.mkdir()
+            stopped = runner_temp / "old-stopped"
+            old = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,signal,time,pathlib; "
+                    f"p=pathlib.Path({str(stopped)!r}); "
+                    "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(.4), p.touch(), os._exit(0))); "
+                    "time.sleep(30)",
+                ]
+            )
+            reaper = threading.Thread(target=old.wait, daemon=True)
+            reaper.start()
+            (work / "labby.pid").write_text(f"{old.pid}\n")
+            (install / "labby").write_text(
+                "#!/bin/sh\n"
+                f"test -f {str(stopped)!r} || exit 42\n"
+                "sleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "curl").chmod(0o755)
+            env = os.environ | {
+                "RUNNER_TEMP": str(runner_temp),
+                "PATH": f"{commands}:{os.environ['PATH']}",
+            }
+            try:
+                subprocess.run(
+                    [str(ROOT / "scripts/ci/n-minus-one/unix"), "restart"],
+                    check=True,
+                    env=env,
+                    timeout=10,
+                )
+                self.assertTrue(stopped.exists())
+            finally:
+                pid_path = work / "labby.pid"
+                if pid_path.exists():
+                    os.kill(int(pid_path.read_text().strip()), 15)
+                if old.poll() is None:
+                    old.kill()
+                reaper.join(timeout=2)
 
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
