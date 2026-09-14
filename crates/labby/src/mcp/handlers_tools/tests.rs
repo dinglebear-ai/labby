@@ -6728,7 +6728,9 @@ async fn personal_oauth_authorize_enforces_mcp_execute_scope() {
     // This scenario exercises gateway.oauth_authorize on the direct gateway tool.
     let mut gateway_config = manager.current_config().await;
     gateway_config.code_mode.enabled = false;
-    manager.seed_config_unchecked_for_tests(gateway_config).await;
+    manager
+        .seed_config_unchecked_for_tests(gateway_config)
+        .await;
     let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(manager),
