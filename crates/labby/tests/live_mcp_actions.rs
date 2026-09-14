@@ -724,8 +724,9 @@ async fn depot_publish_service_requires_the_protected_team_route_contract() {
 async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() {
     let root = tempfile::tempdir().expect("local stdio MCP root");
     std::fs::create_dir_all(root.path().join("tmp")).unwrap();
+    std::fs::create_dir_all(root.path().join(".labby")).unwrap();
     std::fs::write(
-        root.path().join("config.toml"),
+        root.path().join(".labby/config.toml"),
         "[code_mode]\nenabled = false\n",
     )
     .unwrap();

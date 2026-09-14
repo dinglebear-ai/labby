@@ -471,7 +471,7 @@ fn wire_roles<'a>(
 /// exists, every identity without authority is `unprovisioned` and is never
 /// offered bootstrap.
 fn authenticated_session_body(
-    login_available: bool,
+    state: &AppState,
     user: serde_json::Value,
     project_id: Option<&str>,
     expires_at: serde_json::Value,
@@ -479,6 +479,7 @@ fn authenticated_session_body(
     authority: &SessionAuthority,
     bootstrap_eligible: bool,
 ) -> serde_json::Value {
+    let login_available = state.oauth_state.is_some();
     let owner_bootstrap_available =
         bootstrap_eligible && matches!(authority, SessionAuthority::Transport { .. });
     let mut body = match authority {
@@ -545,6 +546,7 @@ fn authenticated_session_body(
             "csrf_token": csrf_token,
         }),
     };
+    body["bearer_login_available"] = serde_json::Value::Bool(static_bearer_login_available(state));
     body["owner_bootstrap_available"] = serde_json::Value::Bool(owner_bootstrap_available);
     body
 }
@@ -777,7 +779,7 @@ pub async fn auth_session(
                         .await
                         .map(|authority| {
                             authenticated_session_body(
-                                login_available,
+                                &state,
                                 serde_json::json!({
                                     "sub": binding.principal_id,
                                     "email": session.email,
@@ -811,8 +813,8 @@ pub async fn auth_session(
                 resolve_session_authority(&state, identity, true)
                     .await
                     .map(|authority| {
-                        let mut body = authenticated_session_body(
-                            login_available,
+                        authenticated_session_body(
+                            &state,
                             serde_json::json!({
                                 "sub": "static-bearer",
                                 "email": serde_json::Value::Null,
@@ -822,9 +824,7 @@ pub async fn auth_session(
                             &session.csrf_token,
                             &authority,
                             false,
-                        );
-                        body["bearer_login_available"] = serde_json::json!(true);
-                        body
+                        )
                     })
             }
             Err(_) => Err(ToolError::internal_message(
@@ -873,7 +873,7 @@ pub async fn auth_session(
                     .await
                     .map(|authority| {
                         authenticated_session_body(
-                            login_available,
+                            &state,
                             serde_json::json!({
                                 "sub": "static-bearer",
                                 "email": serde_json::Value::Null,
@@ -916,7 +916,7 @@ pub async fn auth_session(
                                 .as_ref()
                                 .map(|binding| binding.project_id.as_str());
                             authenticated_session_body(
-                                login_available,
+                                &state,
                                 serde_json::json!({
                                     "sub": session.subject,
                                     "email": session.email,
@@ -1010,7 +1010,7 @@ async fn authenticated_context_session(
     let authority =
         resolve_session_authority(state, identity, scopes_grant_admin(&context.scopes)).await?;
     Ok(authenticated_session_body(
-        false,
+        state,
         serde_json::json!({
             "sub": context.sub,
             "email": context.email,
@@ -1583,7 +1583,9 @@ mod tests {
             .upsert_browser_session(session)
             .await
             .unwrap();
-        let state = AppState::new().with_project_session_state(session_state);
+        let state = AppState::new()
+            .with_project_session_state(session_state)
+            .with_bearer_token(Some(std::sync::Arc::from("operator-token")));
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1616,6 +1618,8 @@ mod tests {
         assert_eq!(json["is_admin"], false, "lab:read binding is not admin");
         assert_eq!(json["project_id"], "project-42");
         assert_eq!(json["expires_at"], expires_at);
+        assert_eq!(json["login_available"], false);
+        assert_eq!(json["bearer_login_available"], true);
         assert_eq!(json["csrf_token"], "csrf-token");
 
         let response = auth_session(State(state), headers, Some(Extension(auth)), None)
@@ -1629,6 +1633,8 @@ mod tests {
         assert_eq!(json["authority_state"], "transport");
         assert_eq!(json["project_id"], "project-42");
         assert_eq!(json["expires_at"], expires_at);
+        assert_eq!(json["login_available"], false);
+        assert_eq!(json["bearer_login_available"], true);
     }
 
     #[test]
@@ -1686,7 +1692,7 @@ mod tests {
             .unwrap();
         assert!(matches!(ready, SessionAuthority::Ready(_)));
         let body = authenticated_session_body(
-            false,
+            &state,
             serde_json::json!({"sub": "owner"}),
             None,
             serde_json::json!(1),
@@ -1709,7 +1715,7 @@ mod tests {
             .unwrap();
         assert!(matches!(unprovisioned, SessionAuthority::Unprovisioned));
         let body = authenticated_session_body(
-            false,
+            &state,
             serde_json::json!({"sub": "stranger"}),
             None,
             serde_json::json!(1),
@@ -1731,7 +1737,7 @@ mod tests {
         let transport = SessionAuthority::Transport { is_admin: false };
         for (eligible, expected) in [(true, true), (false, false)] {
             let body = authenticated_session_body(
-                false,
+                &state,
                 serde_json::json!({"sub": "admin"}),
                 None,
                 serde_json::json!(1),

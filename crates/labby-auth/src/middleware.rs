@@ -1385,7 +1385,7 @@ mod tests {
         let oauth = Arc::new(test_auth_state().await);
         let project = crate::types::BrowserSessionRow {
             session_id: "other-session".into(),
-            subject: "other-user".into(),
+            subject: project_binding().subject,
             email: None,
             csrf_token: "other-csrf".into(),
             created_at: crate::util::now_unix(),
