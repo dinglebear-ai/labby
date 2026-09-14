@@ -997,7 +997,7 @@ mod tests {
     #[cfg(not(feature = "proxy-testkit"))]
     #[tokio::test]
     async fn dev_container_runtime_hook_is_inert_without_testkit() {
-        use labby_runtime::dev_container_runtime::{ContainerRuntime as _, EngineHandle};
+        use labby_runtime::dev_container_runtime::{EngineHandle};
         let runtime = AccessRuntime::blocked_unavailable();
         let handle = EngineHandle {
             instance_id: labby_primitives::dev_container::DevContainerId::new("dc-1").unwrap(),

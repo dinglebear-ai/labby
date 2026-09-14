@@ -14,6 +14,7 @@ use crate::types::BrowserSessionRow;
 use crate::util::{now_unix, random_token};
 
 pub const STATIC_BROWSER_SESSION_COOKIE_NAME: &str = "labby_bearer_session";
+#[allow(clippy::duration_suboptimal_units)]
 const DEFAULT_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 const MAX_SESSIONS: usize = 256;
 

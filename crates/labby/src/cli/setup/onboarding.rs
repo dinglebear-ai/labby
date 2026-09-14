@@ -100,7 +100,7 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
         Some(role) => role,
         None if interactive => match Select::with_theme(&theme)
             .with_prompt("What are we setting up?")
-            .items(&[
+            .items([
                 "Server — run Labby here",
                 "Client — connect to a Labby server",
             ])
@@ -143,7 +143,7 @@ fn collect_server_plan(
         Some(value) => value,
         None if interactive && incus_ready => match Select::with_theme(theme)
             .with_prompt("Deployment")
-            .items(&["Native service — fastest", "Incus container — isolated"])
+            .items(["Native service — fastest", "Incus container — isolated"])
             .default(0)
             .interact()?
         {
@@ -187,7 +187,7 @@ fn collect_server_plan(
         Some(value) => value,
         None if interactive => match Select::with_theme(theme)
             .with_prompt("Authentication")
-            .items(&[
+            .items([
                 "Bearer token — generated automatically",
                 "Google OAuth + bearer break-glass",
                 "Authelia OAuth + bearer break-glass",
@@ -328,7 +328,7 @@ fn collect_client_plan(
     } else if interactive {
         match Select::with_theme(theme)
             .with_prompt("Client authentication")
-            .items(&["Browser sign-in (OAuth)", "Bearer token"])
+            .items(["Browser sign-in (OAuth)", "Bearer token"])
             .default(0)
             .interact()?
         {
@@ -1163,7 +1163,7 @@ fn redacted_plan(plan: &SetupPlan) -> serde_json::Value {
 
 fn print_banner() {
     eprintln!(
-        r#"
+        r"
   _          _     _
  | |    __ _| |__ | |__  _   _
  | |   / _` | '_ \| '_ \| | | |
@@ -1172,7 +1172,7 @@ fn print_banner() {
                          |___/
 
   One setup. Every interface.
-"#
+"
     );
 }
 

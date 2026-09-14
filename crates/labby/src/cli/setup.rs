@@ -114,6 +114,32 @@ pub struct SetupArgs {
     pub command: Option<SetupCommand>,
 }
 
+impl Default for SetupArgs {
+    fn default() -> Self {
+        Self {
+            provision: false,
+            dry_run: false,
+            yes: false,
+            skip_deps: false,
+            role: None,
+            deployment: None,
+            host: None,
+            port: None,
+            server_url: None,
+            public_url: None,
+            oauth: None,
+            desktop: false,
+            no_desktop: false,
+            apply_plan: None,
+            mode: SetupModeArg::Full,
+            no_setup: false,
+            no_browser: false,
+            smoke: false,
+            command: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupRoleArg {
@@ -1545,15 +1571,9 @@ mod tests {
     async fn no_setup_flag_exits_cleanly() {
         let code = run(
             SetupArgs {
-                provision: false,
-                dry_run: false,
-                yes: false,
-                skip_deps: false,
-                mode: SetupModeArg::Full,
                 no_setup: true,
                 no_browser: true,
-                smoke: false,
-                command: None,
+                ..Default::default()
             },
             OutputFormat::from_json_flag(
                 true,

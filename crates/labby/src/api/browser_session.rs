@@ -764,6 +764,7 @@ pub async fn auth_session(
                             serde_json::json!(session.expires_at),
                             &session.csrf_token,
                             &authority,
+                            false,
                         )
                     })
             }

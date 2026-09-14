@@ -18,6 +18,7 @@ struct GoogleRefreshLocks {
     maintenance: std::sync::Mutex<()>,
 }
 
+#[allow(dead_code)]
 static GOOGLE_PROVIDER_REFRESH_LOCKS: OnceLock<GoogleRefreshLocks> = OnceLock::new();
 #[cfg(feature = "http-axum")]
 const SHARED_FAILURE_TTL: Duration = Duration::from_secs(2);
@@ -183,6 +184,7 @@ where
 /// Inbound Labby token rotation, outbound Google MCP refresh, status probes, and
 /// explicit revocation all use this same lock so one central refresh credential
 /// is never refreshed or deleted concurrently by separate product surfaces.
+#[allow(dead_code)]
 pub(crate) fn lock(subject: &str) -> Arc<Mutex<()>> {
     lock_in_registry(
         GOOGLE_PROVIDER_REFRESH_LOCKS.get_or_init(GoogleRefreshLocks::default),
