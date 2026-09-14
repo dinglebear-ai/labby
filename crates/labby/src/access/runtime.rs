@@ -834,7 +834,23 @@ impl AccessRuntime {
         let runtime = self.clone();
         tokio::spawn(async move { runtime.bootstrap_owner_owned(input).await })
             .await
-            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?
+            .map_err(|error| {
+                // A panic here must not become a silent 503-class failure.
+                if error.is_panic() {
+                    tracing::error!(
+                        subsystem = "access",
+                        phase = "bootstrap_owner",
+                        "access owner bootstrap task panicked"
+                    );
+                } else {
+                    tracing::warn!(
+                        subsystem = "access",
+                        phase = "bootstrap_owner",
+                        "access owner bootstrap task was cancelled"
+                    );
+                }
+                AccessRuntimeError::LifecycleUnavailable
+            })?
     }
 
     async fn bootstrap_owner_owned(
@@ -997,7 +1013,7 @@ mod tests {
     #[cfg(not(feature = "proxy-testkit"))]
     #[tokio::test]
     async fn dev_container_runtime_hook_is_inert_without_testkit() {
-        use labby_runtime::dev_container_runtime::{ContainerRuntime as _, EngineHandle};
+        use labby_runtime::dev_container_runtime::EngineHandle;
         let runtime = AccessRuntime::blocked_unavailable();
         let handle = EngineHandle {
             instance_id: labby_primitives::dev_container::DevContainerId::new("dc-1").unwrap(),
