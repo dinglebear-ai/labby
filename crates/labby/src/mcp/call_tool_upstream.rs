@@ -1438,6 +1438,7 @@ mod tests {
                 route_runtime: Default::default(),
                 client_registry: Default::default(),
                 transport_label: "test",
+                lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                     crate::mcp::logging::logging_level_rank(
                         crate::mcp::logging::LoggingLevel::Emergency,

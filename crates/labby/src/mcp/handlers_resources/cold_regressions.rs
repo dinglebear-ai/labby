@@ -185,6 +185,7 @@ async fn serve_gateway(server: LabMcpServer) -> HttpFixture {
             route_runtime: Arc::clone(&server.route_runtime),
             client_registry: server.client_registry.clone(),
             transport_label: "http",
+            lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
             logging_level: Arc::clone(&server.logging_level),
             route_scope: server.route_scope.clone(),
             relay_session_id: crate::mcp::server::next_relay_session_id(),

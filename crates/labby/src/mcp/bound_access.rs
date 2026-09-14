@@ -959,6 +959,7 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
+            lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",
@@ -2581,6 +2582,7 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
+            lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",

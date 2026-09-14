@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-30"
+updated: "2026-09-14"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.3.0`, Git revision `0e1184b47645d5eb64d1df3bb84067b1d4a53340` |
+| Labby rmcp dependency | fork `3.3.0`, Git revision `f2639b9127e8d0f39cfd16193631d056c10cd445` |
 | rmcp conformance fixture | stock upstream `3.3.0` |
 | rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -41,6 +41,41 @@ The stock upstream fixture and Labby's fork are intentionally distinct pins.
 The 3.3.0 fixture does not read `STATELESS`; its default legacy-session support
 is not evidence for Labby's stateless HTTP boundary. The real-product HTTP
 oracles separately exercise Labby's request-scoped cancellation and validation.
+
+The normative denominator contains 2,223 rows: 927 prose requirements and
+1,296 structural schema constraints. The reviewed HTTP catalog currently has
+nine dispositions and nine executable oracles, leaving 2,214 rows unreviewed.
+That is an inventory count, not a conformance percentage. Eight reviewed rows
+are applicable. One reviewed row remains conditional because its registered
+JSON oracle does not prove the complete SSE-resumption clause. The 2,214 count
+excludes all reviewed dispositions; the conditional row is still unresolved
+for conformance even when its narrow product-policy regression passes.
+
+The nine product-wire oracles cover request-scoped cancellation, invalid
+Origin rejection, protocol metadata/header mismatch, unknown methods,
+unsupported versions, a missing current-version header, legacy GET/DELETE,
+`Mcp-Session-Id`, and `Last-Event-ID`. The unsupported-version oracle sends an
+unknown version and every SDK-known historical version to the current HTTP
+boundary. Each must return HTTP 400 with typed JSON-RPC error `-32022`, name the
+requested version, advertise exactly `["2026-07-28"]`, and admit no effect.
+This does not remove the separate legacy `initialize` adapter.
+
+The unsupported-version oracle exercises `tools/call`. Historical HTTP
+`initialize` requests follow a separate SDK compatibility path: Labby rejects
+them with JSON-RPC `-32022`, but the SDK currently carries that handler error in
+an HTTP 200 response. That path does not receive HTTP-025 status-code credit
+from the `tools/call` oracle. Reconciling its HTTP status mapping remains a
+transport-compliance gap.
+
+The `Last-Event-ID` oracle deliberately requests `application/json` and checks
+for identical bounded, meaningful JSON-RPC results with and without the header.
+It proves the obsolete header does not alter that JSON request. It does not
+observe an SSE response, so it does not claim proof that SSE events omit IDs or
+that an SSE stream cannot be resumed. Because this diagnostic oracle maps to a
+conditional requirement, the current oracle-only coordinator remains red even
+when all nine registered test processes pass. Completing HTTP-083 requires a
+product-wire SSE case that observes emitted events without resumable IDs and a
+reconnect/replay attempt that cannot resume from `Last-Event-ID`.
 
 Run the complete gate locally with:
 
@@ -109,7 +144,7 @@ unroutable.
 | Area | Labby posture | Regression evidence |
 |---|---|---|
 | Protocol lifecycle | Modern clients use stateless `server/discover`; legacy `initialize` is adapted only at the transport edge | discovery tests, bridge tests, and the multi-hop driver |
-| Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses | HTTP lifecycle tests and rmcp dated suite |
+| Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses; legacy session and event-resume headers are ignored | literal HTTP lifecycle tests and rmcp dated suite |
 | SEP-2243 headers | rmcp validates method/name headers before dispatch | HTTP method/name header tests |
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |

@@ -80,6 +80,7 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: IN_PROCESS_TRANSPORT_LABEL,
+        lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         // FU-1 (issue #210, lab-48z4k): force Raw mode. Under `Root` the mini
         // server derives its visibility from the process-global code-mode

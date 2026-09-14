@@ -2231,6 +2231,7 @@ fn run_stdio(
             #[cfg(feature = "gateway")]
             client_registry: notifier.client_registry.clone(),
             transport_label: "stdio",
+            lifecycle_profile: crate::mcp::server::McpLifecycleProfile::DirectStdioLegacyCompatible,
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
             )),
@@ -2358,6 +2359,7 @@ fn build_mcp_service_with_scope(
             resource_url,
         ))
         .with_legacy_session_mode(false)
+        .with_stateless_protocol_metadata_required(true)
         .with_json_response(true);
     tracing::info!(
         surface = "mcp",
@@ -2428,6 +2430,7 @@ fn build_mcp_service_with_scope(
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",
+                lifecycle_profile: crate::mcp::server::McpLifecycleProfile::CurrentDiscoveryOnly,
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                     crate::mcp::logging::logging_level_rank(
                         crate::mcp::logging::LoggingLevel::Info,
@@ -3162,7 +3165,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_adapts_every_declared_legacy_initialize_version() {
+    async fn http_mcp_rejects_historical_initialize_versions() {
         let app = build_http_router(
             AppState::new(),
             None,
@@ -3184,6 +3187,8 @@ mod tests {
                         .header("host", "localhost")
                         .header("content-type", "application/json")
                         .header("accept", "application/json, text/event-stream")
+                        .header("mcp-protocol-version", version)
+                        .header("mcp-method", "initialize")
                         .body(Body::from(
                             serde_json::json!({
                                 "jsonrpc": "2.0",
@@ -3202,14 +3207,22 @@ mod tests {
                 .await
                 .expect("response");
 
+            // `initialize` is a valid JSON-RPC method shape at the transport
+            // layer, so rmcp returns the handler's typed negotiation error in
+            // a successful HTTP envelope. The protocol request itself is
+            // rejected below with UNSUPPORTED_PROTOCOL_VERSION.
+            assert_eq!(response.status(), StatusCode::OK);
             let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await
                 .expect("response body");
             let body: serde_json::Value =
-                serde_json::from_slice(&body).expect("legacy initialize response is JSON-RPC");
-            assert!(body.get("error").is_none(), "version {version}: {body}");
-            assert_eq!(body["result"]["protocolVersion"], version);
-            assert_eq!(body["result"]["capabilities"]["tools"]["listChanged"], true);
+                serde_json::from_slice(&body).expect("protocol rejection is JSON-RPC");
+            assert_eq!(body["error"]["code"], -32022, "version {version}: {body}");
+            assert_eq!(body["error"]["data"]["requested"], version);
+            assert_eq!(
+                body["error"]["data"]["supported"],
+                serde_json::json!(["2026-07-28"])
+            );
         }
     }
 
@@ -3433,7 +3446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_discovers_all_supported_protocols() {
+    async fn http_mcp_discovers_only_the_current_protocol() {
         let app = build_http_router(
             AppState::new(),
             None,
@@ -3483,11 +3496,13 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("response body");
-        let body = String::from_utf8(body.to_vec()).expect("UTF-8 response");
-        for version in rmcp::model::ProtocolVersion::KNOWN_VERSIONS {
-            assert!(body.contains(version.as_str()), "missing {version}: {body}");
-        }
-        assert!(body.contains("\"resultType\":\"complete\""));
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("discovery response is JSON-RPC");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(
+            body["result"]["supportedVersions"],
+            serde_json::json!(["2026-07-28"])
+        );
     }
 
     #[tokio::test]

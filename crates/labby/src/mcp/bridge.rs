@@ -239,19 +239,24 @@ impl ServerHandler for BridgeServerHandler {
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        tracing::warn!(
-            surface = "mcp",
-            service = "labby",
-            action = "bridge.lifecycle.compat_legacy_initialize",
-            subsystem = "mcp_bridge",
-            requested_protocol_version = %request.protocol_version,
-            client_name = %request.client_info.name,
-            client_version = %request.client_info.version,
-            "adapting legacy MCP initialize lifecycle on stdio bridge"
-        );
         context.peer.set_peer_info(request.clone());
-        let mut info = self.get_info();
-        info.protocol_version = request.protocol_version;
+        let mut info = self.negotiate_initialize(&request)?;
+        if info.protocol_version != ProtocolVersion::V_2026_07_28 {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.lifecycle.compat_legacy_initialize",
+                subsystem = "mcp_bridge",
+                requested_protocol_version = %request.protocol_version,
+                negotiated_protocol_version = %info.protocol_version,
+                client_name = %request.client_info.name,
+                client_version = %request.client_info.version,
+                "adapting legacy MCP initialize lifecycle on stdio bridge"
+            );
+            if let Some(resources) = info.capabilities.resources.as_mut() {
+                resources.subscribe = None;
+            }
+        }
         Ok(info)
     }
 
@@ -260,7 +265,7 @@ impl ServerHandler for BridgeServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         Ok(DiscoverResult::from_server_info(
-            ProtocolVersion::KNOWN_VERSIONS.to_vec(),
+            vec![ProtocolVersion::V_2026_07_28],
             self.get_info(),
         ))
     }
@@ -663,8 +668,8 @@ mod tests {
     //! second connection to exercise every forwarded request/response path.
     use rmcp::model::{
         CancelTaskParams, CancelTaskRequest, ClientCapabilities, CustomRequest, DetailedTask,
-        ErrorData as McpError, GetTaskParams, GetTaskRequest, ServerCapabilities, ServerInfo, Task,
-        TaskPayload, TaskStatus,
+        ErrorData as McpError, GetTaskParams, GetTaskRequest, RequestMetaObject,
+        ServerCapabilities, ServerInfo, Task, TaskPayload, TaskStatus,
     };
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -731,6 +736,8 @@ mod tests {
             ServerInfo::new(
                 ServerCapabilities::builder()
                     .enable_tools()
+                    .enable_resources()
+                    .enable_resources_subscribe()
                     .enable_tasks()
                     .build(),
             )
@@ -783,11 +790,14 @@ mod tests {
     /// unit-level behavior and by `labby-gateway`'s `RelayClientHandler`
     /// tests for the analogous relay path.
     #[derive(Clone)]
-    struct TestDownstreamClient;
+    struct TestDownstreamClient {
+        protocol_version: ProtocolVersion,
+    }
 
     impl ClientHandler for TestDownstreamClient {
         fn get_info(&self) -> ClientInfo {
             let mut info = ClientInfo::default();
+            info.protocol_version = self.protocol_version.clone();
             info.capabilities = ClientCapabilities::builder().enable_tasks().build();
             info
         }
@@ -807,7 +817,10 @@ mod tests {
 
     /// Wires up the full two-hop bridge topology:
     /// test client -> `BridgeServerHandler` -> `BridgeClientHandler` -> fake daemon.
-    async fn wire_bridge() -> BridgeHarness {
+    async fn wire_bridge_with_lifecycle(
+        lifecycle: ClientLifecycleMode,
+        protocol_version: ProtocolVersion,
+    ) -> BridgeHarness {
         // Hop 1: bridge -> fake daemon, served with `BridgeClientHandler` so
         // the daemon's server->client requests would be relayed (unused by
         // these tests, but this is the real production wiring shape from
@@ -842,12 +855,8 @@ mod tests {
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let (bridge_service, client_service) = tokio::join!(
             bridge_handler.serve(bridge_inbound_transport),
-            TestDownstreamClient.serve_with_lifecycle(
-                client_transport,
-                ClientLifecycleMode::Discover {
-                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                },
-            ),
+            TestDownstreamClient { protocol_version }
+                .serve_with_lifecycle(client_transport, lifecycle,),
         );
         let bridge_service: RunningService<RoleServer, BridgeServerHandler> =
             bridge_service.expect("test client connects to bridge");
@@ -860,6 +869,61 @@ mod tests {
             _client_service: client_service,
             _bridge_service: bridge_service,
         }
+    }
+
+    async fn wire_bridge() -> BridgeHarness {
+        wire_bridge_with_lifecycle(
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+            ProtocolVersion::V_2026_07_28,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn legacy_bridge_initialize_withholds_unusable_resource_subscriptions() {
+        let harness = wire_bridge_with_lifecycle(
+            ClientLifecycleMode::Initialize,
+            ProtocolVersion::V_2025_11_25,
+        )
+        .await;
+        let info = harness.peer.peer_info().expect("legacy initialize result");
+
+        assert_ne!(info.protocol_version, ProtocolVersion::V_2026_07_28);
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.subscribe),
+            None,
+            "the bridge cannot expose modern subscriptions/listen to a legacy client"
+        );
+    }
+
+    #[tokio::test]
+    async fn bridge_discovery_negotiates_the_current_protocol() {
+        let harness = wire_bridge().await;
+        let info = harness.peer.peer_info().expect("discover result");
+        let discovery = harness
+            .peer
+            .discover(RequestMetaObject::new())
+            .await
+            .expect("server/discover remains callable");
+
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2026_07_28);
+        assert_eq!(
+            discovery.supported_versions,
+            vec![ProtocolVersion::V_2026_07_28]
+        );
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.subscribe),
+            Some(true),
+            "modern discovery must preserve usable subscription support"
+        );
     }
 
     #[tokio::test]

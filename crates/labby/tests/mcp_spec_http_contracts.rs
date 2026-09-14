@@ -155,29 +155,36 @@ async fn mcp_spec_http_unsupported_protocol_version_is_bad_request() {
     let runner = start().await;
     let client = client();
     let before = establish_effectful_control(&client, &runner).await;
-    let unsupported = "2999-12-31";
-    let (status, response) = body(
-        post(
-            &client,
-            &runner,
-            effectful_request("positive-control", unsupported),
-            Some(unsupported),
+    for unsupported in [
+        "2999-12-31",
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26",
+        "2024-11-05",
+    ] {
+        let (status, response) = body(
+            post(
+                &client,
+                &runner,
+                effectful_request("unsupported-version", unsupported),
+                Some(unsupported),
+            )
+            .send()
+            .await
+            .expect("HTTP response"),
         )
-        .send()
-        .await
-        .expect("HTTP response"),
-    )
-    .await;
-    assert_eq!(status, 400, "unsupported protocol accepted: {response}");
-    let error: Value = serde_json::from_str(&response).expect("JSON-RPC error response");
-    assert_eq!(error["error"]["code"], -32022);
-    assert_eq!(error["error"]["data"]["requested"], unsupported);
-    assert!(
-        error["error"]["data"]["supported"]
-            .as_array()
-            .is_some_and(|versions| versions.iter().any(|version| version == "2026-07-28")),
-        "supported versions missing from error: {response}"
-    );
+        .await;
+        assert_eq!(status, 400, "unsupported protocol accepted: {response}");
+        let error: Value = serde_json::from_str(&response).expect("JSON-RPC error response");
+        assert_eq!(error["id"], "unsupported-version");
+        assert_eq!(error["error"]["code"], -32022);
+        assert_eq!(error["error"]["data"]["requested"], unsupported);
+        assert_eq!(
+            error["error"]["data"]["supported"],
+            json!(["2026-07-28"]),
+            "HTTP boundary advertised versions it does not implement: {response}"
+        );
+    }
     assert_eq!(runner.effect_counts().expect("side effects"), before);
     finish(runner).await;
 }
@@ -261,5 +268,60 @@ async fn mcp_spec_http_ignores_legacy_session_header() {
     );
     let legacy_body = response.text().await.expect("legacy response body");
     assert_eq!(legacy_body, clean_body, "legacy header changed semantics");
+    finish(runner).await;
+}
+
+#[tokio::test]
+async fn mcp_spec_http_ignores_legacy_last_event_id_header() {
+    let runner = start().await;
+    let client = client();
+    let clean_response = post(
+        &client,
+        &runner,
+        request(Some("legacy-last-event-id"), "tools/list", "2026-07-28"),
+        Some("2026-07-28"),
+    )
+    .header("accept", "application/json")
+    .send()
+    .await
+    .expect("bounded clean HTTP response");
+    assert_eq!(clean_response.status().as_u16(), 200);
+    assert_eq!(
+        clean_response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    let clean_body = clean_response
+        .text()
+        .await
+        .expect("bounded clean JSON body");
+
+    let response = post(
+        &client,
+        &runner,
+        request(Some("legacy-last-event-id"), "tools/list", "2026-07-28"),
+        Some("2026-07-28"),
+    )
+    .header("accept", "application/json")
+    .header("last-event-id", "obsolete-stream-event")
+    .send()
+    .await
+    .expect("bounded HTTP response");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    let legacy_body = response.text().await.expect("bounded legacy JSON body");
+    assert_eq!(legacy_body, clean_body, "Last-Event-ID changed semantics");
+    let response: Value = serde_json::from_str(&legacy_body).expect("meaningful JSON response");
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], "legacy-last-event-id");
+    assert!(response["result"]["tools"].is_array());
     finish(runner).await;
 }

@@ -1,7 +1,7 @@
 ---
 title: "Transport Contract"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-09-14"
 ---
 
 # Transport Contract
@@ -79,6 +79,21 @@ The native MCP endpoint is `/mcp`. The hosted runtime also mounts supported
 `/v1/*` APIs, auth routes, health routes, protected MCP routes, and static web
 assets when available.
 
+The endpoint's request path implements protocol `2026-07-28`. A request whose
+header and body select an unknown or historical version receives HTTP 400 and
+typed `UnsupportedProtocolVersionError` (`-32022`), with exactly
+`["2026-07-28"]` in `supported`; it is rejected before product effects. A
+current-version request without `MCP-Protocol-Version` is also rejected before
+dispatch. This HTTP version policy is distinct from the legacy `initialize`
+edge adapter described below.
+
+The endpoint is stateless. GET and DELETE return 405. An obsolete
+`Mcp-Session-Id` request header is ignored and Labby neither mints nor echoes a
+session ID. `Last-Event-ID` is also tolerated as an obsolete header; the
+registered product oracle currently proves a bounded `application/json`
+response whose content remains meaningful. It does not inspect an SSE stream,
+so the evidence does not establish absence of SSE event IDs or resumability.
+
 The generated route inventory in
 [../generated/api-routes.md](../generated/api-routes.md) is authoritative.
 
@@ -128,10 +143,10 @@ peer_uid = 1000
 ## Authentication
 
 - Operator/admin routes use the configured bearer or OAuth mode.
-- The downstream MCP endpoint uses the stateless `2026-07-28` lifecycle as its
-  primary contract. Its legacy `initialize` compatibility path declares and
-  preserves every SDK-known historical protocol version it genuinely adapts,
-  so older clients retain that version's request-validation and wire semantics.
+- The downstream HTTP MCP endpoint accepts and advertises only stateless
+  `2026-07-28`. Direct stdio separately retains SDK-known historical versions
+  through `initialize`; modern `server/discover` advertises only `2026-07-28`
+  on both surfaces. The stdio adapter does not create a resumable HTTP session.
   The gateway-to-upstream boundary attempts `server/discover` first
   and performs one bounded fallback to legacy `initialize` for recognized
   lifecycle-compatibility failures; HTTP/TCP, Unix-socket, and stdio upstreams
