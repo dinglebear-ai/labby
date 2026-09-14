@@ -160,6 +160,7 @@ struct AuthLayerInner {
     product_credential_verifier: Option<Arc<dyn ProductCredentialVerifier>>,
     product_access_grant_resolver: Option<Arc<dyn ProductAccessGrantResolver>>,
     project_session_state: Option<Arc<ProjectSessionState>>,
+    static_browser_session_state: Option<Arc<crate::static_session::StaticBrowserSessionState>>,
 }
 
 impl AuthLayer {
@@ -186,6 +187,7 @@ impl AuthLayer {
                 product_credential_verifier: None,
                 product_access_grant_resolver: None,
                 project_session_state: None,
+                static_browser_session_state: None,
             }),
         }
     }
@@ -217,6 +219,7 @@ impl AuthLayer {
                 product_credential_verifier: None,
                 product_access_grant_resolver: None,
                 project_session_state: None,
+                static_browser_session_state: None,
             }),
         }
     }
@@ -329,6 +332,14 @@ impl AuthLayer {
     pub fn with_project_session_state(self, state: Option<Arc<ProjectSessionState>>) -> Self {
         self.with(|inner| inner.project_session_state = state)
     }
+
+    #[must_use]
+    pub fn with_static_browser_session_state(
+        self,
+        state: Option<Arc<crate::static_session::StaticBrowserSessionState>>,
+    ) -> Self {
+        self.with(|inner| inner.static_browser_session_state = state)
+    }
 }
 
 impl Default for AuthLayer {
@@ -408,6 +419,23 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(parse_bearer_token);
+
+    // Session cookies and bearer headers are independent authorities. Do not
+    // silently combine them, even when both ultimately derive from the same
+    // static operator credential. The exchange endpoint itself is outside this
+    // middleware and therefore remains able to mint the cookie.
+    if auth_header.is_some()
+        && layer.allow_session_cookie
+        && let Some(session_state) = layer.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), session_state.cookie_name())
+        && session_state.find(&session_id).is_some()
+    {
+        return Err(auth_error_response(
+            "static browser session cookie cannot be combined with bearer authorization",
+            layer,
+        ));
+    }
 
     // A project cookie and bearer token are two independent authorities. Do
     // not let header precedence silently combine them. Legacy Google sessions
@@ -641,7 +669,53 @@ async fn authenticate(
         return Err(auth_error_response("invalid bearer token", layer));
     }
 
-    // 3. Browser session cookie path.
+    // 3. Static-bearer-derived browser session. The long-lived bearer is used
+    // only for the exchange; this path carries a short-lived HttpOnly cookie
+    // and requires the per-session CSRF token for mutations.
+    if layer.allow_session_cookie
+        && let Some(session_state) = layer.static_browser_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), session_state.cookie_name())
+        && let Some(session) = session_state.find(&session_id)
+    {
+        let static_token_blocked = layer.auth_state.as_ref().is_some_and(|state| {
+            state.config.disable_static_token_with_oauth
+                && matches!(state.config.mode, crate::config::AuthMode::OAuth)
+        });
+        if static_token_blocked || layer.static_token.is_none() {
+            session_state.revoke(&session_id);
+            return Err(auth_error_response(
+                "static browser session is disabled",
+                layer,
+            ));
+        }
+        if !session_csrf_valid(&request, &session) {
+            return Err(csrf_error_response("missing or invalid csrf token"));
+        }
+        let sub = "static-bearer".to_string();
+        let identity = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .expect("the configured static bearer slot has a stable non-empty identity");
+        let auth = AuthContext {
+            actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &sub),
+            sub,
+            scopes: layer.static_token_scopes.clone(),
+            issuer: "local".to_string(),
+            via_session: true,
+            csrf_token: Some(session.csrf_token.clone()),
+            email: None,
+        };
+        if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+            return Err(response);
+        }
+        request.extensions_mut().insert(identity);
+        request.extensions_mut().insert(auth);
+        return Ok(request);
+    }
+
+    // 4. Provider/project browser session cookie path.
     if layer.allow_session_cookie
         && let Some(session_state) = layer.project_session_state.as_ref()
         && let Some(session_id) =
