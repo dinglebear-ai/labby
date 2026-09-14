@@ -626,6 +626,7 @@ async fn apply_server(plan: &SetupPlan, format: OutputFormat) -> Result<serde_js
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     #[cfg(target_os = "linux")]
     {
@@ -708,7 +709,10 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
             "features": "full",
         }));
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn apply_native_server(_plan: &SetupPlan) -> Result<serde_json::Value> {
     bail!(
         "native persistent server installation is not yet supported on this operating system; use client mode"
     )
@@ -1087,6 +1091,7 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
     // The access store requires an owner-only state directory. Environment
     // merges protect individual files but create new parents with the umask.
@@ -1156,6 +1161,7 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
     Ok(token)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn configure_local_client(plan: &SetupPlan, token: &str) -> Result<()> {
     let env = plan.invoking_home.join(".labby/.env");
     let server = format!("http://127.0.0.1:{}", plan.port);
@@ -1212,12 +1218,6 @@ fn install_macos_service(plan: &SetupPlan) -> Result<()> {
         bail!("macOS service installer exited with {status}");
     }
     Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-fn install_macos_service(_plan: &SetupPlan) -> Result<()> {
-    bail!("macOS service installer is unavailable")
 }
 
 #[cfg(target_os = "linux")]
@@ -1306,6 +1306,7 @@ fn advertised_url(plan: &SetupPlan) -> String {
     format!("http://{host}:{}", plan.port)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn chown_tree(path: &Path, user: &str) -> Result<()> {
     let status = Command::new("chown")
         .arg("-R")
