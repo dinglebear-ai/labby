@@ -4,6 +4,9 @@
 #[path = "domain_viewer.rs"]
 mod domain_viewer;
 
+#[path = "platform_admin_elevation.rs"]
+mod platform_admin_elevation;
+
 #[cfg(feature = "gateway")]
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
@@ -925,10 +928,16 @@ pub(crate) fn build_router_with_external_auth(
     };
     let v1_protected = if credential_auth_configured {
         v1_group.map_router(|router| {
+            // route_layer order is inside-out: AuthLayer runs first, then
+            // durable platform-admin elevation, then domain Viewer admission.
             router
                 .route_layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     domain_viewer::provision,
+                ))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    platform_admin_elevation::elevate,
                 ))
                 .route_layer(make_auth_layer(true))
         })
