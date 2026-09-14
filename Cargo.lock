@@ -139,6 +139,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -396,6 +402,19 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.0",
+]
 
 [[package]]
 name = "block-buffer"
@@ -673,6 +692,12 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
@@ -2077,11 +2102,13 @@ dependencies = [
  "hyper-util",
  "jiff",
  "jsonschema",
+ "jsonwebtoken",
  "labby-apis",
  "labby-auth",
  "labby-browser",
  "labby-codemode",
  "labby-gateway",
+ "labby-model",
  "labby-openapi",
  "labby-primitives",
  "labby-runtime",
@@ -2091,11 +2118,12 @@ dependencies = [
  "nix",
  "oauth2",
  "percent-encoding",
- "process-wrap",
+ "process-wrap 9.1.0",
  "proptest",
  "rcgen",
  "reqwest",
  "rmcp",
+ "rsa",
  "rusqlite",
  "rustix",
  "rustls",
@@ -2128,6 +2156,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "verify-core",
  "walkdir",
  "wiremock",
  "xxhash-rust",
@@ -2265,7 +2294,7 @@ dependencies = [
  "labby-runtime",
  "labby-winjob",
  "nix",
- "process-wrap",
+ "process-wrap 9.1.0",
  "proptest",
  "reqwest",
  "rmcp",
@@ -2289,6 +2318,16 @@ dependencies = [
  "uuid",
  "wiremock",
  "xxhash-rust",
+]
+
+[[package]]
+name = "labby-model"
+version = "1.19.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "verify-core",
+ "verify-scenario",
 ]
 
 [[package]]
@@ -2934,6 +2973,18 @@ dependencies = [
  "indexmap",
  "nix",
  "tokio",
+]
+
+[[package]]
+name = "process-wrap"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e3f4237d0e4741eb50bc5584db701f1299c85fa31ff0274dd6445e79dc42d12"
+dependencies = [
+ "futures",
+ "indexmap",
+ "nix",
+ "tokio",
  "tracing",
  "windows",
 ]
@@ -3243,8 +3294,8 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.1.4"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=f94e8fabe0b4264db3e7f8771dd49d9ba31f4610#f94e8fabe0b4264db3e7f8771dd49d9ba31f4610"
+version = "3.3.0"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0e1184b47645d5eb64d1df3bb84067b1d4a53340#0e1184b47645d5eb64d1df3bb84067b1d4a53340"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -3258,7 +3309,7 @@ dependencies = [
  "oauth2",
  "pastey",
  "pin-project-lite",
- "process-wrap",
+ "process-wrap 10.0.0",
  "rand 0.10.2",
  "reqwest",
  "rmcp-macros",
@@ -3278,8 +3329,8 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.1.4"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=f94e8fabe0b4264db3e7f8771dd49d9ba31f4610#f94e8fabe0b4264db3e7f8771dd49d9ba31f4610"
+version = "3.3.0"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=0e1184b47645d5eb64d1df3bb84067b1d4a53340#0e1184b47645d5eb64d1df3bb84067b1d4a53340"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -4596,6 +4647,29 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "verify-core"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
+name = "verify-scenario"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "verify-core",
+]
 
 [[package]]
 name = "version_check"

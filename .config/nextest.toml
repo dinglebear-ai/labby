@@ -29,3 +29,14 @@ threads-required = 'num-test-threads'
 platform = 'cfg(windows)'
 filter = 'package(labby) & test(live_labby::tests::)'
 threads-required = 'num-test-threads'
+
+# These three process-inventory controls hit their unchanged 3s deadlines when
+# embedded copies ran alongside other subprocess tests on macOS. Reserve slots
+# for each exact case; default-profile overrides also apply to the CI profile.
+[[profile.default.overrides]]
+filter = '''package(labby) & (
+    test(=live_labby::tests::helper_stderr_is_bounded_and_only_reports_safe_categories)
+    | test(=live_labby::guardian::tests::guardian_publication_failure_reaps_child_before_later_mutation)
+    | test(=live_labby::guardian::tests::runtime_and_browser_guardians_reap_descendants_after_leader_exit)
+)'''
+threads-required = 'num-test-threads'

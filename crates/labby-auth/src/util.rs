@@ -251,11 +251,51 @@ pub(crate) fn random_token(bytes: usize) -> Result<String, AuthError> {
 
 pub fn fingerprint(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
+    truncated_fingerprint(&digest)
+}
+
+/// Stable correlation identifier for provider OAuth state in diagnostics.
+///
+/// Authelia's public OIDC nonce is derived from the same provider state. Keep
+/// this diagnostic namespace distinct so a redacted log identifier can never
+/// reproduce that raw protocol value.
+pub(crate) fn oauth_state_diagnostic_id(state: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"labby-oauth-state-diagnostic-v1\0");
+    hasher.update(state.as_bytes());
+    truncated_fingerprint(&hasher.finalize())
+}
+
+#[cfg(any(feature = "http-axum", test))]
+pub(crate) fn oauth_provider_nonce(state: &str) -> String {
+    fingerprint(state)
+}
+
+fn truncated_fingerprint(digest: &[u8]) -> String {
     let mut output = String::with_capacity(12);
     for byte in &digest[..6] {
         let _ = write!(&mut output, "{byte:02x}");
     }
     output
+}
+
+#[cfg(test)]
+mod oauth_diagnostic_tests {
+    #[test]
+    fn provider_nonce_and_log_identifier_are_stable_but_domain_separated() {
+        let state = "provider-state";
+        let nonce = super::oauth_provider_nonce(state);
+        let diagnostic = super::oauth_state_diagnostic_id(state);
+
+        assert_eq!(nonce, super::oauth_provider_nonce(state));
+        assert_eq!(diagnostic, super::oauth_state_diagnostic_id(state));
+        assert_ne!(diagnostic, state);
+        assert_ne!(diagnostic, nonce);
+        assert_ne!(
+            diagnostic,
+            super::oauth_state_diagnostic_id("different-provider-state")
+        );
+    }
 }
 
 #[cfg(unix)]

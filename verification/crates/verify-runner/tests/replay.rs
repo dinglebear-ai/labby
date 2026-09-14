@@ -1,546 +1,635 @@
-//! End-to-end replay behavior against the fixture model.
-//!
-//! The fixture is compiled as an example rather than a test-only type so that
-//! the same code proves the interface here and serves as the worked example an
-//! adopting project copies.
+//! Finite replay, normalization, registry, CLI and corpus regression contracts.
 
-// Including the example gives one definition of the fixture: the same code
-// proves the interface here and is the worked example M3 copies. Its `main`
-// and `registry` are unused in this context, which is not a defect.
-#[path = "../examples/fixture.rs"]
-#[allow(dead_code)]
-mod fixture;
+#[path = "fixtures/counter.rs"]
+mod counter;
 
+use counter::{Counter, catalog, registry, scenario};
 use serde_json::json;
-use verify_core::Kind;
-use verify_report::replay::Outcome;
-use verify_runner::{TargetKey, TargetRegistry, check_determinism, minimize, replay};
-use verify_scenario::{Expect, Scenario, ScenarioStatus};
+use std::{cell::Cell, ffi::OsString, num::NonZeroUsize, process::Command, time::Duration};
+use verify_core::{ScenarioError, ScenarioTarget, StepOutcome};
+use verify_runner::{
+    CorpusError, InsertResult, NormalizationOptions, ReplayLimits, TargetRegistry, TraceVerdict,
+    insert_scenario, run_cli,
+};
+use verify_scenario::Status;
 
-fn registry() -> TargetRegistry {
-    TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(fixture::RequestModel),
-    )
-}
-
-fn scenario(steps: &serde_json::Value, expect: &str) -> Scenario {
-    let text = format!(
-        r#"{{
-  "schema": 1,
-  "project": "fixture",
-  "model": "request",
-  "invariant": "FIXTURE-REQ-001",
-  "origin": {{ "kind": "manual" }},
-  "steps": {steps},
-  "expect": "{expect}"
-}}"#
-    );
-    Scenario::parse(&text).expect("parse")
+#[test]
+fn normalization_retains_typed_target_resolution_errors() {
+    use verify_runner::{NormalizationError, TargetResolutionError};
+    let runner = registry(Counter::default(), "safety");
+    let mut unknown = scenario(&[], "invariant_holds", "active")
+        .scenario()
+        .clone();
+    unknown.model = "missing".into();
+    unknown.fingerprint = None;
+    match runner
+        .normalize(
+            &unknown.validate().unwrap(),
+            &NormalizationOptions::default(),
+        )
+        .unwrap_err()
+    {
+        NormalizationError::Target(TargetResolutionError::UnknownTarget {
+            project,
+            model,
+            available,
+        }) => {
+            assert_eq!(project, "example");
+            assert_eq!(model, "missing");
+            assert_eq!(available, vec![("example".into(), "counter".into())]);
+        }
+        error => panic!("unexpected typed error: {error}"),
+    }
+    let mut unknown = scenario(&[], "invariant_holds", "active")
+        .scenario()
+        .clone();
+    unknown.invariant = "EX-COUNT-999".to_owned().try_into().unwrap();
+    unknown.fingerprint = None;
+    match runner
+        .normalize(
+            &unknown.validate().unwrap(),
+            &NormalizationOptions::default(),
+        )
+        .unwrap_err()
+    {
+        NormalizationError::Target(TargetResolutionError::UnknownInvariant {
+            project,
+            model,
+            invariant,
+        }) => {
+            assert_eq!(project, "example");
+            assert_eq!(model, "counter");
+            assert_eq!(invariant.as_str(), "EX-COUNT-999");
+        }
+        error => panic!("unexpected typed error: {error}"),
+    }
 }
 
 #[test]
-fn a_violating_trace_reproduces() {
-    let scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "complete" },
-            { "event": "late_response" }
-        ]),
-        "invariant_violated",
-    );
-    let report = replay(&scenario, Kind::Safety, &registry(), "violating");
-    assert_eq!(report.outcome, Outcome::Matched);
-    assert!(!report.failed());
-    assert_eq!(report.first_violation, Some(3));
-}
-
-#[test]
-fn a_golden_trace_holds() {
-    let scenario = scenario(
-        &json!([{ "event": "dispatch" }, { "event": "complete" }]),
-        "invariant_holds",
-    );
-    let report = replay(&scenario, Kind::Safety, &registry(), "golden");
-    assert_eq!(report.outcome, Outcome::Matched);
-}
-
-#[test]
-fn a_tampered_scenario_mismatches_and_fails() {
-    // Same trace, wrong expectation.
-    let scenario = scenario(
-        &json!([{ "event": "dispatch" }, { "event": "complete" }]),
-        "invariant_violated",
-    );
-    let report = replay(&scenario, Kind::Safety, &registry(), "tampered");
-    assert!(matches!(report.outcome, Outcome::Mismatched { .. }));
-    assert!(report.failed(), "an active mismatch must fail CI");
-}
-
-#[test]
-fn a_safety_violation_followed_by_a_rejected_step_still_counts() {
-    // Dispatch is rejected because the request is already dispatched. The
-    // rejected step must not clear the earlier recorded violation.
-    let scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "complete" },
-            { "event": "late_response" },
-            { "event": "dispatch" }
-        ]),
-        "invariant_violated",
-    );
-    let report = replay(&scenario, Kind::Safety, &registry(), "mid-trace");
-    assert_eq!(report.outcome, Outcome::Matched);
-    assert_eq!(
-        report.first_violation,
-        Some(3),
-        "the report must name where it first went wrong"
-    );
-}
-
-#[test]
-fn an_unregistered_target_is_distinct_from_a_mismatch() {
-    // "nobody registered the target" must never read as "the invariant holds".
-    let mut scenario = scenario(&json!([{ "event": "dispatch" }]), "invariant_holds");
-    scenario.model = "nonexistent".to_owned();
-    let report = replay(&scenario, Kind::Safety, &registry(), "no-target");
-    assert!(matches!(report.outcome, Outcome::NoTarget { .. }));
-    assert!(report.failed());
-}
-
-#[test]
-fn an_uninterpretable_step_is_malformed_not_a_violation() {
-    let scenario = scenario(&json!([{ "event": "frobnicate" }]), "invariant_holds");
-    let report = replay(&scenario, Kind::Safety, &registry(), "bad-step");
-    assert!(matches!(report.outcome, Outcome::Malformed { .. }));
-    assert!(report.failed());
-}
-
-#[test]
-fn a_legal_step_rejection_is_recorded_without_failing() {
-    // Cancelling before dispatch is refused by the model. That is a modeled
-    // outcome, not a harness error.
-    let scenario = scenario(
-        &json!([{ "event": "cancel" }, { "event": "dispatch" }]),
-        "invariant_holds",
-    );
-    let report = replay(&scenario, Kind::Safety, &registry(), "rejected");
-    assert_eq!(report.outcome, Outcome::Matched);
-    assert!(!report.steps[0].applied, "step 0 should be refused");
-    assert!(report.steps[1].applied);
-}
-
-#[test]
-fn quarantined_and_unreproduced_scenarios_do_not_gate() {
-    let base = scenario(
-        &json!([{ "event": "dispatch" }, { "event": "complete" }]),
-        "invariant_violated",
-    );
-
-    let mut quarantined = base.clone();
-    quarantined.status = ScenarioStatus::Quarantined;
-    let report = replay(&quarantined, Kind::Safety, &registry(), "quarantined");
-    assert!(matches!(report.outcome, Outcome::Mismatched { .. }));
-    assert!(!report.failed(), "quarantined must be reported, not gating");
-
-    let mut unreproduced = base;
-    unreproduced.status = ScenarioStatus::Unreproduced;
-    let report = replay(&unreproduced, Kind::Safety, &registry(), "unreproduced");
-    assert!(!report.failed());
-}
-
-#[test]
-fn an_unreproduced_scenario_that_starts_matching_is_promotable() {
-    let mut scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "complete" },
-            { "event": "late_response" }
-        ]),
-        "invariant_violated",
-    );
-    scenario.status = ScenarioStatus::Unreproduced;
-    let report = replay(&scenario, Kind::Safety, &registry(), "promotable");
-    assert_eq!(
-        report.outcome,
-        Outcome::Promotable,
-        "the runner surfaces the promotion instead of rewriting the file"
-    );
-    assert!(!report.failed());
-}
-
-#[test]
-fn minimization_drops_steps_that_do_not_matter() {
-    let scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "cancel" },
-            { "event": "complete" },
-            { "event": "late_response" }
-        ]),
-        "invariant_violated",
-    );
-    let minimized = minimize(&scenario, Kind::Safety, &registry());
+fn cli_rejects_duplicate_keys_as_invalid_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("duplicate.json");
+    let raw = r#"{"schema":1,"project":"example","model":"counter","invariant":"EX-COUNT-001","origin":{"kind":"manual"},"steps":[{"actor":"a","value":3,"value":0}],"expect":"invariant_holds"}"#;
+    std::fs::write(&path, raw).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_verify"))
+        .arg("replay")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
     assert!(
-        minimized.steps.len() < scenario.steps.len(),
-        "expected a shorter trace, got {:?}",
-        minimized.steps
-    );
-    // Whatever survives must still reproduce.
-    let report = replay(&minimized, Kind::Safety, &registry(), "minimized");
-    assert_eq!(report.outcome, Outcome::Matched);
-}
-
-#[test]
-fn minimization_leaves_a_golden_trace_intact() {
-    // The bug the design review caught: verdict-preserving minimization shrinks
-    // a golden trace to the empty trace, which trivially still holds.
-    let scenario = scenario(
-        &json!([{ "event": "dispatch" }, { "event": "complete" }]),
-        "invariant_holds",
-    );
-    let minimized = minimize(&scenario, Kind::Safety, &registry());
-    assert_eq!(
-        minimized.steps, scenario.steps,
-        "a golden trace must survive minimization with its steps intact"
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("duplicate JSON object key")
     );
 }
 
 #[test]
-fn minimization_does_not_shrink_a_scenario_that_never_reproduced() {
-    let scenario = scenario(
-        &json!([{ "event": "dispatch" }, { "event": "complete" }]),
-        "invariant_violated",
-    );
-    let minimized = minimize(&scenario, Kind::Safety, &registry());
-    assert_eq!(
-        minimized.steps, scenario.steps,
-        "without a reproduction every candidate 'still fails', shrinking to nothing"
-    );
-}
-
-#[test]
-fn a_pure_target_is_deterministic() {
-    let scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "complete" },
-            { "event": "late_response" }
-        ]),
-        "invariant_violated",
-    );
-    let report = check_determinism(&scenario, Kind::Safety, &registry(), 3);
-    assert!(report.stable);
-    assert_eq!(report.runs, 3);
-}
-
-#[test]
-fn liveness_is_judged_at_the_end_of_the_trace() {
-    // A liveness property is not violated by an intermediate state that has not
-    // yet satisfied it — that is the middle of a trace, not a counterexample.
-    let scenario = scenario(
-        &json!([
-            { "event": "dispatch" },
-            { "event": "complete" },
-            { "event": "late_response" }
-        ]),
-        "invariant_violated",
-    );
-    let safety = replay(&scenario, Kind::Safety, &registry(), "as-safety");
-    let liveness = replay(&scenario, Kind::Liveness, &registry(), "as-liveness");
-    assert_eq!(safety.outcome, Outcome::Matched);
-    // Same trace, different judgement rule: the final state is still violating
-    // here, so both agree — but the reasoning differs, and first_violation is
-    // recorded either way.
-    assert_eq!(liveness.outcome, Outcome::Matched);
-    assert_eq!(safety.expect, Expect::InvariantViolated);
-}
-
-struct VerdictModel(verify_core::verdict::Verdict);
-impl verify_core::target::ScenarioTarget for VerdictModel {
-    type State = ();
-    type Step = serde_json::Value;
-    fn init(&self, _: &serde_json::Value) -> Result<(), verify_core::target::ScenarioError> {
-        Ok(())
-    }
-    fn apply(
-        &self,
-        (): &mut (),
-        _: &Self::Step,
-    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
-        Ok(verify_core::target::StepOutcome::Applied)
-    }
-    fn check(
-        &self,
-        id: &verify_core::InvariantId,
-        (): &(),
-    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
-        Ok(verify_core::InvariantResult::new(
-            id.clone(),
-            self.0.clone(),
-        ))
-    }
-}
-
-#[test]
-fn unavailable_verdicts_never_pass_as_holding_invariants() {
-    use verify_core::verdict::Verdict;
-    for verdict in [
-        Verdict::Error {
-            reason: "failed".into(),
-        },
-        Verdict::Skipped {
-            reason: "missing".into(),
-        },
-        Verdict::Uncovered,
+fn normalization_cannot_disable_an_active_regression_gate() {
+    let runner = registry(Counter::default(), "safety");
+    for (values, expect) in [
+        (&[2][..], "invariant_holds"),
+        (&[0][..], "invariant_violated"),
     ] {
-        let targets = TargetRegistry::new().with(
-            TargetKey::new("fixture", "request"),
-            Box::new(VerdictModel(verdict)),
+        let original = scenario(values, expect, "active");
+        assert!(
+            runner
+                .replay(&original, &ReplayLimits::default())
+                .gate_failure
         );
-        for steps in [json!([]), json!([{}])] {
-            let report = replay(
-                &scenario(&steps, "invariant_holds"),
-                Kind::Safety,
-                &targets,
-                "unavailable",
-            );
-            assert!(matches!(report.outcome, Outcome::Malformed { .. }));
-            assert!(report.failed());
-        }
+        let normalized = runner
+            .normalize(&original, &NormalizationOptions::default())
+            .unwrap();
+        assert_eq!(normalized.scenario.scenario().status, Status::Active);
+        assert!(
+            runner
+                .replay(&normalized.scenario, &ReplayLimits::default())
+                .gate_failure
+        );
     }
 }
 
 #[test]
-fn empty_final_state_traces_judge_the_initial_state() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(VerdictModel(verify_core::verdict::Verdict::Falsified)),
-    );
-    for kind in [Kind::Liveness, Kind::Refinement] {
-        let report = replay(
-            &scenario(&json!([]), "invariant_violated"),
-            kind,
-            &targets,
-            "initial-only",
-        );
-        assert_eq!(report.outcome, Outcome::Matched);
-        assert_eq!(report.first_violation, Some(0));
-    }
-}
-
-struct AlternatingModel(std::cell::Cell<bool>);
-impl verify_core::target::ScenarioTarget for AlternatingModel {
-    type State = ();
-    type Step = serde_json::Value;
-    fn init(&self, _: &serde_json::Value) -> Result<(), verify_core::target::ScenarioError> {
-        Ok(())
-    }
-    fn apply(
-        &self,
-        (): &mut (),
-        _: &Self::Step,
-    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
-        let previous = self.0.replace(!self.0.get());
-        Ok(if previous {
-            verify_core::target::StepOutcome::Applied
-        } else {
-            verify_core::target::StepOutcome::rejected("unavailable")
-        })
-    }
-    fn check(
-        &self,
-        id: &verify_core::InvariantId,
-        (): &(),
-    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
-        Ok(verify_core::InvariantResult::new(
-            id.clone(),
-            verify_core::verdict::Verdict::Verified,
-        ))
-    }
-}
-#[test]
-fn determinism_checks_step_outcomes_even_when_final_verdicts_match() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(AlternatingModel(std::cell::Cell::new(false))),
-    );
-    let scenario = scenario(&json!([{}]), "invariant_holds");
-    assert!(!check_determinism(&scenario, Kind::Safety, &targets, 3).stable);
-    assert_eq!(
-        verify_runner::normalize(&scenario, Kind::Safety, &targets, 3).status,
-        ScenarioStatus::Quarantined
-    );
-}
-
-struct LiteralModel(bool);
-impl verify_core::target::ScenarioTarget for LiteralModel {
-    fn allows_identifier_renaming(&self) -> bool {
-        self.0
-    }
-    type State = bool;
-    type Step = String;
-    fn init(&self, _: &serde_json::Value) -> Result<bool, verify_core::target::ScenarioError> {
-        Ok(false)
-    }
-    fn apply(
-        &self,
-        state: &mut bool,
-        step: &String,
-    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
-        *state = step == "literal_7";
-        Ok(verify_core::target::StepOutcome::Applied)
-    }
-    fn check(
-        &self,
-        id: &verify_core::InvariantId,
-        state: &bool,
-    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
-        Ok(verify_core::InvariantResult::new(
-            id.clone(),
-            if *state {
-                verify_core::verdict::Verdict::Falsified
-            } else {
-                verify_core::verdict::Verdict::Verified
+fn identifier_renaming_cannot_add_or_remove_golden_steps() {
+    let original = scenario(&[0, 1, 0], "invariant_holds", "active");
+    for rename_length_change in [-1, 1] {
+        let runner = registry(
+            Counter {
+                rename_length_change,
+                ..Default::default()
             },
-        ))
-    }
-}
-#[test]
-fn normalization_discards_identifier_rewriting_that_changes_the_verdict() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(LiteralModel(true)),
-    );
-    let scenario = scenario(&json!(["literal_7"]), "invariant_violated");
-    let normalized = verify_runner::normalize(&scenario, Kind::Safety, &targets, 3);
-    assert_eq!(
-        normalized.steps,
-        json!(["literal_7"]).as_array().unwrap().clone()
-    );
-    assert_eq!(normalized.status, ScenarioStatus::Active);
-    assert_eq!(
-        replay(&normalized, Kind::Safety, &targets, "guarded").outcome,
-        Outcome::Matched
-    );
-}
-
-#[test]
-fn normalization_preserves_literal_payloads_without_identifier_opt_in() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(LiteralModel(false)),
-    );
-    let scenario = scenario(&json!(["literal_8"]), "invariant_holds");
-    let normalized = verify_runner::normalize(&scenario, Kind::Safety, &targets, 3);
-    assert_eq!(normalized.steps, vec![json!("literal_8")]);
-}
-
-#[test]
-fn repaired_violation_counts_for_safety_but_not_final_state_properties() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(LiteralModel(false)),
-    );
-    let scenario = scenario(&json!(["literal_7", "repaired"]), "invariant_violated");
-    assert_eq!(
-        replay(&scenario, Kind::Safety, &targets, "safety").outcome,
-        Outcome::Matched
-    );
-    assert_eq!(
-        replay(&scenario, Kind::Liveness, &targets, "liveness").outcome,
-        Outcome::Mismatched {
-            expected: Expect::InvariantViolated,
-            observed: Expect::InvariantHolds
-        }
-    );
-}
-
-struct AlternatingInitialEvidence(std::cell::Cell<bool>);
-impl verify_core::target::ScenarioTarget for AlternatingInitialEvidence {
-    type State = (bool, bool);
-    type Step = serde_json::Value;
-
-    fn init(
-        &self,
-        _: &serde_json::Value,
-    ) -> Result<Self::State, verify_core::target::ScenarioError> {
-        let previous = self.0.replace(!self.0.get());
-        Ok((previous, false))
-    }
-
-    fn apply(
-        &self,
-        state: &mut Self::State,
-        _: &Self::Step,
-    ) -> Result<verify_core::target::StepOutcome, verify_core::target::ScenarioError> {
-        state.1 = true;
-        Ok(verify_core::target::StepOutcome::Applied)
-    }
-
-    fn check(
-        &self,
-        id: &verify_core::InvariantId,
-        state: &Self::State,
-    ) -> Result<verify_core::InvariantResult, verify_core::target::ScenarioError> {
-        let verdict = if state.0 && !state.1 {
-            verify_core::verdict::Verdict::Bounded {
-                bounds: vec![verify_core::verdict::Bound {
-                    dimension: "depth".into(),
-                    limit: 1,
-                }],
-            }
-        } else {
-            verify_core::verdict::Verdict::Verified
-        };
-        Ok(verify_core::InvariantResult::new(id.clone(), verdict))
-    }
-}
-
-#[test]
-fn determinism_preserves_initial_evidence_even_with_identical_final_results() {
-    for steps in [json!([]), json!([{}])] {
-        let targets = TargetRegistry::new().with(
-            TargetKey::new("fixture", "request"),
-            Box::new(AlternatingInitialEvidence(std::cell::Cell::new(false))),
+            "safety",
         );
-        let trace = scenario(&steps, "invariant_holds");
-        assert!(!check_determinism(&trace, Kind::Safety, &targets, 3).stable);
+        let normalized = runner
+            .normalize(&original, &NormalizationOptions::default())
+            .unwrap();
+        assert!(normalized.discarded_transformation);
         assert_eq!(
-            verify_runner::normalize(&trace, Kind::Safety, &targets, 3).status,
-            ScenarioStatus::Quarantined
+            normalized.scenario.scenario().steps,
+            original.scenario().steps
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_rejects_fifo_before_blocking_open() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fifo = temporary.path().join("scenario.json");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_verify"))
+        .arg("replay")
+        .arg(&fifo)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(2));
+            break;
+        }
+        // Includes cold binary startup on macOS, not just the file operation.
+        if started.elapsed() > Duration::from_secs(10) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("scenario loader blocked opening a FIFO");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn transient_and_initial_violations_are_sticky_and_empty_golden_is_valid() {
+    let runner = registry(Counter::default(), "safety");
+    let trace = scenario(&[0, 2, 0], "invariant_violated", "active");
+    let report = runner.replay(&trace, &ReplayLimits::default());
+    assert_eq!(report.verdict, TraceVerdict::InvariantViolated);
+    assert_eq!(report.first_violation, Some(2));
+    assert_eq!(report.observations.len(), 4);
+    assert!(!report.gate_failure);
+    let mut initial = trace.scenario().clone();
+    initial.initial.insert("value".into(), json!(3));
+    initial.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&initial.validate().unwrap(), &ReplayLimits::default())
+            .first_violation,
+        Some(0)
+    );
+    let empty = runner.replay(
+        &scenario(&[], "invariant_holds", "active"),
+        &ReplayLimits::default(),
+    );
+    assert_eq!(empty.verdict, TraceVerdict::InvariantHolds);
+    assert_eq!(empty.observations.len(), 1);
+}
+
+#[test]
+fn all_expectation_status_combinations_follow_the_gate_table() {
+    let runner = registry(Counter::default(), "security");
+    for status in ["active", "quarantined", "unreproduced"] {
+        for expect in ["invariant_holds", "invariant_violated"] {
+            for values in [&[0][..], &[2][..]] {
+                let report =
+                    runner.replay(&scenario(values, expect, status), &ReplayLimits::default());
+                let matches = (values == [0] && expect == "invariant_holds")
+                    || (values == [2] && expect == "invariant_violated");
+                assert_eq!(report.matches_expectation, matches);
+                assert_eq!(report.gate_failure, status == "active" && !matches);
+                assert_eq!(
+                    report.suggested_promotion,
+                    status == "unreproduced" && matches
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn failures_never_satisfy_counterexample_expectations() {
+    let runner = registry(Counter::default(), "safety");
+    for values in [&[-99][..], &[2, -99][..]] {
+        let report = runner.replay(
+            &scenario(values, "invariant_violated", "active"),
+            &ReplayLimits::default(),
+        );
+        assert_eq!(report.verdict, TraceVerdict::Error);
+        assert!(report.gate_failure);
+    }
+    let mut raw = scenario(&[], "invariant_violated", "active")
+        .scenario()
+        .clone();
+    raw.invariant = "EX-COUNT-002".to_owned().try_into().unwrap();
+    raw.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&raw.validate().unwrap(), &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::Error
+    );
+    let mut raw = scenario(&[], "invariant_violated", "active")
+        .scenario()
+        .clone();
+    raw.steps = vec![json!({"bad":true})];
+    raw.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&raw.validate().unwrap(), &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::Error
+    );
+    let mut raw = scenario(&[], "invariant_violated", "active")
+        .scenario()
+        .clone();
+    raw.initial.insert("value".into(), json!("invalid"));
+    raw.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&raw.validate().unwrap(), &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::Error
+    );
+}
+
+#[test]
+fn rejections_and_incomplete_observations_remain_distinct() {
+    let runner = registry(Counter::default(), "safety");
+    let report = runner.replay(
+        &scenario(&[-1], "invariant_holds", "active"),
+        &ReplayLimits::default(),
+    );
+    assert_eq!(
+        report.observations[1].outcome,
+        Some(StepOutcome::Rejected {
+            reason: "fixture rejection".into()
+        })
+    );
+    let report = runner.replay(
+        &scenario(&[-2, 0], "invariant_holds", "active"),
+        &ReplayLimits::default(),
+    );
+    assert_eq!(report.verdict, TraceVerdict::Incomplete);
+    assert!(report.gate_failure);
+}
+
+#[test]
+fn registry_rejects_unknown_identity_and_replacement() {
+    let mut runner = registry(Counter::default(), "safety");
+    assert!(
+        runner
+            .register(&catalog("safety"), "counter", Counter::default())
+            .is_err()
+    );
+    assert!(
+        runner
+            .register(&catalog("safety"), "unknown", Counter::default())
+            .is_err()
+    );
+    assert_eq!(runner.targets(), vec![("example", "counter")]);
+    let mut raw = scenario(&[], "invariant_holds", "active")
+        .scenario()
+        .clone();
+    raw.project = "other".into();
+    raw.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&raw.validate().unwrap(), &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::Error
+    );
+    let mut raw = scenario(&[], "invariant_holds", "active")
+        .scenario()
+        .clone();
+    raw.invariant = "EX-COUNT-999".to_owned().try_into().unwrap();
+    raw.fingerprint = None;
+    assert_eq!(
+        runner
+            .replay(&raw.validate().unwrap(), &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::Error
+    );
+}
+
+#[test]
+fn unsupported_semantics_and_exhausted_budgets_are_incomplete() {
+    let trace = scenario(&[0], "invariant_holds", "active");
+    for kind in ["liveness", "refinement"] {
+        assert_eq!(
+            registry(Counter::default(), kind)
+                .replay(&trace, &ReplayLimits::default())
+                .verdict,
+            TraceVerdict::Incomplete
+        );
+    }
+    let runner = registry(Counter::default(), "safety");
+    for limits in [
+        ReplayLimits {
+            max_steps: 0,
+            ..Default::default()
+        },
+        ReplayLimits {
+            timeout: Duration::ZERO,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            runner.replay(&trace, &limits).verdict,
+            TraceVerdict::Incomplete
         );
     }
 }
 
 #[test]
-fn reports_preserve_and_render_initial_evidence() {
-    let targets = TargetRegistry::new().with(
-        TargetKey::new("fixture", "request"),
-        Box::new(VerdictModel(verify_core::verdict::Verdict::Bounded {
-            bounds: vec![verify_core::verdict::Bound {
-                dimension: "depth".into(),
-                limit: 2,
-            }],
-        })),
+fn golden_traces_never_shrink_but_counterexamples_do() {
+    let runner = registry(Counter::default(), "safety");
+    let golden = scenario(&[0, 1, 0], "invariant_holds", "active");
+    let normalized = runner
+        .normalize(&golden, &NormalizationOptions::default())
+        .unwrap();
+    assert_eq!(normalized.scenario.scenario().steps.len(), 3);
+    assert_eq!(
+        normalized.scenario.scenario().steps[0],
+        json!({"actor":"actor_0","value":0})
     );
-    let report = replay(
-        &scenario(&json!([]), "invariant_holds"),
-        Kind::Safety,
-        &targets,
-        "initial evidence",
+    let violation = scenario(&[0, 0, 2, 0, 0], "invariant_violated", "active");
+    let normalized = runner
+        .normalize(&violation, &NormalizationOptions::default())
+        .unwrap();
+    assert_eq!(
+        normalized.scenario.scenario().steps,
+        vec![json!({"actor":"actor_0","value":2})]
     );
-    let encoded = serde_json::to_value(&report).unwrap();
-    assert_eq!(encoded["initial_result"]["invariant"], "FIXTURE-REQ-001");
-    let decoded: verify_report::replay::ReplayReport =
-        serde_json::from_value(encoded.clone()).unwrap();
-    assert_eq!(decoded, report);
-    assert!(verify_report::text::render_text(&report).contains("initial: bounded (depth <= 2)"));
+    assert_eq!(
+        runner
+            .replay(&normalized.scenario, &ReplayLimits::default())
+            .verdict,
+        TraceVerdict::InvariantViolated
+    );
+    let second = runner
+        .normalize(&normalized.scenario, &NormalizationOptions::default())
+        .unwrap();
+    assert_eq!(
+        normalized.scenario.fingerprint(),
+        second.scenario.fingerprint()
+    );
+}
 
-    // Earlier report JSON remains readable without inventing initial evidence.
-    let mut legacy = encoded;
-    legacy.as_object_mut().unwrap().remove("initial_result");
-    let legacy: verify_report::replay::ReplayReport = serde_json::from_value(legacy).unwrap();
-    assert!(legacy.initial_result.is_none());
+#[test]
+fn canonical_ids_collapse_cross_origin_traces_and_bad_renaming_is_discarded() {
+    let runner = registry(Counter::default(), "safety");
+    let original = scenario(&[2], "invariant_violated", "active");
+    let mut renamed = original.scenario().clone();
+    renamed.steps[0]["actor"] = json!("totally_different");
+    renamed.fingerprint = None;
+    assert_eq!(
+        runner
+            .normalize(&original, &NormalizationOptions::default())
+            .unwrap()
+            .scenario
+            .fingerprint(),
+        runner
+            .normalize(
+                &renamed.validate().unwrap(),
+                &NormalizationOptions::default()
+            )
+            .unwrap()
+            .scenario
+            .fingerprint()
+    );
+    let broken = registry(
+        Counter {
+            broken_rename: true,
+            ..Default::default()
+        },
+        "safety",
+    );
+    let result = broken
+        .normalize(&original, &NormalizationOptions::default())
+        .unwrap();
+    assert!(result.discarded_transformation);
+    assert_eq!(result.scenario.fingerprint(), original.fingerprint());
+}
+
+#[test]
+fn determinism_failures_quarantine_and_budget_is_explicit() {
+    let flaky = registry(
+        Counter {
+            flaky: Some(Cell::new(false)),
+            ..Default::default()
+        },
+        "safety",
+    );
+    let trace = scenario(&[], "invariant_holds", "active");
+    assert_eq!(
+        flaky
+            .normalize(&trace, &NormalizationOptions::default())
+            .unwrap()
+            .scenario
+            .scenario()
+            .status,
+        Status::Quarantined
+    );
+    let runner = registry(Counter::default(), "safety");
+    let options = NormalizationOptions {
+        max_replays: NonZeroUsize::new(6).unwrap(),
+        ..Default::default()
+    };
+    let result = runner
+        .normalize(
+            &scenario(&[0, 2, 0], "invariant_violated", "active"),
+            &options,
+        )
+        .unwrap();
+    assert!(result.budget_exhausted);
+    assert_eq!(result.replays, 6);
+    assert!(
+        runner
+            .normalize(
+                &trace,
+                &NormalizationOptions {
+                    determinism_runs: NonZeroUsize::new(1).unwrap(),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn unmatched_evidence_is_not_shrunk_and_promotion_is_never_automatic() {
+    let runner = registry(Counter::default(), "safety");
+    let result = runner
+        .normalize(
+            &scenario(&[0, 0], "invariant_violated", "unreproduced"),
+            &NormalizationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(result.scenario.scenario().status, Status::Unreproduced);
+    assert_eq!(result.scenario.scenario().steps.len(), 2);
+    let result = runner
+        .normalize(
+            &scenario(&[0], "invariant_holds", "unreproduced"),
+            &NormalizationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(result.scenario.scenario().status, Status::Unreproduced);
+    assert!(
+        runner
+            .replay(&result.scenario, &ReplayLimits::default())
+            .suggested_promotion
+    );
+    assert!(
+        runner
+            .normalize(
+                &scenario(&[-99], "invariant_violated", "active"),
+                &NormalizationOptions::default()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn corpus_is_content_addressed_non_overwriting_and_replay_does_not_mutate() {
+    let directory = tempfile::tempdir().unwrap();
+    let trace = scenario(&[2], "invariant_violated", "active");
+    assert_eq!(
+        insert_scenario(directory.path(), &trace).unwrap(),
+        InsertResult::Inserted
+    );
+    let path = directory.path().join(trace.corpus_path());
+    let before = std::fs::read(&path).unwrap();
+    let mut alternate = trace.scenario().clone();
+    alternate.status = Status::Unreproduced;
+    assert_eq!(
+        insert_scenario(directory.path(), &alternate.validate().unwrap()).unwrap(),
+        InsertResult::Existing
+    );
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    assert_eq!(
+        run_cli(
+            &registry(Counter::default(), "safety"),
+            [OsString::from("replay"), path.clone().into_os_string()],
+            &mut output,
+            &mut errors
+        ),
+        0
+    );
+    let report: verify_runner::ReplayReport = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report.verdict, TraceVerdict::InvariantViolated);
+    assert!(errors.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::write(&path, b"corrupt").unwrap();
+    assert!(matches!(
+        insert_scenario(directory.path(), &trace),
+        Err(CorpusError::Envelope(_))
+    ));
+}
+
+#[test]
+fn cli_status_exit_codes_and_invalid_input_are_not_hidden() {
+    let directory = tempfile::tempdir().unwrap();
+    let runner = registry(Counter::default(), "safety");
+    for (status, expected) in [("active", 1), ("quarantined", 0), ("unreproduced", 0)] {
+        let trace = scenario(&[2], "invariant_holds", status);
+        let path = directory.path().join(status);
+        std::fs::write(&path, serde_json::to_vec(trace.scenario()).unwrap()).unwrap();
+        assert_eq!(
+            run_cli(
+                &runner,
+                [OsString::from("replay"), path.into_os_string()],
+                &mut Vec::new(),
+                &mut Vec::new()
+            ),
+            expected
+        );
+    }
+    for args in [
+        vec![],
+        vec![OsString::from("replay")],
+        vec![OsString::from("oops")],
+        vec![
+            OsString::from("replay"),
+            directory.path().join("absent").into_os_string(),
+        ],
+    ] {
+        assert_eq!(run_cli(&runner, args, &mut Vec::new(), &mut Vec::new()), 2);
+    }
+    let path = directory.path().join("active");
+    let output = Command::new(env!("CARGO_BIN_EXE_verify"))
+        .arg("replay")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: verify_runner::ReplayReport = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report.verdict, TraceVerdict::Error);
+    assert!(report.diagnostic.unwrap().contains("unknown target"));
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_verify"))
+            .arg("--help")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn corpus_rejects_symlink_directories_and_files() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let trace = scenario(&[], "invariant_holds", "active");
+    symlink(outside.path(), root.path().join("example")).unwrap();
+    assert!(matches!(
+        insert_scenario(root.path(), &trace),
+        Err(CorpusError::UnsafePath)
+    ));
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn cooperative_deadline_after_slow_call_is_incomplete() {
+    struct Slow(Counter);
+    impl ScenarioTarget for Slow {
+        type State = i64;
+        type Step = counter::Step;
+        fn init(&self, initial: &serde_json::Value) -> Result<i64, ScenarioError> {
+            self.0.init(initial)
+        }
+        fn apply(&self, state: &mut i64, step: &Self::Step) -> Result<StepOutcome, ScenarioError> {
+            std::thread::sleep(Duration::from_millis(5));
+            self.0.apply(state, step)
+        }
+        fn check(
+            &self,
+            id: &verify_core::InvariantId,
+            state: &i64,
+        ) -> Result<verify_core::InvariantResult, ScenarioError> {
+            self.0.check(id, state)
+        }
+    }
+    let mut runner = TargetRegistry::default();
+    runner
+        .register(&catalog("safety"), "counter", Slow(Counter::default()))
+        .unwrap();
+    let report = runner.replay(
+        &scenario(&[0], "invariant_holds", "active"),
+        &ReplayLimits {
+            timeout: Duration::from_millis(1),
+            ..Default::default()
+        },
+    );
+    assert_eq!(report.verdict, TraceVerdict::Incomplete);
 }

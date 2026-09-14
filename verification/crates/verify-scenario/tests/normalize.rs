@@ -19,7 +19,10 @@ fn scenario_with(steps: &Value, initial: Option<&Value>) -> Scenario {
   "expect": "invariant_violated"{initial_fragment}
 }}"#
     );
-    Scenario::parse(&text).expect("parse")
+    Scenario::from_json(&text)
+        .expect("parse")
+        .scenario()
+        .clone()
 }
 
 #[test]
@@ -73,7 +76,7 @@ fn initial_state_identifiers_are_renamed_consistently_with_steps() {
         Some(&json!({ "primary": "upstream_4" })),
     );
     let out = normalize_identifiers_only(&scenario);
-    let initial = out.initial.clone().expect("initial present");
+    let initial = out.initial.clone();
     assert_eq!(initial["primary"], json!("upstream_0"));
     assert_eq!(out.steps[0]["on"], json!("upstream_0"));
 }

@@ -1,0 +1,19 @@
+[package]
+name = "verify-loom"
+description = "Bounded Loom and Shuttle concurrency verification adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+loom.workspace = true
+serde_json.workspace = true
+shuttle.workspace = true
+verify-core = { path = "../verify-core", version = "=0.1.0" }
+verify-scenario = { path = "../verify-scenario", version = "=0.1.0" }
+
+[lints]
+workspace = true

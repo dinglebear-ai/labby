@@ -1256,12 +1256,15 @@ async fn run_http(
         bearer_token_configured,
         "building http router"
     );
+    let mut effective_mcp_config = mcp_config.clone();
+    effective_mcp_config.host = Some(host.to_string());
+    effective_mcp_config.port = Some(port);
     #[cfg(feature = "gateway")]
     let router = build_http_router(
         state,
         bearer_token,
         auth_state,
-        mcp_config,
+        &effective_mcp_config,
         config_cors_origins,
         notifier,
         mount_http_mcp,
@@ -1272,7 +1275,7 @@ async fn run_http(
         state,
         bearer_token,
         auth_state,
-        mcp_config,
+        &effective_mcp_config,
         config_cors_origins,
         notifier,
         mount_http_mcp,
@@ -2327,12 +2330,14 @@ fn build_mcp_service_with_scope(
 
     let session_manager = Arc::new(NeverSessionManager::default());
 
+    let resource_url = state
+        .auth_config
+        .as_ref()
+        .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str));
+    let mut origin_hosts = allowed_hosts(mcp_config.allowed_hosts.as_deref().unwrap_or(&[]), None);
     let mut allowed_hosts = allowed_hosts(
         mcp_config.allowed_hosts.as_deref().unwrap_or(&[]),
-        state
-            .auth_config
-            .as_ref()
-            .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str)),
+        resource_url,
     );
     let mut seen_allowed_hosts: std::collections::HashSet<String> =
         allowed_hosts.iter().cloned().collect();
@@ -2340,9 +2345,17 @@ fn build_mcp_service_with_scope(
         if seen_allowed_hosts.insert(host.clone()) {
             allowed_hosts.push(host.clone());
         }
+        if !origin_hosts.contains(host) {
+            origin_hosts.push(host.clone());
+        }
     }
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts.clone())
+        .with_allowed_origins(allowed_origins(
+            &origin_hosts,
+            mcp_config.port.unwrap_or(8765),
+            resource_url,
+        ))
         .with_legacy_session_mode(false)
         .with_json_response(true);
     tracing::info!(
@@ -2516,6 +2529,45 @@ fn allowed_hosts(config_allowed_hosts: &[String], resource_url: Option<&str>) ->
     hosts
 }
 
+/// Build browser origins from the same authorities trusted by MCP Host validation.
+///
+/// An absent Origin remains valid for non-browser clients. A present Origin must
+/// use HTTP(S) and name an explicitly allowed MCP authority.
+fn allowed_origins(
+    allowed_hosts: &[String],
+    bound_port: u16,
+    resource_url: Option<&str>,
+) -> Vec<String> {
+    let mut origins: Vec<String> = allowed_hosts
+        .iter()
+        .map(|host| {
+            let authority = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+                format!("[{host}]:{bound_port}")
+            } else if host
+                .parse::<axum::http::uri::Authority>()
+                .is_ok_and(|value| value.port_u16().is_some())
+            {
+                host.clone()
+            } else {
+                format!("{host}:{bound_port}")
+            };
+            format!("http://{authority}")
+        })
+        .collect();
+    if let Some(resource_url) = resource_url
+        && let Ok(mut parsed) = url::Url::parse(resource_url)
+    {
+        parsed.set_path("");
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        let origin = parsed.as_str().trim_end_matches('/').to_string();
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
 /// Bind a TCP listener on `addr`. If the port is already in use and the
 /// holding process is `lab` (Linux only), send SIGTERM and retry.
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
@@ -2682,7 +2734,7 @@ mod tests {
     #[cfg(feature = "fs")]
     use super::workspace_runtime_home_from_env_values;
     use super::{
-        McpArgs, PeerNotifier, ServeCommand, Transport, allowed_hosts, bind_addr,
+        McpArgs, PeerNotifier, ServeCommand, Transport, allowed_hosts, allowed_origins, bind_addr,
         build_http_router, filter_registry, initialize_selected_file_stash_runtime,
         is_loopback_host, resolve_lab_spawn_depth, resolve_port, resolve_transport,
         resolve_web_ui_auth_disabled, should_run_stdio, stdio_recursion_guard_active,
@@ -2974,6 +3026,25 @@ mod tests {
         assert!(hosts.contains(&"lab.internal".to_string()));
     }
 
+    #[test]
+    fn allowed_origins_are_derived_from_trusted_mcp_hosts() {
+        let origins = allowed_origins(
+            &[
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+                "lab.internal:9443".to_string(),
+            ],
+            8765,
+            Some("https://public.example/mcp"),
+        );
+        assert!(origins.contains(&"http://127.0.0.1:8765".to_string()));
+        assert!(origins.contains(&"http://[::1]:8765".to_string()));
+        assert!(origins.contains(&"http://lab.internal:9443".to_string()));
+        assert!(origins.contains(&"https://public.example".to_string()));
+        assert!(!origins.contains(&"http://public.example".to_string()));
+        assert!(!origins.contains(&"http://public.example:8765".to_string()));
+    }
+
     #[tokio::test]
     async fn hosted_http_without_http_mcp_keeps_v1_routes_but_not_mcp() {
         let state = AppState::new();
@@ -3041,6 +3112,52 @@ mod tests {
             .await
             .expect("response");
         assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_mcp_validates_present_origin_and_allows_absence() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "127.0.0.1:8765")
+                    .header("origin", "https://attacker.invalid")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(invalid.status(), StatusCode::FORBIDDEN);
+
+        for origin in [Some("http://127.0.0.1:8765"), None] {
+            let mut request = Request::builder()
+                .method("GET")
+                .uri("/mcp")
+                .header("host", "127.0.0.1:8765");
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            assert_ne!(response.status(), StatusCode::FORBIDDEN);
+        }
     }
 
     #[tokio::test]

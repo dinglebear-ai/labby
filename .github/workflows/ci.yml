@@ -59,7 +59,7 @@ jobs:
           --allow-arm64
       - name: Verify workflow policy tests and Node toolchain sync
         run: |
-          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py
+          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py scripts/ci/test_verification_workflow.py scripts/ci/test_conformance_workflow.py scripts/ci/test_incident_evidence.py scripts/ci/test_mcp_spec_workflow.py
           python scripts/ci/check_node_toolchain_sync.py
       - name: Enforce shared-cache capability boundary
         run: >-
@@ -1168,6 +1168,28 @@ jobs:
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts
         run: python3 scripts/ci/mcp_auth_normative_conformance.py
+      - name: Checkout immutable MCP specification source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: modelcontextprotocol/modelcontextprotocol
+          ref: 5f5440bb26a62e2cf3440b92da5a667efa03b267
+          path: target/mcp-spec-source
+          persist-credentials: false
+      - name: Fetch locked dependencies for offline evidence binding
+        run: cargo fetch --locked
+      - name: Validate full specification inventory and fail-closed reporter
+        run: |
+          python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
+          python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout target/mcp-spec-source
+      - name: Run registered specification oracles (not a full-compliance claim)
+        run: python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout target/mcp-spec-source
+      - name: Preserve specification coverage gaps and execution receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mcp-spec-compliance
+          path: target/mcp-spec-compliance
+          if-no-files-found: warn
       - name: Run dated protocol and extension suites
         run: |
           python3 -m unittest scripts/ci/test_mcp_conformance_script.py
@@ -1675,6 +1697,24 @@ jobs:
       - name: Run isolated real-Authelia flow
         run: bash tests/authelia/run.sh
 
+  verification-t0:
+    name: Verification T0
+    uses: ./.github/workflows/verification-t0.yml
+    permissions:
+      contents: read
+
+  verification-conformance:
+    name: Lifecycle implementation conformance
+    uses: ./.github/workflows/verification-conformance.yml
+    permissions:
+      contents: read
+
+  verification-t1:
+    name: Verification T1 (advisory)
+    uses: ./.github/workflows/verification-t1.yml
+    permissions:
+      contents: read
+
   ci-gate:
     name: ci-gate
     runs-on: ubuntu-24.04
@@ -1682,6 +1722,8 @@ jobs:
     if: always()
     needs:
       - fleet-policy
+      - verification-t0
+      - verification-conformance
       - changes
       - unraid-plugin-check
       - actionlint
@@ -1769,6 +1811,8 @@ jobs:
             esac
           }
           require_success fleet-policy "${{ needs.fleet-policy.result }}"
+          require_success verification-t0 "${{ needs.verification-t0.result }}"
+          require_success verification-conformance "${{ needs.verification-conformance.result }}"
           require_success changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"

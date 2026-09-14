@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Refresh the normative MCP 2026-07-28 authorization denominator."""
 
-import json
-import hashlib
-import re
-import urllib.request
 import argparse
+import hashlib
+import json
+import re
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +18,18 @@ SOURCE_BASE = (
     f"{SOURCE_REVISION}/docs/specification/2026-07-28/basic/authorization/"
 )
 PAGES = ["index.md", "authorization-server-discovery.md", "client-registration.md", "security-considerations.md"]
+FETCH_ATTEMPTS = 3
+
+
+def fetch_source(url: str) -> str:
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return urllib.request.urlopen(url, timeout=20).read().decode()
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            time.sleep(attempt)
+    raise AssertionError("unreachable")
 
 
 def fetch_denominator() -> dict:
@@ -24,7 +38,7 @@ def fetch_denominator() -> dict:
     for page in PAGES:
         url = BASE + page
         source_page = page.removesuffix(".md") + ".mdx"
-        text = urllib.request.urlopen(SOURCE_BASE + source_page, timeout=20).read().decode()
+        text = fetch_source(SOURCE_BASE + source_page)
         source_digests[url] = hashlib.sha256(text.encode()).hexdigest()
         paragraphs = re.split(r"\n\s*\n", text)
         ordinal = 0

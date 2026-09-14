@@ -14,7 +14,7 @@ Feature invariant status: clean.
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `integrated-gateway` | IntentionalException | false | false | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
-| labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit` |
+| labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit`<br>`labby-auth/testkit` |
 | labby | `skills` | IntentionalException | true | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
@@ -23,6 +23,7 @@ Feature invariant status: clean.
 | labby-apis | `test-utils` | HelperInternal | false | false | - |  |
 | labby-auth | `default` | AggregateDefault | true | true | - |  |
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
+| labby-auth | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow`<br>`dep:labby-runtime` |
 | labby-codemode | `no_features` | ExtractedCrate | true | true | - |  |
 | labby-gateway | `skills` | ExtractedCrate | false | false | - |  |

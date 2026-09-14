@@ -1,0 +1,75 @@
+name: Verification T3
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 7 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  formal-tools:
+    name: TLC and Alloy bounded checks (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: verification/target
+      LABBY_JAVA: java
+      LABBY_TLA_TOOLS_JAR: verification-tools/tla2tools-1.7.4.jar
+      LABBY_ALLOY_JAR: verification-tools/alloy-6.2.0.jar
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-kache
+      - name: Acquire and authenticate exact releases
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mkdir -p verification-tools verification-evidence
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$LABBY_TLA_TOOLS_JAR" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$LABBY_ALLOY_JAR" \
+            https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar
+          printf '%s  %s\n' \
+            936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88 \
+            "$LABBY_TLA_TOOLS_JAR" > verification-tools/SHA256SUMS
+          printf '%s  %s\n' \
+            6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d \
+            "$LABBY_ALLOY_JAR" >> verification-tools/SHA256SUMS
+          sha256sum --check verification-tools/SHA256SUMS
+          cp verification-tools/SHA256SUMS verification-evidence/formal-tool-sha256.txt
+          set +e
+          java -cp "$LABBY_TLA_TOOLS_JAR" tlc2.TLC -help \
+            > verification-evidence/tlc-version.txt 2>&1
+          tlc_status=$?
+          set -e
+          test "$tlc_status" -eq 1
+          grep -F 'Version 2.19' verification-evidence/tlc-version.txt
+          java -jar "$LABBY_ALLOY_JAR" version \
+            > verification-evidence/alloy-version.txt
+      - name: Run exact adapter controls
+        timeout-minutes: 50
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > verification-evidence/source-revision.txt
+          timeout --signal=TERM --kill-after=5s 2700s \
+            cargo test --manifest-path verification/Cargo.toml \
+              -p verify-tla -p verify-alloy --locked --test actual_tools \
+              -- --ignored --test-threads=1 \
+              2>&1 | tee verification-evidence/formal-qualification.txt
+          printf '%s\n' \
+            'Apalache unavailable in this lane: pinned image is not executed without a configured container runtime.' \
+            > verification-evidence/apalache-unavailable.txt
+      - name: Preserve formal-tool evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-t3-formal-tools
+          path: verification-evidence/
+          if-no-files-found: error
+          retention-days: 14
