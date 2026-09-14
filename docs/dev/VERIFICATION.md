@@ -97,7 +97,7 @@ granular source obligations are present for review. It does **not** mean:
 
 The current catalog has nine reviewed dispositions and nine registered oracles,
 leaving 2,214 rows without dispositions before considering execution state.
-Eight reviewed rows are applicable. The HTTP 0.8.3 `Last-Event-ID` row is
+Eight reviewed rows are applicable. The HTTP-083 `Last-Event-ID` row is
 conditional and therefore remains `applicability_unresolved` even when its
 diagnostic oracle passes. A report can consequently show all nine commands ran
 successfully while both the oracle and full gates remain red. The other rows
@@ -230,7 +230,7 @@ tiers. `mcp-spec-inventory` is a mutation and belongs only in an intentional
 spec migration; ordinary checks never regenerate committed catalogs.
 `mcp-spec-gate` first runs the complete intent and coordinator-test check, then
 executes all registered oracles. It currently exits nonzero because the mapped
-HTTP 0.8.3 conditional row is unresolved; command execution success does not
+HTTP-083 conditional row is unresolved; command execution success does not
 convert that source disposition into compliance credit.
 `mcp-spec-report` preserves the strict compliance exit status and therefore
 normally exits 1 while coverage remains incomplete. A missing receipt is
