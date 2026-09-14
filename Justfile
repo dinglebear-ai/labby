@@ -91,6 +91,32 @@ skill-drift:
 deny:
     cargo deny check
 
+# --- verification toolkit -----------------------------------------------
+# `verification/` is its own Cargo workspace (see verification/CLAUDE.md), so
+# the workspace-wide recipes above do not reach it. These do.
+
+# Check the verification toolkit workspace compiles
+verify-check:
+    cd verification && cargo check --workspace --all-targets
+
+# Run the verification toolkit tests
+verify-test:
+    cd verification && cargo nextest run --workspace
+
+# Lint the verification toolkit workspace
+verify-lint:
+    cd verification && cargo clippy --workspace --all-targets -- -D warnings
+    cd verification && cargo fmt --all -- --check
+
+# Format the verification toolkit workspace
+verify-fmt:
+    cd verification && cargo fmt --all
+
+# License and vulnerability audit for the verification toolkit lockfile, which
+# the root `deny` recipe does not cover.
+verify-deny:
+    cd verification && cargo deny check
+
 # Build with all features using the release-fast profile (optimized, no LTO/codegen-units=1
 # slowdown). Use `cargo build --workspace --all-features` directly for a debug-assertions/
 # full-unwind dev build instead.
