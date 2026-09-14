@@ -271,7 +271,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
             failure_diagnostics(&mut server, "initial stdio discovery")
         )
     });
-    let initial = published_recovery(&server, "owned-stdio", 9).await;
+    let initial = published_recovery(&server, "owned-stdio", 10).await;
     let row = initial
         .as_array()
         .unwrap()
@@ -308,7 +308,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
             failure_diagnostics(&mut server, "stdio replacement")
         )
     });
-    let recovered = published_recovery(&server, "owned-stdio", 9).await;
+    let recovered = published_recovery(&server, "owned-stdio", 10).await;
     let row = recovered
         .as_array()
         .unwrap()

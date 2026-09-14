@@ -2,22 +2,30 @@
 
 #[cfg(feature = "http-axum")]
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
+use std::sync::OnceLock;
 #[cfg(feature = "http-axum")]
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 const MAX_GOOGLE_REFRESH_LOCKS: usize = 2_048;
 
-#[derive(Default)]
 struct GoogleRefreshLocks {
-    locks: DashMap<String, Arc<Mutex<()>>>,
-    overflow: Arc<Mutex<()>>,
-    maintenance: std::sync::Mutex<()>,
+    locks: [Arc<Mutex<()>>; MAX_GOOGLE_REFRESH_LOCKS],
 }
 
+impl Default for GoogleRefreshLocks {
+    fn default() -> Self {
+        Self {
+            locks: std::array::from_fn(|_| Arc::new(Mutex::new(()))),
+        }
+    }
+}
+
+#[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 static GOOGLE_PROVIDER_REFRESH_LOCKS: OnceLock<GoogleRefreshLocks> = OnceLock::new();
 #[cfg(feature = "http-axum")]
 const SHARED_FAILURE_TTL: Duration = Duration::from_secs(2);
@@ -183,6 +191,7 @@ where
 /// Inbound Labby token rotation, outbound Google MCP refresh, status probes, and
 /// explicit revocation all use this same lock so one central refresh credential
 /// is never refreshed or deleted concurrently by separate product surfaces.
+#[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 pub(crate) fn lock(subject: &str) -> Arc<Mutex<()>> {
     lock_in_registry(
         GOOGLE_PROVIDER_REFRESH_LOCKS.get_or_init(GoogleRefreshLocks::default),
@@ -191,30 +200,12 @@ pub(crate) fn lock(subject: &str) -> Arc<Mutex<()>> {
 }
 
 fn lock_in_registry(registry: &GoogleRefreshLocks, subject: &str) -> Arc<Mutex<()>> {
-    let _maintenance = registry
-        .maintenance
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = registry.locks.get(subject) {
-        return existing.value().clone();
-    }
-    if registry.locks.len() >= MAX_GOOGLE_REFRESH_LOCKS {
-        let idle = registry
-            .locks
-            .iter()
-            .find(|entry| Arc::strong_count(entry.value()) == 1)
-            .map(|entry| entry.key().clone());
-        if let Some(idle) = idle {
-            registry.locks.remove(&idle);
-        } else {
-            return Arc::clone(&registry.overflow);
-        }
-    }
-    registry
-        .locks
-        .entry(subject.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+    // Permanent stripes never remap an active subject when capacity changes.
+    // Hash collisions only serialize unrelated subjects; credential storage and
+    // authority remain separately keyed and checked by each caller.
+    let digest = Sha256::digest(subject.as_bytes());
+    let stripe = usize::from(u16::from_be_bytes([digest[0], digest[1]])) % MAX_GOOGLE_REFRESH_LOCKS;
+    Arc::clone(&registry.locks[stripe])
 }
 
 #[cfg(feature = "http-axum")]
@@ -292,8 +283,7 @@ mod tests {
         }
     }
 
-    // Capacity tests must not force unrelated parallel auth tests onto the
-    // process-wide overflow lock. Exercise the same logic with local registries.
+    // Keep lock contention tests isolated from parallel product auth tests.
     #[test]
     fn lock_is_shared_per_google_subject() {
         let registry = GoogleRefreshLocks::default();
@@ -306,16 +296,45 @@ mod tests {
     }
 
     #[test]
-    fn active_subjects_use_bounded_overflow_lock_after_registry_cap() {
+    fn subject_lock_survives_capacity_recovery() {
         let registry = GoogleRefreshLocks::default();
-        let held = (0..super::MAX_GOOGLE_REFRESH_LOCKS)
-            .map(|index| lock_in_registry(&registry, &format!("bounded-subject-{index}")))
-            .collect::<Vec<_>>();
-        let overflow_one = lock_in_registry(&registry, "bounded-overflow-one");
-        let overflow_two = lock_in_registry(&registry, "bounded-overflow-two");
-        assert!(registry.locks.len() <= super::MAX_GOOGLE_REFRESH_LOCKS);
-        assert!(Arc::ptr_eq(&overflow_one, &overflow_two));
-        drop(held);
+        let mut held: Vec<_> = (0..super::MAX_GOOGLE_REFRESH_LOCKS)
+            .map(|index| lock_in_registry(&registry, &format!("held-subject-{index}")))
+            .collect();
+        let first = lock_in_registry(&registry, "capacity-recovery-subject");
+        let _guard = first.try_lock().unwrap();
+        held.pop();
+        assert_eq!(held.len(), super::MAX_GOOGLE_REFRESH_LOCKS - 1);
+        let second = lock_in_registry(&registry, "capacity-recovery-subject");
+        assert!(
+            second.try_lock().is_err(),
+            "same subject acquired a second lock"
+        );
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn hash_collisions_only_serialize_subjects() {
+        let registry = GoogleRefreshLocks::default();
+        let mut seen = std::collections::HashMap::new();
+        let mut found_collision = false;
+        for index in 0..=super::MAX_GOOGLE_REFRESH_LOCKS {
+            let subject = format!("bounded-subject-{index}");
+            let lock = lock_in_registry(&registry, &subject);
+            if let Some((prior_subject, prior_lock)) =
+                seen.insert(Arc::as_ptr(&lock), (subject.clone(), Arc::clone(&lock)))
+            {
+                assert_ne!(prior_subject, subject);
+                let guard = prior_lock.try_lock().unwrap();
+                assert!(lock.try_lock().is_err());
+                drop(guard);
+                assert!(lock.try_lock().is_ok());
+                assert_eq!(registry.locks.len(), super::MAX_GOOGLE_REFRESH_LOCKS);
+                found_collision = true;
+                break;
+            }
+        }
+        assert!(found_collision, "more subjects than stripes must collide");
     }
 
     #[cfg(feature = "http-axum")]

@@ -1,226 +1,367 @@
-//! The invariant catalog and its validation rules.
-//!
-//! Parsing a catalog is the easy half. The rules below are the reason this
-//! crate exists: each one closes a way for a catalog to look fine and report
-//! green while checking nothing.
-
 use std::collections::{BTreeMap, BTreeSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::backend::{BackendId, Capabilities};
-use crate::invariant::{InvariantId, Kind, Severity, Status};
+use crate::{BackendId, BackendRegistry, InvariantId, identity::valid_namespace};
 
-/// Schema version of the catalog format.
-pub const CATALOG_SCHEMA: u32 = 1;
-
-/// A parsed `invariants.toml`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Catalog {
-    pub schema: u32,
-    pub project: String,
-    /// Identifier prefix every invariant id in this catalog must carry.
-    pub namespace: String,
-    #[serde(default, rename = "invariant")]
-    pub invariants: Vec<Invariant>,
+/// Semantic property category, used to reject unsupported backend bindings.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Nothing bad happens.
+    Safety,
+    /// An obligation eventually completes under declared fairness assumptions.
+    Liveness,
+    /// An authority or confidentiality boundary holds.
+    Security,
+    /// Concrete observations conform to an abstract relation.
+    Refinement,
 }
 
-/// One catalogued property.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Impact of violating a catalogued property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Highest-impact property.
+    Critical,
+    /// High-impact property.
+    High,
+    /// Medium-impact property.
+    Medium,
+}
+
+/// Invariant lifecycle, distinct from a scenario's reproduction status.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantStatus {
+    /// Property currently intended to be checked.
+    #[default]
+    Active,
+    /// Property still being specified.
+    Draft,
+    /// Tombstone retained permanently; the ID cannot be reused.
+    Retired,
+}
+
+/// Nonempty configured handle list; semantic validation also rejects whitespace.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct Handles(
+    /// Adapter-owned handles, never filesystem paths interpreted by the core.
+    #[schemars(length(min = 1), inner(length(min = 1)))]
+    pub Vec<String>,
+);
+
+/// One named correctness property. Constructed data must pass catalog validation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Invariant {
+    /// Permanent namespaced identifier.
     pub id: InvariantId,
+    /// Human-readable property statement.
+    #[schemars(length(min = 1))]
     pub title: String,
+    /// Required backend semantic capability.
     pub kind: Kind,
+    /// Impact of violation.
     pub severity: Severity,
-    /// Target model name, resolved against the project's target registry.
+    /// Project-defined model name.
+    #[schemars(length(min = 1))]
     pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
+    /// Optional project owner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+    /// Lifecycle; omitted entries are active.
     #[serde(default)]
-    pub status: Status,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-    /// Backend id to the handles that backend resolves for this invariant.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub checks: BTreeMap<BackendId, Vec<String>>,
+    pub status: InvariantStatus,
+    /// Optional project annotations, not interpreted by the toolkit.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    /// Backend IDs mapped to adapter-local handles. No entries means uncovered.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_checks"
+    )]
+    #[schemars(with = "BTreeMap<BackendId, Handles>")]
+    pub checks: BTreeMap<BackendId, Handles>,
 }
 
-impl Invariant {
-    /// Whether any backend claims this invariant.
-    pub fn is_covered(&self) -> bool {
-        self.checks.values().any(|handles| !handles.is_empty())
+fn deserialize_checks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<BackendId, Handles>, D::Error> {
+    struct ChecksVisitor;
+    impl<'de> serde::de::Visitor<'de> for ChecksVisitor {
+        type Value = BTreeMap<BackendId, Handles>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("unique backend keys mapped to handle lists")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut result = BTreeMap::new();
+            while let Some((key, handles)) = map.next_entry::<BackendId, Handles>()? {
+                match result.entry(key) {
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate backend key: {}",
+                            entry.key()
+                        )));
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(handles);
+                    }
+                }
+            }
+            Ok(result)
+        }
     }
+    deserializer.deserialize_map(ChecksVisitor)
 }
 
-/// One reason a catalog was rejected.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[non_exhaustive]
+/// Project-agnostic invariant catalog. Use `validate` before consuming bindings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Catalog {
+    /// Envelope version; only version 1 is supported.
+    #[schemars(range(min = 1, max = 1))]
+    pub schema: u32,
+    /// Adopting project identity.
+    #[schemars(length(min = 1))]
+    pub project: String,
+    /// Required prefix of every invariant ID.
+    #[schemars(regex(pattern = "^[A-Z][A-Z0-9]*$"))]
+    pub namespace: String,
+    /// Nonempty property catalog, including retired-ID tombstones.
+    #[schemars(length(min = 1))]
+    pub invariant: Vec<Invariant>,
+}
+
+/// Typed parse/validation failures; callers need not classify error strings.
+#[derive(Debug, Error)]
 pub enum CatalogError {
-    #[error("catalog declares schema {found}, but this tool understands {CATALOG_SCHEMA}")]
-    Schema { found: u32 },
-
-    #[error(
-        "catalog namespace `{namespace}` must be uppercase alphanumeric starting with a letter"
-    )]
-    Namespace { namespace: String },
-
-    #[error("invariant id `{id}` appears more than once")]
-    DuplicateId { id: InvariantId },
-
-    #[error(
-        "invariant id `{id}` does not start with the catalog namespace `{namespace}`; \
-         ids from another project would otherwise validate cleanly here"
-    )]
-    NamespaceMismatch { id: InvariantId, namespace: String },
-
-    #[error(
-        "invariant `{id}` binds backend `{backend}`, which is not registered; known backends: {known}"
-    )]
+    /// Invalid JSON shape, unknown fields, or malformed IDs.
+    #[error("invalid JSON catalog: {0}")]
+    Json(#[from] serde_json::Error),
+    /// Invalid TOML shape, duplicate keys, unknown fields, or malformed IDs.
+    #[error("invalid TOML catalog: {0}")]
+    Toml(#[from] toml::de::Error),
+    /// Unsupported envelope version.
+    #[error("unsupported catalog schema: {0}")]
+    Schema(u32),
+    /// A required field or collection is empty.
+    #[error("empty catalog field: {0}")]
+    Empty(String),
+    /// Namespace does not match the stable identity syntax.
+    #[error("invalid namespace: {0}")]
+    Namespace(String),
+    /// An invariant's namespace differs from its catalog's namespace.
+    #[error("invariant {id} is outside catalog namespace {namespace}")]
+    NamespaceMismatch {
+        /// Rejected invariant.
+        id: InvariantId,
+        /// Catalog namespace.
+        namespace: String,
+    },
+    /// Includes duplicate retired IDs: retirement does not free an ID.
+    #[error("duplicate invariant: {0}")]
+    DuplicateId(InvariantId),
+    /// The configured adapter is not registered.
+    #[error("unknown backend {backend}; registered backends: {available:?}")]
     UnknownBackend {
-        id: InvariantId,
+        /// Configured key.
         backend: BackendId,
-        known: String,
+        /// Known keys, in stable order.
+        available: Vec<BackendId>,
     },
-
-    #[error(
-        "invariant `{id}` is a {kind} property but backend `{backend}` does not claim that kind; \
-         binding it would report green without establishing anything"
-    )]
-    CapabilityMismatch {
+    /// Backend capability cannot discharge this property's kind.
+    #[error("backend {backend} cannot check {kind:?} invariant {id}")]
+    UnsupportedKind {
+        /// Configured backend.
+        backend: BackendId,
+        /// Rejected property.
         id: InvariantId,
+        /// Required capability.
         kind: Kind,
-        backend: BackendId,
     },
-
-    #[error("invariant `{id}` binds backend `{backend}` with no handles")]
-    EmptyHandles { id: InvariantId, backend: BackendId },
+    /// A handle is not known for the specified model.
+    #[error("backend {backend} has no handle {handle} for model {model}")]
+    UnresolvedHandle {
+        /// Configured backend.
+        backend: BackendId,
+        /// Target model.
+        model: String,
+        /// Misspelled or unknown handle.
+        handle: String,
+    },
+    /// Repeating a handle would execute the same check twice.
+    #[error("duplicate handle {handle} for backend {backend}")]
+    DuplicateHandle {
+        /// Backend with duplicate binding.
+        backend: BackendId,
+        /// Repeated handle.
+        handle: String,
+    },
+    /// A historical catalog must belong to the same project and namespace.
+    #[error("catalog history belongs to a different project or namespace")]
+    HistoryIdentity,
+    /// A previous ID disappeared instead of retaining its tombstone.
+    #[error("historical invariant removed: {0}")]
+    RemovedId(InvariantId),
+    /// A stable ID was reassigned or a retired ID reactivated.
+    #[error("historical invariant identity reused: {0}")]
+    ReusedId(InvariantId),
 }
+
+/// Immutable structurally and semantically validated catalog snapshot.
+#[derive(Debug, Clone)]
+pub struct ValidatedCatalog(Catalog);
 
 impl Catalog {
-    /// Parse a catalog from TOML text.
-    pub fn parse(text: &str) -> Result<Self, CatalogParseError> {
-        toml::from_str(text).map_err(|source| CatalogParseError {
-            message: source.to_string(),
-        })
+    /// Parse caller-supplied JSON and validate without running any backend.
+    pub fn from_json(
+        input: &str,
+        backends: &BackendRegistry<'_>,
+    ) -> Result<ValidatedCatalog, CatalogError> {
+        serde_json::from_str::<Self>(input)?.validate(backends)
     }
 
-    /// Check every structural rule, returning *all* violations rather than the
-    /// first: a catalog author fixing one id at a time is a slow loop.
-    ///
-    /// `backends` maps each registered backend to what it can honestly claim.
-    /// Pass an empty map only when no backends are registered yet — every
-    /// binding will then be reported as unknown, which is the correct answer.
+    /// Parse caller-supplied TOML and validate without reading files or env.
+    pub fn from_toml(
+        input: &str,
+        backends: &BackendRegistry<'_>,
+    ) -> Result<ValidatedCatalog, CatalogError> {
+        toml::from_str::<Self>(input)?.validate(backends)
+    }
+
+    /// Validate every binding, including draft/retired records, against metadata.
     pub fn validate(
-        &self,
-        backends: &BTreeMap<BackendId, Capabilities>,
-    ) -> Result<(), Vec<CatalogError>> {
-        let mut errors = self.validate_structure().err().unwrap_or_default();
-        for invariant in &self.invariants {
-            for (backend, handles) in &invariant.checks {
-                let Some(capabilities) = backends.get(backend) else {
-                    errors.push(CatalogError::UnknownBackend {
-                        id: invariant.id.clone(),
-                        backend: backend.clone(),
-                        known: render_known(backends),
-                    });
-                    continue;
-                };
-                if handles.is_empty() {
-                    errors.push(CatalogError::EmptyHandles {
-                        id: invariant.id.clone(),
-                        backend: backend.clone(),
-                    });
-                }
-                if !capabilities.claims(invariant.kind) {
-                    errors.push(CatalogError::CapabilityMismatch {
-                        id: invariant.id.clone(),
-                        kind: invariant.kind,
-                        backend: backend.clone(),
-                    });
-                }
-            }
+        self,
+        backends: &BackendRegistry<'_>,
+    ) -> Result<ValidatedCatalog, CatalogError> {
+        if self.schema != 1 {
+            return Err(CatalogError::Schema(self.schema));
         }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
+        nonempty(&self.project, "project")?;
+        if !valid_namespace(&self.namespace) {
+            return Err(CatalogError::Namespace(self.namespace));
         }
-    }
-
-    /// Validate schema and invariant identity without resolving backend bindings.
-    /// Replay uses this subset because it executes targets, not search backends.
-    pub fn validate_structure(&self) -> Result<(), Vec<CatalogError>> {
-        let mut errors = Vec::new();
-
-        if self.schema != CATALOG_SCHEMA {
-            errors.push(CatalogError::Schema { found: self.schema });
+        if self.invariant.is_empty() {
+            return Err(CatalogError::Empty("invariant".into()));
         }
-        if !is_valid_namespace(&self.namespace) {
-            errors.push(CatalogError::Namespace {
-                namespace: self.namespace.clone(),
-            });
-        }
-
-        let mut seen: BTreeSet<&InvariantId> = BTreeSet::new();
-        for invariant in &self.invariants {
-            if !seen.insert(&invariant.id) {
-                errors.push(CatalogError::DuplicateId {
-                    id: invariant.id.clone(),
-                });
-            }
+        let mut ids = BTreeSet::new();
+        for invariant in &self.invariant {
             if invariant.id.namespace() != self.namespace {
-                errors.push(CatalogError::NamespaceMismatch {
+                return Err(CatalogError::NamespaceMismatch {
                     id: invariant.id.clone(),
                     namespace: self.namespace.clone(),
                 });
             }
+            if !ids.insert(&invariant.id) {
+                return Err(CatalogError::DuplicateId(invariant.id.clone()));
+            }
+            nonempty(&invariant.title, "invariant.title")?;
+            nonempty(&invariant.model, "invariant.model")?;
+            for (key, handles) in &invariant.checks {
+                let backend = backends
+                    .get(key)
+                    .ok_or_else(|| CatalogError::UnknownBackend {
+                        backend: key.clone(),
+                        available: backends.ids(),
+                    })?;
+                if !backend.capabilities().supports(invariant.kind) {
+                    return Err(CatalogError::UnsupportedKind {
+                        backend: key.clone(),
+                        id: invariant.id.clone(),
+                        kind: invariant.kind,
+                    });
+                }
+                if handles.0.is_empty() {
+                    return Err(CatalogError::Empty(format!("checks.{key}")));
+                }
+                let mut seen = BTreeSet::new();
+                for handle in &handles.0 {
+                    nonempty(handle, "check handle")?;
+                    if !seen.insert(handle) {
+                        return Err(CatalogError::DuplicateHandle {
+                            backend: key.clone(),
+                            handle: handle.clone(),
+                        });
+                    }
+                    if !backend.has_handle(&invariant.model, handle) {
+                        return Err(CatalogError::UnresolvedHandle {
+                            backend: key.clone(),
+                            model: invariant.model.clone(),
+                            handle: handle.clone(),
+                        });
+                    }
+                }
+            }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        Ok(ValidatedCatalog(self))
+    }
+}
+
+fn nonempty(value: &str, field: &str) -> Result<(), CatalogError> {
+    if value.trim().is_empty() {
+        Err(CatalogError::Empty(field.into()))
+    } else {
+        Ok(())
+    }
+}
+
+impl ValidatedCatalog {
+    /// Borrow the immutable validated declaration.
+    pub fn catalog(&self) -> &Catalog {
+        &self.0
     }
 
-    /// Ids no backend claims. A legitimate state to ship with, as long as the
-    /// report names them instead of printing a count.
-    pub fn uncovered(&self) -> Vec<&InvariantId> {
-        self.invariants
+    /// Properties with no configured checks, including their lifecycle status.
+    pub fn uncovered(&self) -> impl Iterator<Item = &Invariant> {
+        self.0
+            .invariant
             .iter()
-            .filter(|invariant| invariant.status != Status::Retired && !invariant.is_covered())
-            .map(|invariant| &invariant.id)
-            .collect()
+            .filter(|invariant| invariant.checks.is_empty())
+    }
+
+    /// Enforce ID continuity against a caller-supplied previous catalog.
+    ///
+    /// No history is read implicitly. Stable identity means namespace, ID,
+    /// model and kind; title, owner and severity may be clarified over time.
+    /// A retired ID must remain retired. Keep tombstones rather than delete IDs.
+    pub fn validate_evolution(&self, previous: &Self) -> Result<(), CatalogError> {
+        if self.0.project != previous.0.project || self.0.namespace != previous.0.namespace {
+            return Err(CatalogError::HistoryIdentity);
+        }
+        let current: BTreeMap<_, _> = self.0.invariant.iter().map(|i| (&i.id, i)).collect();
+        for old in &previous.0.invariant {
+            let new = current
+                .get(&old.id)
+                .ok_or_else(|| CatalogError::RemovedId(old.id.clone()))?;
+            if new.kind != old.kind
+                || new.model != old.model
+                || (old.status == InvariantStatus::Retired
+                    && new.status != InvariantStatus::Retired)
+            {
+                return Err(CatalogError::ReusedId(old.id.clone()));
+            }
+        }
+        Ok(())
     }
 }
 
-fn render_known(backends: &BTreeMap<BackendId, Capabilities>) -> String {
-    if backends.is_empty() {
-        return "none registered".to_owned();
-    }
-    backends
-        .keys()
-        .map(BackendId::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
+/// Generate the public schema from the same types the core deserializes.
+/// Cross-field namespace, registry and history constraints remain runtime rules.
+pub fn catalog_schema() -> schemars::Schema {
+    let mut schema = schemars::schema_for!(Catalog);
+    schema.insert(
+        "$id".into(),
+        "https://dinglebear.ai/schemas/verify/invariants/1".into(),
+    );
+    schema
 }
-
-fn is_valid_namespace(namespace: &str) -> bool {
-    let mut bytes = namespace.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    first.is_ascii_uppercase() && bytes.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-}
-
-/// A catalog that could not be parsed at all.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("catalog is not valid TOML for this schema: {message}")]
-pub struct CatalogParseError {
-    pub message: String,
-}
-
-#[cfg(test)]
-mod tests;

@@ -17,7 +17,7 @@ use crate::types::{
     BrowserLoginQuery, BrowserLoginStateRow, ClientRegistrationRequest, ClientRegistrationResponse,
     RegisteredClient,
 };
-use crate::util::{fingerprint, now_unix, random_token};
+use crate::util::{fingerprint, now_unix, oauth_state_diagnostic_id, random_token};
 
 pub async fn browser_login(
     State(state): State<AuthState>,
@@ -31,7 +31,7 @@ pub async fn browser_login(
     let provider_code_challenge =
         URL_SAFE_NO_PAD.encode(Sha256::digest(provider_code_verifier.as_bytes()));
     let request_state = random_token(24)?;
-    let oauth_state_id = fingerprint(&request_state);
+    let oauth_state_id = oauth_state_diagnostic_id(&request_state);
     state
         .store
         .insert_bound_browser_login_state(
