@@ -19,6 +19,65 @@ The design intentionally builds on current Labby boundaries rather than replacin
 
 The new subsystem should reuse those mechanisms as inputs/output adapters. It should not duplicate them.
 
+## Implemented authorization: lock order and key predicates
+
+This section describes current code (2026-09-13). The rest of this document is
+design.
+
+### Lock order
+
+AccessStore uses one serialized SQLite connection, and mutations run in
+`IMMEDIATE` transactions. When an operation crosses the Gateway and the access
+store, the order is fixed:
+
+1. Gateway publication lease (held by the product authority before it calls in);
+2. `AccessRuntime` writer (`acquire_bootstrap_writer`);
+3. the SQLite transaction.
+
+The writer stays held through the SQLite commit
+(`crates/labby/src/access/runtime.rs`, `reconcile_project_policy`). Code must
+never acquire the publication lease while holding the runtime writer or an
+open transaction, because that inverts the order and can deadlock.
+
+### Key authorization predicates
+
+- **Browser admission** (`crates/labby-auth/src/sqlite.rs`,
+  `find_authorized_bound_browser_session`): a live, current-provider-generation
+  session is authorized when its email equals `LABBY_AUTH_ADMIN_EMAIL`, is in
+  `allowed_users`, or has a domain suffix in the caller-supplied domain list.
+  The middleware supplies that list only for Authelia (see
+  [OAUTH.md](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface)).
+- **Browser scope ceiling** (`crates/labby-auth/src/middleware.rs`): configured
+  admin email gets the static-token scopes; other authorized sessions get them
+  with `:admin` lowered; Viewer-domain-only sessions get `lab:read`.
+- **Durable elevation** (`crates/labby/src/api/platform_admin_elevation.rs`):
+  on `/v1` only, a browser session whose Principal holds `platform.manage` gains
+  `lab:admin`; any store failure leaves scopes unchanged.
+- **MCP team auto-provision** (`crates/labby/src/api/protected_mcp_route.rs`,
+  `crates/labby/src/access/team_provision.rs`): applies only to OAuth-delegated
+  requests on a project-bound protected route whose upstreams include
+  `team-depot` (`dispatch::depot_publish::REQUIRED_UPSTREAM`). Admission uses
+  `AuthState::is_current_identity_authorized` (admin email, allowlist, or email
+  address suffix in the domain list). It creates a Principal and link for a
+  new issuer/subject and a Project membership, and never reactivates inactive
+  links, Principals, or memberships.
+- **Invitation accept** (`crates/labby/src/access/team.rs`,
+  `accept_invitation_at`): the token is stored only as a SHA-256 digest; the
+  caller's Principal must be the invited Principal in the same Organization;
+  an expired invitation is marked `expired`; the Team membership epoch must be
+  unchanged since the invitation was issued; the invitation moves from
+  `pending` to `accepted` exactly once. Invitations cannot grant the `owner`
+  role.
+- **Owner bootstrap** (browser `crates/labby/src/access/bootstrap.rs`, proof
+  `crates/labby/src/access/credential_store.rs` `consume_bootstrap_proof`): both
+  writers require a pristine store and write the same reserved Organization,
+  owner Principal, identity link, default Project, and owner membership in one
+  transaction.
+- **Product-credential throttle** (`crates/labby/src/access/credential_verifier.rs`):
+  admission is a read-only budget check; only denied verifications are charged
+  (16 per minute per credential, 64 per minute per installation). Successful
+  verifications never consume the budget.
+
 ## Proposed component boundary
 
 ### labby-access

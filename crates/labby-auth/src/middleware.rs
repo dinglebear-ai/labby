@@ -716,10 +716,18 @@ async fn authenticate(
                 }
                 // Domain-only browser admission never inherits the gateway's
                 // administrative static-token scopes, even if configured there.
-                let browser_scopes = if authorized {
+                // Allowlisted identities other than the configured admin are
+                // admitted, but an allowlist entry is not an administrative
+                // grant: products elevate them only from durable authority.
+                let is_configured_admin = session.email.as_deref().is_some_and(|email| {
+                    email.eq_ignore_ascii_case(&auth_state.config.admin_email)
+                });
+                let browser_scopes = if !authorized {
+                    vec!["lab:read".into()]
+                } else if is_configured_admin {
                     layer.static_token_scopes.clone()
                 } else {
-                    vec!["lab:read".into()]
+                    without_admin_scopes(&layer.static_token_scopes)
                 };
                 let browser_authority = if matches!(
                     auth_state.inbound_provider.kind(),
@@ -1046,6 +1054,20 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
         }
     }
     Some(response)
+}
+
+/// Lower every `<prefix>:admin` scope to its `<prefix>` write scope, keeping
+/// order and dropping duplicates. Used for allowlisted browser identities that
+/// are not the configured admin.
+fn without_admin_scopes(scopes: &[String]) -> Vec<String> {
+    let mut lowered: Vec<String> = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        let scope = scope.strip_suffix(":admin").unwrap_or(scope);
+        if !lowered.iter().any(|existing| existing == scope) {
+            lowered.push(scope.to_owned());
+        }
+    }
+    lowered
 }
 
 fn scope_satisfies(granted: &str, required: &str) -> bool {
@@ -2082,7 +2104,19 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[test]
+    fn non_admin_allowlisted_sessions_lose_every_admin_scope() {
+        let lowered = without_admin_scopes(&[
+            "lab:read".to_string(),
+            "lab:admin".to_string(),
+            "lab".to_string(),
+            "syslog:admin".to_string(),
+        ]);
+        assert_eq!(lowered, vec!["lab:read", "lab", "syslog"]);
+        assert!(!lowered.iter().any(|scope| scope.ends_with(":admin")));
+    }
+
+    #[tokio::test]
     async fn broader_admin_scope_satisfies_read_scope_hierarchy() {
         let app = echo_app(
             AuthLayer::new()

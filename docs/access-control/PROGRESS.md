@@ -7,6 +7,12 @@ status: "implementation"
 
 # Access Control Progress
 
+> **Historical document.** This progress log stopped at 2026-08-23 and records
+> early milestones (for example "schema v2"). It is not a description of
+> current code. The access store is now at schema v7 (see
+> [DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)); current operator
+> behavior is in [services/ACCESS.md](../services/ACCESS.md).
+
 ## Current state
 
 The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Project-bound protected Streamable HTTP requests carry server-owned evidence that composes stable Access, a Loadout-filtered MCP catalog, and protected-route narrowing. Exact regular Prompt/Resource/Tool dispatch and `tools/list` now enforce that Project binding for their bounded supported families; other discovery families still retain their documented shadow-only boundaries. Legacy transports remain unchanged. Startup bootstrap, destructive Tool confirmation/admin authority, personal-Labby pairing, and transfer protocols remain unimplemented.

@@ -135,6 +135,43 @@ impl AccessStore {
         }).await
     }
 
+    /// Whether an admission bucket is currently at its limit, without
+    /// consuming an attempt. Mirrors the window rules of
+    /// [`Self::admit_security_operation`].
+    pub(crate) async fn security_operation_exhausted(
+        &self,
+        admission_class: String,
+        bucket_fingerprint: [u8; 32],
+        now: i64,
+        window_seconds: i64,
+        limit: i64,
+    ) -> AccessStoreResult<bool> {
+        if !matches!(
+            admission_class.as_str(),
+            "proof_global" | "proof_peer" | "credential_global" | "credential_peer"
+        ) || window_seconds <= 0
+            || limit <= 0
+            || limit > 64
+        {
+            return Err(AccessStoreError::InvalidBootstrapInput);
+        }
+        self.with_connection(move |connection| {
+            let current = connection
+                .query_row(
+                    "SELECT window_started_at, attempts FROM access_admission_buckets \
+                     WHERE admission_class = ?1 AND bucket_fingerprint = ?2",
+                    params![admission_class, bucket_fingerprint.as_slice()],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            Ok(current.is_some_and(|(started, attempts)| {
+                now.saturating_sub(started) < window_seconds && attempts >= limit
+            }))
+        })
+        .await
+    }
+
     pub(crate) async fn record_security_event(
         &self,
         event_kind: String,

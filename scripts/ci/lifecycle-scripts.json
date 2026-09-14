@@ -72,6 +72,7 @@
     "scripts/ci/test-incus-contract.py",
     "scripts/ci/test-build-on-tootie-incus.py",
     "scripts/ci/test_npm_pointer.py",
+    "scripts/ci/test_update_safety_oracles.py",
     "scripts/tests/test_timeout.py"
   ]
 }

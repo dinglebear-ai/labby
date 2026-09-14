@@ -385,6 +385,13 @@ codes, client assertions, refresh tokens, or provider credentials into an
 Inspector capture, issue, or report. The executable conformance matrices and
 their pinned provenance remain the release evidence.
 
+## Privilege Exposure And Config Rollback
+
+For suspected misuse of administrative scope (for example the allowlisted-admin
+exposure fixed in PR #637), owner re-verification, credential rotation, and
+restoring a known-good `config.toml`/`.env`, follow the
+[privilege-exposure runbook](./runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md).
+
 ## OAuth Connector Incident Triage
 
 Classify the failing layer before retrying:
