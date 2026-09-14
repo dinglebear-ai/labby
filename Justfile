@@ -1,6 +1,7 @@
 # Labby — Development Commands
 
 local_release_profile := "release-fast"
+mcp_spec_checkout := "target/mcp-spec-source"
 
 default:
     @just --list
@@ -39,23 +40,144 @@ verify-t0:
 verify-t1:
     cargo run --manifest-path verification/Cargo.toml -p labby-verify --locked -- t1 formal
 
+# Real-process lifecycle conformance. CI adds retained provenance validation.
+verify-c1:
+    cargo test -p labby --all-features --test lifecycle_conformance --locked -- --test-threads=1 conformance
+
+# Deterministic bounded Shuttle schedules (no external verifier install).
+verify-t2-shuttle:
+    cargo test --manifest-path verification/Cargo.toml -p verify-loom --locked --test lifecycle shuttle_ -- --test-threads=1
+
+# Kani 0.67.0 controls. LABBY_KANI_DRIVER must name the qualified executable.
+verify-t2-kani:
+    cargo test --manifest-path verification/Cargo.toml -p verify-kani --test actual_kani --locked -- --ignored --test-threads=1
+
+# TLC 1.7.4 and Alloy 6.2.0 controls. See docs/dev/VERIFICATION.md for required variables.
+verify-t3-formal:
+    cargo test --manifest-path verification/Cargo.toml -p verify-tla -p verify-alloy --locked --test actual_tools -- --ignored --test-threads=1
+
 # Regenerate the authoritative invariant schema and design-document mirror.
 verify-schema:
     cargo run --manifest-path verification/Cargo.toml -p verify-core --example invariants-schema --locked -- --write
     cargo run --manifest-path verification/Cargo.toml -p verify-scenario --example scenario-schema --locked -- --write
 
+# Prepare an exact detached checkout of the immutable MCP source revision.
+# A fresh `git clone --no-checkout` has no index and is safe to materialize;
+# an already-materialized checkout must be clean before it is moved.
+mcp-spec-source spec_checkout=mcp_spec_checkout:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    checkout={{quote(spec_checkout)}}
+    revision="$(python3 -c 'import json; print(json.load(open("conformance/mcp-spec-sources.json"))["revision"])')"
+    repository="$(python3 -c 'import json; print(json.load(open("conformance/mcp-spec-sources.json"))["repository"])')"
+    [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid pinned MCP source revision" >&2; exit 2; }
+    [[ "$repository" == "https://github.com/modelcontextprotocol/modelcontextprotocol" ]] || { echo "unexpected MCP source repository" >&2; exit 2; }
+    fresh_clone=0
+    if [[ ! -e "$checkout/.git" ]]; then
+        [[ ! -e "$checkout" ]] || { echo "refusing to replace non-Git path: $checkout" >&2; exit 2; }
+        mkdir -p "$(dirname "$checkout")"
+        git clone --filter=blob:none --no-checkout "$repository" "$checkout"
+        fresh_clone=1
+    fi
+    git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null
+    origin="$(git -C "$checkout" remote get-url origin)"
+    [[ "$origin" == "$repository" || "$origin" == "$repository.git" ]] || { echo "unexpected MCP source origin: $origin" >&2; exit 2; }
+    if (( ! fresh_clone )) && [[ -n "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
+        echo "refusing to modify dirty MCP source checkout: $checkout" >&2
+        exit 2
+    fi
+    git -C "$checkout" cat-file -e "$revision^{commit}" 2>/dev/null || git -C "$checkout" fetch --filter=blob:none origin "$revision"
+    git -C "$checkout" checkout --detach "$revision"
+    [[ "$(git -C "$checkout" rev-parse HEAD)" == "$revision" ]]
+    [[ -z "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]
+
+# Prepare only the supported default. Explicit checkout arguments are read-only.
+_mcp-spec-prepare spec_checkout:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ {{quote(spec_checkout)}} == {{quote(mcp_spec_checkout)}} ]]; then
+        just mcp-spec-source {{quote(spec_checkout)}}
+    fi
+
+# Intentionally rewrite both generated inventories during a reviewed spec migration.
+mcp-spec-inventory spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
+    python3 scripts/ci/extract_mcp_spec_requirements.py --source-root {{quote(spec_checkout)}}
+    python3 scripts/ci/extract_mcp_schema_requirements.py {{quote(spec_checkout)}} --write
+
 # Validate pinned specification extraction and reviewed applicability, not compliance.
-mcp-spec-check spec_checkout:
+mcp-spec-check spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout {{quote(spec_checkout)}}
+    # Extractor contract tests use the canonical target path as a fixed fixture.
+    just mcp-spec-source
     python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
 
-# Execute all registered oracles; coverage gaps remain explicit in the report.
-mcp-spec-oracles spec_checkout:
+# Execute all registered oracles; unresolved conditional mappings can keep this red.
+mcp-spec-oracles spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}}
 
+# Select check, all registered oracles, or the strict denominator-wide gate.
+mcp-spec-verify tier="oracles" spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{quote(tier)}} in
+      check) python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout {{quote(spec_checkout)}} ;;
+      oracles) python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}} ;;
+      full) python3 scripts/ci/mcp_spec_compliance.py run --gate full --spec-checkout {{quote(spec_checkout)}} ;;
+      *) echo "tier must be check, oracles, or full" >&2; exit 2 ;;
+    esac
+
+# Aggregate intent/harness checks plus every oracle; unresolved mappings stay red.
+mcp-spec-gate spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
+    just mcp-spec-check {{quote(spec_checkout)}}
+    python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}}
+
+# Rebuild the denominator-wide report. Exit 1 truthfully means incomplete.
+mcp-spec-report spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
+    python3 scripts/ci/mcp_spec_compliance.py report --gate full --spec-checkout {{quote(spec_checkout)}}
+
+# Operator summary: tolerate valid incomplete coverage (1), reject invalid/stale evidence (2).
+mcp-spec-summary spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    python3 scripts/ci/mcp_spec_compliance.py report --gate full --spec-checkout {{quote(spec_checkout)}} || status=$?
+    (( status <= 1 )) || exit "$status"
+
 # Strict full-compliance gate: missing/unreviewed requirements fail.
-mcp-spec-compliance spec_checkout:
+mcp-spec-compliance spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     python3 scripts/ci/mcp_spec_compliance.py run --spec-checkout {{quote(spec_checkout)}}
+
+# MCP authorization denominator helpers.
+mcp-auth-list:
+    python3 scripts/ci/mcp_auth_normative_conformance.py --list
+
+mcp-auth-validate:
+    python3 scripts/ci/mcp_auth_normative_conformance.py --validate-only
+
+mcp-auth-resolve row_id:
+    python3 scripts/ci/mcp_auth_normative_conformance.py --resolve {{quote(row_id)}}
+
+mcp-auth-run row_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n {{quote(row_id)}} ]]; then
+        python3 scripts/ci/mcp_auth_normative_conformance.py {{quote(row_id)}}
+    else
+        python3 scripts/ci/mcp_auth_normative_conformance.py
+    fi
+
+# OpenAI authorization matrix helpers.
+openai-auth-list:
+    scripts/ci/openai-auth-conformance.sh --list
+
+openai-auth-run requirement_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n {{quote(requirement_id)}} ]]; then
+        scripts/ci/openai-auth-conformance.sh {{quote(requirement_id)}}
+    else
+        scripts/ci/openai-auth-conformance.sh
+    fi
 
 # Regenerate code-owned documentation inventories
 docs-generate:

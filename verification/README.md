@@ -23,12 +23,55 @@ just verify-lint
 just verify-deny
 just verify-t0 # Labby catalog, golden coverage and model replay
 just verify-t1 # bounded Stateright exploration, not product conformance
+just verify-c1 # controlled real-process lifecycle relation
+just verify-t2-shuttle # deterministic bounded schedules
+# Requires LABBY_KANI_DRIVER pointing to qualified Kani 0.67.0:
+just verify-t2-kani
+# Requires LABBY_JAVA, LABBY_TLA_TOOLS_JAR and LABBY_ALLOY_JAR:
+just verify-t3-formal
 just verify-schema # regenerate after an intentional catalog contract change
 ```
 
 Python 3.11+ is required for the workspace contract tests. `verify-deny` requires
 cargo-deny and access to its advisory database. Missing tools are failures,
 not silently skipped checks. These commands do not install external verifiers.
+The T2/T3 workflows remain the source of retained tool hashes and CI
+provenance; a local recipe demonstrates only the command's local result.
+
+The repository also provides supported operator entry points for the separate
+MCP specification and authorization systems:
+
+```sh
+just mcp-spec-source                 # prepare the pinned default checkout
+just mcp-spec-check                  # validate source, catalogs and runner tests
+just mcp-spec-oracles                # run all oracles; current conditional gap exits red
+just mcp-spec-report                 # strict report; incomplete coverage exits 1
+just mcp-spec-summary                # print valid incomplete coverage successfully
+just mcp-spec-compliance             # strict denominator-wide execution gate
+just mcp-auth-list
+just mcp-auth-validate
+just mcp-auth-resolve MCP-2026-AUTH-INDEX-001
+just mcp-auth-run MCP-2026-AUTH-INDEX-001
+just openai-auth-list
+just openai-auth-run OAI-AUTH-001
+```
+
+All MCP specification recipes accept an optional checkout path and otherwise
+use `target/mcp-spec-source`. `mcp-spec-inventory` is the intentional mutation
+used during a reviewed spec migration. `mcp-spec-verify` accepts `check`,
+`oracles`, or `full`; `mcp-spec-gate` is the complete registered-oracle gate.
+The default source is prepared automatically; an explicit checkout is inspected
+without changing its Git state. The aggregate gate runs intent and harness
+tests before it starts the registered oracles. The current HTTP 0.8.3
+`Last-Event-ID` disposition is conditional, so its requirement remains
+unresolved and the oracle/full gates can exit nonzero even if every registered
+command itself passes. Treat the receipt as execution evidence and the report
+outcomes as the gate decision.
+The strict report writes a valid `not_run` report and exits 1 when no receipt
+exists. The summary wrapper accepts that incomplete result, but malformed or
+stale receipts still exit 2 and fail. No reporting recipe executes an oracle.
+The detailed artifact, binding, outcome, and extension rules are canonical in
+[Verification and Compliance](../docs/dev/VERIFICATION.md).
 
 `Cargo.toml` and `Cargo.lock` belong to this workspace. The root product
 workspace explicitly excludes it. Direct dependency versions are exact pins;

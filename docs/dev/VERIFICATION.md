@@ -96,13 +96,14 @@ granular source obligations are present for review. It does **not** mean:
 - an unmapped row has failed a test.
 
 The current catalog has nine reviewed dispositions and nine registered oracles,
-leaving 2,214 rows unreviewed before considering execution state. Initially
-crediting five requirements while reporting 2,218 unresolved meant
-that five rows had the full chain of reviewed applicability, sufficient oracle
-scope, and passing bound execution evidence. The other rows still needed one
-or more of: applicability review, a justified not-applicable disposition, an
-oracle, the required evidence scope, or a fresh passing run. Always inspect the
-per-outcome counts instead of subtracting a single headline number.
+leaving 2,214 rows without dispositions before considering execution state.
+Eight reviewed rows are applicable. The HTTP 0.8.3 `Last-Event-ID` row is
+conditional and therefore remains `applicability_unresolved` even when its
+diagnostic oracle passes. A report can consequently show all nine commands ran
+successfully while both the oracle and full gates remain red. The other rows
+still need one or more of: applicability review, a justified not-applicable
+disposition, an oracle, the required evidence scope, or a fresh passing run.
+Always inspect the per-outcome counts instead of subtracting a headline number.
 
 The denominator can contain multiple obligations about the same behavior and
 schema constraints that do not apply to every Labby role or transport. Those
@@ -192,10 +193,13 @@ directory as the `mcp-spec-compliance` artifact.
 Use the repository's MCP specification Just recipes with a checkout whose HEAD
 exactly matches `conformance/mcp-spec-sources.json`. They default to
 `target/mcp-spec-source`, or accept a checkout path as their final argument.
+The default checkout is prepared automatically. An explicitly supplied checkout
+is only inspected by check/run/report and is never fetched, reset, or checked
+out by those recipes.
 The recipe list in the Justfile is the command source of truth:
 
 ```bash
-# Materialize and authenticate the default immutable source checkout.
+# Materialize and verify the default immutable source checkout.
 just mcp-spec-source
 
 # Intentionally rewrite the generated prose and schema inventories.
@@ -224,11 +228,18 @@ just mcp-spec-compliance /path/to/modelcontextprotocol
 `just mcp-spec-verify check`, `oracles`, and `full` provide the three named
 tiers. `mcp-spec-inventory` is a mutation and belongs only in an intentional
 spec migration; ordinary checks never regenerate committed catalogs.
+`mcp-spec-gate` first runs the complete intent and coordinator-test check, then
+executes all registered oracles. It currently exits nonzero because the mapped
+HTTP 0.8.3 conditional row is unresolved; command execution success does not
+convert that source disposition into compliance credit.
 `mcp-spec-report` preserves the strict compliance exit status and therefore
-normally exits 1 while coverage remains incomplete. `mcp-spec-summary` is the
-explicitly non-gating operator view: it accepts only exit 0 (complete) or exit
-1 (valid report, incomplete compliance), while source, catalog, binding, and
-receipt errors still exit 2 and fail the recipe. Neither command runs oracles.
+normally exits 1 while coverage remains incomplete. A missing receipt is
+rendered honestly as `not_run` coverage and also exits 1; it is not execution
+evidence. `mcp-spec-summary` is the explicitly non-gating operator view: it
+accepts only exit 0 (complete) or exit 1 (valid report, including missing or
+incomplete execution evidence), while source, catalog, binding, malformed
+receipt, and stale-receipt errors still exit 2 and fail the recipe. Neither
+command runs oracles, and neither treats a stale receipt as current evidence.
 
 The supported workflow has three stages:
 
@@ -237,8 +248,10 @@ The supported workflow has three stages:
    catalogs, and run coordinator tests. This prints `Valid intent`; it is not a
    compliance result.
 2. **Run registered oracles.** Execute every registered oracle and write bound
-   evidence. The oracle gate succeeds when every mapped oracle passes, while
-   uncovered requirements remain visible as gaps.
+   evidence. The oracle gate succeeds only when every mapped requirement has a
+   `passed` outcome. A conditional mapped row remains unresolved and keeps this
+   gate red even when its command succeeds; uncovered requirements remain
+   visible as gaps.
 3. **Run the strict compliance gate.** Require every denominator row to be
    either passed with sufficient scoped evidence or reviewed not applicable.
    Until mapping is complete, this gate is expected to remain red.
@@ -412,11 +425,11 @@ semantics:
 | `just mcp-auth-list` | `MCP-2026-AUTH-INDEX-*` and section-specific `MCP-2026-AUTH-*` matrix row IDs | List all 132 normative denominator rows; does not execute tests. |
 | `just mcp-auth-validate` | entire MCP authorization matrix | Validate provenance, actors, dispositions, aggregate links, coverage projection, evidence paths, and exact test resolution; does not execute tests. |
 | `just mcp-auth-resolve MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Print the deduplicated exact tests behind a direct or aggregate row; does not execute them. |
-| `just mcp-auth-oracles` | complete MCP authorization matrix | Validate and execute every mapped repository and pinned-rmcp test. |
-| `just mcp-auth-oracles MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Validate the complete matrix, resolve the selected row, and execute its exact tests. |
+| `just mcp-auth-run` | complete MCP authorization matrix | Validate and execute every mapped repository and pinned-rmcp test. |
+| `just mcp-auth-run MCP-2026-AUTH-INDEX-001` | one exact matrix row ID | Validate the complete matrix, resolve the selected row, and execute its exact tests. |
 | `just openai-auth-list` | `OAI-AUTH-001` through `OAI-AUTH-011` | List executable OpenAI authorization verification groups; these are not the `OAI-CLAUSE-*` source rows. |
-| `just openai-auth-oracles` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
-| `just openai-auth-oracles OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
+| `just openai-auth-run` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
+| `just openai-auth-run OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
 The 21 `OAI-CLAUSE-*` entries in
 `conformance/openai-auth-normative.json` are source obligations. They map to
