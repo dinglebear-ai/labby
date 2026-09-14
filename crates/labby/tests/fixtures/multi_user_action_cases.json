@@ -845,7 +845,9 @@
     "fixture_params": {
       "fixture": "isolated_agents_workflow",
       "parameters": {
-        "agent_id": "$fixture.agent_id"
+        "agent_id": "$fixture.agent_id",
+        "idempotency_key": "$fixture.idempotency_key",
+        "input": "$fixture.input"
       }
     },
     "required": true,
@@ -1435,7 +1437,8 @@
         "owner_kind": "$fixture.owner_kind",
         "owner_id": "$fixture.owner_id",
         "agent_id": "$fixture.agent_id",
-        "input_digest": "$fixture.input_digest"
+        "input_digest": "$fixture.input_digest",
+        "input": "$fixture.input"
       }
     },
     "required": true,

@@ -16,6 +16,7 @@
     "agent_id": "matrix-agent",
     "idempotency_key": "matrix-idempotency-key",
     "input_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "input": "Inspect the scheduled task fixture",
     "owner_id": "bootstrap-owner",
     "owner_kind": "personal",
     "task_id": "matrix-task",
