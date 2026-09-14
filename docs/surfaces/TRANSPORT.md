@@ -84,15 +84,20 @@ header and body select an unknown or historical version receives HTTP 400 and
 typed `UnsupportedProtocolVersionError` (`-32022`), with exactly
 `["2026-07-28"]` in `supported`; it is rejected before product effects. A
 current-version request without `MCP-Protocol-Version` is also rejected before
-dispatch. This HTTP version policy is distinct from the legacy `initialize`
-edge adapter described below.
+dispatch. `initialize` has an explicit HTTP boundary matrix: without either
+`MCP-Protocol-Version` or `Mcp-Method` it returns HTTP 400 / `-32020`
+(`HeaderMismatch`); with a historical protocol header it returns HTTP 400 /
+`-32022` (`UnsupportedProtocolVersionError`); and with the current header it
+returns HTTP 404 / `-32601` (`MethodNotFound`). Each JSON-RPC error retains the
+request ID. This HTTP policy is distinct from the direct-stdio legacy
+`initialize` edge adapter described below.
 
 The endpoint is stateless. GET and DELETE return 405. An obsolete
 `Mcp-Session-Id` request header is ignored and Labby neither mints nor echoes a
 session ID. `Last-Event-ID` is also tolerated as an obsolete header; the
-registered product oracle currently proves a bounded `application/json`
-response whose content remains meaningful. It does not inspect an SSE stream,
-so the evidence does not establish absence of SSE event IDs or resumability.
+registered product oracle proves a bounded `application/json` response remains
+meaningful, a new `subscriptions/listen` POST starts an SSE stream without event
+IDs, and the legacy GET resume path returns 405 with `Allow: POST`.
 
 The generated route inventory in
 [../generated/api-routes.md](../generated/api-routes.md) is authoritative.

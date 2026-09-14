@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.3.0`, Git revision `f2639b9127e8d0f39cfd16193631d056c10cd445` |
+| Labby rmcp dependency | fork `3.3.0`, Git revision `a30965679d27ba4f7d17e9d8efa7c95742eb6b42` ([strict stateless follow-up](https://github.com/dinglebear-ai/rust-sdk/pull/4)) |
 | rmcp conformance fixture | stock upstream `3.3.0` |
 | rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -42,14 +42,21 @@ The 3.3.0 fixture does not read `STATELESS`; its default legacy-session support
 is not evidence for Labby's stateless HTTP boundary. The real-product HTTP
 oracles separately exercise Labby's request-scoped cancellation and validation.
 
+The conformance script accepts `LABBY_RMCP_REPOSITORY`,
+`LABBY_RMCP_REVISION`, `RMCP_FIXTURE_VERSION`, `RMCP_TAG`, `RMCP_COMMIT`,
+`MCP_CONFORMANCE_VERSION`, and `MCP_SPEC_VERSION` as explicit one-run
+development overrides. They are useful when qualifying a proposed dependency
+or fixture update, but a non-default run is diagnostic and does not qualify the
+canonical pins in the table above. Every full run writes the effective values
+and a `canonical` flag to `target/mcp-conformance/pins.json` (or the configured
+output directory), so retained reports identify the pin set they exercised.
+
 The normative denominator contains 2,223 rows: 927 prose requirements and
 1,296 structural schema constraints. The reviewed HTTP catalog currently has
 nine dispositions and nine executable oracles, leaving 2,214 rows unreviewed.
-That is an inventory count, not a conformance percentage. Eight reviewed rows
-are applicable. One reviewed row remains conditional because its registered
-JSON oracle does not prove the complete SSE-resumption clause. The 2,214 count
-excludes all reviewed dispositions; the conditional row is still unresolved
-for conformance even when its narrow product-policy regression passes.
+That is an inventory count, not a conformance percentage. All nine reviewed
+rows are applicable. The 2,214 count excludes those reviewed dispositions and
+remains unresolved pending denominator-wide applicability and oracle work.
 
 The nine product-wire oracles cover request-scoped cancellation, invalid
 Origin rejection, protocol metadata/header mismatch, unknown methods,
@@ -60,22 +67,24 @@ boundary. Each must return HTTP 400 with typed JSON-RPC error `-32022`, name the
 requested version, advertise exactly `["2026-07-28"]`, and admit no effect.
 This does not remove the separate legacy `initialize` adapter.
 
-The unsupported-version oracle exercises `tools/call`. Historical HTTP
-`initialize` requests follow a separate SDK compatibility path: Labby rejects
-them with JSON-RPC `-32022`, but the SDK currently carries that handler error in
-an HTTP 200 response. That path does not receive HTTP-025 status-code credit
-from the `tools/call` oracle. Reconciling its HTTP status mapping remains a
-transport-compliance gap.
+The unsupported-version oracle exercises `tools/call`. HTTP `initialize`
+requests have a separate, explicit boundary matrix. With neither
+`MCP-Protocol-Version` nor `Mcp-Method`, Labby returns HTTP 400 and JSON-RPC
+`-32020` (`HeaderMismatch`). With an explicitly historical protocol header it
+returns HTTP 400 and `-32022` (`UnsupportedProtocolVersionError`), including the
+requested version and exactly `2026-07-28` as supported. With the current
+protocol header it returns HTTP 404 and `-32601` (`MethodNotFound`). Every case
+retains the JSON-RPC request ID. Labby enables the SDK's strict stateless
+metadata option, which enforces these headers and maps terminal protocol errors
+to their modern HTTP statuses. Relaxed SDK users retain legacy initialization
+behavior; Labby does not duplicate that logic in an HTTP wrapper.
 
-The `Last-Event-ID` oracle deliberately requests `application/json` and checks
-for identical bounded, meaningful JSON-RPC results with and without the header.
-It proves the obsolete header does not alter that JSON request. It does not
-observe an SSE response, so it does not claim proof that SSE events omit IDs or
-that an SSE stream cannot be resumed. Because this diagnostic oracle maps to a
-conditional requirement, the current oracle-only coordinator remains red even
-when all nine registered test processes pass. Completing HTTP-083 requires a
-product-wire SSE case that observes emitted events without resumable IDs and a
-reconnect/replay attempt that cannot resume from `Last-Event-ID`.
+The `Last-Event-ID` oracle checks identical bounded, meaningful JSON-RPC results
+with and without the obsolete header. It also proves a fresh
+`subscriptions/listen` POST emits an SSE stream without event IDs and that the
+legacy GET resume path returns 405 with `Allow: POST`. Together these cases
+cover both configured response modes and show the stateless endpoint cannot
+resume an earlier stream from `Last-Event-ID`.
 
 Run the complete gate locally with:
 
@@ -159,10 +168,12 @@ unroutable.
 
 ### Lifecycle compatibility
 
-Labby's internal contract is stateless `2026-07-28` discovery. A legacy
-`initialize` request is accepted as an edge adapter for existing hosts: Labby
-records the peer information and returns the negotiated legacy version without
-changing internal request handling or creating a resumable session.
+Labby's internal contract is stateless `2026-07-28` discovery. On direct stdio,
+a legacy `initialize` request is accepted as an edge adapter for existing hosts:
+Labby records the peer information and returns the negotiated legacy version
+without changing internal request handling or creating a resumable HTTP session.
+The hosted HTTP boundary rejects historical `initialize` versions as described
+above.
 
 ### MRTR and tasks
 

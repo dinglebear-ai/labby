@@ -20,6 +20,7 @@ mod support {
 use std::time::Duration;
 
 use reqwest::{Client, Response};
+use rmcp::model::ProtocolVersion;
 use serde_json::{Value, json};
 use transport::{TransportKind, TransportQualification};
 
@@ -98,6 +99,25 @@ async fn body(response: Response) -> (u16, String) {
     (status, body)
 }
 
+async fn first_sse_event(mut response: Response) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut observed = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let chunk = tokio::time::timeout(remaining, response.chunk())
+            .await
+            .expect("bounded SSE response")
+            .expect("read SSE response")
+            .expect("SSE response ended before its first event");
+        observed.extend_from_slice(&chunk);
+        assert!(observed.len() <= 64 * 1024, "first SSE event was unbounded");
+        if let Some(end) = observed.windows(2).position(|window| window == b"\n\n") {
+            observed.truncate(end + 2);
+            return String::from_utf8(observed).expect("UTF-8 SSE event");
+        }
+    }
+}
+
 async fn establish_effectful_control(
     client: &Client,
     runner: &TransportQualification,
@@ -155,13 +175,27 @@ async fn mcp_spec_http_unsupported_protocol_version_is_bad_request() {
     let runner = start().await;
     let client = client();
     let before = establish_effectful_control(&client, &runner).await;
-    for unsupported in [
+    let unsupported_versions = [
         "2999-12-31",
         "2025-11-25",
         "2025-06-18",
         "2025-03-26",
         "2024-11-05",
-    ] {
+    ];
+    let sdk_known_legacy_versions = ProtocolVersion::KNOWN_VERSIONS
+        .iter()
+        .filter(|version| version.as_str() != ProtocolVersion::V_2026_07_28.as_str())
+        .map(ProtocolVersion::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        unsupported_versions[1..]
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        sdk_known_legacy_versions,
+        "literal rejection cases drifted from the SDK-known legacy versions"
+    );
+    for unsupported in unsupported_versions {
         let (status, response) = body(
             post(
                 &client,
@@ -272,7 +306,7 @@ async fn mcp_spec_http_ignores_legacy_session_header() {
 }
 
 #[tokio::test]
-async fn mcp_spec_http_ignores_legacy_last_event_id_header() {
+async fn mcp_spec_http_ignores_legacy_last_event_id_and_has_no_resume_endpoint() {
     let runner = start().await;
     let client = client();
     let clean_response = post(
@@ -323,5 +357,72 @@ async fn mcp_spec_http_ignores_legacy_last_event_id_header() {
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], "legacy-last-event-id");
     assert!(response["result"]["tools"].is_array());
+
+    let mut listen = request(
+        Some("legacy-last-event-id-stream"),
+        "subscriptions/listen",
+        "2026-07-28",
+    );
+    listen["params"]["notifications"] = json!({"toolsListChanged": true});
+    let clean_stream = post(&client, &runner, listen.clone(), Some("2026-07-28"))
+        .send()
+        .await
+        .expect("bounded clean SSE response");
+    assert_eq!(clean_stream.status().as_u16(), 200);
+    assert!(
+        clean_stream
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream")),
+        "subscriptions/listen did not select SSE"
+    );
+    let clean_event = first_sse_event(clean_stream).await;
+
+    let legacy_stream = post(&client, &runner, listen, Some("2026-07-28"))
+        .header("last-event-id", "obsolete-stream-event")
+        .send()
+        .await
+        .expect("bounded legacy SSE response");
+    assert_eq!(legacy_stream.status().as_u16(), 200);
+    assert!(
+        legacy_stream
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream")),
+        "legacy subscriptions/listen did not select SSE"
+    );
+    let legacy_event = first_sse_event(legacy_stream).await;
+    assert_eq!(
+        legacy_event, clean_event,
+        "Last-Event-ID resumed or otherwise changed the POST SSE stream"
+    );
+    assert!(
+        legacy_event.contains("notifications/subscriptions/acknowledged"),
+        "POST SSE stream did not begin with a fresh subscription acknowledgement: {legacy_event}"
+    );
+    assert!(
+        !legacy_event.lines().any(|line| line.starts_with("id:")),
+        "POST SSE stream emitted a resumable event ID: {legacy_event}"
+    );
+
+    let resume_response = client
+        .get(runner.http_endpoint().expect("HTTP endpoint"))
+        .bearer_auth(runner.http_token())
+        .header("accept", "text/event-stream")
+        .header("last-event-id", "obsolete-stream-event")
+        .send()
+        .await
+        .expect("bounded legacy resume response");
+    assert_eq!(resume_response.status().as_u16(), 405);
+    assert_eq!(
+        resume_response
+            .headers()
+            .get("allow")
+            .and_then(|value| value.to_str().ok()),
+        Some("POST"),
+        "legacy resume traffic exposed a resumable stream method"
+    );
     finish(runner).await;
 }

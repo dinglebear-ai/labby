@@ -3207,16 +3207,13 @@ mod tests {
                 .await
                 .expect("response");
 
-            // `initialize` is a valid JSON-RPC method shape at the transport
-            // layer, so rmcp returns the handler's typed negotiation error in
-            // a successful HTTP envelope. The protocol request itself is
-            // rejected below with UNSUPPORTED_PROTOCOL_VERSION.
-            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await
                 .expect("response body");
             let body: serde_json::Value =
                 serde_json::from_slice(&body).expect("protocol rejection is JSON-RPC");
+            assert_eq!(body["id"], 1);
             assert_eq!(body["error"]["code"], -32022, "version {version}: {body}");
             assert_eq!(body["error"]["data"]["requested"], version);
             assert_eq!(
@@ -3224,6 +3221,107 @@ mod tests {
                 serde_json::json!(["2026-07-28"])
             );
         }
+    }
+
+    #[tokio::test]
+    async fn http_mcp_rejects_legacy_initialize_without_modern_headers() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": {},
+                                "clientInfo": {"name": "legacy-test", "version": "1.0"}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("header rejection is JSON-RPC");
+        assert_eq!(body["id"], 1);
+        assert_eq!(body["error"]["code"], -32020);
+        assert!(body["error"].get("data").is_none());
+    }
+
+    #[tokio::test]
+    async fn http_mcp_rejects_initialize_in_the_current_lifecycle() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "initialize")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2026-07-28",
+                                "capabilities": {},
+                                "clientInfo": {"name": "modern-test", "version": "1.0"}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("method rejection is JSON-RPC");
+        assert_eq!(body["id"], 1);
+        assert_eq!(body["error"]["code"], -32601);
     }
 
     #[tokio::test]

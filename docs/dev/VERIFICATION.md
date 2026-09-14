@@ -97,12 +97,9 @@ granular source obligations are present for review. It does **not** mean:
 
 The current catalog has nine reviewed dispositions and nine registered oracles,
 leaving 2,214 rows without dispositions before considering execution state.
-Eight reviewed rows are applicable. The HTTP-083 `Last-Event-ID` row is
-conditional and therefore remains `applicability_unresolved` even when its
-diagnostic oracle passes. A report can consequently show all nine commands ran
-successfully while both the oracle and full gates remain red. The other rows
-still need one or more of: applicability review, a justified not-applicable
-disposition, an oracle, the required evidence scope, or a fresh passing run.
+All nine reviewed rows are applicable. The other rows still need one or more
+of: applicability review, a justified not-applicable disposition, an oracle,
+the required evidence scope, or a fresh passing run.
 Always inspect the per-outcome counts instead of subtracting a headline number.
 
 The denominator can contain multiple obligations about the same behavior and
@@ -229,9 +226,9 @@ just mcp-spec-compliance /path/to/modelcontextprotocol
 tiers. `mcp-spec-inventory` is a mutation and belongs only in an intentional
 spec migration; ordinary checks never regenerate committed catalogs.
 `mcp-spec-gate` first runs the complete intent and coordinator-test check, then
-executes all registered oracles. It currently exits nonzero because the mapped
-HTTP-083 conditional row is unresolved; command execution success does not
-convert that source disposition into compliance credit.
+executes all registered oracles. Passing this gate means those nine mapped
+requirements have fresh passing execution evidence; it does not resolve the
+remaining denominator-wide applicability and mapping gaps.
 `mcp-spec-report` preserves the strict compliance exit status and therefore
 normally exits 1 while coverage remains incomplete. A missing receipt is
 rendered honestly as `not_run` coverage and also exits 1; it is not execution
@@ -249,9 +246,7 @@ The supported workflow has three stages:
    compliance result.
 2. **Run registered oracles.** Execute every registered oracle and write bound
    evidence. The oracle gate succeeds only when every mapped requirement has a
-   `passed` outcome. A conditional mapped row remains unresolved and keeps this
-   gate red even when its command succeeds; uncovered requirements remain
-   visible as gaps.
+   `passed` outcome; uncovered requirements remain visible as gaps.
 3. **Run the strict compliance gate.** Require every denominator row to be
    either passed with sufficient scoped evidence or reviewed not applicable.
    Until mapping is complete, this gate is expected to remain red.

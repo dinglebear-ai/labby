@@ -159,7 +159,7 @@
       "requirement_ids": [
         "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-083"
       ],
-      "expected": "Current-version tools/list requests with and without Last-Event-ID return identical bounded, meaningful application/json responses with the matching request ID. Because the requests select JSON, the oracle proves header tolerance but does not prove that an SSE stream omitted event IDs or resumption behavior.",
+      "expected": "Current-version tools/list requests with and without Last-Event-ID return identical bounded JSON responses. Paired subscriptions/listen POSTs with and without the header each begin with the same fresh acknowledgement and no SSE id field. An authenticated GET carrying Last-Event-ID returns 405 with Allow: POST. Together these prove the header is ignored on every product response mode and neither POST nor GET exposes resumable streams.",
       "evidence_level": "product_wire",
       "scopes": [
         {
@@ -170,7 +170,7 @@
       "kind": "cargo_nextest",
       "package": "labby",
       "target": "test:mcp_spec_http_contracts",
-      "test": "mcp_spec_http_ignores_legacy_last_event_id_header",
+      "test": "mcp_spec_http_ignores_legacy_last_event_id_and_has_no_resume_endpoint",
       "timeout_seconds": 900
     }
   ]

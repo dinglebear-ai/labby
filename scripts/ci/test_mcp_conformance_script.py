@@ -172,6 +172,23 @@ work_dir="$(mktemp -d)"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("--direct-proxy-only", completed.stdout)
         self.assertIn("MCP_CONFORMANCE_OUTPUT_DIR", completed.stdout)
+        self.assertIn("one-run development overrides", completed.stdout)
+
+    def test_script_records_effective_pin_set_and_labels_overrides(self) -> None:
+        script = (ROOT / "scripts/ci/mcp-conformance.sh").read_text()
+        self.assertIn('"$output_dir/pins.json"', script)
+        self.assertIn('"canonical": sys.argv[2] == "true"', script)
+        self.assertIn("non-default pin overrides active; results are diagnostic", script)
+        for field in (
+            "labby_rmcp_repository",
+            "labby_rmcp_revision",
+            "rmcp_fixture_version",
+            "rmcp_tag",
+            "rmcp_commit",
+            "mcp_conformance_version",
+            "mcp_spec_version",
+        ):
+            self.assertIn(f'"{field}"', script)
 
     def test_authenticated_smoke_uses_dated_wire_metadata(self):
         script = (ROOT / "scripts/ci/mcp-conformance.sh").read_text()

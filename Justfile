@@ -82,7 +82,13 @@ mcp-spec-source spec_checkout=mcp_spec_checkout:
     git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null
     origin="$(git -C "$checkout" remote get-url origin)"
     [[ "$origin" == "$repository" || "$origin" == "$repository.git" ]] || { echo "unexpected MCP source origin: $origin" >&2; exit 2; }
-    if (( ! fresh_clone )) && [[ -n "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
+    # A caller may have already made the same virgin no-checkout clone. It is
+    # safe to materialize only when it has neither an index nor worktree files.
+    empty_no_checkout=0
+    if [[ ! -e "$checkout/.git/index" ]] && [[ -z "$(find "$checkout" -mindepth 1 -maxdepth 1 ! -name .git -print -quit)" ]]; then
+        empty_no_checkout=1
+    fi
+    if (( ! fresh_clone && ! empty_no_checkout )) && [[ -n "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)" ]]; then
         echo "refusing to modify dirty MCP source checkout: $checkout" >&2
         exit 2
     fi
@@ -107,11 +113,9 @@ mcp-spec-inventory spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_chec
 # Validate pinned specification extraction and reviewed applicability, not compliance.
 mcp-spec-check spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout {{quote(spec_checkout)}}
-    # Extractor contract tests use the canonical target path as a fixed fixture.
-    just mcp-spec-source
-    python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
+    LABBY_MCP_SPEC_SOURCE={{quote(spec_checkout)}} python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner scripts.ci.test_mcp_spec_recipes
 
-# Execute all registered oracles; unresolved conditional mappings can keep this red.
+# Execute all registered oracles; denominator-wide gaps remain in the report.
 mcp-spec-oracles spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}}
 
@@ -126,7 +130,7 @@ mcp-spec-verify tier="oracles" spec_checkout=mcp_spec_checkout: (_mcp-spec-prepa
       *) echo "tier must be check, oracles, or full" >&2; exit 2 ;;
     esac
 
-# Aggregate intent/harness checks plus every oracle; unresolved mappings stay red.
+# Aggregate intent/harness checks plus every registered oracle.
 mcp-spec-gate spec_checkout=mcp_spec_checkout: (_mcp-spec-prepare spec_checkout)
     just mcp-spec-check {{quote(spec_checkout)}}
     python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}}

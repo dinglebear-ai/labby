@@ -3,11 +3,13 @@
 from copy import deepcopy
 from pathlib import Path
 import tempfile
+import signal
+import subprocess
 import unittest
 from unittest.mock import patch
 
 from scripts.ci.mcp_spec_compliance import (
-    InvalidCatalog, apply_dispositions, coverage, dependency_fingerprint, digest, invalidate_evidence, oracle_command, schema_requirements, source_check, validate_catalog, validate_oracles,
+    InvalidCatalog, apply_dispositions, coverage, dependency_fingerprint, digest, execute, invalidate_evidence, oracle_command, schema_requirements, source_check, validate_catalog, validate_oracles,
 )
 
 
@@ -21,6 +23,43 @@ def fixture():
     mapping["oracles"][0]["scopes"] = [{"role": "client", "transport": "http"}]
     catalog["requirements"][0].update(role_inference="explicit_actor", capability="core", source_anchor="#messages", requirement_kind="direct", external_normative_references=[], existing_auth_ids=[])
     return sources, catalog, mapping
+
+
+class ExecutionTests(unittest.TestCase):
+    def test_sigterm_cleans_process_group_and_restores_handler(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        with patch("scripts.ci.mcp_spec_compliance.subprocess.Popen") as spawn, patch("scripts.ci.mcp_spec_compliance.os.killpg") as kill:
+            process = spawn.return_value
+            process.pid = 12345
+
+            def terminate_on_first_wait(*args, **kwargs):
+                process.wait.side_effect = None
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+            process.wait.side_effect = terminate_on_first_wait
+            with self.assertRaises(SystemExit) as result:
+                execute(["test-command"], 30)
+            self.assertEqual(result.exception.code, 128 + signal.SIGTERM)
+            self.assertEqual([call.args for call in kill.call_args_list], [(12345, signal.SIGTERM), (12345, signal.SIGKILL)])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+
+    def test_interrupt_cleans_entire_process_group_and_propagates(self):
+        with patch("scripts.ci.mcp_spec_compliance.subprocess.Popen") as spawn, patch("scripts.ci.mcp_spec_compliance.os.killpg") as kill:
+            process = spawn.return_value
+            process.pid = 12345
+            process.wait.side_effect = [KeyboardInterrupt(), 0, 0]
+            with self.assertRaises(KeyboardInterrupt):
+                execute(["test-command"], 30)
+            self.assertEqual([call.args for call in kill.call_args_list], [(12345, signal.SIGTERM), (12345, signal.SIGKILL)])
+            self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+
+    def test_timeout_cleans_descendants_after_parent_exits(self):
+        with patch("scripts.ci.mcp_spec_compliance.subprocess.Popen") as spawn, patch("scripts.ci.mcp_spec_compliance.os.killpg") as kill:
+            process = spawn.return_value
+            process.pid = 12345
+            process.wait.side_effect = [subprocess.TimeoutExpired("test-command", 30), 0, 0]
+            self.assertEqual(execute(["test-command"], 30), (None, "timeout"))
+            self.assertEqual([call.args for call in kill.call_args_list], [(12345, signal.SIGTERM), (12345, signal.SIGKILL)])
 
 
 class CatalogTests(unittest.TestCase):

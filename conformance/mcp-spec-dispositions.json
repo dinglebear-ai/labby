@@ -117,8 +117,8 @@
     {
       "requirement_id": "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-083",
       "requirement_sha256": "14e20f7fac944001688e64fdc64558ff589dcc401f5f7312a9d1fd103a2f823e",
-      "applicability": "conditional",
-      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28, satisfying the source antecedent. The reviewed oracle proves Last-Event-ID is ignored on a bounded JSON request by comparing responses with and without the header, but it does not prove the compound clause's absence of SSE event IDs or stream resumability. The conditional disposition is temporary tracking for that incomplete compound evidence, not an unresolved applicability antecedent.",
+      "applicability": "applicable",
+      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28. Product-wire checks prove Last-Event-ID leaves bounded JSON responses unchanged, POST subscriptions/listen starts a fresh SSE stream without event IDs, and the legacy GET resume path returns 405 with Allow: POST. This covers both configured response modes and proves streams are not resumable.",
       "review_reference": "lab-jfu6q.20.7",
       "required_evidence": [
         {

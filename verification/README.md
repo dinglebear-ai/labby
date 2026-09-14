@@ -44,7 +44,7 @@ MCP specification and authorization systems:
 ```sh
 just mcp-spec-source                 # prepare the pinned default checkout
 just mcp-spec-check                  # validate source, catalogs and runner tests
-just mcp-spec-oracles                # run all oracles; current conditional gap exits red
+just mcp-spec-oracles                # run all registered oracles
 just mcp-spec-report                 # strict report; incomplete coverage exits 1
 just mcp-spec-summary                # print valid incomplete coverage successfully
 just mcp-spec-compliance             # strict denominator-wide execution gate
@@ -62,11 +62,10 @@ used during a reviewed spec migration. `mcp-spec-verify` accepts `check`,
 `oracles`, or `full`; `mcp-spec-gate` is the complete registered-oracle gate.
 The default source is prepared automatically; an explicit checkout is inspected
 without changing its Git state. The aggregate gate runs intent and harness
-tests before it starts the registered oracles. The current HTTP 0.8.3
-`Last-Event-ID` disposition is conditional, so its requirement remains
-unresolved and the oracle/full gates can exit nonzero even if every registered
-command itself passes. Treat the receipt as execution evidence and the report
-outcomes as the gate decision.
+tests before it starts the registered oracles. Passing the oracle gate credits
+only the nine mapped requirements; the strict full gate remains incomplete
+while denominator-wide applicability and mapping gaps remain. Treat the receipt
+as execution evidence and the report outcomes as the gate decision.
 The strict report writes a valid `not_run` report and exits 1 when no receipt
 exists. The summary wrapper accepts that incomplete result, but malformed or
 stale receipts still exit 2 and fail. No reporting recipe executes an oracle.
