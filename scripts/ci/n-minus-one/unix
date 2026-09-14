@@ -58,19 +58,30 @@ verify_provenance() {
 start_service() {
     PATH="$install_dir:$PATH" HOME="$user_home" LABBY_HOME="$labby_home" nohup "$install_dir/labby" serve \
         >"$work_root/service.log" 2>&1 &
-    local pid identity
+    local pid identity child_start
     pid=$!
+    for _ in {1..50}; do
+        child_start=$(python3 "$repo_root/scripts/ci/verified-process.py" start \
+            --pid "$pid" --proc-root "$proc_root") && break
+        sleep 0.02
+    done
+    [[ -n "${child_start:-}" ]] || {
+        echo "could not record launched service process identity" >&2
+        return 1
+    }
     for _ in {1..50}; do
         if curl -fsS http://127.0.0.1:8765/ready >/dev/null; then
             identity=$(python3 "$repo_root/scripts/ci/verified-process.py" identity \
                 --pid "$pid" --proc-root "$proc_root" --executable "$install_dir/labby") && {
+                [[ "${identity%%$'\t'*}" == "$child_start" ]] || break
                 printf '%s\t%s\n' "$pid" "$identity" >"$pid_file"
                 return
             }
         fi
         sleep 0.2
     done
-    kill "$pid" 2>/dev/null || true
+    python3 "$repo_root/scripts/ci/verified-process.py" stop --pid "$pid" \
+        --proc-root "$proc_root" --start "$child_start" || true
     wait "$pid" 2>/dev/null || true
     echo 'service did not become ready with the expected process identity' >&2
     return 1

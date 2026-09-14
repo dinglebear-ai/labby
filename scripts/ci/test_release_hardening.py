@@ -401,6 +401,39 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertEqual(2, partial.returncode)
             self.assertIn("cannot read process executable", partial.stderr)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
+    def test_startup_cleanup_refuses_reused_child_pid_and_accepts_disappearance(self) -> None:
+        helper = ROOT / "scripts/ci/verified-process.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = Path(tmp)
+            victim = subprocess.Popen(["sleep", "30"])
+            proc = proc_root / str(victim.pid)
+            proc.mkdir()
+            (proc / "stat").write_text(
+                f"{victim.pid} (replacement) S {'0 ' * 18}99999\n"
+            )
+            (proc / "exe").symlink_to("/usr/bin/sleep")
+            try:
+                reused = subprocess.run(
+                    [str(helper), "stop", "--pid", str(victim.pid),
+                     "--proc-root", str(proc_root), "--start", "12345"],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(2, reused.returncode)
+                self.assertIn("identity changed; refusing to signal", reused.stderr)
+                self.assertIsNone(victim.poll())
+            finally:
+                victim.terminate()
+                victim.wait(timeout=2)
+
+            disappeared = subprocess.run(
+                [str(helper), "stop", "--pid", "999999",
+                 "--proc-root", str(proc_root), "--start", "12345"],
+                capture_output=True,
+            )
+            self.assertEqual(0, disappeared.returncode)
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "proc identity is Linux-specific")
     def test_unix_start_identity_failure_cleans_unpublished_child(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

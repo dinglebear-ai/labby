@@ -54,6 +54,14 @@ def identity(args: argparse.Namespace) -> int:
     return 0
 
 
+def start(args: argparse.Namespace) -> int:
+    observed = inspect(Path(args.proc_root), args.pid)
+    if observed is None:
+        return 1
+    print(observed[0])
+    return 0
+
+
 def stop(args: argparse.Namespace) -> int:
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
         raise RuntimeError("pidfd signaling is unavailable")
@@ -68,13 +76,13 @@ def stop(args: argparse.Namespace) -> int:
         observed = inspect(proc_root, args.pid)
         if observed is None:
             return 0
-        if observed[:2] != (args.start, args.executable):
+        if observed[0] != args.start or (args.executable and observed[1] != args.executable):
             raise RuntimeError("process identity changed; refusing to signal it")
         signal.pidfd_send_signal(pidfd, signal.SIGTERM)
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
             observed = inspect(proc_root, args.pid)
-            if observed is None or observed[:2] != (args.start, args.executable):
+            if observed is None or observed[0] != args.start:
                 return 0
             time.sleep(0.1)
         raise RuntimeError("verified process did not stop")
@@ -84,15 +92,19 @@ def stop(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("identity", "stop"))
+    parser.add_argument("command", choices=("identity", "start", "stop"))
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--proc-root", default="/proc")
-    parser.add_argument("--executable", required=True)
+    parser.add_argument("--executable")
     parser.add_argument("--start")
     parser.add_argument("--timeout", type=float, default=10)
     args = parser.parse_args()
     try:
-        return identity(args) if args.command == "identity" else stop(args)
+        if args.command == "identity":
+            if not args.executable:
+                parser.error("identity requires --executable")
+            return identity(args)
+        return start(args) if args.command == "start" else stop(args)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
         return 2
