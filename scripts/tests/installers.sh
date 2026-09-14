@@ -153,7 +153,7 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
         cd "$case_root/cwd"
         env -i HOME="$home" PATH="$fake_bin:/usr/bin:/bin" LABBY_TEST_FIXTURES="$fixtures" \
             LABBY_INSTALL_DIR="$home/bin" LABBY_INSTALL_REPO=example/labby \
-            LABBY_INSTALL_VERSION=v1.0.0 /bin/sh <"$repo_root/install.sh"
+            LABBY_INSTALL_VERSION=v1.0.0 LABBY_INSTALL_NO_SETUP=1 /bin/sh <"$repo_root/install.sh"
     )
     [ "$("$home/bin/labby")" = release-v1 ] || fail "piped root installer was not self-contained"
 }
@@ -451,6 +451,7 @@ run_installer() {
         LABBY_TEST_FIXTURES="$fixtures" \
         LABBY_INSTALL_DIR="$home/bin" \
         LABBY_INSTALL_REPO="example/labby" \
+        LABBY_INSTALL_NO_SETUP=1 \
         "$@" \
         /bin/sh "$repo_root/scripts/install.sh"
 }

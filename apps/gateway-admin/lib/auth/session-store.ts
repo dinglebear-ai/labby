@@ -32,7 +32,11 @@ export type BrowserSessionState =
       isAdmin?: boolean
       projectId?: string
     }
-  | { status: 'unauthenticated' }
+  | {
+      status: 'unauthenticated'
+      loginAvailable?: boolean
+      bearerLoginAvailable?: boolean
+    }
   | {
       status: 'auth_error'
       kind?: string
@@ -67,6 +71,8 @@ type SessionPayload =
     }
   | {
       authenticated: false
+      login_available?: boolean
+      bearer_login_available?: boolean
     }
 
 type SessionErrorPayload = {
@@ -130,7 +136,11 @@ function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: tr
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
   if (!payload.authenticated) {
-    return { status: 'unauthenticated' }
+    return {
+      status: 'unauthenticated',
+      ...(typeof payload.login_available === 'boolean' ? { loginAvailable: payload.login_available } : {}),
+      ...(typeof payload.bearer_login_available === 'boolean' ? { bearerLoginAvailable: payload.bearer_login_available } : {}),
+    }
   }
   const authority = normalizeAuthority(payload)
   // normalizeAuthority already rejected unknown states, so any string left is one of ours.
@@ -244,6 +254,25 @@ export async function loadBrowserSession() {
 
   setState(next)
   return next
+}
+
+export async function exchangeBearerBrowserSession(token: string) {
+  const credential = token.trim()
+  if (!credential) throw new Error('Enter the bearer token generated during Labby setup.')
+  const response = await fetch('/auth/bearer-session', {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'include',
+    headers: {
+      authorization: `Bearer ${credential}`,
+      accept: 'application/json',
+    },
+  })
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as SessionErrorPayload | null
+    throw new Error(payload?.message || 'Labby rejected that bearer token.')
+  }
+  return loadBrowserSession()
 }
 
 export class LogoutRevocationError extends Error {
