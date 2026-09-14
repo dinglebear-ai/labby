@@ -451,7 +451,6 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 /// consumer that needs the mounted path (OpenAPI, tests) reads it here.
 #[allow(dead_code)]
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn service_dispatch_path(service: &str) -> String {
     match service {
         "access" => "/v1/access/admin".to_owned(),
