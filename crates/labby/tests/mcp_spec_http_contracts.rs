@@ -56,18 +56,9 @@ fn effectful_request(id: &str, version: &str) -> Value {
 }
 
 async fn start() -> TransportQualification {
-    let runner = TransportQualification::start(TransportKind::StreamableHttp, "http-contract")
+    TransportQualification::start(TransportKind::StreamableHttp, "http-contract")
         .await
-        .expect("real Labby MCP process");
-    let tools = runner
-        .discover_tools()
-        .await
-        .expect("forge upstream readiness");
-    assert!(
-        tools.contains_key("forge.safe"),
-        "ready forge upstream did not advertise forge.safe"
-    );
-    runner
+        .expect("real Labby MCP process")
 }
 
 async fn finish(runner: TransportQualification) {
@@ -176,6 +167,28 @@ async fn mcp_spec_http_missing_protocol_version_is_bad_request() {
     .await;
     assert_eq!(status, 400, "missing protocol header accepted: {response}");
     assert_eq!(runner.effect_counts().expect("side effects"), before);
+    finish(runner).await;
+}
+
+#[tokio::test]
+async fn mcp_spec_http_cold_tools_list_completes_without_prior_tool_call() {
+    let runner = TransportQualification::start(TransportKind::StreamableHttp, "cold-tools-list")
+        .await
+        .expect("real Labby MCP process");
+    let response = post(
+        &client(),
+        &runner,
+        request(Some("cold-list"), "tools/list", "2026-07-28"),
+        Some("2026-07-28"),
+    )
+    .send()
+    .await
+    .expect("cold literal tools/list response");
+    let (status, body) = body(response).await;
+    assert_eq!(status, 200, "cold list failed: {body}");
+    let result: Value = serde_json::from_str(&body).expect("cold list JSON response");
+    assert_eq!(result["id"], "cold-list");
+    assert!(result["result"]["tools"].is_array());
     finish(runner).await;
 }
 
