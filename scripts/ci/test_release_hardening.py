@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 import yaml
@@ -230,7 +231,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
         self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
         self.assertIn('for _ in {1..100}; do', unix)
-        self.assertIn('kill -0 "$pid" 2>/dev/null || break', unix)
+        self.assertIn('observed=$(process_identity "$pid")', unix)
         self.assertIn('service pid $pid did not stop and still owns lifecycle state', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
@@ -262,30 +263,58 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             commands = runner_temp / "commands"
             install.mkdir(parents=True)
             commands.mkdir()
+            proc_root = runner_temp / "proc"
+            proc_root.mkdir()
+            identity_ready = runner_temp / "identity-ready"
+            ready = runner_temp / "old-ready"
             stopped = runner_temp / "old-stopped"
             old = subprocess.Popen(
                 [
                     sys.executable,
                     "-c",
-                    "import os,signal,time,pathlib; "
-                    f"p=pathlib.Path({str(stopped)!r}); "
-                    "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(.4), p.touch(), os._exit(0))); "
-                    "time.sleep(30)",
+                    "import os,signal,time,pathlib\n"
+                    f"p=pathlib.Path({str(stopped)!r})\n"
+                    f"ready=pathlib.Path({str(ready)!r})\n"
+                    f"identity=pathlib.Path({str(identity_ready)!r})\n"
+                    f"proc=pathlib.Path({str(proc_root)!r})/str(os.getpid())\n"
+                    "while not identity.exists(): time.sleep(.01)\n"
+                    "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(.4), p.touch(), __import__('shutil').rmtree(proc), os._exit(0)))\n"
+                    "ready.touch()\n"
+                    "time.sleep(30)\n",
                 ]
             )
             reaper = threading.Thread(target=old.wait, daemon=True)
             reaper.start()
-            (work / "labby.pid").write_text(f"{old.pid}\n")
+            old_proc = proc_root / str(old.pid)
+            old_proc.mkdir()
+            (old_proc / "stat").write_text(f"{old.pid} (labby) S {'0 ' * 18}12345\n")
+            (old_proc / "exe").symlink_to(install / "labby")
+            identity_ready.touch()
+            deadline = time.monotonic() + 2
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "old daemon did not install its TERM handler")
+            (work / "labby.pid").write_text(f"{old.pid}\t12345\t{install / 'labby'}\n")
             (install / "labby").write_text(
                 "#!/bin/sh\n"
+                f"proc={str(proc_root)!r}/$$\n"
+                "mkdir -p \"$proc\"\n"
+                f"printf '%s (labby) S {'0 ' * 18}777\\n' \"$$\" >\"$proc/stat\"\n"
+                "ln -s \"$0\" \"$proc/exe\"\n"
+                "trap 'rm -rf \"$proc\"; exit 0' TERM\n"
                 f"test -f {str(stopped)!r} || exit 42\n"
                 "sleep 30\n"
             )
             (install / "labby").chmod(0o755)
-            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "curl").write_text(
+                "#!/bin/sh\n"
+                f"pid=$(cut -f1 {str(work / 'labby.pid')!r})\n"
+                "kill -0 \"$pid\" 2>/dev/null\n"
+            )
             (commands / "curl").chmod(0o755)
             env = os.environ | {
                 "RUNNER_TEMP": str(runner_temp),
+                "LABBY_N_MINUS_ONE_PROC_ROOT": str(proc_root),
                 "PATH": f"{commands}:{os.environ['PATH']}",
             }
             try:
@@ -293,16 +322,58 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                     [str(ROOT / "scripts/ci/n-minus-one/unix"), "restart"],
                     check=True,
                     env=env,
-                    timeout=10,
+                    timeout=15,
                 )
                 self.assertTrue(stopped.exists())
             finally:
                 pid_path = work / "labby.pid"
                 if pid_path.exists():
-                    os.kill(int(pid_path.read_text().strip()), 15)
+                    os.kill(int(pid_path.read_text().split("\t", 1)[0]), 15)
                 if old.poll() is None:
                     old.kill()
                 reaper.join(timeout=2)
+
+    def test_unix_restart_refuses_reused_or_uninspectable_pid(self) -> None:
+        for case in ("identity-mismatch", "unknown-proc"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                runner_temp = Path(tmp)
+                work = runner_temp / "labby-n-minus-one" / "unix"
+                proc_root = runner_temp / "proc"
+                work.mkdir(parents=True)
+                victim = subprocess.Popen(["sleep", "30"])
+                proc = proc_root / str(victim.pid)
+                proc.mkdir(parents=True)
+                if case == "identity-mismatch":
+                    (proc / "stat").write_text(
+                        f"{victim.pid} (other) S {'0 ' * 18}99999\n"
+                    )
+                    (proc / "exe").symlink_to("/usr/bin/other")
+                (work / "labby.pid").write_text(
+                    f"{victim.pid}\t12345\t{work / 'bin/labby'}\n"
+                )
+                env = os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "LABBY_N_MINUS_ONE_PROC_ROOT": str(proc_root),
+                }
+                try:
+                    result = subprocess.run(
+                        [str(ROOT / "scripts/ci/n-minus-one/unix"), "restart"],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIsNone(victim.poll(), "unverified PID was signaled")
+                    expected = (
+                        "identity changed; refusing to signal it"
+                        if case == "identity-mismatch"
+                        else "cannot safely inspect service pid"
+                    )
+                    self.assertIn(expected, result.stderr)
+                finally:
+                    victim.terminate()
+                    victim.wait(timeout=2)
 
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
