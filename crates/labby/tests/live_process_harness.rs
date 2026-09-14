@@ -419,6 +419,8 @@ async fn partial_invalid_config_exits_with_sanitized_diagnostics() {
 
 // Migrated from startup_config: the lifecycle guard now owns and evidences the
 // exact compiled `labby serve` process whose invalid startup is under test.
+// Use the harness native startup budget: this checks the validation error, not
+// startup speed. Windows must finish bootstrap before it can report that error.
 #[tokio::test]
 async fn adopted_invalid_gateway_config_exits_without_panicking() {
     let failure = match LiveLabbyBuilder::new()
@@ -429,7 +431,6 @@ name = "invalid-fixture"
 command = "/definitely/not/allowed"
 "#,
         )
-        .readiness_deadline(Duration::from_secs(3))
         .start()
         .await
     {

@@ -271,6 +271,56 @@ fn shared_rust_setup_does_not_require_desktop_packages() {
 }
 
 #[test]
+fn verification_workspace_changes_route_to_the_required_jobs() {
+    // Runner/backend code remains isolated from the product workspace.
+    let out = classify(
+        "pull_request",
+        &["verification/crates/verify-runner/src/lib.rs"],
+    );
+    assert_eq!(out["verification"], "true");
+    assert_eq!(out["rust_compile"], "false");
+    assert_eq!(out["rust_test"], "false");
+    assert_eq!(out["web"], "false");
+    assert_eq!(out["docker"], "false");
+    assert_eq!(out["release"], "false");
+
+    // The product's M3 model imports verify-core and verify-scenario, so edits
+    // to those shared crates must also exercise the product Rust matrix.
+    let out = classify(
+        "pull_request",
+        &[
+            "verification/crates/verify-core/src/lib.rs",
+            "verification/crates/verify-scenario/src/lib.rs",
+        ],
+    );
+    assert_eq!(out["verification"], "true");
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["rust_test"], "true");
+}
+
+#[test]
+fn verification_runs_when_its_inherited_build_inputs_change() {
+    for path in [
+        "rust-toolchain.toml",
+        "clippy.toml",
+        "Justfile",
+        ".cargo/config.toml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["verification"], "true", "{path}");
+    }
+}
+
+#[test]
+fn product_changes_do_not_enable_the_verification_workspace_job() {
+    // The inverse direction: the two workspaces are independent, so a product
+    // source edit has no reason to rebuild the toolkit.
+    let out = classify("pull_request", &["crates/labby/src/lib.rs"]);
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["verification"], "false");
+}
+
+#[test]
 fn docs_only_changes_skip_expensive_runtime_categories() {
     let out = classify("pull_request", &["docs/runtime/CICD.md", "docs/README.md"]);
     assert_eq!(out["docs"], "true");

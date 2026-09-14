@@ -192,7 +192,7 @@ fn every_row_is_consistent_with_the_production_authority_vocabulary() {
         // exercises the PersonalUser role over their own credential resource.
         let personal = key == "gateway:gateway.oauth.authorize";
         let effective_role = |role| {
-            if personal {
+            if personal && role != RoleTemplate::PlatformAdmin {
                 RoleTemplate::PersonalUser
             } else {
                 role

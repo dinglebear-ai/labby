@@ -47,3 +47,9 @@ fn canonical(value: &Value, output: &mut Vec<u8>) {
         _ => output.extend(serde_json::to_vec(value).expect("JSON value serialization")),
     }
 }
+
+pub(crate) fn canonical_bytes(value: &Value) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    canonical(value, &mut bytes);
+    bytes
+}
