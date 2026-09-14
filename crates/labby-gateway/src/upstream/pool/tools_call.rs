@@ -1115,6 +1115,7 @@ mod tests {
             pool.subject_connections.write().await.insert(
                 (upstream_name.to_string(), subject.to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: conn,
                     peer: peer.clone(),
                     tools: vec![],

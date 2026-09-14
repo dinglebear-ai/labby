@@ -679,9 +679,22 @@ impl UpstreamOauthManager {
     /// short refresh buffer. Status checks need an explicit refresh so UI state
     /// cannot report a stale credential row as connected.
     pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
+        // Once admitted, persist a provider's rotated token even if the status
+        // request disappears. Dropping the JoinHandle detaches this bounded
+        // provider operation instead of cancelling between exchange and save.
+        let manager = self.clone();
+        let subject = subject.to_string();
+        tokio::spawn(async move { manager.refresh_auth_client_if_due_owned(&subject).await })
+            .await
+            .map_err(|error| {
+                OauthError::Internal(format!("OAuth status refresh task failed: {error}"))
+            })?
+    }
+
+    async fn refresh_auth_client_if_due_owned(&self, subject: &str) -> Result<bool, OauthError> {
         let started = std::time::Instant::now();
         let lock = self.acquire_refresh_lock(subject).await?;
-        let _guard = lock.lock().await;
+        let guard = lock.lock_owned().await;
         self.preflight_shared_google_credential().await?;
 
         // A status caller may have waited behind another status/request refresh.
@@ -741,6 +754,19 @@ impl UpstreamOauthManager {
                     "upstream oauth: failed to build refresh manager"
                 );
             })?;
+        // rmcp persists refresh responses through this store before returning.
+        // The store owns the already-held account guard, so that save must not
+        // acquire the same non-reentrant Google mutex a second time.
+        let _ordinary_guard = if self.oauth_config()?.credential.is_google_provider() {
+            let store = self.google_credential_store(self.effective_scopes()?)?;
+            let row = store.credential_row().await?.ok_or_else(|| {
+                OauthError::NeedsReauth("central Google credential was removed".into())
+            })?;
+            manager.set_credential_store(store.with_refresh_guard(row.subject, guard));
+            None
+        } else {
+            Some(guard)
+        };
         let initialized = manager.initialize_from_store().await.map_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,

@@ -1145,7 +1145,7 @@ impl UpstreamPool {
             }));
         }
         let oauth_epoch = if subject.is_some() {
-            self.oauth_lifecycle_epoch()
+            subject.and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject))
         } else {
             None
         };
@@ -1366,14 +1366,15 @@ impl UpstreamPool {
                         message,
                     }));
                 }
-                let _oauth_publication = match self.oauth_publication_guard(oauth_epoch).await {
-                    Ok(guard) => guard,
-                    Err(error) => {
-                        return Some(Err(super::CapabilityCallError::Other {
-                            message: error.to_string(),
-                        }));
-                    }
-                };
+                let _oauth_publication =
+                    match self.oauth_publication_guard(oauth_epoch.as_ref()).await {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            return Some(Err(super::CapabilityCallError::Other {
+                                message: error.to_string(),
+                            }));
+                        }
+                    };
                 let result = self
                     .register_task_response(&relay_key, caller_subject, task_authorization, result)
                     .await;
@@ -2023,7 +2024,8 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
-        let lifecycle_epoch = subject.and_then(|_| self.oauth_lifecycle_epoch());
+        let lifecycle_epoch =
+            subject.and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject));
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -2146,7 +2148,8 @@ impl UpstreamPool {
         };
         let peer = conn.peer.clone();
         let generation = conn.runtime.generation;
-        let _oauth_publication = match self.oauth_publication_guard(lifecycle_epoch).await {
+        let _oauth_publication = match self.oauth_publication_guard(lifecycle_epoch.as_ref()).await
+        {
             Ok(guard) => guard,
             Err(_) => {
                 conn.shutdown(&config.name, "relay.oauth_epoch.changed")

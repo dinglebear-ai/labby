@@ -314,6 +314,19 @@ impl UpstreamPool {
             .await
             {
                 Ok(prompts) => {
+                    self.record_subject_optional_catalog(
+                        &name,
+                        subject,
+                        &peer,
+                        None,
+                        Some(
+                            prompts
+                                .iter()
+                                .map(|prompt| prompt.name.to_string())
+                                .collect(),
+                        ),
+                    )
+                    .await;
                     let discovered_count = prompts.len();
                     let exposed: Vec<Prompt> = prompts
                         .into_iter()

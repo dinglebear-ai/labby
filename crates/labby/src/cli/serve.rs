@@ -165,7 +165,7 @@ fn bootstrap_skill_library(
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_host_configs(
             &config.artifacts,
             &config.depot,
         )

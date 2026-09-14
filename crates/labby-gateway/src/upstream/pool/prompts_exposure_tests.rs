@@ -84,6 +84,7 @@ async fn seed_subject_connection(pool: &UpstreamPool, upstream: &str, subject: &
     pool.subject_connections.write().await.insert(
         (upstream.to_string(), subject.to_string()),
         SubjectScopedConnection {
+            optional_catalogs: Default::default(),
             _connection: connection,
             peer,
             tools: Vec::new(),

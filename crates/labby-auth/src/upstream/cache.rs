@@ -51,6 +51,22 @@ pub struct CachedAuthClient {
     fingerprint: String,
 }
 
+type ScopedEpochs = std::collections::HashMap<(String, Option<String>), std::sync::Weak<AtomicU64>>;
+
+/// A publication fence retained only while an identity has work in flight.
+#[derive(Clone)]
+pub struct OAuthLifecycleEpoch {
+    epochs: [(Arc<AtomicU64>, u64); 3],
+}
+
+impl OAuthLifecycleEpoch {
+    pub fn is_current(&self) -> bool {
+        self.epochs
+            .iter()
+            .all(|(epoch, expected)| epoch.load(Ordering::Acquire) == *expected)
+    }
+}
+
 /// Per-`(upstream, subject)` `AuthClient` cache.
 ///
 /// Cheap to clone (all state is behind `Arc`). Safe to share between the
@@ -71,12 +87,13 @@ pub struct OauthClientCache {
     evicted_clients: Arc<std::sync::Mutex<VecDeque<(String, String)>>>,
     client_capacity: usize,
     /// Process-wide credential lifecycle barrier shared with every upstream
-    /// pool built from this cache. Connection builders take a read guard for
-    /// their complete build-and-publish path; revocation takes the write guard.
+    /// pool built from this cache. Builders take a short read guard only when
+    /// publishing; revocation takes the write guard and advances scoped epochs.
     invalidation_barrier: Arc<RwLock<()>>,
     /// Monotonic credential lifecycle generation. Builders snapshot this
     /// before I/O and must re-check it under the short publication reader.
     lifecycle_epoch: Arc<AtomicU64>,
+    scoped_epochs: Arc<std::sync::Mutex<ScopedEpochs>>,
     /// Optional host-owned interactive reauthorization hook.
     reauth_handler: Option<OauthReauthHandler>,
 }
@@ -98,6 +115,7 @@ impl OauthClientCache {
             client_capacity: MAX_BUILD_LOCKS,
             invalidation_barrier: Arc::new(RwLock::new(())),
             lifecycle_epoch: Arc::new(AtomicU64::new(0)),
+            scoped_epochs: Arc::new(std::sync::Mutex::new(ScopedEpochs::new())),
             reauth_handler: None,
         }
     }
@@ -163,9 +181,51 @@ impl OauthClientCache {
         self.lifecycle_epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 
-    async fn ensure_epoch_current(&self, expected: u64) -> Result<(), OauthError> {
+    pub fn lifecycle_epoch_for(&self, upstream: &str, subject: &str) -> OAuthLifecycleEpoch {
+        let mut scopes = self
+            .scoped_epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scopes.retain(|_, epoch| epoch.strong_count() > 0);
+        let mut get = |key| {
+            let epoch = scopes
+                .get(&key)
+                .and_then(std::sync::Weak::upgrade)
+                .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
+            scopes.insert(key, Arc::downgrade(&epoch));
+            let expected = epoch.load(Ordering::Acquire);
+            (epoch, expected)
+        };
+        OAuthLifecycleEpoch {
+            epochs: [
+                (Arc::clone(&self.lifecycle_epoch), self.lifecycle_epoch()),
+                get((upstream.to_string(), None)),
+                get((upstream.to_string(), Some(subject.to_string()))),
+            ],
+        }
+    }
+
+    pub fn advance_subject_epoch(&self, upstream: &str, subject: &str) {
+        self.advance_scoped_epoch((upstream.to_string(), Some(subject.to_string())));
+    }
+
+    pub fn advance_upstream_epoch(&self, upstream: &str) {
+        self.advance_scoped_epoch((upstream.to_string(), None));
+    }
+
+    fn advance_scoped_epoch(&self, key: (String, Option<String>)) {
+        let scopes = self
+            .scoped_epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(epoch) = scopes.get(&key).and_then(std::sync::Weak::upgrade) {
+            epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    async fn ensure_epoch_current(&self, expected: &OAuthLifecycleEpoch) -> Result<(), OauthError> {
         let _publication = self.invalidation_barrier.read().await;
-        if self.lifecycle_epoch() == expected {
+        if expected.is_current() {
             Ok(())
         } else {
             Err(OauthError::NeedsReauth(
@@ -208,7 +268,7 @@ impl OauthClientCache {
         config: &UpstreamConfig,
         subject: &str,
     ) -> Result<Arc<AuthClient<reqwest::Client>>, OauthError> {
-        let lifecycle_epoch = self.lifecycle_epoch();
+        let lifecycle_epoch = self.lifecycle_epoch_for(&config.name, subject);
         // For Dynamic upstreams, include the stored client_id in the
         // fingerprint so a re-registration is detected (lab-77y5.13).
         let dynamic_client_id: Option<String> = if config
@@ -264,7 +324,7 @@ impl OauthClientCache {
                 },
             )
             .await?;
-        if let Err(error) = self.ensure_epoch_current(lifecycle_epoch).await {
+        if let Err(error) = self.ensure_epoch_current(&lifecycle_epoch).await {
             self.evict_subject(&config.name, subject);
             return Err(error);
         }
@@ -289,7 +349,7 @@ impl OauthClientCache {
     where
         C: StreamableHttpClient + Clone,
     {
-        let lifecycle_epoch = self.lifecycle_epoch();
+        let lifecycle_epoch = self.lifecycle_epoch_for(&config.name, subject);
         // The capped path does not retain the resulting AuthClient, but it
         // still shares this single-flight gate with `get_or_build`. Without
         // the gate, two cold connections could both observe a revoked refresh
@@ -310,7 +370,7 @@ impl OauthClientCache {
             })?;
         let Some(handler) = self.reauth_handler.clone() else {
             let client = manager.build_auth_client_with(subject, http_client).await?;
-            self.ensure_epoch_current(lifecycle_epoch).await?;
+            self.ensure_epoch_current(&lifecycle_epoch).await?;
             return Ok(client);
         };
 
@@ -322,7 +382,7 @@ impl OauthClientCache {
             }
             result => result,
         }?;
-        self.ensure_epoch_current(lifecycle_epoch).await?;
+        self.ensure_epoch_current(&lifecycle_epoch).await?;
         Ok(client)
     }
 
@@ -360,10 +420,10 @@ impl OauthClientCache {
             return Ok(Arc::clone(&entry.client));
         }
 
-        let lifecycle_epoch = self.lifecycle_epoch();
+        let lifecycle_epoch = self.lifecycle_epoch_for(&config.name, subject);
         let arc_client = builder().await?;
         let _publication = self.invalidation_barrier.read().await;
-        if self.lifecycle_epoch() != lifecycle_epoch {
+        if !lifecycle_epoch.is_current() {
             return Err(OauthError::NeedsReauth(
                 "credentials changed while the OAuth client was being built".to_string(),
             ));
@@ -883,6 +943,54 @@ mod tests {
             Err(OauthError::NeedsReauth(_))
         ));
         assert!(cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_identity_invalidation_preserves_inflight_build() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let config = cfg("healthy", "client");
+        let building = cache.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let start = Arc::clone(&started);
+        let release = Arc::clone(&resume);
+        let task = tokio::spawn(async move {
+            building
+                .get_or_insert_with(&config, "alice", None, || async move {
+                    start.notify_one();
+                    release.notified().await;
+                    Ok(dummy_auth_client().await)
+                })
+                .await
+        });
+        started.notified().await;
+        let barrier = cache.invalidation_barrier();
+        let guard = barrier.write().await;
+        cache.advance_upstream_epoch("broken");
+        cache.advance_subject_epoch("healthy", "bob");
+        drop(guard);
+        resume.notify_one();
+        task.await
+            .unwrap()
+            .expect("unrelated credentials did not change");
+        assert!(cache.contains_ready_client("healthy", "alice"));
+    }
+
+    #[test]
+    fn scoped_epoch_fences_same_identity_and_whole_upstream() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let alice = cache.lifecycle_epoch_for("server", "alice");
+        let bob = cache.lifecycle_epoch_for("server", "bob");
+        let other = cache.lifecycle_epoch_for("other", "alice");
+        cache.advance_subject_epoch("server", "alice");
+        assert!(!alice.is_current());
+        assert!(bob.is_current());
+        assert!(other.is_current());
+        cache.advance_upstream_epoch("server");
+        assert!(!bob.is_current());
+        assert!(other.is_current());
+        cache.advance_lifecycle_epoch();
+        assert!(!other.is_current());
     }
 
     // Cache lifecycle behavior is covered here; matching a capacity victim to

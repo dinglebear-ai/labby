@@ -125,7 +125,7 @@ impl UpstreamPool {
         *self.resource_upstreams.write().await = resource_names;
     }
 
-    async fn ensure_lazy_upstream_entry(&self, config: &UpstreamConfig) {
+    pub(super) async fn ensure_lazy_upstream_entry(&self, config: &UpstreamConfig) {
         let Some(entry) = validated_lazy_entry(config) else {
             return;
         };
@@ -228,7 +228,8 @@ impl UpstreamPool {
             let lifecycle_epoch = config
                 .oauth
                 .as_ref()
-                .and_then(|_| self.oauth_lifecycle_epoch());
+                .and(oauth_subject)
+                .and_then(|subject| self.oauth_lifecycle_epoch(&config.name, subject));
             if self.upstream_is_ready(&config.name, readiness).await {
                 if readiness == Readiness::Tools {
                     self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
@@ -239,6 +240,11 @@ impl UpstreamPool {
 
             let connect_lock = self.lazy_connect_lock(&config.name).await;
             let _connect_guard = connect_lock.lock().await;
+            anyhow::ensure!(
+                self.lazy_connect_gate_is_current(&config.name, &connect_lock)
+                    .await,
+                "upstream configuration changed before connection"
+            );
             if self.upstream_is_ready(&config.name, readiness).await {
                 if readiness == Readiness::Tools {
                     self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
@@ -247,11 +253,10 @@ impl UpstreamPool {
                 return Ok(false);
             }
 
-            if readiness == Readiness::Connection
-                && self
-                    .upstream_tool_health(&config.name)
-                    .await
-                    .is_some_and(|health| !health.is_routable())
+            if self
+                .upstream_tool_health(&config.name)
+                .await
+                .is_some_and(|health| !health.is_routable())
                 && !self.should_reprobe(&config.name).await
             {
                 anyhow::bail!(
@@ -313,7 +318,9 @@ impl UpstreamPool {
             };
             let tool_count = tools.len();
             let supports_skills = peer_declares_skills(&conn.peer);
-            let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
+            let _oauth_publication = self
+                .oauth_publication_guard(lifecycle_epoch.as_ref())
+                .await?;
             self.install_connected_tools(config, conn, tools, Some(supports_skills))
                 .await?;
             if let Some(subject) = subject {
@@ -452,6 +459,7 @@ impl UpstreamPool {
         self.subject_connections.write().await.insert(
             (config.name.clone(), subject.to_string()),
             super::SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools,
@@ -483,6 +491,7 @@ impl UpstreamPool {
         self.subject_connections.write().await.insert(
             (config.name.clone(), subject.to_string()),
             super::SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools: Vec::new(),
@@ -491,7 +500,7 @@ impl UpstreamPool {
         );
     }
 
-    async fn lazy_connect_lock(&self, upstream_name: &str) -> Arc<Mutex<()>> {
+    pub(super) async fn lazy_connect_lock(&self, upstream_name: &str) -> Arc<Mutex<()>> {
         if let Some(lock) = self
             .lazy_connect_locks
             .read()
@@ -542,6 +551,11 @@ impl UpstreamPool {
         }
         let connect_lock = self.lazy_connect_lock(&config.name).await;
         let _connect_guard = connect_lock.lock().await;
+        anyhow::ensure!(
+            self.lazy_connect_gate_is_current(&config.name, &connect_lock)
+                .await,
+            "upstream configuration changed before reprobe"
+        );
         self.reprobe_upstream(config, oauth_subject, runtime_owner)
             .await
     }
@@ -610,7 +624,7 @@ impl UpstreamPool {
     /// Scope note: the subject-scoped OAuth branch of `ensure_tools_for_upstream`
     /// returns before reaching this, so OAuth upstreams refresh neither cache.
     /// That gap predates this function and is shared by resources and prompts.
-    async fn refresh_capability_caches_after_connect(&self, config: &UpstreamConfig) {
+    pub(super) async fn refresh_capability_caches_after_connect(&self, config: &UpstreamConfig) {
         if config.proxy_resources {
             // Reset before listing, not after: an open circuit would exclude
             // this upstream from the very fan-out being kicked off here, making
@@ -682,6 +696,45 @@ mod tests {
         UpstreamConnection, UpstreamRuntimeMetadata, helpers::IN_PROCESS_PEER_BUFFER_BYTES,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn successful_empty_catalog_reuses_the_live_connection() {
+        let pool = catalog_pool_with_server("empty", StaticCatalogServer::default()).await;
+        let config = named_test_upstream_config("empty");
+        let observed = pool
+            .observe_connection_catalog_entry("empty")
+            .await
+            .unwrap();
+        assert!(
+            !pool
+                .ensure_tools_for_upstream(&config, None, None)
+                .await
+                .unwrap()
+        );
+        assert!(pool.observed_entry_is_current(&observed).await);
+        assert!(pool.healthy_tools_for_upstream("empty").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn filtered_catalog_reuses_the_live_connection() {
+        let pool = catalog_pool_with_server("hidden", StaticCatalogServer::default()).await;
+        let mut config = named_test_upstream_config("hidden");
+        config.expose_tools = Some(vec!["different_tool".into()]);
+        pool.replace_catalog_tools(&config, vec![test_tool("private_tool")], Some(false))
+            .await;
+        let observed = pool
+            .observe_connection_catalog_entry("hidden")
+            .await
+            .unwrap();
+        assert!(
+            !pool
+                .ensure_tools_for_upstream(&config, None, None)
+                .await
+                .unwrap()
+        );
+        assert!(pool.observed_entry_is_current(&observed).await);
+        assert!(pool.healthy_tools_for_upstream("hidden").await.is_empty());
+    }
 
     #[tokio::test]
     async fn seed_lazy_upstreams_records_enabled_names_without_connections() {
@@ -918,9 +971,8 @@ mod tests {
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://quick-shell/component.html" }),
         )])));
-        pool.install_test_tools_for_upstream(&alpha, vec![ui_tool])
-            .await
-            .expect("tools install");
+        pool.replace_catalog_tools(&alpha, vec![ui_tool], None)
+            .await;
         assert!(pool.cached_upstream_resource_uris().await.is_empty());
 
         pool.ensure_tools_for_upstream(&alpha, None, None)

@@ -231,6 +231,7 @@ async fn subject_catalogs_are_isolated_from_each_other_and_the_global_catalog() 
         pool.subject_connections.write().await.insert(
             ("private".to_string(), subject.to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
                 tools: vec![test_tool(tool_name)],
@@ -267,6 +268,7 @@ async fn exact_subject_scoped_lookup_projects_only_the_requested_tool() {
     pool.subject_connections.write().await.insert(
         ("private".to_string(), "alice".to_string()),
         SubjectScopedConnection {
+            optional_catalogs: Default::default(),
             _connection: connection,
             peer,
             tools,

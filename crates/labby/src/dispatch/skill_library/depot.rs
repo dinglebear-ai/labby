@@ -84,14 +84,16 @@ impl DepotConnection {
         pinned_addresses: BTreeSet<IpAddr>,
         staging_root: impl Into<std::path::PathBuf>,
         policy: ArtifactFetchPolicy,
+        authority: labby_runtime::artifacts::provider::ArtifactNetworkAuthority,
     ) -> Result<Self, ArtifactError> {
         let source_id = source_id.into();
-        let provider = GuardedExactArtifactProvider::configured_http(
+        let provider = GuardedExactArtifactProvider::configured_http_with_authority(
             endpoint.clone(),
             pinned_addresses.clone(),
             credential,
             staging_root,
             policy,
+            authority,
         )?;
         // ExactArtifactRequest performs the authoritative URL/DNS/credential validation before IO.
         let credential_origin = Some(endpoint.clone());
@@ -129,12 +131,14 @@ impl DepotConnection {
         binding: &crate::config::depot::PublicReadBinding,
         acquisition_endpoint: &str,
         token: &str,
+        policy: crate::dispatch::depot::network::NetworkPolicy,
     ) -> Result<(), ArtifactError> {
         self.catalog_binding = Some(Arc::new(
             crate::dispatch::depot::catalog_binding::CatalogBinding::new(
                 binding,
                 acquisition_endpoint,
                 token,
+                policy,
             )
             .map_err(ArtifactError::Conflict)?,
         ));

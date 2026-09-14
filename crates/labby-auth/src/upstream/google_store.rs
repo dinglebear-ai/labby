@@ -39,6 +39,7 @@ pub struct GoogleProviderCredentialStore {
     expected_client_id: String,
     required_scopes: Vec<String>,
     authorization_fence_epoch: Arc<AtomicI64>,
+    refresh_guard: Option<Arc<(String, tokio::sync::OwnedMutexGuard<()>)>>,
 }
 
 impl std::fmt::Debug for GoogleProviderCredentialStore {
@@ -68,7 +69,19 @@ impl GoogleProviderCredentialStore {
             expected_client_id,
             required_scopes: normalize_scopes(required_scopes),
             authorization_fence_epoch: Arc::new(AtomicI64::new(-1)),
+            refresh_guard: None,
         }
+    }
+
+    /// Transfer the account transaction lock into the store used by rmcp.
+    /// Its refresh saves execute inside this transaction, without re-locking it.
+    pub(crate) fn with_refresh_guard(
+        mut self,
+        subject: String,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Self {
+        self.refresh_guard = Some(Arc::new((subject, guard)));
+        self
     }
 
     pub async fn credential_row(&self) -> Result<Option<GoogleProviderCredentialRow>, OauthError> {
@@ -294,7 +307,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 return Err(AuthError::AuthorizationRequired);
             }
             let (subject, email) = self.identity_for_save(token, existing.as_ref()).await?;
-            let _provider_guard = crate::google_refresh::lock(&subject).lock_owned().await;
+            let _provider_guard = match &self.refresh_guard {
+                Some(guard) if guard.0 == subject => None,
+                Some(_) => return Err(AuthError::AuthorizationRequired),
+                None => Some(crate::google_refresh::lock(&subject).lock_owned().await),
+            };
             let observed_revocation_epoch = self.authorization_fence_epoch.load(Ordering::Acquire);
             if observed_revocation_epoch < 0 {
                 return Err(AuthError::AuthorizationRequired);

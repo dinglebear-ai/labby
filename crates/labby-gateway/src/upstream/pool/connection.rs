@@ -13,9 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[cfg(unix)]
-use crate::process::unix::{
-    pid_is_alive, terminate_process_group_sigkill, terminate_process_group_sigterm,
-};
+use crate::process::unix::{terminate_process_group_sigkill, terminate_process_group_sigterm};
 
 use tokio::sync::Mutex;
 
@@ -74,10 +72,8 @@ impl<H: rmcp::ClientHandler> std::fmt::Debug for UpstreamConnection<H> {
 /// discovery timeouts, cancelled `buffer_unordered` futures, pool drops,
 /// `insert()` overwrites, etc.
 ///
-/// The async `shutdown()` graceful path takes `self.runtime.pgid` (Unix)
-/// or `self.runtime.job` (Windows) and takes
-/// `_server_task` before its first `.await` so this Drop no-ops on the
-/// graceful path.
+/// Graceful shutdown retains ownership of the process group across every
+/// await. Cancelling shutdown therefore still invokes this last-resort cleanup.
 ///
 /// - Unix: `SIGTERM` + `SIGKILL` the process group via `killpg`.
 /// - Windows: close the Job Object handle; `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
@@ -127,10 +123,10 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
         // Clone runtime BEFORE taking pgid / job so subsequent log
         // lines still surface the original values.
         let runtime = self.runtime.clone();
-        // INVARIANT: take pgid (Unix) / job (Windows) BEFORE any
-        // `.await` so the consuming Drop no-ops on the graceful path.
+        // Keep the Unix group on self until cleanup completes. A cancelled
+        // close/sleep must still trigger Drop's process-tree cleanup.
         #[cfg(unix)]
-        let runtime_pgid = self.runtime.pgid.take();
+        let runtime_pgid = self.runtime.pgid;
         #[cfg(windows)]
         let runtime_job = self.runtime.job.take();
         let started = Instant::now();
@@ -145,20 +141,22 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
         let mut termination_failures = Vec::new();
 
         #[cfg(unix)]
-        if let (Some(pid), Some(pgid)) = (runtime.pid, runtime_pgid)
-            && pid_is_alive(pid)
-        {
+        if let Some(pgid) = runtime_pgid {
+            // The group can outlive its original leader. Always address the
+            // owned group; ESRCH means it has already been reaped.
             if let Err(error) = terminate_process_group_sigterm(pgid)
                 && error != nix::errno::Errno::ESRCH
             {
                 termination_failures.push(format!("SIGTERM process group {pgid}: {error}"));
             }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            if pid_is_alive(pid)
-                && let Err(error) = terminate_process_group_sigkill(pgid)
+            if let Err(error) = terminate_process_group_sigkill(pgid)
                 && error != nix::errno::Errno::ESRCH
             {
                 termination_failures.push(format!("SIGKILL process group {pgid}: {error}"));
+            }
+            if termination_failures.is_empty() {
+                self.runtime.pgid = None;
             }
         }
 
@@ -376,7 +374,7 @@ impl UpstreamPool {
         use super::connect::connect_upstream_with_client;
 
         let key = (config.name.clone(), subject.to_string());
-        let lifecycle_epoch = self.oauth_lifecycle_epoch();
+        let lifecycle_epoch = self.oauth_lifecycle_epoch(&config.name, subject);
 
         // Fast path: check cache with inline TTL eviction (write lock allows
         // removing the stale entry atomically).
@@ -437,7 +435,9 @@ impl UpstreamPool {
             let cached_tools = tools.clone();
             // Network I/O completes without holding the lifecycle barrier.
             // Only the atomic epoch check plus cache publication is fenced.
-            let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
+            let _oauth_publication = self
+                .oauth_publication_guard(lifecycle_epoch.as_ref())
+                .await?;
             // Enforce the LRU cap BEFORE inserting so a burst of unique subjects
             // can't push the live-peer (and FD) count past the bound. Evicted
             // peers are shut down cleanly off-lock (P-H2).
@@ -447,6 +447,7 @@ impl UpstreamPool {
                 cache.insert(
                     key.clone(),
                     SubjectScopedConnection {
+                        optional_catalogs: Default::default(),
                         _connection: conn,
                         peer: peer.clone(),
                         tools: cached_tools,
@@ -668,6 +669,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("alpha".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: alpha_conn,
                 peer: peer.clone(),
                 tools: tools.clone(),
@@ -700,6 +702,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("alpha".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: alpha_conn,
                 peer,
                 tools: vec![],
@@ -766,6 +769,7 @@ mod tests {
             pool.subject_connections.write().await.insert(
                 ((*upstream).to_string(), (*subject).to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: connection,
                     peer,
                     tools: vec![],
@@ -793,7 +797,11 @@ mod tests {
         assert_eq!(pool.subject_connections.read().await.len(), keys.len());
         let epoch_before = client_cache.lifecycle_epoch();
         pool.drain_oauth_client_capacity_evictions().await;
-        assert!(client_cache.lifecycle_epoch() > epoch_before);
+        assert_eq!(
+            client_cache.lifecycle_epoch(),
+            epoch_before,
+            "capacity eviction must not invalidate unrelated identities"
+        );
         assert_eq!(client_cache.ready_client_count(), 2);
         assert_eq!(pool.subject_connections.read().await.len(), 2);
 
@@ -903,6 +911,7 @@ mod tests {
             cache.insert(
                 ("alpha".to_string(), "alice".to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: alpha_conn,
                     peer: alpha_peer.clone(),
                     tools: vec![],
@@ -927,6 +936,7 @@ mod tests {
             cache.insert(
                 ("beta".to_string(), "alice".to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: beta_conn,
                     peer: beta_peer.clone(),
                     tools: vec![],
@@ -986,6 +996,7 @@ mod tests {
             cache.insert(
                 ("alpha".to_string(), "alice".to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: stale_conn,
                     peer: stale_peer,
                     tools: vec![],
@@ -998,6 +1009,7 @@ mod tests {
             cache.insert(
                 ("beta".to_string(), "bob".to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: fresh_conn,
                     peer: fresh_peer,
                     tools: vec![],
@@ -1042,6 +1054,7 @@ mod tests {
         pool.subject_connections.write().await.insert(
             ("alpha".to_string(), "alice".to_string()),
             SubjectScopedConnection {
+                optional_catalogs: Default::default(),
                 _connection: conn,
                 peer,
                 tools: vec![],
@@ -1109,6 +1122,7 @@ mod tests {
             cache.insert(
                 (name.to_string(), "subj".to_string()),
                 SubjectScopedConnection {
+                    optional_catalogs: Default::default(),
                     _connection: conn,
                     peer,
                     tools: vec![],

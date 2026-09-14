@@ -127,40 +127,102 @@ impl ImportCoordinator {
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, ArtifactError> {
-        config
-            .depot
-            .validate_public_acquisition(&config.artifacts)
-            .map_err(ArtifactError::Conflict)?;
-        let mut imports = Self::from_config_with_env(&config.artifacts, staging_root, env)?;
+        let mut imports = Self {
+            depot: BTreeMap::new(),
+            repository: BTreeMap::new(),
+            catalog_project: None,
+        };
+        let policy = match crate::dispatch::depot::manager::host_policy(&config.depot) {
+            Ok(policy) => policy,
+            Err(reason) => {
+                tracing::warn!(
+                    reason,
+                    "import host policy invalid; remote sources disabled"
+                );
+                return Ok(imports);
+            }
+        };
+        let mut ids = BTreeSet::new();
+        for source in &config.artifacts.sources {
+            if source.id != "public"
+                && config
+                    .depot
+                    .public_read_binding
+                    .as_ref()
+                    .is_some_and(|binding| {
+                        source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
+                    })
+            {
+                tracing::warn!(connection_id = %source.id, "public credential cannot authorize another source; source disabled");
+                continue;
+            }
+            if !ids.insert(source.id.clone()) {
+                imports.depot.remove(&source.id);
+                imports.repository.remove(&source.id);
+                tracing::warn!(connection_id = %source.id, "duplicate import connection; source disabled");
+                continue;
+            }
+            let single = crate::config::ArtifactPreferences {
+                sources: vec![source.clone()],
+            };
+            match Self::from_config_with_policy(&single, staging_root, env, &policy) {
+                Ok(mut source_imports) => {
+                    imports.depot.append(&mut source_imports.depot);
+                    imports.repository.append(&mut source_imports.repository);
+                }
+                Err(error) => {
+                    tracing::warn!(connection_id = %source.id, error = %error, "import source initialization failed; source disabled")
+                }
+            }
+        }
         if let Some(binding) = &config.depot.public_read_binding {
-            imports.catalog_project = Some(
+            let bind = || -> Result<_, ArtifactError> {
                 config
+                    .depot
+                    .validate_public_acquisition(&config.artifacts)
+                    .map_err(ArtifactError::Conflict)?;
+                let project = config
                     .depot
                     .read_project_id
                     .clone()
-                    .ok_or(ArtifactError::Conflict("public_read_project_required"))?,
-            );
-            let source = config
-                .artifacts
-                .sources
-                .iter()
-                .find(|source| source.id == "public")
-                .ok_or(ArtifactError::Conflict(
-                    "public_acquisition_connection_required",
-                ))?;
-            let token = env(&binding.bearer_token_env)
-                .ok_or(ArtifactError::Conflict(
-                    "public_acquisition_credential_required",
-                ))?
-                .into_string()
-                .map_err(|_| ArtifactError::Conflict("public_acquisition_credential_not_utf8"))?;
-            imports
-                .depot
-                .get_mut("public")
-                .ok_or(ArtifactError::Conflict(
-                    "public_acquisition_connection_required",
-                ))?
-                .bind_catalog(binding, &source.endpoint, &token)?;
+                    .ok_or(ArtifactError::Conflict("public_read_project_required"))?;
+                let source = config
+                    .artifacts
+                    .sources
+                    .iter()
+                    .find(|source| source.id == "public")
+                    .ok_or(ArtifactError::Conflict(
+                        "public_acquisition_connection_required",
+                    ))?;
+                let token = env(&binding.bearer_token_env)
+                    .ok_or(ArtifactError::Conflict(
+                        "public_acquisition_credential_required",
+                    ))?
+                    .into_string()
+                    .map_err(|_| {
+                        ArtifactError::Conflict("public_acquisition_credential_not_utf8")
+                    })?;
+                let mut connection =
+                    imports
+                        .depot
+                        .get("public")
+                        .cloned()
+                        .ok_or(ArtifactError::Conflict(
+                            "public_acquisition_connection_required",
+                        ))?;
+                connection.bind_catalog(binding, &source.endpoint, &token, policy.clone())?;
+                Ok((project, connection))
+            };
+            match bind() {
+                Ok((project, connection)) => {
+                    imports.catalog_project = Some(project);
+                    imports.depot.insert("public".to_owned(), connection);
+                }
+                Err(error) => {
+                    imports.depot.remove("public");
+                    tracing::warn!(connection_id = "public", error = %error, "catalog binding unavailable; public import source disabled");
+                }
+            }
         }
         Ok(imports)
     }
@@ -173,10 +235,20 @@ impl ImportCoordinator {
         Self::from_config_with_env(config, staging_root, &|name| std::env::var_os(name))
     }
 
+    #[cfg(test)]
     fn from_config_with_env(
         config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, ArtifactError> {
+        Self::from_config_with_policy(config, staging_root, env, &Default::default())
+    }
+
+    fn from_config_with_policy(
+        config: &crate::config::ArtifactPreferences,
+        staging_root: &Path,
+        env: &impl Fn(&str) -> Option<std::ffi::OsString>,
+        policy: &crate::dispatch::depot::network::NetworkPolicy,
     ) -> Result<Self, ArtifactError> {
         let mut depot = BTreeMap::new();
         let mut repository: BTreeMap<String, Arc<dyn RepositoryConnection>> = BTreeMap::new();
@@ -236,6 +308,14 @@ impl ImportCoordinator {
                     labby_runtime::artifacts::provider::ExactArtifactSource::Repository
                 }
             };
+            let host = endpoint
+                .host_str()
+                .ok_or(ArtifactError::UnsafePath("provider_origin"))?;
+            let granted = policy.private_hosts.get(host).cloned().unwrap_or_default();
+            let authority =
+                labby_runtime::artifacts::provider::ArtifactNetworkAuthority::for_host_grant(
+                    &endpoint, granted,
+                )?;
             let connection = DepotConnection::configured(
                 kind,
                 source.id.clone(),
@@ -248,6 +328,7 @@ impl ImportCoordinator {
                     .collect::<BTreeSet<_>>(),
                 source_root,
                 Default::default(),
+                authority,
             )?;
             match source.kind {
                 crate::config::ArtifactSourceKind::Depot => {
@@ -651,6 +732,48 @@ mod tests {
         ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
     };
     use serde_json::json;
+
+    #[test]
+    fn host_sources_are_isolated_and_private_grants_remain_exact() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let mut config: crate::config::LabConfig = toml::from_str(
+            r#"
+[[artifacts.sources]]
+id = "private-depot"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["10.1.0.8"]
+[[artifacts.sources]]
+id = "public-depot"
+kind = "depot"
+endpoint = "https://public.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.8.8"]
+"#,
+        )
+        .unwrap();
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
+        assert!(!imports.depot.contains_key("private-depot"));
+        assert!(imports.depot.contains_key("public-depot"));
+        config.depot.extra.insert(
+            "private_hosts".to_owned(),
+            toml::Value::try_from(BTreeMap::from([("depot.example.com", vec!["10.1.0.8"])]))
+                .unwrap(),
+        );
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
+        assert!(imports.depot.contains_key("private-depot"));
+        config.artifacts.sources[0].pinned_addresses = vec!["10.1.0.9".parse().unwrap()];
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
+        assert!(!imports.depot.contains_key("private-depot"));
+        assert!(imports.depot.contains_key("public-depot"));
+        config.artifacts.sources[0].endpoint = "not a URL".to_owned();
+        assert!(
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).is_ok()
+        );
+    }
 
     fn acquisition(
         name: &str,

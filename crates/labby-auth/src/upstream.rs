@@ -19,3 +19,6 @@ pub mod refresh;
 pub mod runtime;
 pub mod store;
 pub mod types;
+
+#[cfg(all(test, feature = "http-axum"))]
+mod refresh_regression_tests;

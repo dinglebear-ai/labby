@@ -197,7 +197,7 @@ export { matchPattern }
 // Collapsing the two here renders every tool/resource/prompt as "Exposed" on a
 // server the gateway is actually hiding in full — the precise inverse of the
 // truth. See bead lab-sc8ba, which made `[]` persistable in the first place.
-function matchTool(toolName: string, patterns?: string[] | null): string | null {
+export function matchTool(toolName: string, patterns?: string[] | null): string | null {
   if (!patterns) {
     return '*'
   }
