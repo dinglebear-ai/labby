@@ -709,6 +709,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_file_stash_runtime(Arc::clone(&file_stash_runtime))
         .with_http_bind_host(host.clone());
+    if matches!(transport, Transport::Http) {
+        state = state.with_phoenix_mcp_url(format!("http://127.0.0.1:{port}/mcp"));
+    }
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
     {

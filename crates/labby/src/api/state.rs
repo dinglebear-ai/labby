@@ -287,6 +287,17 @@ impl AppState {
         self
     }
 
+    /// Point Phoenix's container-local Codex process at this listener's MCP endpoint.
+    #[must_use]
+    pub(crate) fn with_phoenix_mcp_url(mut self, url: impl Into<Arc<str>>) -> Self {
+        self.phoenix_runtime =
+            Arc::new(crate::dispatch::phoenix::PhoenixRuntime::new_with_mcp_url(
+                self.config.phoenix.clone(),
+                url,
+            ));
+        self
+    }
+
     #[must_use]
     pub fn with_depot_snapshot(
         mut self,

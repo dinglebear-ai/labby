@@ -107,8 +107,10 @@ export function PhoenixAvailability() {
   const animationFrameRef = useRef<number | undefined>(undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
   const closeAfterTurnRef = useRef<string | undefined>(undefined)
+  const requestGenerationRef = useRef(0)
 
   useEffect(() => {
+    requestGenerationRef.current += 1
     setPhoenixDocked?.(open && dock === 'right')
     return () => setPhoenixDocked?.(false)
   }, [dock, open, setPhoenixDocked])
@@ -247,6 +249,7 @@ export function PhoenixAvailability() {
   const sendTurn = async (draft: string, forceNewThread = false) => {
     const text = draft.trim()
     if (!text || sending) return
+    const requestGeneration = ++requestGenerationRef.current
     setSending(true)
     setError(undefined)
     setInput('')
@@ -255,26 +258,31 @@ export function PhoenixAvailability() {
       let activeSessionId = forceNewThread || newThreadOnSend ? undefined : sessionId
       if (!activeSessionId) {
         const started = await phoenixApi.start(model || undefined, effort || undefined)
+        if (requestGeneration !== requestGenerationRef.current) return
         activeSessionId = started.session_id
         setSessionId(activeSessionId)
         setThreadHistory((current) => current.some((thread) => thread.session_id === started.session_id) ? current : [{ session_id: started.session_id, title: text.slice(0, 54), preview: text, model: model || null, effort: effort || null, message_count: 1, turn_status: 'in_progress' }, ...current])
       }
       const updated = await phoenixApi.send(activeSessionId, text, attachments)
+      if (requestGeneration !== requestGenerationRef.current) return
       setAttachments([])
       setNewThreadOnSend(false)
       setMessages(updated.messages)
       setEvents(updated.events ?? [])
     } catch (reason) {
+      if (requestGeneration !== requestGenerationRef.current) return
       setInput(text)
       setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== text))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not complete the turn')
     } finally {
-      setSending(false)
-      const closing = closeAfterTurnRef.current
-      if (closing) {
-        closeAfterTurnRef.current = undefined
-        await phoenixApi.close(closing).catch(() => undefined)
-        setSessionId(undefined)
+      if (requestGeneration === requestGenerationRef.current) {
+        setSending(false)
+        const closing = closeAfterTurnRef.current
+        if (closing) {
+          closeAfterTurnRef.current = undefined
+          await phoenixApi.close(closing).catch(() => undefined)
+          setSessionId(undefined)
+        }
       }
     }
   }
@@ -371,20 +379,26 @@ export function PhoenixAvailability() {
   }
 
   const switchThread = async (id: string) => {
+    const requestGeneration = ++requestGenerationRef.current
+    setSending(false)
     setError(undefined)
     try {
       const thread = await phoenixApi.read(id)
+      if (requestGeneration !== requestGenerationRef.current) return
       setSessionId(id)
       setTitle(threadHistory.find((item) => item.session_id === id)?.title || 'Phoenix')
       setMessages(thread.messages)
       setEvents(thread.events ?? [])
       setThreadMenuOpen(false)
     } catch (reason) {
+      if (requestGeneration !== requestGenerationRef.current) return
       setError(reason instanceof Error ? reason.message : 'Phoenix could not open that thread')
     }
   }
 
   const startNewThread = () => {
+    requestGenerationRef.current += 1
+    setSending(false)
     setSessionId(undefined)
     setMessages([])
     setEvents([])

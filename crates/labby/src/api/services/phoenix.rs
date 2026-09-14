@@ -44,6 +44,12 @@ async fn handle(
 ) -> Result<Json<Value>, ApiError> {
     let auth = auth.ok_or_else(denied)?.0;
     let identity = identity.ok_or_else(denied)?.0;
+    let authority = state
+        .access_runtime
+        .session_authority(identity.clone())
+        .await
+        .map_err(|_| denied())?;
+    require_platform_administrator(authority.platform_administrator)?;
     let owner = identity.safe_fingerprint().to_owned();
     let runtime = state.phoenix_runtime;
     let request_headers = headers.clone();
@@ -75,6 +81,17 @@ fn denied() -> ToolError {
     }
 }
 
+fn require_platform_administrator(platform_administrator: bool) -> Result<(), ToolError> {
+    if platform_administrator {
+        Ok(())
+    } else {
+        Err(ToolError::Forbidden {
+            message: "Phoenix requires platform administrator authority".into(),
+            required_scopes: vec![],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +103,14 @@ mod tests {
         assert!(!csrf_exempt("phoenix.session.start"));
         assert!(!csrf_exempt("phoenix.session.rename"));
         assert!(!csrf_exempt("phoenix.session.close"));
+    }
+
+    #[test]
+    fn lower_privilege_identity_cannot_delegate_the_owner_mcp_credential() {
+        assert_eq!(
+            require_platform_administrator(false).unwrap_err().kind(),
+            "forbidden"
+        );
+        assert!(require_platform_administrator(true).is_ok());
     }
 }

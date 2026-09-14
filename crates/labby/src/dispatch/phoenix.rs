@@ -145,6 +145,7 @@ struct Session {
 #[derive(Clone)]
 pub(crate) struct PhoenixRuntime {
     config: PhoenixPreferences,
+    local_mcp_url: Arc<str>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
     capacity: Arc<Semaphore>,
 }
@@ -152,8 +153,17 @@ pub(crate) struct PhoenixRuntime {
 impl PhoenixRuntime {
     #[must_use]
     pub(crate) fn new(config: PhoenixPreferences) -> Self {
+        Self::new_with_mcp_url(config, LOCAL_MCP_URL)
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_mcp_url(
+        config: PhoenixPreferences,
+        local_mcp_url: impl Into<Arc<str>>,
+    ) -> Self {
         Self {
             config,
+            local_mcp_url: local_mcp_url.into(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
         }
@@ -309,7 +319,7 @@ impl PhoenixRuntime {
 
     async fn models(&self) -> Result<Value, ToolError> {
         self.require_available()?;
-        let runtime = initialized_app_server(&self.config).await?;
+        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
         let response = runtime
             .request("model/list", json!({"limit":100,"includeHidden":false}))
             .await?;
@@ -334,7 +344,7 @@ impl PhoenixRuntime {
         })?;
         validate_selection("model", model.as_deref())?;
         validate_selection("effort", effort.as_deref())?;
-        let runtime = initialized_app_server(&self.config).await?;
+        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
         let workspace_root = self
             .config
             .workspace_root
@@ -737,7 +747,7 @@ impl PhoenixRuntime {
 
     async fn diagnostics(&self) -> Result<Value, ToolError> {
         self.require_available()?;
-        let runtime = initialized_app_server(&self.config).await?;
+        let runtime = initialized_app_server(&self.config, &self.local_mcp_url).await?;
         let workspace_root = self
             .config
             .workspace_root
@@ -876,7 +886,10 @@ struct TurnResult {
     output: String,
 }
 
-async fn launch_app_server(config: &PhoenixPreferences) -> Result<AppServerRuntime, ToolError> {
+async fn launch_app_server(
+    config: &PhoenixPreferences,
+    local_mcp_url: &str,
+) -> Result<AppServerRuntime, ToolError> {
     let command = config
         .command
         .as_ref()
@@ -906,24 +919,29 @@ async fn launch_app_server(config: &PhoenixPreferences) -> Result<AppServerRunti
     }
     AppServerRuntime::launch(LaunchSpec {
         command: command.clone(),
-        args: vec![
-            "app-server".into(),
-            "--stdio".into(),
-            "-c".into(),
-            format!("mcp_servers.labby.url=\\\"{LOCAL_MCP_URL}\\\"").into(),
-            "-c".into(),
-            format!("mcp_servers.labby.bearer_token_env_var=\\\"{LOCAL_MCP_TOKEN_ENV}\\\"").into(),
-        ],
+        args: app_server_args(local_mcp_url),
         env,
         cwd: workspace_root.clone(),
     })
     .await
 }
 
+fn app_server_args(local_mcp_url: &str) -> Vec<OsString> {
+    vec![
+        "app-server".into(),
+        "--stdio".into(),
+        "-c".into(),
+        format!("mcp_servers.labby.url=\"{local_mcp_url}\"").into(),
+        "-c".into(),
+        format!("mcp_servers.labby.bearer_token_env_var=\"{LOCAL_MCP_TOKEN_ENV}\"").into(),
+    ]
+}
+
 async fn initialized_app_server(
     config: &PhoenixPreferences,
+    local_mcp_url: &str,
 ) -> Result<AppServerRuntime, ToolError> {
-    let runtime = launch_app_server(config).await?;
+    let runtime = launch_app_server(config, local_mcp_url).await?;
     runtime.request("initialize", json!({
         "clientInfo":{"name":"labby_phoenix","title":"Labby Phoenix","version":env!("CARGO_PKG_VERSION")},
         "capabilities":{"experimentalApi":true}
@@ -1292,6 +1310,20 @@ mod tests {
             model: None,
         });
         assert!(!runtime.available());
+    }
+
+    #[test]
+    fn app_server_uses_the_effective_nondefault_listener_port() {
+        let args = app_server_args("http://127.0.0.1:9876/mcp");
+        assert!(
+            args.iter()
+                .any(|arg| arg == "mcp_servers.labby.url=\"http://127.0.0.1:9876/mcp\"")
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains(":8765/mcp"))
+        );
     }
 
     #[cfg(unix)]

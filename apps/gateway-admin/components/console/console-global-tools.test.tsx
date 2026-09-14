@@ -176,3 +176,47 @@ test('Phoenix exposes a Stop control that interrupts an in-flight turn', async (
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   }
 })
+
+test('Phoenix ignores a completed old turn after starting a new thread', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  let finishSend: ((response: Response) => void) | undefined
+  const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { action: string }
+    if (body.action === 'phoenix.status') return response({ enabled: true, available: true })
+    if (body.action === 'phoenix.models.list') return response({ models: [] })
+    if (body.action === 'phoenix.session.list') return response({ sessions: [] })
+    if (body.action === 'phoenix.session.start') return response({ session_id: 'old', status: 'ready', messages: [] })
+    if (body.action === 'phoenix.turn.send') return new Promise<Response>((resolve) => { finishSend = resolve })
+    return response({ session_id: 'old', status: 'ready', messages: [] })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]'); assert.ok(input)
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set?.call(input, 'old question')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'old question' }) as unknown as Event)
+    })
+    await act(async () => { input.form!.requestSubmit(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    assert.ok(finishSend, 'turn POST is pending')
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Switch Phoenix thread"]')!.click())
+    const menu = document.querySelector('[aria-label="Phoenix threads"]'); assert.ok(menu)
+    const newButton = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('New')); assert.ok(newButton)
+    await act(async () => newButton.click())
+    assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+    await act(async () => {
+      finishSend?.(response({ session_id: 'old', status: 'ready', messages: [{ role: 'assistant', text: 'OLD THREAD RESPONSE' }] }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
