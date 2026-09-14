@@ -37,6 +37,10 @@ import { ArtifactKindPicker } from './artifact-kind-picker'
 import { ArtifactDescriptionField } from './artifact-description-field'
 import { ArtifactFieldIndicator } from './artifact-field-indicator'
 import { artifactValidationSummary, skillAuthoringSummary } from '@/lib/editor/artifact-validation-summary'
+import {
+  browserModelContext, registerCreatePageWebMcpTools,
+  type CreatePageDraftPatch, type CreatePageDraftSnapshot, type CreatePagePublishReceipt,
+} from './create-page-webmcp'
 
 const STARTER_BODY = `## When to use
 
@@ -132,6 +136,15 @@ function parseStoredDraft(raw: string): StoredCreateDraft | null {
   } catch { return null }
 }
 
+type CreatePageWebMcpRuntime = {
+  snapshot: CreatePageDraftSnapshot
+  configureDraft: (patch: CreatePageDraftPatch) => CreatePageDraftSnapshot
+  publishSkill: () => Promise<CreatePagePublishReceipt>
+}
+
+type PublishAttempt =
+  | { ok: true; receipt: CreatePagePublishReceipt }
+  | { ok: false; error: string }
 export function ArtifactComposer() {
   const [kind, setKind] = React.useState<ArtifactKind>('Skill')
   const [metadata, setMetadata] = React.useState<ArtifactMetadata>(STARTER_METADATA)
@@ -151,6 +164,7 @@ export function ArtifactComposer() {
   const [publishCapability, setPublishCapability] = React.useState<DepotPublishCapability | null>(null)
   const [publishing, setPublishing] = React.useState(false)
   const publishingRef = React.useRef(false)
+  const webMcpRuntimeRef = React.useRef<CreatePageWebMcpRuntime | null>(null)
   const [linkingOwner, setLinkingOwner] = React.useState(false)
   const linkingOwnerRef = React.useRef(false)
   const [publishMessage, setPublishMessage] = React.useState('')
@@ -170,7 +184,6 @@ export function ArtifactComposer() {
     })
     return () => controller.abort()
   }, [sessionEpoch])
-
   React.useEffect(() => {
     setDraftLoaded(false)
     if (!draftStorageKey) {
@@ -222,11 +235,18 @@ export function ArtifactComposer() {
     () => kind === 'Skill' ? skillAuthoringSummary(metadata, content, issues) : artifactValidationSummary(issues),
     [content, issues, kind, metadata],
   )
-  const errors = issues.filter((entry) => entry.severity === 'error')
   const unavailableReason = publishCapability?.reason === 'project_session_required'
     ? 'Open an authenticated team project session to publish. Your current sign-in has no project publishing authority.'
     : publishCapability?.reason
-  const canPublish = publishCapability?.available === true && kind === 'Skill' && workspaceMode === 'artifact' && errors.length === 0
+  const publishAvailability = (nextKind: ArtifactKind, nextIssues: ReturnType<typeof validateArtifactDraft>) => {
+    if (workspaceMode !== 'artifact') return { available: false, reason: 'Switch to the Artifact workspace before publishing.' }
+    if (nextKind !== 'Skill') return { available: false, reason: 'Only Skill drafts can be published from the Create page.' }
+    if (nextIssues.some((entry) => entry.severity === 'error')) return { available: false, reason: 'Fix validation errors before publishing.' }
+    if (publishCapability?.available !== true) return { available: false, reason: unavailableReason ?? 'Publishing is unavailable for this session.' }
+    return { available: true, reason: null }
+  }
+  const currentPublishAvailability = publishAvailability(kind, issues)
+  const canPublish = currentPublishAvailability.available
   const ownerLinkPending = publishCapability?.reason === 'owner_link_approval_pending'
   const confirmOwnerLink = async () => {
     if (!ownerLinkPending || linkingOwnerRef.current) return
@@ -250,8 +270,9 @@ export function ArtifactComposer() {
       setLinkingOwner(false)
     }
   }
-  const publish = async () => {
-    if (!canPublish || publishingRef.current) return
+  const publish = async (): Promise<PublishAttempt> => {
+    if (!canPublish) return { ok: false, error: currentPublishAvailability.reason ?? 'Publishing is unavailable for this draft.' }
+    if (publishingRef.current) return { ok: false, error: 'Publishing is already in progress.' }
     publishingRef.current = true
     setPublishing(true)
     setPublishError('')
@@ -259,14 +280,17 @@ export function ArtifactComposer() {
     const submittingSessionEpoch = getBrowserSessionEpoch()
     try {
       const receipt = await publishDepotSkill(metadata.name, source)
-      if (submittingSessionEpoch !== getBrowserSessionEpoch()) return
+      if (submittingSessionEpoch !== getBrowserSessionEpoch()) {
+        return { ok: false, error: 'The session changed while publishing. Check catalog jobs before retrying.' }
+      }
       const message = `Publishing accepted. Job ${receipt.jobId}: ${receipt.status}. Check catalog jobs for the final result.`
       setPublishMessage(message)
       toast.success('Skill submitted to team catalog')
+      return { ok: true, receipt }
     } catch (error) {
-      if (submittingSessionEpoch === getBrowserSessionEpoch()) {
-        setPublishError(error instanceof Error ? error.message : 'Publishing failed. Check catalog jobs before retrying.')
-      }
+      const message = error instanceof Error ? error.message : 'Publishing failed. Check catalog jobs before retrying.'
+      if (submittingSessionEpoch === getBrowserSessionEpoch()) setPublishError(message)
+      return { ok: false, error: message }
     } finally {
       publishingRef.current = false
       setPublishing(false)
@@ -274,6 +298,76 @@ export function ArtifactComposer() {
   }
 
   const markDraftDirty = () => setDraftStatus(draftStorageKey ? 'unsaved' : 'session')
+  const currentWebMcpSnapshot: CreatePageDraftSnapshot = {
+    kind,
+    metadata,
+    content,
+    issues,
+    canPublish,
+    publishReason: currentPublishAvailability.reason,
+  }
+  const configureDraftFromWebMcp = (patch: CreatePageDraftPatch): CreatePageDraftSnapshot => {
+    const current = webMcpRuntimeRef.current?.snapshot ?? currentWebMcpSnapshot
+    const nextKind = patch.kind ?? current.kind
+    const nextMetadata: ArtifactMetadata = {
+      ...current.metadata,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.tags !== undefined ? { tags: [...patch.tags] } : {}),
+      ...(patch.license !== undefined ? { license: patch.license } : {}),
+      ...(patch.compatibility !== undefined ? { compatibility: patch.compatibility } : {}),
+      ...(patch.allowedTools !== undefined ? { allowedTools: patch.allowedTools } : {}),
+    }
+    const nextContent = patch.content ?? current.content
+    const nextIssues = validateArtifactDraft(nextKind, nextMetadata, nextContent)
+    const nextPublishAvailability = publishAvailability(nextKind, nextIssues)
+    const snapshot: CreatePageDraftSnapshot = {
+      kind: nextKind,
+      metadata: nextMetadata,
+      content: nextContent,
+      issues: nextIssues,
+      canPublish: nextPublishAvailability.available,
+      publishReason: nextPublishAvailability.reason,
+    }
+    markDraftDirty()
+    setKind(nextKind)
+    setMetadata(nextMetadata)
+    setContent(nextContent)
+    if (patch.tags !== undefined) setTagInput('')
+    if (webMcpRuntimeRef.current) webMcpRuntimeRef.current.snapshot = snapshot
+    return snapshot
+  }
+  const publishSkillFromWebMcp = async (): Promise<CreatePagePublishReceipt> => {
+    const attempt = await publish()
+    if (!attempt.ok) throw new Error(attempt.error)
+    return attempt.receipt
+  }
+  React.useEffect(() => {
+    webMcpRuntimeRef.current = {
+      snapshot: currentWebMcpSnapshot,
+      configureDraft: configureDraftFromWebMcp,
+      publishSkill: publishSkillFromWebMcp,
+    }
+  })
+  React.useEffect(() => {
+    const context = browserModelContext()
+    if (!context?.registerTool) return
+    const lifecycle = new AbortController()
+    const runtime = () => {
+      const current = webMcpRuntimeRef.current
+      if (!current) throw new Error('The Create page is not ready for WebMCP yet.')
+      return current
+    }
+    registerCreatePageWebMcpTools({
+      context,
+      signal: lifecycle.signal,
+      getDraft: () => runtime().snapshot,
+      configureDraft: (patch) => runtime().configureDraft(patch),
+      publishSkill: () => runtime().publishSkill(),
+    })
+    return () => lifecycle.abort()
+  }, [])
+
   const updateMetadata = (field: Exclude<keyof ArtifactMetadata, 'tags'>) => (value: string) => { markDraftDirty(); setMetadata((current) => ({ ...current, [field]: value })) }
   const addTag = () => {
     const tag = tagInput.trim().replace(/^#/, '').toLowerCase()

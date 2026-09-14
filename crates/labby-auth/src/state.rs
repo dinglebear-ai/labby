@@ -376,6 +376,14 @@ impl AuthState {
                     google_config.client_secret.clone(),
                     redirect_uri,
                 )?;
+                #[cfg(feature = "testkit")]
+                {
+                    google = crate::google::apply_test_endpoint_overrides(
+                        google,
+                        std::env::var("LABBY_TEST_GOOGLE_TOKEN_ENDPOINT").ok(),
+                        std::env::var("LABBY_TEST_GOOGLE_JWKS_ENDPOINT").ok(),
+                    )?;
+                }
                 google.scopes.clone_from(&google_config.scopes);
                 InboundProviderRuntime::Google(Box::new(google))
             }

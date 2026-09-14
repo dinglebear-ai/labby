@@ -1642,6 +1642,60 @@ impl ArtifactStore {
         Ok(Some(receipt.clone()))
     }
 
+    /// Resolve an already committed create without rebuilding or reacquiring its payload.
+    ///
+    /// This is an opportunistic lookup, not a new global idempotency namespace. Different
+    /// artifact scopes may reuse a key (and even a digest). An ambiguous match must fall back
+    /// to the ordinary artifact-scoped mutation path, not classify valid metadata as corrupt.
+    pub fn replay_library_create(
+        &self,
+        authorization: &LibraryAuthorization,
+        target_ownership: &LibraryOwnership,
+        idempotency: &LibraryIdempotency,
+    ) -> Result<Option<LibraryMutationOutcome>, ArtifactError> {
+        target_ownership.validate()?;
+        authorization.validate_for(target_ownership)?;
+        validate_idempotency(idempotency)?;
+        let _lock = self.library_lock()?;
+        let current = self.read_library_snapshot_unvalidated()?;
+        current.validate_metadata()?;
+        let mut matches = current.receipts.values().filter(|receipt| {
+            receipt.tenant_id == authorization.tenant_id
+                && receipt.actor_id == authorization.actor_id
+                && receipt.ownership.as_ref() == Some(target_ownership)
+                && receipt.action == "create"
+                && receipt.idempotency_key == idempotency.key
+                && receipt.request_digest == idempotency.request_digest
+        });
+        let Some(receipt) = matches.next() else {
+            return Ok(None);
+        };
+        if matches.next().is_some() {
+            return Ok(None);
+        }
+        let scope_digest = receipt_scope_digest(
+            &authorization.tenant_id,
+            &authorization.actor_id,
+            Some(target_ownership),
+            "create",
+            &receipt.artifact_id,
+            &idempotency.key,
+        )?;
+        validate_replay_receipt(
+            receipt,
+            &scope_digest,
+            authorization,
+            "create",
+            &receipt.artifact_id,
+            &idempotency.key,
+            current.version,
+        )?;
+        Ok(Some(LibraryMutationOutcome::Replayed(
+            receipt.clone(),
+            LibraryMutationSeal::for_receipt(receipt)?,
+        )))
+    }
+
     /// Persist the sole allowed post-commit terminal transition.
     ///
     /// The mutation outcome is an unforgeable capability produced by this store. The
@@ -3148,6 +3202,41 @@ mod tests {
             )
             .unwrap();
         (artifact_id, revision_id)
+    }
+
+    #[test]
+    fn opportunistic_create_replay_preserves_artifact_scoped_keys() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let owner = ownership("org-a", "alice");
+        let (first, _) = add_skill(&store, &source, "shared", "first", &owner, 0);
+        let request = idem("create-shared");
+        let replay = store
+            .replay_library_create(&owner_auth(&owner), &owner, &request)
+            .unwrap()
+            .unwrap();
+        assert!(replay.is_replay());
+        assert_eq!(replay.receipt().artifact_id, first);
+
+        let mut unrelated = request.clone();
+        unrelated.request_digest = canonical_json::digest(&"another-source").unwrap();
+        assert!(
+            store
+                .replay_library_create(&owner_auth(&owner), &owner, &unrelated)
+                .unwrap()
+                .is_none()
+        );
+
+        add_skill(&store, &source, "shared", "second", &owner, 1);
+        assert!(
+            store
+                .replay_library_create(&owner_auth(&owner), &owner, &request)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.library_snapshot().unwrap().version, 2);
+        assert_eq!(store.library_snapshot().unwrap().records.len(), 2);
     }
 
     #[test]

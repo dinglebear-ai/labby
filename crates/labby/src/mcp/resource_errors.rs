@@ -68,15 +68,35 @@ pub(crate) fn render(uri: &str, message: impl Into<String>) -> ErrorData {
 
 /// A read failure reported under its own stable kind.
 ///
-/// `fetch` flattens every cause to `upstream_error`. `cancelled`, `timeout`,
-/// and `response_too_large` are distinct documented kinds with different
-/// recovery advice (docs/dev/ERRORS.md), so a caller that can act on the
-/// difference must be able to see it.
+/// Gateway cancellation, timeout, queue saturation and response-size failures
+/// carry distinct recovery advice (docs/dev/ERRORS.md). The typed classifier
+/// selects the kind; this renderer never includes upstream-authored detail.
 #[must_use]
 #[cfg(feature = "gateway")]
 pub(crate) fn fetch_classified(uri: &str, kind: &'static str, summary: &str) -> ErrorData {
     let context = context(uri);
     internal_agent_error(kind, format!("Resource `{uri}` {summary}."), None, &context)
+}
+
+/// Map the gateway-owned failure variant without inspecting upstream-authored text.
+#[must_use]
+#[cfg(feature = "gateway")]
+pub(crate) fn classify_fetch_failure(
+    error: &crate::dispatch::upstream::pool::CapabilityCallError,
+) -> (&'static str, &'static str) {
+    use crate::dispatch::upstream::pool::CapabilityCallError;
+    match error {
+        CapabilityCallError::ResponseTooLarge { .. } => {
+            ("response_too_large", "response exceeded the gateway cap")
+        }
+        CapabilityCallError::QueueSaturated { .. } => (
+            "queue_saturated",
+            "could not be admitted to the gateway queue",
+        ),
+        CapabilityCallError::Timeout { .. } => ("timeout", "read timed out"),
+        CapabilityCallError::Cancelled { .. } => ("cancelled", "read was cancelled"),
+        _ => ("upstream_error", "could not be fetched"),
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +122,56 @@ mod tests {
         assert_eq!(data["denied_service"], "gateway");
         assert_eq!(data["origin"], "policy");
         assert_eq!(data["side_effects"], "none_expected");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn fetch_failure_classification_uses_variants_and_redacts_upstream_detail() {
+        use crate::dispatch::upstream::pool::CapabilityCallError;
+        for message in ["cancelled", "timed out", "response too large"] {
+            let error = CapabilityCallError::Mcp {
+                data: ErrorData::invalid_params(message, None),
+                message: format!("upstream resource read failed: {message}"),
+            };
+            let (kind, summary) = classify_fetch_failure(&error);
+            assert_eq!(kind, "upstream_error");
+            let rendered = fetch_classified("lab://upstream/alpha/item", kind, summary);
+            assert_eq!(rendered.data.as_ref().unwrap()["kind"], "upstream_error");
+            assert!(!rendered.message.contains(message));
+        }
+        for (error, expected_kind) in [
+            (
+                CapabilityCallError::ResponseTooLarge {
+                    message: "opaque".into(),
+                },
+                "response_too_large",
+            ),
+            (
+                CapabilityCallError::Timeout {
+                    message: "opaque".into(),
+                },
+                "timeout",
+            ),
+            (
+                CapabilityCallError::Cancelled {
+                    message: "opaque".into(),
+                },
+                "cancelled",
+            ),
+            (
+                CapabilityCallError::QueueSaturated {
+                    message: "opaque".into(),
+                },
+                "queue_saturated",
+            ),
+            (
+                CapabilityCallError::Other {
+                    message: "cancelled timed out response too large".into(),
+                },
+                "upstream_error",
+            ),
+        ] {
+            assert_eq!(classify_fetch_failure(&error).0, expected_kind);
+        }
     }
 }

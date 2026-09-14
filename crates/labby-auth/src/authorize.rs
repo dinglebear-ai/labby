@@ -32,7 +32,7 @@ use crate::types::{
     NativeAuthorizationResultRow, NativeAuthorizationStartResponse, NativeCallbackQuery,
     NativePollQuery, NativePollResponse,
 };
-use crate::util::{expires_at, fingerprint, now_unix, random_token};
+use crate::util::{expires_at, fingerprint, now_unix, oauth_state_diagnostic_id, random_token};
 
 /// Peer address used by OAuth callback and native-poll admission control.
 pub struct RemoteAddr(pub SocketAddr);
@@ -196,7 +196,7 @@ pub async fn authorize(
     let provider_code_challenge =
         URL_SAFE_NO_PAD.encode(Sha256::digest(provider_code_verifier.as_bytes()));
     let request_state = random_token(24)?;
-    let oauth_state_id = fingerprint(&request_state);
+    let oauth_state_id = oauth_state_diagnostic_id(&request_state);
 
     state
         .store
@@ -379,7 +379,7 @@ pub async fn callback(
             "OAuth callback query is too large".into(),
         ));
     }
-    let oauth_state_id = fingerprint(&query.state);
+    let oauth_state_id = oauth_state_diagnostic_id(&query.state);
     info!(
         oauth_state_id = %oauth_state_id,
         provider = ?state.inbound_provider.kind(),
@@ -2353,7 +2353,7 @@ pub mod tests {
     async fn authelia_callback_completes_downstream_code_and_token_flow() {
         let upstream_state = "authelia-e2e-state";
         let (provider, _server) = crate::authelia::tests::mock_provider_for_nonce(
-            &crate::util::fingerprint(upstream_state),
+            &crate::util::oauth_provider_nonce(upstream_state),
         )
         .await;
         let base = test_auth_state_with_registered_client().await;
@@ -3774,7 +3774,7 @@ pub mod tests {
 
     async fn test_auth_state_with_mock_authelia(upstream_state: &str) -> (AuthState, MockServer) {
         let (provider, server) = crate::authelia::tests::mock_provider_for_nonce(
-            &crate::util::fingerprint(upstream_state),
+            &crate::util::oauth_provider_nonce(upstream_state),
         )
         .await;
         let base = test_auth_state_with_registered_client().await;

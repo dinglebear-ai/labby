@@ -1,6 +1,10 @@
 # Verification Toolkit
 
-Status: proposed design. Nothing in this folder is implemented.
+The local implementation under [verification/](../../../verification/README.md)
+includes the workspace, catalog, replay, request-lifecycle model, bounded
+Stateright adapter, and evidence-separated reporting. Required T0 replay and
+advisory T1 model checking remain distinct from product qualification;
+[Q0 inventory](INVENTORY.md) records existing product evidence and gaps.
 
 ## Purpose
 
@@ -20,8 +24,12 @@ and formal specifications stay with the project that owns the domain.
 - [Implementation plan](IMPLEMENTATION.md): ordered milestones, from in-repo
   incubation to standalone extraction.
 - [Progress](PROGRESS.md): current state and explicit open decisions.
-- [schemas/](schemas/): draft JSON Schema for the invariant catalog and the
-  scenario envelope. These are design drafts, not yet enforced by any tool.
+- [Product qualification](QUALIFICATION.md): required E2E matrix, evidence
+  boundaries, budgets, and existing implementation owners.
+- [Extraction decision](EXTRACTION_DECISION.md): M8 second-adopter evidence and
+  the explicit decision to keep incubating until all four extraction gates hold.
+- [schemas/](schemas/): generated invariant-catalog and scenario-schema mirrors;
+  both are enforced by Rust drift tests.
 
 ## Shape In One Screen
 
@@ -56,5 +64,5 @@ labby/                           # first adopter
    That is a research project, not a tooling investment.
 2. No attempt to verify production Labby code paths directly. Backends verify
    *models*; conformance between model and implementation is a separate,
-   explicitly-scoped concern (see SPEC §11).
+   explicitly-scoped, required Labby v1 milestone (see SPEC §11 and C1).
 3. No new mandatory CI gate until the toolkit has a stable scenario corpus.

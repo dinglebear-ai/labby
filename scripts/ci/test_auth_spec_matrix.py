@@ -1,9 +1,12 @@
 import json
-import unittest
 import subprocess
+import unittest
+import urllib.error
 from collections import Counter
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from scripts.ci import refresh_mcp_auth_denominator
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "conformance/auth-requirements.json"
@@ -13,6 +16,41 @@ OPENAI_NORMATIVE = ROOT / "conformance/openai-auth-normative.json"
 
 
 class AuthSpecificationMatrixTests(unittest.TestCase):
+    def test_mcp_source_fetch_recovers_from_transient_network_failure(self) -> None:
+        response = Mock()
+        response.read.return_value = b"source"
+        with (
+            patch.object(
+                refresh_mcp_auth_denominator.urllib.request,
+                "urlopen",
+                side_effect=[urllib.error.URLError("reset"), response],
+            ) as urlopen,
+            patch.object(refresh_mcp_auth_denominator.time, "sleep") as sleep,
+        ):
+            self.assertEqual(
+                refresh_mcp_auth_denominator.fetch_source("https://example.test/source"),
+                "source",
+            )
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_mcp_source_fetch_fails_after_bounded_retries(self) -> None:
+        failure = urllib.error.URLError("reset")
+        with (
+            patch.object(
+                refresh_mcp_auth_denominator.urllib.request,
+                "urlopen",
+                side_effect=failure,
+            ) as urlopen,
+            patch.object(refresh_mcp_auth_denominator.time, "sleep") as sleep,
+            self.assertRaises(urllib.error.URLError),
+        ):
+            refresh_mcp_auth_denominator.fetch_source(
+                "https://example.test/source"
+            )
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+
     def test_authoritative_denominator_is_complete_and_evidenced(self) -> None:
         data = json.loads(MATRIX.read_text())
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

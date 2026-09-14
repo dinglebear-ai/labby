@@ -10,7 +10,6 @@
 use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
 use labby_auth::{AuthContext, VerifiedIdentity};
 
-use crate::access::AccessRuntimeStatus;
 use crate::api::state::AppState;
 
 const ADMIN_SCOPE: &str = "lab:admin";
@@ -37,18 +36,36 @@ pub(super) async fn elevate(
 }
 
 async fn holds_platform_manage(state: &AppState, identity: VerifiedIdentity) -> bool {
-    if state.access_runtime.status().await != AccessRuntimeStatus::Ready {
-        return false;
-    }
-    let Ok(store) = state.access_runtime.store().await else {
-        return false;
+    // `store()` issues a handle only while the runtime is Ready, so it is the
+    // single readiness observation; a separate `status()` check would take the
+    // runtime lock twice per request.
+    let store = match state.access_runtime.store().await {
+        Ok(store) => store,
+        Err(error) => {
+            // Expected before owner bootstrap; debug only. Identity is never logged.
+            tracing::debug!(
+                subsystem = "access",
+                phase = "elevation",
+                error = %error,
+                "platform-admin elevation skipped: access runtime unavailable"
+            );
+            return false;
+        }
     };
     match store.session_authority(identity).await {
         Ok(snapshot) => snapshot
             .capabilities
             .iter()
             .any(|capability| capability.as_wire() == PLATFORM_MANAGE),
-        Err(_) => false,
+        Err(error) => {
+            tracing::warn!(
+                subsystem = "access",
+                phase = "elevation",
+                error = %error,
+                "platform-admin elevation denied: session authority lookup failed"
+            );
+            false
+        }
     }
 }
 

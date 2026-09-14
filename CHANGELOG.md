@@ -93,6 +93,19 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.19.0](https://github.com/dinglebear-ai/labby/compare/v1.18.2...v1.19.0) (2026-09-14)
+
+
+### Added
+
+* **verification:** add toolkit workspace, CI routing, and boundary docs ([#609](https://github.com/dinglebear-ai/labby/issues/609)) ([5202e2c](https://github.com/dinglebear-ai/labby/commit/5202e2cba43c78f51e5f2d6053625b67bbc425be))
+
+
+### Fixed
+
+* **access:** stop admitting allowlisted users as admins ([#637](https://github.com/dinglebear-ai/labby/issues/637)) ([d685ba1](https://github.com/dinglebear-ai/labby/commit/d685ba179a14a0fc00e3c6de0cb7f3e5f7ca61e7))
+* **ci:** wait for Unix daemon shutdown ([#649](https://github.com/dinglebear-ai/labby/issues/649)) ([9b8e7ae](https://github.com/dinglebear-ai/labby/commit/9b8e7ae67f379a2f7c3660822ba23248a0e3950e))
+
 ## [1.18.2](https://github.com/dinglebear-ai/labby/compare/v1.18.1...v1.18.2) (2026-09-13)
 
 

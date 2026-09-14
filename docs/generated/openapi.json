@@ -8522,6 +8522,16 @@
             ],
             "description": "Sealed runtime capability profile. Integrated mode reports a distinct\nvalue so Core can reject a standalone/all-features artifact at\nreadiness time."
           },
+          "degraded": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Stable codes of subsystems that are degraded while the process still\nserves traffic (HTTP 200, `status: \"degraded\"`). Codes only; detail is\nserved by the authenticated `doctor system.checks` action."
+          },
           "mode": {
             "type": [
               "string",
@@ -8557,7 +8567,7 @@
           },
           "status": {
             "type": "string",
-            "description": "Status string: `\"ok\"` for liveness, `\"ready\"` or `\"not_ready\"` for\nreadiness."
+            "description": "Status string: `\"ok\"` for liveness; `\"ready\"`, `\"degraded\"`, or\n`\"not_ready\"` for readiness."
           },
           "uptime_s": {
             "type": [

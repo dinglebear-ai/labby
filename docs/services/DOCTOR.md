@@ -34,6 +34,8 @@ post-commit retention pass could not converge (more than 10 copies or more than
 the active configuration, and follow the recovery procedure in
 [Configuration](../runtime/CONFIG.md); doctor never deletes backups.
 
+`system.checks` also includes `config:startup-validation`. It runs the same offline `labby serve` config validations as the `setup check` `config` check. A fatal problem is a failure; a problem that would leave Artifact services unavailable is a warning. When doctor runs inside a serving process, each subsystem that started degraded appears as a failed `subsystem:<code>` finding (for example `subsystem:artifacts_unavailable`) with the full startup error chain. The public `/ready` probe reports only the codes.
+
 ## Access-store health
 
 `access.check` returns one agent-safe `access` / `store` finding. It does not expose database paths, SQL, identities, or raw storage errors. Its stable health classifications project to findings as follows:

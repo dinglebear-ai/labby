@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Verify Labby's production rmcp pin, then run the matching upstream
-# rmcp 3.1.0 fixture against the 2026-07-28 dated protocol, Labby-native
+# Verify Labby's production rmcp pin, then run the independent upstream
+# stock rmcp 3.3.0 fixture against the 2026-07-28 dated protocol, Labby-native
 # multi-hop proxying, the direct stdio proxy probe, and the separately scored
 # extension suite.
 #
@@ -37,10 +37,10 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-f94e8fabe0b4264db3e7f8771dd49d9ba31f4610}"
-RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.1.0}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-0e1184b47645d5eb64d1df3bb84067b1d4a53340}"
+RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.3.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
-RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
+RMCP_COMMIT="${RMCP_COMMIT:-3e636cab26c013eca5131103c03d20237f12c4df}"
 MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.10}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
 MCP_CONFORMANCE_PORT="${MCP_CONFORMANCE_PORT:-18002}"
@@ -62,21 +62,86 @@ rmcp_target_dir="${CARGO_TARGET_DIR:-${work_dir}/rust-sdk/target}"
 server_pid=""
 labby_pid=""
 direct_proxy_pid=""
+cleanup_initial_attempts=30
+cleanup_term_attempts=20
+cleanup_poll_interval=0.1
+
+owned_job_exists() {
+  local pid="$1"
+  jobs -p | grep -Fxq -- "$pid"
+}
+
+owned_process_is_alive() {
+  local pid="$1"
+  owned_job_exists "$pid" && kill -0 "$pid" 2>/dev/null
+}
+
+reap_owned_process_if_exited() {
+  local pid="$1"
+  if owned_job_exists "$pid" && ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+stop_owned_process() {
+  local pid="$1"
+  local initial_signal="$2"
+  local role="$3"
+  if ! owned_process_is_alive "$pid"; then
+    reap_owned_process_if_exited "$pid"
+    return 0
+  fi
+  kill "-$initial_signal" "$pid" 2>/dev/null || true
+  for _ in $(seq 1 "$cleanup_initial_attempts"); do
+    if ! owned_process_is_alive "$pid"; then
+      reap_owned_process_if_exited "$pid"
+      return 0
+    fi
+    sleep "$cleanup_poll_interval"
+  done
+  echo "cleanup: $role process $pid did not exit after $initial_signal; escalating" >&2
+  if [[ "$initial_signal" != TERM ]] && owned_process_is_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 "$cleanup_term_attempts"); do
+      if ! owned_process_is_alive "$pid"; then
+        reap_owned_process_if_exited "$pid"
+        return 1
+      fi
+      sleep "$cleanup_poll_interval"
+    done
+  fi
+  if owned_process_is_alive "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  for _ in $(seq 1 "$cleanup_term_attempts"); do
+    if ! owned_process_is_alive "$pid"; then
+      reap_owned_process_if_exited "$pid"
+      return 1
+    fi
+    sleep "$cleanup_poll_interval"
+  done
+  echo "cleanup: $role process $pid remained alive after KILL" >&2
+  return 1
+}
 
 cleanup() {
+  local status="$?"
+  local cleanup_failed=0
+  trap - EXIT
   if [[ -n "$direct_proxy_pid" ]]; then
-    kill -INT "$direct_proxy_pid" 2>/dev/null || true
-    wait "$direct_proxy_pid" 2>/dev/null || true
+    stop_owned_process "$direct_proxy_pid" INT "direct proxy" || cleanup_failed=1
   fi
   if [[ -n "$server_pid" ]]; then
-    kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
+    stop_owned_process "$server_pid" TERM "stock conformance server" || cleanup_failed=1
   fi
   if [[ -n "$labby_pid" ]]; then
-    kill "$labby_pid" 2>/dev/null || true
-    wait "$labby_pid" 2>/dev/null || true
+    stop_owned_process "$labby_pid" TERM "Labby server" || cleanup_failed=1
   fi
-  rm -rf "$work_dir"
+  rm -rf "$work_dir" || cleanup_failed=1
+  if [[ "$status" -eq 0 ]] && [[ "$cleanup_failed" -ne 0 ]]; then
+    status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -121,12 +186,15 @@ run_direct_proxy() {
     sleep 0.1
   done
   if [[ "$ready" != true ]]; then
+    # Preserve a bounded diagnostic after the temporary work tree is removed.
+    # This fixture uses auth=none and the log is still capped defensively.
+    tail -c 65536 "$error_file" >"${output_dir}/direct-proxy-readiness.stderr" || true
     echo "direct stdio proxy did not become ready" >&2
     return 1
   fi
 
-local direct_url
-direct_url="$(jq -r .url "$ready_file")"
+  local direct_url
+  direct_url="$(jq -r .url "$ready_file")"
   local method marker body_file status
   for method_marker in \
     'tools/list|fixture.echo' \
@@ -134,7 +202,8 @@ direct_url="$(jq -r .url "$ready_file")"
     'prompts/list|fixture.prompt'; do
     IFS='|' read -r method marker <<<"$method_marker"
     body_file="${work_dir}/direct-${method//\//-}.body"
-    status="$(curl --silent --show-error --output "$body_file" --write-out '%{http_code}' \
+    status="$(curl --silent --show-error --max-time 10 \
+      --output "$body_file" --write-out '%{http_code}' \
       --header 'Content-Type: application/json' \
       --header 'Accept: application/json, text/event-stream' \
       --header 'MCP-Protocol-Version: 2026-07-28' \
@@ -148,6 +217,31 @@ direct_url="$(jq -r .url "$ready_file")"
   done
 
   kill -INT "$direct_proxy_pid"
+  local stopped=false
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$direct_proxy_pid" 2>/dev/null; then
+      stopped=true
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$stopped" != true ]]; then
+    tail -c 65536 "$error_file" >"${output_dir}/direct-proxy-shutdown.stderr" || true
+    kill -TERM "$direct_proxy_pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      if ! kill -0 "$direct_proxy_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "$direct_proxy_pid" 2>/dev/null; then
+      kill -KILL "$direct_proxy_pid" 2>/dev/null || true
+    fi
+    wait "$direct_proxy_pid" 2>/dev/null || true
+    direct_proxy_pid=""
+    echo "direct stdio proxy did not exit after Ctrl+C" >&2
+    return 1
+  fi
   wait "$direct_proxy_pid"
   direct_proxy_pid=""
   if [[ -f "$child_pid_file" ]] && kill -0 "$(<"$child_pid_file")" 2>/dev/null; then
@@ -240,12 +334,14 @@ if [[ "$labby_ready" != true ]]; then
   exit 1
 fi
 
-mcp_request='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+mcp_request='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"independent-auth-smoke","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
 unauth_status="$(curl --silent --show-error \
   --output "${output_dir}/labby-unauthenticated.json" \
   --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   --header 'Accept: application/json, text/event-stream' \
+  --header 'MCP-Protocol-Version: 2026-07-28' \
+  --header 'Mcp-Method: tools/list' \
   --data "$mcp_request" \
   "http://127.0.0.1:${MCP_CONFORMANCE_LABBY_PORT}/mcp")"
 if [[ "$unauth_status" != 401 ]]; then
@@ -259,6 +355,8 @@ auth_status="$(curl --silent --show-error \
   --header "Authorization: Bearer ${conformance_token}" \
   --header 'Content-Type: application/json' \
   --header 'Accept: application/json, text/event-stream' \
+  --header 'MCP-Protocol-Version: 2026-07-28' \
+  --header 'Mcp-Method: tools/list' \
   --data "$mcp_request" \
   "http://127.0.0.1:${MCP_CONFORMANCE_LABBY_PORT}/mcp")"
 if [[ "$auth_status" != 200 ]]; then
@@ -269,7 +367,7 @@ jq --exit-status '.jsonrpc == "2.0" and .id == 1 and (.result.tools | map(.name)
   "${output_dir}/labby-tools-list.json" >/dev/null
 
 # Score the dated protocol against rmcp's purpose-built fixture catalog.
-STATELESS=1 PORT="$MCP_CONFORMANCE_PORT" \
+PORT="$MCP_CONFORMANCE_PORT" \
   "${rmcp_target_dir}/debug/conformance-server" \
   >"${output_dir}/server.log" 2>&1 &
 server_pid="$!"

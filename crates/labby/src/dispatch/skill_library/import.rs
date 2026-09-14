@@ -19,6 +19,9 @@ use super::depot::{DepotConnection, RequestHeaders};
 use super::dispatch::{SkillLibraryDispatchError, SkillLibraryService};
 use super::params::SourceSelector;
 
+const IMPORT_GATE_QUEUE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+const IMPORT_GATE_STRIPES: usize = 16;
+
 pub(crate) type RepositoryFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ArtifactAcquisition, ArtifactError>> + Send + 'a>>;
 
@@ -112,9 +115,75 @@ pub(crate) struct ImportCoordinator {
     depot: BTreeMap<String, DepotConnection>,
     catalog_project: Option<String>,
     repository: BTreeMap<String, Arc<dyn RepositoryConnection>>,
+    import_gates: [tokio::sync::Mutex<()>; IMPORT_GATE_STRIPES],
 }
 
 impl ImportCoordinator {
+    fn import_gate_index(scope: &str) -> usize {
+        let digest = Sha256::digest(scope.as_bytes());
+        usize::from(digest[0]) % IMPORT_GATE_STRIPES
+    }
+
+    async fn acquire_import_gate(
+        &self,
+        scope: &str,
+        deadline: std::time::Duration,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, ImportAdapterError> {
+        tokio::time::timeout(
+            deadline,
+            self.import_gates[Self::import_gate_index(scope)].lock(),
+        )
+        .await
+        .map_err(|_| ArtifactError::Busy.into())
+    }
+
+    fn request_digest(
+        source: &ImportSource,
+        expected_library_version: u64,
+        idempotency_key: &str,
+    ) -> Result<String, ArtifactError> {
+        let source = match source {
+            ImportSource::Depot {
+                connection_id,
+                artifact_id,
+                revision_id,
+            } => serde_json::json!({
+                "kind": "depot",
+                "connection_id": connection_id,
+                "artifact_id": artifact_id,
+                "revision_id": revision_id,
+            }),
+            ImportSource::Repository {
+                repository,
+                artifact_id,
+                object_id,
+            } => serde_json::json!({
+                "kind": "repository",
+                "repository": repository,
+                "artifact_id": artifact_id,
+                "object_id": object_id,
+            }),
+        };
+        labby_runtime::artifacts::canonical_json::digest(&serde_json::json!({
+            "action": "artifacts.import",
+            "source": source,
+            "expected_library_version": expected_library_version,
+            "idempotency_key": idempotency_key,
+        }))
+    }
+
+    fn ensure_source_configured(&self, source: &ImportSource) -> Result<(), ImportAdapterError> {
+        let configured = match source {
+            ImportSource::Depot { connection_id, .. } => self.depot.contains_key(connection_id),
+            ImportSource::Repository { repository, .. } => self.repository.contains_key(repository),
+        };
+        if configured {
+            Ok(())
+        } else {
+            Err(ImportAdapterError::SourceUnavailable)
+        }
+    }
+
     pub(crate) fn from_host_config(
         config: &crate::config::LabConfig,
         staging_root: &Path,
@@ -298,6 +367,7 @@ impl ImportCoordinator {
             depot,
             repository,
             catalog_project: None,
+            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
         })
     }
 
@@ -318,6 +388,7 @@ impl ImportCoordinator {
             depot,
             repository,
             catalog_project: None,
+            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
         }
     }
 
@@ -439,6 +510,39 @@ impl ImportCoordinator {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, ImportAdapterError> {
+        let artifact_id = match &source {
+            ImportSource::Depot { artifact_id, .. } => artifact_id.as_str(),
+            ImportSource::Repository { artifact_id, .. } => artifact_id.as_str(),
+        };
+        let request_digest =
+            Self::request_digest(&source, expected_library_version, &idempotency_key)?;
+        self.ensure_source_configured(&source)?;
+        self.authorize_catalog_source(runtime, &caller, project_id, &source, correlation_id)
+            .await?;
+        let _gate = self
+            .acquire_import_gate(&request_digest, IMPORT_GATE_QUEUE_DEADLINE)
+            .await?;
+        self.authorize_catalog_source(runtime, &caller, project_id, &source, correlation_id)
+            .await?;
+        // Managed-source authority must be fresh after queue admission, including
+        // the receipt-only path that never reaches acquisition below.
+        let _delegated_headers =
+            delegated_read_headers(runtime, &caller, project_id, &source).await?;
+        if let Some(receipt) = service
+            .replay_import(
+                runtime,
+                caller.clone(),
+                project_id,
+                artifact_id,
+                request_digest.clone(),
+                &idempotency_key,
+                correlation_id,
+            )
+            .await
+            .map_err(ImportAdapterError::Dispatch)?
+        {
+            return Ok(receipt);
+        }
         let acquisition = self
             .acquire_authorized(runtime, &caller, project_id, source, correlation_id)
             .await?;
@@ -448,6 +552,7 @@ impl ImportCoordinator {
                 caller,
                 project_id,
                 acquisition,
+                request_digest,
                 expected_library_version,
                 idempotency_key,
                 correlation_id,
@@ -544,28 +649,20 @@ impl ImportCoordinator {
         let mut version = expected_library_version;
         let mut items = Vec::with_capacity(sources.len());
         for (index, (source, child_key)) in sources.into_iter().zip(child_keys).enumerate() {
-            // Acquire and commit one item at a time. An acquisition can approach the provider's
-            // per-item byte limit, so retaining the whole batch would multiply peak memory by 100.
-            let acquisition = match self.resolve_selector(source) {
-                Ok(source) => {
-                    match self
-                        .acquire_authorized(runtime, &caller, project_id, source, correlation_id)
-                        .await
-                    {
-                        Ok(acquisition) => acquisition,
-                        Err(error) => {
-                            return Ok(batch_partial_receipt(items, version, index, &error));
-                        }
-                    }
-                }
+            let resolved_source = match self.resolve_selector(source) {
+                Ok(source) => source,
                 Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
             };
-            let value = match service
-                .import_acquired(
+            // Import and commit one item at a time. Reusing the single-item path keeps source
+            // authorization, replay binding, single-flight acquisition and terminal auditing
+            // identical for batch and individual requests without retaining acquired payloads.
+            let value = match self
+                .import(
+                    service,
                     runtime,
                     caller.clone(),
                     project_id,
-                    acquisition,
+                    resolved_source,
                     version,
                     child_key,
                     correlation_id,
@@ -574,7 +671,6 @@ impl ImportCoordinator {
             {
                 Ok(value) => value,
                 Err(error) => {
-                    let error = ImportAdapterError::Dispatch(error);
                     return Ok(batch_partial_receipt(items, version, index, &error));
                 }
             };
@@ -737,6 +833,27 @@ mod tests {
     struct FakeDepot {
         value: ArtifactAcquisition,
         calls: Arc<AtomicUsize>,
+    }
+
+    struct BarrierDepot {
+        value: ArtifactAcquisition,
+        calls: Arc<AtomicUsize>,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    impl DepotExactProvider for BarrierDepot {
+        fn acquire(
+            &self,
+            _artifact_id: String,
+            _revision_id: String,
+            _headers: RequestHeaders,
+        ) -> DepotFuture<'_> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                self.barrier.wait().await;
+                Ok(self.value.clone())
+            })
+        }
     }
 
     impl DepotExactProvider for FakeDepot {
@@ -922,7 +1039,7 @@ mod tests {
                 let provider: Arc<dyn DepotExactProvider> = if mode == "revoked" {
                     Arc::new(RevokingDepot {
                         value,
-                        access,
+                        access: Arc::clone(&access),
                         calls: calls.clone(),
                     })
                 } else {
@@ -942,7 +1059,7 @@ mod tests {
                             &runtime,
                             caller,
                             project,
-                            vec![selector],
+                            vec![selector.clone()],
                             0,
                             "catalog-batch".into(),
                             &correlation,
@@ -955,7 +1072,7 @@ mod tests {
                             &runtime,
                             caller,
                             project,
-                            selector,
+                            selector.clone(),
                             0,
                             "catalog-single".into(),
                             &correlation,
@@ -978,8 +1095,323 @@ mod tests {
                     u64::from(allowed),
                     "{mode}"
                 );
+                if allowed && !batch {
+                    access
+                        .execute_test_statement(
+                            "UPDATE project_memberships SET status='suspended' WHERE membership_id='member-membership'",
+                        )
+                        .await
+                        .unwrap();
+                    let replay_after_revocation = coordinator
+                        .import_selected(
+                            &service,
+                            &runtime,
+                            SkillLibraryCaller::new(
+                                VerifiedIdentity::local_credential(
+                                    Authenticator::StaticBearer,
+                                    "static-bearer:member",
+                                )
+                                .unwrap(),
+                                ["lab".to_owned()],
+                                SkillLibraryTransport::bearer(
+                                    super::super::auth::SkillLibrarySurface::ApiBearer,
+                                    true,
+                                ),
+                            ),
+                            project,
+                            selector,
+                            0,
+                            "catalog-single".into(),
+                            &SkillLibraryCorrelationId::parse("protected-import-replay").unwrap(),
+                        )
+                        .await;
+                    assert!(replay_after_revocation.is_err());
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        1,
+                        "revoked replay must fail before another provider request"
+                    );
+                }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn import_gate_queue_timeout_is_typed_busy_and_releases_cleanly() {
+        let coordinator = ImportCoordinator::new(None, None);
+        let scope = "same-import-scope";
+        let held = coordinator.import_gates[ImportCoordinator::import_gate_index(scope)]
+            .lock()
+            .await;
+        let saturated = coordinator
+            .acquire_import_gate(scope, Duration::from_millis(1))
+            .await;
+        assert!(matches!(
+            saturated,
+            Err(ImportAdapterError::Artifact(ArtifactError::Busy))
+        ));
+        drop(held);
+        let reacquired = coordinator
+            .acquire_import_gate(scope, Duration::from_secs(1))
+            .await;
+        assert!(reacquired.is_ok(), "released import gate must be reusable");
+    }
+
+    #[tokio::test]
+    async fn unrelated_import_scopes_do_not_share_one_global_gate() {
+        let coordinator = ImportCoordinator::new(None, None);
+        let first = "slow-import-scope";
+        let first_index = ImportCoordinator::import_gate_index(first);
+        let second = (0..1_000)
+            .map(|index| format!("unrelated-import-{index}"))
+            .find(|scope| ImportCoordinator::import_gate_index(scope) != first_index)
+            .expect("fixed stripe set has an unrelated scope");
+        let held = coordinator.import_gates[first_index].lock().await;
+        let unrelated = coordinator
+            .acquire_import_gate(&second, Duration::from_millis(50))
+            .await;
+        assert!(
+            unrelated.is_ok(),
+            "unrelated import must not queue behind the held stripe"
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn independent_coordinators_converge_after_concurrent_provider_fetches() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "concurrent-owner",
+        )
+        .unwrap();
+        access_store
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path).await;
+        let caller = || {
+            SkillLibraryCaller::new(
+                identity.clone(),
+                [],
+                SkillLibraryTransport::browser(true, true),
+            )
+        };
+        let store = Arc::new(
+            labby_runtime::artifacts::ArtifactStore::new(root.path().join("artifacts")).unwrap(),
+        );
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection::default());
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(4, Duration::from_secs(1), Duration::from_secs(10))
+                .unwrap(),
+            Arc::new(ActivationCoordinator::new(initial, 0)),
+            projection,
+        );
+        let acquired = acquisition(
+            "cross-coordinator",
+            "depot",
+            Some("shared-account"),
+            None,
+            "shared-object",
+        );
+        let artifact_id = acquired.interchange.descriptor.id.clone();
+        let revision_id = acquired.interchange.revision.id.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let coordinator = || {
+            ImportCoordinator::new(
+                Some(DepotConnection::fake(
+                    Arc::new(BarrierDepot {
+                        value: acquired.clone(),
+                        calls: Arc::clone(&calls),
+                        barrier: Arc::clone(&barrier),
+                    }),
+                    "shared-account",
+                )),
+                None,
+            )
+        };
+        let first = coordinator();
+        let second = coordinator();
+        let source = || ImportSource::Depot {
+            connection_id: "shared-account".to_owned(),
+            artifact_id: artifact_id.clone(),
+            revision_id: revision_id.clone(),
+        };
+        let first_correlation = SkillLibraryCorrelationId::parse("cross-coordinator-a").unwrap();
+        let second_correlation = SkillLibraryCorrelationId::parse("cross-coordinator-b").unwrap();
+        let (a, b) = tokio::join!(
+            first.import(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                source(),
+                0,
+                "cross-coordinator-key".to_owned(),
+                &first_correlation,
+            ),
+            second.import(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                source(),
+                0,
+                "cross-coordinator-key".to_owned(),
+                &second_correlation,
+            )
+        );
+        let a = a.unwrap();
+        let b = b.unwrap();
+        let outcomes = [a["outcome"].as_str(), b["outcome"].as_str()];
+        assert!(
+            outcomes.contains(&Some("committed")),
+            "outcomes: {outcomes:?}"
+        );
+        assert!(
+            outcomes.contains(&Some("replayed")),
+            "outcomes: {outcomes:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "both coordinators may fetch"
+        );
+        assert_eq!(store.library_snapshot().unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_import_receipt_replays_after_source_digest_upgrade() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "legacy-owner",
+        )
+        .unwrap();
+        access_store
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path).await;
+        let caller = || {
+            SkillLibraryCaller::new(
+                identity.clone(),
+                [],
+                SkillLibraryTransport::browser(true, true),
+            )
+        };
+        let store = Arc::new(
+            labby_runtime::artifacts::ArtifactStore::new(root.path().join("artifacts")).unwrap(),
+        );
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection::default());
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(2, Duration::from_secs(1), Duration::from_secs(10))
+                .unwrap(),
+            Arc::new(ActivationCoordinator::new(initial, 0)),
+            projection,
+        );
+        let acquired = acquisition(
+            "legacy-import",
+            "depot",
+            Some("account-legacy"),
+            None,
+            "object-legacy",
+        );
+        let artifact_id = acquired.interchange.descriptor.id.clone();
+        let revision_id = acquired.interchange.revision.id.clone();
+        let key = "legacy-import-key";
+        let legacy_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
+            "action":"artifacts.import",
+            "artifact_id":artifact_id,
+            "revision_id":revision_id,
+            "expected_library_version":0,
+            "idempotency_key":key,
+        }))
+        .unwrap();
+        let committed = service
+            .import_acquired(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                acquired.clone(),
+                legacy_digest,
+                0,
+                key.to_owned(),
+                &SkillLibraryCorrelationId::parse("legacy-import-seed").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(committed["outcome"], "committed");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let coordinator = ImportCoordinator::new(
+            Some(DepotConnection::fake(
+                Arc::new(FakeDepot {
+                    value: acquired,
+                    calls: Arc::clone(&calls),
+                }),
+                "account-legacy",
+            )),
+            None,
+        );
+        let replayed = coordinator
+            .import(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                ImportSource::Depot {
+                    connection_id: "account-legacy".to_owned(),
+                    artifact_id,
+                    revision_id,
+                },
+                0,
+                key.to_owned(),
+                &SkillLibraryCorrelationId::parse("legacy-import-replay").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replayed["outcome"], "replayed");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "legacy fallback verifies exact bytes once"
+        );
+        assert_eq!(store.library_snapshot().unwrap().version, 1);
     }
 
     #[tokio::test]
@@ -1101,24 +1533,42 @@ mod tests {
             })),
         );
 
-        let first = coordinator
-            .import_selected(
+        let source = || SourceSelector::Depot {
+            connection_id: "account-1".to_owned(),
+            artifact_id: depot_id.clone(),
+            revision_id: depot_revision.clone(),
+        };
+        let first_correlation = SkillLibraryCorrelationId::parse("depot-import-1").unwrap();
+        let concurrent_correlation =
+            SkillLibraryCorrelationId::parse("depot-import-concurrent").unwrap();
+        let (first, concurrent) = tokio::join!(
+            coordinator.import_selected(
                 &service,
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                SourceSelector::Depot {
-                    connection_id: "account-1".to_owned(),
-                    artifact_id: depot_id.clone(),
-                    revision_id: depot_revision.clone(),
-                },
+                source(),
                 0,
                 "depot-import-key".to_owned(),
-                &SkillLibraryCorrelationId::parse("depot-import-1").unwrap(),
+                &first_correlation,
+            ),
+            coordinator.import_selected(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                source(),
+                0,
+                "depot-import-key".to_owned(),
+                &concurrent_correlation,
             )
-            .await
-            .unwrap();
-        assert_eq!(first["outcome"], "committed");
+        );
+        let first = first.unwrap();
+        let concurrent = concurrent.unwrap();
+        let outcomes = [first["outcome"].as_str(), concurrent["outcome"].as_str()];
+        assert!(outcomes.contains(&Some("committed")));
+        assert!(outcomes.contains(&Some("replayed")));
+        assert_eq!(depot_calls.load(Ordering::SeqCst), 1);
         let depot_local_id = first["artifact_id"].as_str().unwrap().to_owned();
         let replay = coordinator
             .import(
@@ -1138,7 +1588,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replay["outcome"], "replayed");
+        assert_eq!(
+            depot_calls.load(Ordering::SeqCst),
+            1,
+            "a committed identical retry must use its durable receipt without refetching Depot"
+        );
         assert_eq!(store.library_snapshot().unwrap().version, 1);
+        let reopened_projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection::default());
+        let reopened_initial = reopened_projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let reopened_service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(2, Duration::from_secs(1), Duration::from_secs(10))
+                .unwrap(),
+            Arc::new(ActivationCoordinator::new(reopened_initial, 0)),
+            reopened_projection,
+        );
+        let reopened_replay = coordinator
+            .import(
+                &reopened_service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                ImportSource::Depot {
+                    connection_id: "account-1".to_owned(),
+                    artifact_id: depot_id.clone(),
+                    revision_id: depot_revision.clone(),
+                },
+                0,
+                "depot-import-key".to_owned(),
+                &SkillLibraryCorrelationId::parse("depot-import-reopened").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reopened_replay["outcome"], "replayed");
+        assert_eq!(
+            depot_calls.load(Ordering::SeqCst),
+            1,
+            "durable replay must survive service reconstruction"
+        );
 
         let repo_result = coordinator
             .import(
@@ -1152,13 +1643,67 @@ mod tests {
                     object_id: repository_revision.clone(),
                 },
                 1,
-                "repo-import-key".to_owned(),
+                "depot-import-key".to_owned(),
                 &SkillLibraryCorrelationId::parse("repo-import-2").unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(repo_result["outcome"], "committed");
+        assert_eq!(repository_calls.load(Ordering::SeqCst), 1);
         let repository_local_id = repo_result["artifact_id"].as_str().unwrap().to_owned();
+        let repo_replay = coordinator
+            .import(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                ImportSource::Repository {
+                    repository: "repo-1".to_owned(),
+                    artifact_id: repository_id.clone(),
+                    object_id: repository_revision.clone(),
+                },
+                1,
+                "depot-import-key".to_owned(),
+                &SkillLibraryCorrelationId::parse("repo-import-replay").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(repo_replay["outcome"], "replayed");
+        assert_eq!(
+            repository_calls.load(Ordering::SeqCst),
+            1,
+            "a committed repository retry must not reacquire the object"
+        );
+        let changed_binding = coordinator
+            .import(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                ImportSource::Repository {
+                    repository: "repo-1".to_owned(),
+                    artifact_id: repository_id.clone(),
+                    object_id: format!("sha256:{}", "f".repeat(64)),
+                },
+                1,
+                "depot-import-key".to_owned(),
+                &SkillLibraryCorrelationId::parse("repo-import-binding-change").unwrap(),
+            )
+            .await;
+        assert!(
+            matches!(
+                &changed_binding,
+                Err(ImportAdapterError::Artifact(ArtifactError::Conflict(
+                    "provider_revision_binding_mismatch"
+                )))
+            ),
+            "unexpected changed binding result: {changed_binding:?}"
+        );
+        assert_eq!(
+            repository_calls.load(Ordering::SeqCst),
+            2,
+            "a different selector must be verified, never replay an unrelated receipt"
+        );
         assert_eq!(store.library_snapshot().unwrap().records.len(), 2);
         let repository_record = store
             .library_snapshot()

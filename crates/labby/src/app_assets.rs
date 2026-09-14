@@ -124,12 +124,8 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   }
   async function callViaOpenAi(service, action, params) {
     const args = { action, params: params || {} };
-    try {
-      return await window.openai.callTool({ name: service, arguments: args });
-    } catch (err) {
-      if (!shouldRetryLegacyCallTool(err)) throw err;
-      return await window.openai.callTool(service, args);
-    }
+    // A rejected host call may already have executed. Never retry it to probe a signature.
+    return await window.openai.callTool(service, args);
   }
   async function callViaMcp(service, action, params) {
     await connectMcp();
@@ -137,11 +133,6 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
       name: service,
       arguments: { action, params: params || {} }
     }, 30000);
-  }
-  function shouldRetryLegacyCallTool(err) {
-    if (err instanceof TypeError) return true;
-    const message = String((err && err.message) || "");
-    return /callTool/i.test(message) && /(signature|expected.*string|argument shape)/i.test(message);
   }
   async function callViaHttp(_service, _action, params, options) {
     const route = options && options.route;

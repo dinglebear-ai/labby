@@ -851,8 +851,17 @@ mod tests {
             )
             .await
             .expect_err("legacy OAuth fixture intentionally cannot connect");
-        assert_eq!(legacy_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(legacy_error.message.contains("oauth"));
+        // The caller supplied a valid URI. An upstream connection failure is operational,
+        // not invalid parameters, and must not copy the upstream's diagnostic into the reply.
+        assert_eq!(legacy_error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            legacy_error.data.as_ref().unwrap()["kind"],
+            "upstream_error"
+        );
+        assert_eq!(
+            legacy_error.message,
+            "Resource `lab://upstream/oauth/file:///subject` could not be fetched."
+        );
         assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
     }
 
