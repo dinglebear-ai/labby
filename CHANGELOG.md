@@ -82,6 +82,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.18.2](https://github.com/dinglebear-ai/labby/compare/v1.18.1...v1.18.2) (2026-09-13)
+
+
+### Fixed
+
+* **host-service:** restore prior service generation ([#633](https://github.com/dinglebear-ai/labby/issues/633)) ([83eb284](https://github.com/dinglebear-ai/labby/commit/83eb2848a9608740ce7ee0365452f347b2e7667d))
+
 ## [1.18.1](https://github.com/dinglebear-ai/labby/compare/v1.18.0...v1.18.1) (2026-09-13)
 
 

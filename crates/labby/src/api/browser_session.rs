@@ -237,8 +237,10 @@ enum SessionAuthority {
     Transport { is_admin: bool },
 }
 
+// An unprovisioned identity only exists once owner bootstrap has completed, so
+// bootstrap is never a remedy for it.
 const UNPROVISIONED_REMEDIATION: &str = "This identity is authenticated but has no access authority yet. \
-     Ask an administrator to add this identity to a team, or complete owner bootstrap.";
+     Ask an administrator to add this identity to a team.";
 const TRANSPORT_REMEDIATION: &str = "Durable access authority is not initialized on this process; \
      authority is projected from the transport credential only. Complete owner bootstrap to enable \
      multi-user authority.";
@@ -321,6 +323,16 @@ async fn resolve_session_authority(
 
 fn scopes_grant_admin(scopes: &[String]) -> bool {
     scopes.iter().any(|scope| scope == "lab:admin")
+}
+
+/// Whether an OAuth browser identity is the configured admin, the only caller
+/// `POST /v1/access/bootstrap-owner` accepts. The session projection uses this
+/// so the UI never offers owner bootstrap to anyone the endpoint would refuse.
+fn is_configured_admin_email(state: &AppState, email: Option<&str>) -> bool {
+    let Some(config) = state.auth_config.as_ref() else {
+        return false;
+    };
+    email.is_some_and(|email| email.eq_ignore_ascii_case(&config.admin_email))
 }
 
 /// Identity for an OAuth-backed browser session row.
@@ -424,6 +436,11 @@ fn wire_roles<'a>(
 /// The `user`, `csrf_token`, and `expires_at` fields are emitted in both the
 /// ready and unprovisioned states so the UI can fail closed on authority
 /// while still holding a usable session.
+///
+/// `owner_bootstrap_available` is true only while no owner exists yet
+/// (`transport`) and the caller is eligible to claim ownership. Once an owner
+/// exists, every identity without authority is `unprovisioned` and is never
+/// offered bootstrap.
 fn authenticated_session_body(
     login_available: bool,
     user: serde_json::Value,
@@ -431,8 +448,11 @@ fn authenticated_session_body(
     expires_at: serde_json::Value,
     csrf_token: &str,
     authority: &SessionAuthority,
+    bootstrap_eligible: bool,
 ) -> serde_json::Value {
-    match authority {
+    let owner_bootstrap_available =
+        bootstrap_eligible && matches!(authority, SessionAuthority::Transport { .. });
+    let mut body = match authority {
         SessionAuthority::Ready(authority) => serde_json::json!({
             "authenticated": true,
             "login_available": login_available,
@@ -495,7 +515,9 @@ fn authenticated_session_body(
             "expires_at": expires_at,
             "csrf_token": csrf_token,
         }),
-    }
+    };
+    body["owner_bootstrap_available"] = serde_json::Value::Bool(owner_bootstrap_available);
+    body
 }
 
 /// Finish a `session.get` dispatch. Success and unprovisioned outcomes log
@@ -573,6 +595,9 @@ pub async fn auth_session(
                                 serde_json::json!(session.expires_at),
                                 &session.csrf_token,
                                 &authority,
+                                // Project sessions are local credentials; the
+                                // bootstrap endpoint accepts only OAuth identities.
+                                false,
                             )
                         })
                 }
@@ -634,6 +659,8 @@ pub async fn auth_session(
                             serde_json::json!(DEV_SESSION_EXPIRES_AT),
                             "",
                             &authority,
+                            // Browser bootstrap requires an OAuth identity.
+                            false,
                         )
                     })
             }
@@ -653,6 +680,7 @@ pub async fn auth_session(
     match load_browser_session(auth_state, &headers).await {
         Ok(Some(session)) => {
             let actor_key = actor_key_for_session(&state, &session);
+            let bootstrap_eligible = is_configured_admin_email(&state, session.email.as_deref());
             let outcome = match oauth_browser_session_identity(auth_state, &session) {
                 Ok(identity) => {
                     // An OAuth cookie alone never carries transport admin.
@@ -673,6 +701,7 @@ pub async fn auth_session(
                                 serde_json::json!(session.expires_at),
                                 &session.csrf_token,
                                 &authority,
+                                bootstrap_eligible,
                             )
                         })
                 }
@@ -741,6 +770,16 @@ async fn authenticated_context_session(
             })?
         }
     };
+    // Mirrors `access_bootstrap::require_browser_admin`: browser session,
+    // OAuth identity for the same subject, `lab:admin`, configured admin email.
+    let bootstrap_eligible = context.via_session
+        && identity.authenticator() == labby_auth::Authenticator::BrowserSession
+        && matches!(
+            identity.principal_link(),
+            labby_auth::PrincipalLink::External { subject, .. } if subject == &context.sub
+        )
+        && scopes_grant_admin(&context.scopes)
+        && is_configured_admin_email(state, context.email.as_deref());
     let authority =
         resolve_session_authority(state, identity, scopes_grant_admin(&context.scopes)).await?;
     Ok(authenticated_session_body(
@@ -753,6 +792,7 @@ async fn authenticated_context_session(
         serde_json::json!(expires_at),
         context.csrf_token.as_deref().unwrap_or_default(),
         &authority,
+        bootstrap_eligible,
     ))
 }
 
@@ -1085,6 +1125,25 @@ mod tests {
         assert_eq!(json["expires_at"], expires_at);
     }
 
+    #[test]
+    fn bootstrap_eligibility_requires_the_configured_admin_email() {
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "owner@example.com".into(),
+            ..Default::default()
+        };
+        let state = AppState::new().with_auth_config(config);
+        assert!(is_configured_admin_email(&state, Some("OWNER@example.com")));
+        assert!(!is_configured_admin_email(
+            &state,
+            Some("other@example.com")
+        ));
+        assert!(!is_configured_admin_email(&state, None));
+        assert!(!is_configured_admin_email(
+            &AppState::new(),
+            Some("owner@example.com")
+        ));
+    }
+
     /// B-I7: an authenticated identity with no principal link is a 200
     /// `unprovisioned` projection with a remediation hint, never a 500; a
     /// provisioned owner projects durable authority; a blocked store is 503.
@@ -1127,9 +1186,11 @@ mod tests {
             serde_json::json!(1),
             "",
             &ready,
+            true,
         );
         assert_eq!(body["authority_state"], "ready");
         assert_eq!(body["is_admin"], true);
+        assert_eq!(body["owner_bootstrap_available"], false);
 
         let stranger = labby_auth::VerifiedIdentity::external(
             labby_auth::Authenticator::BrowserSession,
@@ -1148,13 +1209,33 @@ mod tests {
             serde_json::json!(1),
             "",
             &unprovisioned,
+            // Even a caller that would pass the bootstrap gate is never
+            // offered bootstrap once an owner exists.
+            true,
         );
         assert_eq!(body["authority_state"], "unprovisioned");
         assert_eq!(
             body["is_admin"], false,
             "transport scope never grants durable admin"
         );
-        assert!(body["remediation"].as_str().unwrap().contains("bootstrap"));
+        assert_eq!(body["owner_bootstrap_available"], false);
+        assert!(!body["remediation"].as_str().unwrap().contains("bootstrap"));
+
+        // Before any owner exists, only an eligible caller is offered bootstrap.
+        let transport = SessionAuthority::Transport { is_admin: false };
+        for (eligible, expected) in [(true, true), (false, false)] {
+            let body = authenticated_session_body(
+                false,
+                serde_json::json!({"sub": "admin"}),
+                None,
+                serde_json::json!(1),
+                "",
+                &transport,
+                eligible,
+            );
+            assert_eq!(body["authority_state"], "transport");
+            assert_eq!(body["owner_bootstrap_available"], expected);
+        }
 
         // A blocked store that is not the non-owner sentinel is a typed outage.
         assert_eq!(

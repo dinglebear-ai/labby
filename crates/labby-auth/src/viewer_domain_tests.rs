@@ -133,8 +133,11 @@ async fn domain_only_session_and_opaque_authority_never_inherit_admin_scopes() {
     }
 }
 
+/// An explicit allowlist entry admits the identity with write scope, but an
+/// allowlist entry is not an administrative grant: only the configured admin
+/// email keeps `lab:admin` (products elevate others from durable authority).
 #[tokio::test]
-async fn explicitly_allowlisted_domain_member_keeps_existing_admin_behavior() {
+async fn explicitly_allowlisted_member_is_admitted_without_admin_scope() {
     let (state, session) = fixture("existing-admin@lime-technology.com", true).await;
     state
         .store
@@ -154,7 +157,8 @@ async fn explicitly_allowlisted_domain_member_keeps_existing_admin_behavior() {
             "/probe",
             get(
                 |axum::Extension(context): axum::Extension<crate::AuthContext>| async move {
-                    assert!(context.scopes.iter().any(|scope| scope == "lab:admin"));
+                    assert_eq!(context.scopes, vec!["lab"]);
+                    assert!(!context.scopes.iter().any(|scope| scope == "lab:admin"));
                     StatusCode::OK
                 },
             ),
