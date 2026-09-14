@@ -162,7 +162,7 @@ impl ServerHandler for StaticCatalogServer {
     }
 }
 
-pub(super) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
+pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
     static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
 }
 
