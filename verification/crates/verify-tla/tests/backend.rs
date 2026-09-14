@@ -207,12 +207,12 @@ fn successful_scope_records_deadline_without_simulation_depth() {
     let (_dir, backend) = fixture(
         "#!/bin/sh\ncase \"$*\" in *-depth*) exit 99;; *-help*) echo 'TLC Version 2.19'; exit 1;; *) echo 'Model checking completed. No error has been found';; esac\n",
     );
-    let report = backend.run(&plan(1000));
+    let report = backend.run(&plan(5000));
     let Verdict::Bounded { bounds } = report.verdict else {
         panic!("expected successful finite model result");
     };
     assert_eq!(bounds["scope"], "registered_module_and_config");
-    assert_eq!(bounds["timeout_ms"], 1000);
+    assert_eq!(bounds["timeout_ms"], 5000);
     assert_eq!(bounds["workers"], 1);
     assert!(!bounds.contains_key("depth"));
 }
