@@ -230,9 +230,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('labby_home="$user_home/.labby"', unix)
         self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
         self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
-        self.assertIn('for _ in {1..100}; do', unix)
-        self.assertIn('observed=$(process_identity "$pid")', unix)
-        self.assertIn('service pid $pid did not stop and still owns lifecycle state', unix)
+        self.assertIn('scripts/ci/verified-process.py" identity', unix)
+        self.assertIn('scripts/ci/verified-process.py" stop', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
         self.assertEqual(1, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
@@ -255,6 +254,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
         self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
     def test_unix_restart_waits_for_prior_daemon_exit_before_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner_temp = Path(tmp)
@@ -333,6 +333,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                     old.kill()
                 reaper.join(timeout=2)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
     def test_unix_restart_refuses_reused_or_uninspectable_pid(self) -> None:
         for case in ("identity-mismatch", "unknown-proc"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
@@ -366,14 +367,71 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertIsNone(victim.poll(), "unverified PID was signaled")
                     expected = (
-                        "identity changed; refusing to signal it"
+                        "process identity changed; refusing to signal it"
                         if case == "identity-mismatch"
-                        else "cannot safely inspect service pid"
+                        else "cannot read process stat"
                     )
                     self.assertIn(expected, result.stderr)
                 finally:
                     victim.terminate()
                     victim.wait(timeout=2)
+
+    def test_verified_process_classifies_zombie_and_partial_proc_teardown(self) -> None:
+        helper = ROOT / "scripts/ci/verified-process.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = Path(tmp)
+            proc = proc_root / "123"
+            proc.mkdir()
+            stat = proc / "stat"
+            stat.write_text(f"123 (labby worker) Z {'0 ' * 18}12345\n")
+            zombie = subprocess.run(
+                [str(helper), "identity", "--pid", "123", "--proc-root", str(proc_root),
+                 "--executable", "/tmp/labby"],
+                capture_output=True,
+            )
+            self.assertEqual(1, zombie.returncode)
+
+            stat.write_text(f"123 (labby worker) S {'0 ' * 18}12345\n")
+            partial = subprocess.run(
+                [str(helper), "identity", "--pid", "123", "--proc-root", str(proc_root),
+                 "--executable", "/tmp/labby"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(2, partial.returncode)
+            self.assertIn("cannot read process executable", partial.stderr)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "proc identity is Linux-specific")
+    def test_unix_start_identity_failure_cleans_unpublished_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            commands = runner_temp / "commands"
+            install.mkdir(parents=True)
+            commands.mkdir()
+            launched = runner_temp / "launched-pid"
+            (install / "labby").write_text(
+                f"#!/bin/sh\necho $$ > {str(launched)!r}\nsleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "curl").chmod(0o755)
+            result = subprocess.run(
+                [str(ROOT / "scripts/ci/n-minus-one/unix"), "authenticated-action"],
+                env=os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "PATH": f"{commands}:{os.environ['PATH']}",
+                },
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertNotEqual(0, result.returncode)
+            pid = int(launched.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            self.assertFalse((work / "labby.pid").exists())
 
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
