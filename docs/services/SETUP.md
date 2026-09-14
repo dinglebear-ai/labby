@@ -122,6 +122,47 @@ Legacy snake-case plugin action aliases remain in the action catalog for compati
 
 `labby setup` is the supported operator entrypoint. Use `labby setup --help` and the generated [CLI help](../generated/cli-help.md) for the exact current command grammar.
 
+Bare `labby setup` prompts for a server or client role. Server setup uses a native
+service by default; Linux x86_64 hosts with a reachable Incus daemon can select
+`--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
+Google and Authelia configuration require provider credentials and a public URL.
+Client setup saves the selected gateway URL and uses browser OAuth or a bearer
+token. The optional desktop app is downloaded from the matching release and its
+provenance is verified before installation.
+
+For a fresh bearer-only server, explicit setup creates the durable first owner
+for its static credential. It preserves an existing owner and refuses a blocked
+access store. OAuth deployments retain their authenticated owner-bootstrap flow.
+Browser token sign-in exchanges the configured bearer for an HttpOnly session
+cookie; the bearer is not retained by the browser, and restarting Labby invalidates
+those derived sessions. Mixed browser identities must be signed out before
+switching authentication methods.
+
+Run setup as your ordinary user. Native Linux setup requests elevation for the
+service portion, then installs an optional desktop app as the original user.
+OAuth client setup requires a browser; `--no-browser` rejects that combination
+before changing configuration. A bearer client can be configured without a browser.
+
+```bash
+# Inspect a native server setup without changing host state.
+labby setup --role server --oauth none --no-desktop --yes --dry-run
+
+# Connect this machine to an existing OAuth gateway.
+labby setup --role client --server-url https://labby.example.com --oauth google --no-desktop --yes
+
+# Keep the existing web setup entrypoint.
+labby setup wizard
+```
+
+The Linux/macOS release installer invokes this same setup flow after verifying
+and installing the binary. Unattended callers must select `LABBY_SETUP_ROLE`;
+other shell options include `LABBY_SETUP_DEPLOYMENT`, `LABBY_SETUP_HOST`,
+`LABBY_SETUP_PORT`, `LABBY_SETUP_SERVER_URL`, `LABBY_SETUP_PUBLIC_URL`,
+`LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and `LABBY_SETUP_NO_BROWSER`.
+Provider/client secrets use the normal credential environment variables, not
+command-line arguments. Set `LABBY_INSTALL_NO_SETUP=1` to install only the binary.
+Updates set this flag automatically so they cannot restart onboarding.
+
 ## Related Docs
 
 - [Configuration](../runtime/CONFIG.md)

@@ -9,6 +9,8 @@ export type BrowserSessionState =
   | { status: 'loading' }
   | {
       status: 'authenticated'
+      loginAvailable?: boolean
+      bearerLoginAvailable?: boolean
       user: {
         sub: string
         email?: string | null
@@ -47,6 +49,8 @@ export type BrowserSessionState =
 type SessionPayload =
   | {
       authenticated: true
+      login_available?: boolean
+      bearer_login_available?: boolean
       user: {
         sub: string
         email?: string | null
@@ -150,6 +154,8 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     : undefined
   return {
     status: 'authenticated',
+    ...(typeof payload.login_available === 'boolean' ? { loginAvailable: payload.login_available } : {}),
+    ...(typeof payload.bearer_login_available === 'boolean' ? { bearerLoginAvailable: payload.bearer_login_available } : {}),
     user: payload.user,
     expiresAt: payload.expires_at,
     csrfToken: payload.csrf_token,
@@ -292,6 +298,12 @@ export class LogoutRevocationError extends Error {
  */
 export async function logoutBrowserSession() {
   const csrfToken = getSessionCsrfToken()
+  const loginMethods = currentState.status === 'authenticated' || currentState.status === 'unauthenticated'
+    ? {
+        ...(typeof currentState.loginAvailable === 'boolean' ? { loginAvailable: currentState.loginAvailable } : {}),
+        ...(typeof currentState.bearerLoginAvailable === 'boolean' ? { bearerLoginAvailable: currentState.bearerLoginAvailable } : {}),
+      }
+    : {}
   let failure: LogoutRevocationError | undefined
   try {
     const response = await fetch('/auth/logout', {
@@ -310,7 +322,7 @@ export async function logoutBrowserSession() {
   } finally {
     sessionGeneration += 1
     resetAuthorityOpaqueValues()
-    setState({ status: 'unauthenticated' })
+    setState({ status: 'unauthenticated', ...loginMethods })
   }
   if (failure) throw failure
 }

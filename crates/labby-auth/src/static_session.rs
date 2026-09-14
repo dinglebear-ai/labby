@@ -111,6 +111,28 @@ impl StaticBrowserSessionState {
     }
 }
 
+/// Detect a second stored browser authority before selecting the static cookie.
+/// Store failures remain errors so an unavailable authority cannot be ignored.
+pub async fn has_other_browser_session(
+    headers: &axum::http::HeaderMap,
+    project: Option<&crate::project_session::ProjectSessionState>,
+    oauth: Option<&crate::state::AuthState>,
+) -> Result<bool, AuthError> {
+    if let Some(project) = project
+        && let Some(id) = crate::session::read_cookie(headers, &project.cookie_name)
+        && project.store.find_browser_session(&id).await?.is_some()
+    {
+        return Ok(true);
+    }
+    if let Some(oauth) = oauth
+        && let Some(id) = crate::session::read_cookie(headers, &oauth.config.session_cookie_name)
+        && oauth.store.find_browser_session(&id).await?.is_some()
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

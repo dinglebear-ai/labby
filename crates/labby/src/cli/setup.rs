@@ -12,10 +12,8 @@
 //!
 //! Honors `LABBY_SKIP_SETUP=1` and `--no-setup` for CI / power users.
 //!
-//! Browser auto-launch is intentionally deferred to a follow-up so this PR
-//! avoids adding the `webbrowser` dependency. The bead's locked decision
-//! includes browser launch + headless detection; that wiring can land
-//! incrementally without breaking the CLI surface contract.
+//! OAuth client onboarding uses the existing browser authorization flow.
+//! `--no-browser` requires bearer client authentication instead.
 
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
@@ -92,6 +90,10 @@ pub struct SetupArgs {
     #[arg(long, hide = true)]
     pub apply_plan: Option<PathBuf>,
 
+    /// Internal local owner bootstrap used by container onboarding.
+    #[arg(long, hide = true)]
+    pub bootstrap_static_owner: bool,
+
     /// Setup UI mode for `labby setup wizard`.
     #[arg(long, value_enum, default_value_t = SetupModeArg::Full, hide = true)]
     pub mode: SetupModeArg,
@@ -100,8 +102,7 @@ pub struct SetupArgs {
     #[arg(long, hide = true)]
     pub no_setup: bool,
 
-    /// Do not attempt to open the browser (no-op for now; reserved for
-    /// the follow-up that adds `webbrowser` integration).
+    /// Do not open a browser. Client setup requires bearer authentication with this flag.
     #[arg(long, hide = true)]
     pub no_browser: bool,
 
@@ -131,6 +132,7 @@ impl Default for SetupArgs {
             desktop: false,
             no_desktop: false,
             apply_plan: None,
+            bootstrap_static_owner: false,
             mode: SetupModeArg::Full,
             no_setup: false,
             no_browser: false,
@@ -599,6 +601,11 @@ fn install_self() -> Result<PathBuf> {
 }
 
 pub async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+    if args.bootstrap_static_owner {
+        let paths = crate::installation::InstallationPaths::resolve()?;
+        onboarding::bootstrap_static_owner_at(paths.root()).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(plan_path) = args.apply_plan.take() {
         return onboarding::apply_plan_file(&plan_path, format).await;
     }

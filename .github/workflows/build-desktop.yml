@@ -98,7 +98,7 @@ jobs:
             echo "::error::macOS desktop releases require APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID for notarization"
             exit 1
           }
-          pnpm --dir apps/labby-desktop exec tauri build --bundles app --target aarch64-apple-darwin
+          pnpm --dir apps/labby-desktop exec tauri build --bundles app --target aarch64-apple-darwin -- --locked
           app="apps/labby-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Labby.app"
           [[ -d "$app" ]] || { echo "::error::missing Labby.app bundle"; exit 1; }
           tar -C "$(dirname "$app")" -czf "${{ matrix.asset }}" Labby.app
@@ -107,7 +107,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          pnpm --dir apps/labby-desktop exec tauri build --bundles appimage
+          pnpm --dir apps/labby-desktop exec tauri build --bundles appimage -- --locked
           appimage="$(find apps/labby-desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           [[ -n "$appimage" ]] || { echo "::error::missing Labby AppImage"; exit 1; }
           cp "$appimage" "${{ matrix.asset }}"

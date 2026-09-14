@@ -879,6 +879,39 @@ SH
     [ -f "$case_home/bin/.labby-install/activation-journal/old-binary.present" ] || fail "retirement failure lost rollback backup"
 }
 
+test_first_run_setup_forwards_options_and_propagates_failure() {
+    local case_root="$test_root/first-run"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/tools" case_home="$case_root/home"
+    mkdir -p "$fixtures" "$case_home"
+    make_fake_tools "$fake_bin" "$fixtures"
+    cat > "$case_root/labby" <<'SH'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'labby 1.0.0'; exit 0; fi
+printf '%s\n' "$@" > "$LABBY_TEST_SETUP_ARGS"
+exit "${LABBY_TEST_SETUP_STATUS:-0}"
+SH
+    chmod 755 "$case_root/labby"
+    local digest
+    digest=$(shasum -a 256 "$case_root/labby" | awk '{print $1}')
+    run_installer "$case_home" "$fixtures" "$fake_bin" \
+        LABBY_INSTALL_LOCAL_BINARY="$case_root/labby" LABBY_INSTALL_LOCAL_SHA256="$digest" \
+        LABBY_INSTALL_VERSION=v1.0.0 LABBY_INSTALL_NO_SETUP=0 \
+        LABBY_SETUP_ROLE=client LABBY_SETUP_SERVER_URL=https://labby.example.com \
+        LABBY_SETUP_OAUTH=google LABBY_SETUP_DESKTOP=0 LABBY_SETUP_NO_BROWSER=1 \
+        LABBY_TEST_SETUP_ARGS="$case_root/args" > "$case_root/out" 2>&1
+    printf '%s\n' setup --role client --yes --server-url https://labby.example.com \
+        --oauth google --no-desktop --no-browser > "$case_root/expected"
+    cmp "$case_root/expected" "$case_root/args" || fail 'setup options were not preserved'
+    if run_installer "$case_home" "$fixtures" "$fake_bin" \
+        LABBY_INSTALL_LOCAL_BINARY="$case_root/labby" LABBY_INSTALL_LOCAL_SHA256="$digest" \
+        LABBY_INSTALL_VERSION=v1.0.0 LABBY_INSTALL_NO_SETUP=0 \
+        LABBY_SETUP_ROLE=server LABBY_TEST_SETUP_STATUS=23 \
+        LABBY_TEST_SETUP_ARGS="$case_root/args" > "$case_root/failure" 2>&1; then
+        fail 'failed first-run setup was reported as success'
+    fi
+}
+
+test_first_run_setup_forwards_options_and_propagates_failure
 test_failed_journal_retirement_preserves_backups
 test_installers_share_a_process_level_transaction_lock
 test_artifact_retention_keeps_only_current_and_rollback

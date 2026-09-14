@@ -3264,6 +3264,7 @@ mod tests {
                 LabConfig {
                     code_mode: crate::config::CodeModeConfig {
                         enabled: true,
+                        mcp_ui_enabled: false,
                         ..crate::config::CodeModeConfig::default()
                     },
                     ..LabConfig::default()
@@ -3273,8 +3274,8 @@ mod tests {
             .await;
         let state = AppState::new().with_gateway_manager(std::sync::Arc::clone(&manager));
 
-        // `mcp_ui_enabled` defaults to false (Labby-owned apps are opt-in), and
-        // a manager-backed server reads the published config rather than the
+        // Start with the inspector explicitly disabled for this transition test.
+        // A manager-backed server reads the published config rather than the
         // mirrored session atomic, so the config is what a fresh listing must
         // observe.
         let notifier = PeerNotifier::default();

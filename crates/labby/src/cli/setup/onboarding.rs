@@ -76,8 +76,18 @@ pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCod
         return Ok(ExitCode::SUCCESS);
     }
 
-    if requires_root(&plan) && !nix::unistd::Uid::effective().is_root() {
-        return elevate_and_apply(&plan);
+    if plan.install_desktop && is_unix_root() {
+        bail!(
+            "desktop installation must run as the desktop user; run labby setup without sudo so only native service installation elevates"
+        );
+    }
+
+    if requires_root(&plan) && !is_unix_root() {
+        elevate_and_apply(&plan)?;
+        if plan.install_desktop {
+            install_desktop(&plan)?;
+        }
+        return Ok(ExitCode::SUCCESS);
     }
     apply(plan, format).await
 }
@@ -89,7 +99,7 @@ pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result
     // The plan may contain provider/client secrets. Remove it as soon as the
     // privileged process has a private in-memory copy.
     drop(std::fs::remove_file(path));
-    if requires_root(&plan) && !nix::unistd::Uid::effective().is_root() {
+    if requires_root(&plan) && !is_unix_root() {
         bail!("native Linux server setup requires root privileges");
     }
     apply(plan, format).await
@@ -114,12 +124,12 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
         None => bail!("non-interactive setup requires --role server|client"),
     };
 
-    let invoking_home =
-        dirs::home_dir().context("could not determine the invoking user's home directory")?;
     let invoking_user = std::env::var("SUDO_USER")
         .ok()
         .or_else(|| std::env::var("USER").ok())
         .filter(|value| !value.trim().is_empty() && value != "root");
+    let invoking_home =
+        invoking_home_for(is_unix_root(), invoking_user.as_deref(), dirs::home_dir())?;
 
     match role {
         SetupRoleArg::Server => {
@@ -129,6 +139,33 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
             collect_client_plan(args, interactive, &theme, invoking_home, invoking_user)
         }
     }
+}
+
+#[cfg(unix)]
+fn is_unix_root() -> bool {
+    nix::unistd::Uid::effective().is_root()
+}
+
+#[cfg(not(unix))]
+const fn is_unix_root() -> bool {
+    false
+}
+
+fn invoking_home_for(
+    is_root: bool,
+    user: Option<&str>,
+    ambient_home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    #[cfg(unix)]
+    if is_root && let Some(user) = user {
+        return nix::unistd::User::from_name(user)
+            .context("resolve invoking user account")?
+            .map(|account| account.dir)
+            .context("invoking user account does not exist");
+    }
+    #[cfg(not(unix))]
+    let _ = (is_root, user);
+    ambient_home.context("could not determine the invoking user's home directory")
 }
 
 fn collect_server_plan(
@@ -344,6 +381,7 @@ fn collect_client_plan(
     } else {
         ClientAuth::OAuth
     };
+    validate_client_browser_mode(client_auth, args.no_browser)?;
     let client_bearer_token = if matches!(client_auth, ClientAuth::Bearer) {
         Some(
             match std::env::var("LABBY_MCP_HTTP_TOKEN")
@@ -379,6 +417,15 @@ fn collect_client_plan(
         invoking_home,
         invoking_user,
     })
+}
+
+fn validate_client_browser_mode(auth: ClientAuth, no_browser: bool) -> Result<()> {
+    if no_browser && matches!(auth, ClientAuth::OAuth) {
+        bail!(
+            "OAuth client setup requires browser authorization; omit --no-browser or use --oauth none with LABBY_MCP_HTTP_TOKEN for bearer authentication"
+        );
+    }
+    Ok(())
 }
 
 fn desktop_choice(args: &SetupArgs, interactive: bool, theme: &ColorfulTheme) -> Result<bool> {
@@ -522,11 +569,18 @@ fn requires_root(plan: &SetupPlan) -> bool {
         && matches!(plan.deployment, Some(SetupDeploymentArg::Native))
 }
 
+fn privileged_plan(plan: &SetupPlan) -> SetupPlan {
+    let mut privileged = plan.clone();
+    privileged.install_desktop = false;
+    privileged
+}
+
 fn elevate_and_apply(plan: &SetupPlan) -> Result<ExitCode> {
     let plan_dir = plan.invoking_home.join(".labby");
     std::fs::create_dir_all(&plan_dir)?;
     let mut plan_file = tempfile::NamedTempFile::new_in(&plan_dir)?;
-    serde_json::to_writer(&mut plan_file, plan)?;
+    // User application files and gh authentication belong to the original process.
+    serde_json::to_writer(&mut plan_file, &privileged_plan(plan))?;
     plan_file.write_all(
         b"
 ",
@@ -575,7 +629,7 @@ async fn apply_server(plan: &SetupPlan, format: OutputFormat) -> Result<serde_js
 async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     #[cfg(target_os = "linux")]
     {
-        if !nix::unistd::Uid::effective().is_root() {
+        if !is_unix_root() {
             bail!("native Linux server setup requires root privileges");
         }
         crate::dispatch::setup::provision::ensure_lab_user()
@@ -588,6 +642,28 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
         let outcome = crate::dispatch::setup::host_service::install_self_transaction(&executable)
             .await
             .map_err(|e| anyhow::anyhow!("install Labby system service: {e}"))?;
+        if plan.oauth.is_none() {
+            // Access stores enforce same-user ownership, including during health
+            // inspection. Bootstrap with the installed executable as the service
+            // account, then refresh the daemon's cached admission state.
+            run_status(
+                "runuser",
+                &[
+                    "-u",
+                    "labby",
+                    "--",
+                    "env",
+                    "LABBY_HOME=/home/labby/.labby",
+                    "/usr/local/bin/labby",
+                    "setup",
+                    "--bootstrap-static-owner",
+                ],
+                "bootstrap native static bearer owner",
+            )?;
+            crate::dispatch::setup::host_service::restart()
+                .await
+                .map_err(|e| anyhow::anyhow!("refresh native owner admission: {e}"))?;
+        }
         configure_local_client(plan, &token)?;
         if plan.install_desktop {
             install_desktop(plan)?;
@@ -608,6 +684,14 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     {
         let home_env = plan.invoking_home.join(".labby/.env");
         let token = configure_server_env(&home_env, plan)?;
+        if plan.oauth.is_none() {
+            bootstrap_static_owner_at(
+                home_env
+                    .parent()
+                    .context("server environment has no parent")?,
+            )
+            .await?;
+        }
         install_macos_service(plan)?;
         configure_local_client(plan, &token)?;
         if plan.install_desktop {
@@ -824,6 +908,38 @@ fn configure_incus_server(plan: &SetupPlan) -> Result<String> {
     )?;
     run_status(
         "incus",
+        &[
+            "exec",
+            CONTAINER,
+            "--",
+            "chmod",
+            "0700",
+            "/home/labby/.labby",
+        ],
+        "protect Incus access state directory",
+    )?;
+    if plan.oauth.is_none() {
+        run_status(
+            "incus",
+            &[
+                "exec",
+                CONTAINER,
+                "--",
+                "runuser",
+                "-u",
+                "labby",
+                "--",
+                "env",
+                "LABBY_HOME=/home/labby/.labby",
+                "/usr/local/bin/labby",
+                "setup",
+                "--bootstrap-static-owner",
+            ],
+            "bootstrap Incus static bearer owner",
+        )?;
+    }
+    run_status(
+        "incus",
         &["exec", CONTAINER, "--", "systemctl", "restart", "labby"],
         "restart Labby inside Incus",
     )?;
@@ -837,6 +953,15 @@ fn configure_incus_server(plan: &SetupPlan) -> Result<String> {
             "--fail",
             "--silent",
             "--show-error",
+            "--retry",
+            "10",
+            "--retry-connrefused",
+            "--retry-delay",
+            "1",
+            "--retry-max-time",
+            "30",
+            "--max-time",
+            "3",
             "http://127.0.0.1:8765/ready",
         ],
         "verify Labby readiness inside Incus",
@@ -897,11 +1022,7 @@ async fn apply_client(plan: &SetupPlan) -> Result<serde_json::Value> {
         .as_deref()
         .context("client setup requires a server URL")?;
     let env_path = plan.invoking_home.join(".labby/.env");
-    let mut entries = vec![EnvEntry::new("LABBY_SERVER_URL", server_url).force()];
-    if let Some(token) = plan.client_bearer_token.as_deref() {
-        entries.push(EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token).force());
-    }
-    merge_env(&env_path, entries)?;
+    configure_client_env(&env_path, server_url, plan.client_bearer_token.as_deref())?;
     if plan.install_desktop {
         install_desktop(plan)?;
     }
@@ -918,7 +1039,65 @@ async fn apply_client(plan: &SetupPlan) -> Result<serde_json::Value> {
     }))
 }
 
+fn configure_client_env(path: &Path, server_url: &str, bearer: Option<&str>) -> Result<()> {
+    // Credentials are bound to the selected server and auth mode. An old token
+    // must never override OAuth or be forwarded to a newly selected origin.
+    merge_env(
+        path,
+        vec![
+            EnvEntry::new("LABBY_SERVER_URL", server_url).force(),
+            EnvEntry::new("LABBY_MCP_HTTP_TOKEN", bearer.unwrap_or("")).force(),
+        ],
+    )
+}
+
+pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
+    use crate::access::{AccessRuntime, AccessRuntimeStatus, BootstrapOwnerInput};
+
+    let paths = crate::installation::InstallationPaths::from_root(root)?;
+    let env = paths.dotenv();
+    if read_env(&env, "LABBY_AUTH_MODE").as_deref() != Some("bearer")
+        || read_env(&env, "LABBY_MCP_HTTP_TOKEN").is_none_or(|token| token.trim().is_empty())
+    {
+        bail!(
+            "static owner setup requires a configured bearer token and bearer authentication mode"
+        );
+    }
+    let runtime = AccessRuntime::initialize(paths.access_db()).await;
+    match runtime.status().await {
+        AccessRuntimeStatus::Ready => Ok(()),
+        AccessRuntimeStatus::Blocked(reason) => bail!(
+            "owner setup is blocked ({reason:?}); repair the existing access store before retrying setup"
+        ),
+        AccessRuntimeStatus::SetupRequired(_) => {
+            let identity = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .context("construct static bearer owner identity")?;
+            runtime
+                .bootstrap_owner(
+                    BootstrapOwnerInput::new(identity, "Local", "Default")
+                        .context("construct local owner bootstrap")?,
+                )
+                .await
+                .context("bootstrap durable static bearer owner")?;
+            Ok(())
+        }
+    }
+}
+
 fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<String> {
+    // The access store requires an owner-only state directory. Environment
+    // merges protect individual files but create new parents with the umask.
+    let root = path.parent().context("server environment has no parent")?;
+    let paths = crate::installation::InstallationPaths::from_root(root)?;
+    std::fs::create_dir_all(paths.root())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(paths.root(), std::fs::Permissions::from_mode(0o700))?;
+    }
     if !path.exists() {
         crate::dispatch::setup::bootstrap_at(path)
             .map_err(|e| anyhow::anyhow!("bootstrap server credentials: {e}"))?;
@@ -987,7 +1166,7 @@ fn configure_local_client(plan: &SetupPlan, token: &str) -> Result<()> {
             EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token).force(),
         ],
     )?;
-    if nix::unistd::Uid::effective().is_root()
+    if is_unix_root()
         && let Some(user) = plan.invoking_user.as_deref()
     {
         chown_tree(&plan.invoking_home.join(".labby"), user)?;
@@ -1043,8 +1222,13 @@ fn install_macos_service(_plan: &SetupPlan) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn converge_incus_publish(name: &str, host: &str, port: u16) -> Result<()> {
+    converge_incus_publish_with(Path::new("incus"), name, host, port)
+}
+
+#[cfg(target_os = "linux")]
+fn converge_incus_publish_with(program: &Path, name: &str, host: &str, port: u16) -> Result<()> {
     let listen = format!("tcp:{host}:{port}");
-    let exists = Command::new("incus")
+    let exists = Command::new(program)
         .args(["config", "device", "show", name])
         .output()
         .map(|output| {
@@ -1055,7 +1239,7 @@ fn converge_incus_publish(name: &str, host: &str, port: u16) -> Result<()> {
         })
         .unwrap_or(false);
     let status = if exists {
-        Command::new("incus")
+        Command::new(program)
             .args([
                 "config",
                 "device",
@@ -1067,7 +1251,7 @@ fn converge_incus_publish(name: &str, host: &str, port: u16) -> Result<()> {
             ])
             .status()?
     } else {
-        Command::new("incus")
+        Command::new(program)
             .args([
                 "config",
                 "device",
@@ -1075,8 +1259,7 @@ fn converge_incus_publish(name: &str, host: &str, port: u16) -> Result<()> {
                 name,
                 "labby-http",
                 "proxy",
-                "listen",
-                &listen,
+                &format!("listen={listen}"),
                 "connect=tcp:127.0.0.1:8765",
             ])
             .status()?
@@ -1084,7 +1267,7 @@ fn converge_incus_publish(name: &str, host: &str, port: u16) -> Result<()> {
     if !status.success() {
         bail!("failed to publish Incus Labby endpoint on {host}:{port}");
     }
-    let autostart = Command::new("incus")
+    let autostart = Command::new(program)
         .args(["config", "set", name, "boot.autostart", "true"])
         .status()?;
     if !autostart.success() {
@@ -1180,6 +1363,218 @@ fn print_banner() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server_plan(home: PathBuf) -> SetupPlan {
+        SetupPlan {
+            role: SetupRoleArg::Server,
+            deployment: Some(SetupDeploymentArg::Native),
+            host: DEFAULT_HOST.into(),
+            port: DEFAULT_PORT,
+            server_url: None,
+            public_url: None,
+            oauth: None,
+            client_auth: None,
+            client_bearer_token: None,
+            install_desktop: true,
+            no_browser: true,
+            invoking_home: home,
+            invoking_user: Some("operator".into()),
+        }
+    }
+
+    #[test]
+    fn elevated_plan_defers_desktop_installation_to_invoking_process() {
+        let plan = server_plan(PathBuf::from("/home/operator"));
+        let elevated = privileged_plan(&plan);
+        assert!(!elevated.install_desktop);
+        assert!(plan.install_desktop);
+        assert_eq!(elevated.invoking_home, plan.invoking_home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn externally_elevated_setup_uses_account_home_instead_of_root_home() {
+        let account = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            invoking_home_for(true, Some(&account.name), Some(PathBuf::from("/root"))).unwrap(),
+            account.dir
+        );
+        assert_eq!(
+            invoking_home_for(
+                false,
+                Some(&account.name),
+                Some(PathBuf::from("/custom-home"))
+            )
+            .unwrap(),
+            PathBuf::from("/custom-home")
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_client_setup_uses_the_current_user_home() {
+        let home = PathBuf::from(r"C:\Users\operator");
+        assert!(!is_unix_root());
+        assert_eq!(
+            invoking_home_for(false, None, Some(home.clone())).unwrap(),
+            home
+        );
+        assert!(invoking_home_for(false, None, None).is_err());
+    }
+
+    #[test]
+    fn no_browser_refuses_oauth_before_client_configuration() {
+        assert!(validate_client_browser_mode(ClientAuth::OAuth, true).is_err());
+        assert!(validate_client_browser_mode(ClientAuth::OAuth, false).is_ok());
+        assert!(validate_client_browser_mode(ClientAuth::Bearer, true).is_ok());
+    }
+
+    #[test]
+    fn switching_to_oauth_clears_bearer_from_previous_origin() {
+        let directory = tempfile::tempdir().unwrap();
+        let env = directory.path().join(".env");
+        configure_client_env(&env, "https://a.example", Some("server-a-secret")).unwrap();
+        configure_client_env(&env, "https://b.example", None).unwrap();
+        assert_eq!(
+            read_env(&env, "LABBY_SERVER_URL").as_deref(),
+            Some("https://b.example")
+        );
+        assert_eq!(read_env(&env, "LABBY_MCP_HTTP_TOKEN").as_deref(), Some(""));
+        configure_client_env(&env, "https://c.example", Some("server-c-secret")).unwrap();
+        assert_eq!(
+            read_env(&env, "LABBY_MCP_HTTP_TOKEN").as_deref(),
+            Some("server-c-secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_nested_server_root_supports_durable_owner_bootstrap() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("new-user/.labby");
+        assert!(!root.exists());
+        configure_server_env(&root.join(".env"), &server_plan(root.clone())).unwrap();
+        bootstrap_static_owner_at(&root).await.unwrap();
+        let runtime = crate::access::AccessRuntime::initialize(root.join("access.db")).await;
+        assert_eq!(
+            runtime.status().await,
+            crate::access::AccessRuntimeStatus::Ready
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn static_owner_setup_is_durable_and_preserves_existing_owner() {
+        use crate::access::{AccessRuntime, AccessRuntimeStatus, BootstrapOwnerInput};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join(".labby");
+        assert!(!root.exists());
+        configure_server_env(&root.join(".env"), &server_plan(root.clone())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        bootstrap_static_owner_at(&root).await.unwrap();
+        let reopened = AccessRuntime::initialize(root.join("access.db")).await;
+        assert_eq!(reopened.status().await, AccessRuntimeStatus::Ready);
+        drop(reopened);
+        bootstrap_static_owner_at(&root).await.unwrap();
+        let connection = rusqlite::Connection::open(root.join("access.db")).unwrap();
+        let credential: String = connection
+            .query_row(
+                "SELECT credential_id FROM principal_links WHERE link_id='bootstrap-owner-link'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(credential, "static-bearer:primary");
+        drop(connection);
+
+        let other_directory = tempfile::tempdir().unwrap();
+        let other = other_directory.path().canonicalize().unwrap();
+        configure_server_env(&other.join(".env"), &server_plan(other.clone())).unwrap();
+        let runtime = AccessRuntime::initialize(other.join("access.db")).await;
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "existing-owner",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(BootstrapOwnerInput::new(identity, "Existing", "Project").unwrap())
+            .await
+            .unwrap();
+        drop(runtime);
+        bootstrap_static_owner_at(&other).await.unwrap();
+        let connection = rusqlite::Connection::open(other.join("access.db")).unwrap();
+        let credential: String = connection
+            .query_row(
+                "SELECT credential_id FROM principal_links WHERE link_id='bootstrap-owner-link'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(credential, "existing-owner");
+    }
+
+    #[tokio::test]
+    async fn static_owner_setup_refuses_corrupt_store_and_oauth_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        configure_server_env(&root.join(".env"), &server_plan(root.clone())).unwrap();
+        std::fs::write(root.join("access.db"), b"not a database").unwrap();
+        assert!(bootstrap_static_owner_at(&root).await.is_err());
+        assert_eq!(
+            std::fs::read(root.join("access.db")).unwrap(),
+            b"not a database"
+        );
+        merge_env(
+            &root.join(".env"),
+            vec![EnvEntry::new("LABBY_AUTH_MODE", "oauth").force()],
+        )
+        .unwrap();
+        assert!(bootstrap_static_owner_at(&root).await.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn incus_publish_accepts_fresh_device_key_value_arguments() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("incus");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/sh
+set -eu
+case "$1 $2 $3" in
+  'config device show') exit 0 ;;
+  'config device add')
+    [ "$4" = labby ] && [ "$5" = labby-http ] && [ "$6" = proxy ] &&
+    [ "$7" = listen=tcp:127.0.0.1:9123 ] && [ "$8" = connect=tcp:127.0.0.1:8765 ] ;;
+  'config set labby') [ "$4" = boot.autostart ] && [ "$5" = true ] ;;
+  *) exit 99 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        converge_incus_publish_with(&executable, "labby", "127.0.0.1", 9123).unwrap();
+    }
 
     #[test]
     fn advertised_url_never_uses_unspecified_address() {

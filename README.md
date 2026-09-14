@@ -101,8 +101,6 @@ gh attestation verify labby-install.sh \
   --deny-self-hosted-runners
 shasum -a 256 -c labby-install.sh.sha256
 LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
-labby setup
-labby serve --host 127.0.0.1 --port 8765
 ```
 
 MCP clients that prefer npm launchers can run Labby through the Node wrapper:
@@ -134,10 +132,17 @@ labby serve --host 127.0.0.1 --port 8765
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
 platform asset, require `gh`, verify the archive's attestation against the
 Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
-user PATH. They do **not** perform
-operator provisioning or environment setup. The scripts only install the binary
-(from a release or fallback source build); all first-run provisioning is handled
-inside `labby` via `labby serve` bootstrap and `labby setup`.
+user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
+asks whether this machine should run a server or connect to an existing one.
+Server setup configures authentication and a managed native service, or an Incus
+container on supported Linux hosts. Client setup saves the explicit gateway URL
+and configures browser sign-in or a bearer token. Desktop installation is optional.
+The PowerShell installer installs the binary; run setup separately as shown above.
+
+For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
+corresponding `LABBY_SETUP_*` options. For a binary-only install, set
+`LABBY_INSTALL_NO_SETUP=1`. Manual and automatic `labby update` operations always
+skip first-run setup. See the [setup guide](./docs/services/SETUP.md) for examples.
 
 Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
 `LABBY_INSTALL_REPO`. Source fallback is off by default. Opt in with

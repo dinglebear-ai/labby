@@ -79,7 +79,7 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   is the always-available root-gateway control tool for the manager UI,
   inspector, Gateway Status, Server Logs, Add Server, and Settings surfaces; it
   supports per-app and `all` `status|enable|disable` operations. Its own manager
-  UI is opt-in and may be disabled, but the text-only control tool remains
+  UI is enabled by default and may be disabled, but the text-only control tool remains
   available. App mutations require `lab:admin`, are gateway-scoped, and schedule
   coalesced
   `tools/list_changed` plus `resources/list_changed` notifications after the
@@ -221,8 +221,8 @@ Resources are read-only. Do not use them for mutations.
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
   resources, and direct reads fail as unknown. All Labby-owned app UIs are
-  opt-in; a disabled surface must not remain reachable through a cached URI.
-- `ui://lab/mcp-apps/manager` — the opt-in UI for the always-available `mcp_app`
+  enabled by default; a disabled surface must not remain reachable through a cached URI.
+- `ui://lab/mcp-apps/manager` — the default-enabled UI for the always-available `mcp_app`
   control tool. Disabling this manager UI strips its tool metadata and resource
   but does not remove the text-only control tool needed to restore app surfaces.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the

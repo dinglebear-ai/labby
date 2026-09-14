@@ -5704,6 +5704,11 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
     manager
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
+                // Exercise the direct gateway tool, independent of Code Mode defaults.
+                code_mode: crate::config::CodeModeConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
                 upstream: vec![{
                     let mut upstream = fixture_upstream_config("gateway-alpha");
                     upstream.enabled = false;
@@ -5807,6 +5812,11 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
     manager
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
+                // Exercise the direct gateway tool, independent of Code Mode defaults.
+                code_mode: crate::config::CodeModeConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
                 upstream: vec![{
                     let mut upstream = fixture_upstream_config("gateway-alpha");
                     upstream.enabled = false;
@@ -6171,9 +6181,14 @@ async fn raw_mode_builtin_descriptors_match_across_builders() {
 #[cfg(feature = "skills")]
 #[tokio::test]
 async fn authenticated_http_gets_scoped_artifact_management_while_local_peers_do_not() {
+    let manager = restricted_skills_gateway_manager(&["artifacts.list"]).await;
+    // Compare direct artifact descriptors across peer authorities.
+    let mut config = manager.current_config().await;
+    config.code_mode.enabled = false;
+    manager.seed_config_unchecked_for_tests(config).await;
     let mut server = test_server(
         crate::registry::build_docs_registry(),
-        Some(restricted_skills_gateway_manager(&["artifacts.list"]).await),
+        Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
@@ -6710,6 +6725,10 @@ async fn personal_oauth_authorize_enforces_mcp_execute_scope() {
         .with_upstream_oauth_managers(managers),
     );
     manager.replace_config_for_tests(vec![config]).await;
+    // This scenario exercises gateway.oauth_authorize on the direct gateway tool.
+    let mut gateway_config = manager.current_config().await;
+    gateway_config.code_mode.enabled = false;
+    manager.seed_config_unchecked_for_tests(gateway_config).await;
     let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(manager),

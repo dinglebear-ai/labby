@@ -322,10 +322,24 @@ async fn failed_reload_rolls_back_disk_live_state_and_restart_truth() {
 async fn failed_code_mode_reconcile_preserves_process_flag() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
-        .expect("seed disk");
+    crate::gateway::config::write_gateway_config(
+        &path,
+        &GatewayConfig {
+            // The mutation must change the runtime regime to exercise reconciliation.
+            code_mode: CodeModeConfig {
+                enabled: false,
+                ..CodeModeConfig::default()
+            },
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("seed disk");
     let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
-    let manager = GatewayManager::with_store(path, GatewayRuntimeHandle::default(), store.clone());
+    let manager =
+        GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store.clone());
+    manager
+        .seed_config_unchecked_for_tests(load_gateway_config(&path).expect("initial config"))
+        .await;
     store.fail_next_reload();
     manager
         .set_code_mode_config(
@@ -602,14 +616,26 @@ async fn reload_rollback_covers_batch_update_remove_and_code_mode_mutations() {
     // share the same rollback contract.
     let mode_dir = tempfile::tempdir().expect("mode tempdir");
     let mode_path = mode_dir.path().join("config.toml");
-    crate::gateway::config::write_gateway_config(&mode_path, &GatewayConfig::default())
-        .expect("seed mode disk");
+    crate::gateway::config::write_gateway_config(
+        &mode_path,
+        &GatewayConfig {
+            // The mutation must change the runtime regime to exercise reconciliation.
+            code_mode: CodeModeConfig {
+                enabled: false,
+                ..CodeModeConfig::default()
+            },
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("seed mode disk");
     let mode_store = Arc::new(FaultAfterPersistStore::new(mode_path.clone()));
     let mode = GatewayManager::with_store(
         mode_path.clone(),
         GatewayRuntimeHandle::default(),
         mode_store.clone(),
     );
+    mode.seed_config_unchecked_for_tests(load_gateway_config(&mode_path).expect("initial mode"))
+        .await;
     mode_store.fail_next_reload();
     mode.set_code_mode_config(
         CodeModeConfig {
@@ -632,7 +658,14 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
     let runtime = GatewayRuntimeHandle::default();
     let manager = GatewayManager::new(path, runtime.clone());
     manager
-        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            // The mutation must change the runtime regime to exercise reconciliation.
+            code_mode: CodeModeConfig {
+                enabled: false,
+                ..CodeModeConfig::default()
+            },
+            ..GatewayConfig::default()
+        })
         .await;
     manager
         .set_code_mode_config(
@@ -805,7 +838,14 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
     manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
     manager
-        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            // Change only app visibility; keep the runtime regime unchanged.
+            code_mode: CodeModeConfig {
+                mcp_ui_enabled: false,
+                ..CodeModeConfig::default()
+            },
+            ..GatewayConfig::default()
+        })
         .await;
     assert!(runtime.current_pool().await.is_none());
 
@@ -934,7 +974,14 @@ async fn code_mode_runtime_change_notifies_from_the_previous_regime() {
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
     manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
     manager
-        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            // The mutation must change the runtime regime to exercise reconciliation.
+            code_mode: CodeModeConfig {
+                enabled: false,
+                ..CodeModeConfig::default()
+            },
+            ..GatewayConfig::default()
+        })
         .await;
 
     let updated = manager

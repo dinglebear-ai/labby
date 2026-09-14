@@ -678,6 +678,22 @@ async fn authenticate(
             session::read_cookie(request.headers(), session_state.cookie_name())
         && let Some(session) = session_state.find(&session_id)
     {
+        match crate::static_session::has_other_browser_session(
+            request.headers(),
+            layer.project_session_state.as_deref(),
+            layer.auth_state.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                return Err(auth_error_response(
+                    "static browser session cannot be combined with another browser session",
+                    layer,
+                ));
+            }
+            Err(_) => return Err(project_session_unavailable_response(layer)),
+            Ok(false) => {}
+        }
         let static_token_blocked = layer.auth_state.as_ref().is_some_and(|state| {
             state.config.disable_static_token_with_oauth
                 && matches!(state.config.mode, crate::config::AuthMode::OAuth)
@@ -1361,6 +1377,72 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let grant = self.grant.clone();
             Box::pin(async move { Ok(grant) })
+        }
+    }
+
+    #[tokio::test]
+    async fn static_browser_sessions_enforce_csrf_and_reject_mixed_authority() {
+        let oauth = Arc::new(test_auth_state().await);
+        let project = crate::types::BrowserSessionRow {
+            session_id: "other-session".into(),
+            subject: "other-user".into(),
+            email: None,
+            csrf_token: "other-csrf".into(),
+            created_at: crate::util::now_unix(),
+            expires_at: crate::util::now_unix() + 3600,
+            project_binding: Some(project_binding()),
+        };
+        oauth.store.upsert_browser_session(project).await.unwrap();
+        let sessions = Arc::new(crate::static_session::StaticBrowserSessionState::new(false));
+        let row = sessions.create().unwrap();
+        let layer = AuthLayer::new()
+            .with_static_token(Some(Arc::from("secret")))
+            .with_static_token_scopes(vec!["lab:admin".into()])
+            .with_allow_session_cookie(true)
+            .with_static_browser_session_state(Some(sessions.clone()))
+            .with_project_session_state(Some(Arc::new(
+                ProjectSessionState::from_store(oauth.store.clone(), "__Host-project-session")
+                    .unwrap(),
+            )));
+        let app = Router::new()
+            .route("/probe", get(|| async { "ok" }).post(|| async { "ok" }))
+            .route_layer(layer);
+        let cookie = format!("{}={}", sessions.cookie_name(), row.session_id);
+        for (method, csrf, mixed, expected) in [
+            (Method::GET, None, false, StatusCode::OK),
+            (Method::POST, None, false, StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                Method::POST,
+                Some(row.csrf_token.as_str()),
+                false,
+                StatusCode::OK,
+            ),
+            (Method::GET, None, true, StatusCode::UNAUTHORIZED),
+            (
+                Method::POST,
+                Some(row.csrf_token.as_str()),
+                true,
+                StatusCode::UNAUTHORIZED,
+            ),
+        ] {
+            let cookies = if mixed {
+                format!("{cookie}; __Host-project-session=other-session")
+            } else {
+                cookie.clone()
+            };
+            let mut request = HttpRequest::builder()
+                .uri("/probe")
+                .method(method)
+                .header(header::COOKIE, cookies);
+            if let Some(csrf) = csrf {
+                request = request.header(session::BROWSER_CSRF_HEADER_NAME, csrf);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
         }
     }
 
