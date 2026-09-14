@@ -11,7 +11,7 @@ INIT = PLUGIN / "scripts/labby-incus-init.sh"
 
 
 class WorkerProfileTests(unittest.TestCase):
-    def probe(self, enabled, residual=False, query_failed=False, loaded=False, live=False, resources=False):
+    def probe(self, enabled, residual=False, query_failed=False, loaded=False, live=False, resources=False, action=None):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
             (prefix / "bin").mkdir()
@@ -58,7 +58,7 @@ incus_exec() {
 '''
             result = subprocess.run(
                 ["bash", "-c", script, "test", str(INIT), enabled,
-                 "ensure_service_resource_limits" if resources else "ensure_service_worker_profile"],
+                 action or ("ensure_service_resource_limits" if resources else "ensure_service_worker_profile")],
                 env={**os.environ, "EMHTTP": str(PLUGIN),
                      "INCUS_PREFIX": str(prefix), "LABBY_SERVICE_DROPIN_DIR": str(prefix / "dropin"), "INCUS_CONFIG": str(prefix / "absent"),
                      "CFG": str(prefix / "labby.cfg"), "LABBY_INCUS_INIT_LIBRARY": "1",
@@ -72,6 +72,15 @@ incus_exec() {
         result = self.probe("false", resources=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("InaccessiblePaths=/run/user", result.dropin)
+
+    def test_preflight_allows_live_socket_until_hardened_restart(self):
+        result = self.probe("false", live=True, action="ensure_service_worker_profile_config")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_runtime_guard_rejects_live_socket(self):
+        result = self.probe("false", live=True, action="ensure_service_worker_runtime")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restart", result.stdout + result.stderr)
 
     def test_enabling_profile_is_rejected_without_installing_it(self):
         result = self.probe("true")

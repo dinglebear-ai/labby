@@ -660,8 +660,8 @@ ensure_service_resource_limits() {
     fi
 }
 
-ensure_service_worker_profile() {
-    local properties main_pid
+ensure_service_worker_profile_config() {
+    local properties
     case "$LABBY_SERVICE_WORKERS_ENABLED" in
         false) ;;
         true)
@@ -679,6 +679,12 @@ ensure_service_worker_profile() {
     case "$properties" in
         */run/user/*) fail "loaded gateway policy still exposes the user manager; reload systemd and restart the gateway after restoring the original upstream commands" ;;
     esac
+}
+
+ensure_service_worker_runtime() {
+    local properties main_pid
+    properties=$(incus_exec 10 systemctl show labby.service --property=MainPID --property=BindPaths) \
+        || fail "cannot inspect running gateway worker policy; retry after restoring guest access"
     main_pid=$(printf '%s\n' "$properties" | sed -n 's/^MainPID=//p')
     case "$main_pid" in
         0) return 0 ;;
@@ -693,7 +699,12 @@ ensure_service_worker_profile() {
         done
         [ -d "/proc/$1/root/run" ]
     ' sh "$main_pid" \
-        || fail "cannot confirm the running gateway has no user-manager socket; restart the gateway after restoring its original upstream commands and safe unit policy, then retry"
+        || fail "cannot confirm the running gateway has no user-manager socket; restart the gateway after restoring the original upstream commands and safe unit policy, then retry"
+}
+
+ensure_service_worker_profile() {
+    ensure_service_worker_profile_config
+    ensure_service_worker_runtime
 }
 
 tailscale_has_ip() {
@@ -849,7 +860,9 @@ write_sentinel() {
 converge_provisioning() {
     local labby_version
 
-    ensure_service_worker_profile
+    # Reject legacy explicit worker socket exposure before changing policy,
+    # but verify the live namespace only after the hardened drop-in is active.
+    ensure_service_worker_profile_config
     ensure_service_resource_limits
     labby_version="$(container_labby_version)"
     [ -n "$labby_version" ] || fail "could not determine baked labby binary version inside ${INCUS_CONTAINER_NAME}"
@@ -858,8 +871,10 @@ converge_provisioning() {
         if [ "$LABBY_SERVICE_RESTART_REQUIRED" = true ]; then
             incus_exec 120 systemctl restart labby.service \
                 || fail "failed to apply changed service policy"
+            LABBY_SERVICE_RESTART_REQUIRED=false
             wait_for_ready
         fi
+        ensure_service_worker_runtime
         ensure_service_active
         log "${INCUS_CONTAINER_NAME} is already running, ready, and provision sentinel matches; skipping labby setup --provision --yes"
         return 0
@@ -874,19 +889,26 @@ converge_provisioning() {
         log "provisioning sentinel matches image=${INCUS_IMAGE_VERSION}, sha256=${INCUS_IMAGE_SHA256}, labby=${labby_version}, schema=${PROVISION_SCHEMA_VERSION}; restarting service without reprovisioning"
         incus_exec 120 systemctl restart labby.service \
             || fail "labby.service restart failed inside ${INCUS_CONTAINER_NAME}"
+        LABBY_SERVICE_RESTART_REQUIRED=false
     else
         log "running labby setup --provision --yes inside ${INCUS_CONTAINER_NAME}"
         incus_exec 900 labby setup --provision --yes \
             || fail "labby setup --provision --yes failed inside ${INCUS_CONTAINER_NAME}"
-        ensure_service_worker_profile
+        ensure_service_worker_profile_config
         ensure_service_resource_limits
         incus_exec 120 systemctl enable --now labby.service \
             || fail "failed to enable/start labby.service inside ${INCUS_CONTAINER_NAME}"
+        if [ "$LABBY_SERVICE_RESTART_REQUIRED" = true ]; then
+            incus_exec 120 systemctl restart labby.service \
+                || fail "failed to apply changed service policy after provisioning"
+            LABBY_SERVICE_RESTART_REQUIRED=false
+        fi
         write_sentinel "$labby_version"
     fi
 
     ensure_service_active
     wait_for_ready
+    ensure_service_worker_runtime
 }
 
 main() {
