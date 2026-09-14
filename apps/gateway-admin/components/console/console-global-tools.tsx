@@ -110,12 +110,12 @@ export function PhoenixAvailability() {
   const requestGenerationRef = useRef(0)
 
   useEffect(() => {
-    requestGenerationRef.current += 1
     setPhoenixDocked?.(open && dock === 'right')
     return () => setPhoenixDocked?.(false)
   }, [dock, open, setPhoenixDocked])
 
   useEffect(() => {
+    requestGenerationRef.current += 1
     setStatus(undefined)
     setSessionId(undefined)
     setMessages([])
@@ -129,6 +129,8 @@ export function PhoenixAvailability() {
     setSending(false)
     setInterrupting(false)
     setCopiedIndex(undefined)
+    // Identity changes and unmount revoke pending work; layout changes do not.
+    return () => { requestGenerationRef.current += 1 }
   }, [identity])
 
   useEffect(() => {

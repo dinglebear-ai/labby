@@ -29,6 +29,64 @@ const APP_SERVER_PROTOCOL_SCHEMA: &str = "v2";
 const LOCAL_MCP_URL: &str = "http://127.0.0.1:8765/mcp";
 const LOCAL_MCP_TOKEN_ENV: &str = "LABBY_MCP_HTTP_TOKEN";
 
+/// Resolve the local MCP destination from the HTTP listener's address.
+pub(crate) fn listener_mcp_url(mut address: std::net::SocketAddr) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    match address.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => address.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        IpAddr::V6(ip) if ip.is_unspecified() => address.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        _ => {}
+    }
+    format!("http://{address}/mcp")
+}
+
+#[cfg(test)]
+mod listener_url_tests {
+    use super::listener_mcp_url;
+
+    #[test]
+    fn preserves_specific_addresses_and_normalizes_wildcards() {
+        for (host, expected) in [
+            ("127.0.0.1", "127.0.0.1"),
+            ("192.0.2.42", "192.0.2.42"),
+            ("0.0.0.0", "127.0.0.1"),
+            ("[::1]", "[::1]"),
+            ("[2001:db8::42]", "[2001:db8::42]"),
+            ("[::]", "[::1]"),
+        ] {
+            assert_eq!(
+                listener_mcp_url(format!("{host}:9123").parse().unwrap()),
+                format!("http://{expected}:9123/mcp")
+            );
+        }
+    }
+
+    #[test]
+    fn ephemeral_destination_connects_to_the_actual_listener() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        for host in ["127.0.0.1", "0.0.0.0", "::1", "::"] {
+            let listener = TcpListener::bind((host, 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let port = address.port();
+            assert_ne!(port, 0, "the OS must assign the requested ephemeral port");
+            let url = listener_mcp_url(address);
+            let destination = url
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/mcp")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let stream = TcpStream::connect_timeout(&destination, Duration::from_secs(1))
+                .unwrap_or_else(|error| panic!("{url} cannot reach listener {host}: {error}"));
+            assert_eq!(stream.peer_addr().unwrap().port(), port);
+        }
+    }
+}
+
 const fn param(name: &'static str, required: bool) -> ParamSpec {
     ParamSpec {
         name,
@@ -167,6 +225,12 @@ impl PhoenixRuntime {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             capacity: Arc::new(Semaphore::new(MAX_SESSIONS)),
         }
+    }
+
+    /// Host of the server-owned endpoint used by the local client.
+    pub(crate) fn local_mcp_host(&self) -> Option<String> {
+        let url = url::Url::parse(&self.local_mcp_url).ok()?;
+        Some(url.host_str()?.to_owned())
     }
 
     pub(crate) async fn dispatch(

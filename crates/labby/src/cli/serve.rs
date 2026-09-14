@@ -709,9 +709,6 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_file_stash_runtime(Arc::clone(&file_stash_runtime))
         .with_http_bind_host(host.clone());
-    if matches!(transport, Transport::Http) {
-        state = state.with_phoenix_mcp_url(format!("http://127.0.0.1:{port}/mcp"));
-    }
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
     {
@@ -1244,6 +1241,15 @@ async fn run_http(
     };
     // ── end single-master lock ────────────────────────────────────────────────
 
+    // Bind once before the router captures AppState. Port zero and hostname
+    // resolution must use the socket the server will actually serve.
+    let (state, tcp_listener) = if matches!(transport, Transport::Http) {
+        let (listener, destination) = bind_http_listener(host, port).await?;
+        (state.with_phoenix_mcp_url(destination), Some(listener))
+    } else {
+        (state, None)
+    };
+
     let web_assets_enabled = state.web_assets_enabled();
     let bearer_token_configured = bearer_token.is_some();
     let resource_registry = auth_state
@@ -1298,7 +1304,12 @@ async fn run_http(
     };
     let hosted_listener = async move {
         match transport {
-            Transport::Http => serve_tcp_listener(host, port, router, listener_status).await,
+            Transport::Http => {
+                let listener = tcp_listener.ok_or_else(|| {
+                    anyhow::anyhow!("HTTP transport resolved without a bound listener")
+                })?;
+                serve_tcp_listener(listener, router, listener_status).await
+            }
             Transport::UnixSocket => {
                 let unix_config = unix_listener_config.ok_or_else(|| {
                     anyhow::anyhow!("unix_socket transport resolved without listener configuration")
@@ -1542,19 +1553,7 @@ mod update_shutdown_tests {
     }
 }
 
-async fn serve_tcp_listener(
-    host: &str,
-    port: u16,
-    router: axum::Router,
-    status: HostedListenerStatus,
-) -> Result<()> {
-    let HostedListenerStatus {
-        web_assets_enabled,
-        bearer_token_configured,
-        mount_http_mcp,
-        ..
-    } = status;
-    // Parse and validate the address at bind time, not at CLI parse time.
+async fn bind_http_listener(host: &str, port: u16) -> Result<(tokio::net::TcpListener, String)> {
     let addr = bind_addr(host, port);
     tracing::info!(
         subsystem = "api_server",
@@ -1564,6 +1563,48 @@ async fn serve_tcp_listener(
         "binding HTTP listener"
     );
     let listener = bind_or_reclaim(&addr, port).await?;
+    let destination = crate::dispatch::phoenix::listener_mcp_url(listener.local_addr()?);
+    Ok((listener, destination))
+}
+
+#[cfg(test)]
+mod phoenix_listener_binding_tests {
+    #[tokio::test]
+    async fn ephemeral_binding_supplies_a_reachable_phoenix_endpoint() {
+        for host in ["127.0.0.1", "::1"] {
+            let (listener, url) = super::bind_http_listener(host, 0).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            assert_ne!(address.port(), 0);
+            assert_eq!(url, format!("http://{address}/mcp"));
+            let destination = url
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/mcp")
+                .unwrap();
+            let stream = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::net::TcpStream::connect(destination),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), address);
+        }
+    }
+}
+
+async fn serve_tcp_listener(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    status: HostedListenerStatus,
+) -> Result<()> {
+    let HostedListenerStatus {
+        web_assets_enabled,
+        bearer_token_configured,
+        mount_http_mcp,
+        ..
+    } = status;
+    let addr = listener.local_addr()?.to_string();
     notify_systemd_ready("http");
     tracing::info!(
         subsystem = "api_server",
@@ -2304,12 +2345,15 @@ fn build_mcp_service(
     mcp_config: &crate::config::McpPreferences,
     notifier: PeerNotifier,
 ) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
+    // Admit only this bound endpoint for the native Phoenix client. Keep the
+    // additional host scoped to root MCP, not protected upstream routes.
+    let local_host: Vec<_> = state.phoenix_runtime.local_mcp_host().into_iter().collect();
     build_mcp_service_with_scope(
         state,
         mcp_config,
         notifier,
         crate::mcp::route_scope::McpRouteScope::Root,
-        &[],
+        &local_host,
     )
 }
 
@@ -2976,6 +3020,41 @@ mod tests {
     fn allowed_hosts_include_configured_hosts() {
         let hosts = allowed_hosts(&["lab.internal".to_string()], None);
         assert!(hosts.contains(&"lab.internal".to_string()));
+    }
+
+    #[tokio::test]
+    async fn phoenix_listener_host_is_admitted_without_other_hosts() {
+        for (url, accepted) in [
+            ("http://192.0.2.42:9123/mcp", "192.0.2.42:9123"),
+            ("http://192.0.2.42:80/mcp", "192.0.2.42"),
+            ("http://192.0.2.42:80/mcp", "192.0.2.42:80"),
+            ("http://[2001:db8::42]:9123/mcp", "[2001:db8::42]:9123"),
+        ] {
+            let state = AppState::new().with_phoenix_mcp_url(url);
+            let service = super::build_mcp_service(
+                &state,
+                &McpPreferences::default(),
+                PeerNotifier::default(),
+            )
+            .unwrap();
+            for (host, expected) in [
+                (accepted, StatusCode::OK),
+                ("192.0.2.43:9123", StatusCode::FORBIDDEN),
+                ("unrelated.example:9123", StatusCode::FORBIDDEN),
+            ] {
+                let response = service.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", host)
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"phoenix-host-test","version":"1"}}}"#))
+                    .unwrap()
+            ).await.unwrap();
+                assert_eq!(response.status(), expected, "Host {host}");
+            }
+        }
     }
 
     #[tokio::test]

@@ -220,3 +220,78 @@ test('Phoenix ignores a completed old turn after starting a new thread', async (
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   }
 })
+
+for (const transition of ['dock', 'close', 'identity', 'unmount'] as const) {
+  test(`Phoenix preserves request ownership across ${transition} transitions`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const actions: string[] = []
+    let finishRequest: ((response: Response) => void) | undefined
+    const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      actions.push(action)
+      if (action === 'phoenix.status') return response({ enabled: true, available: true })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return response({ sessions: [] })
+      if (action === (transition === 'unmount' ? 'phoenix.session.start' : 'phoenix.turn.send')) {
+        return new Promise<Response>((resolve) => { finishRequest = resolve })
+      }
+      return response({ session_id: 'old', status: 'ready', messages: [] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    let unmounted = false
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+      const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]'); assert.ok(input)
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set?.call(input, 'old question')
+        input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'old question' }) as unknown as Event)
+      })
+      await act(async () => { input.form!.requestSubmit(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+      assert.ok(finishRequest, 'request must be pending before the transition')
+      if (transition === 'dock') {
+        await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Dock Phoenix right"]')!.click())
+      } else if (transition === 'close') {
+        await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Close Phoenix panel"]')!.click())
+        assert.equal(document.querySelector('[aria-label="Phoenix session"]'), null)
+      } else if (transition === 'identity') {
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+        await view.rerender(<PhoenixAvailability />)
+        __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'new-user' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-new' })
+        await view.rerender(<PhoenixAvailability />)
+      } else {
+        await view.unmount()
+        unmounted = true
+      }
+      await act(async () => {
+        finishRequest?.(response({ session_id: 'old', status: 'ready', messages: [{ role: 'assistant', text: 'OLD THREAD RESPONSE' }] }))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      if (transition === 'unmount') {
+        assert.equal(actions.includes('phoenix.turn.send'), false, 'unmounted session-start completion must not dispatch a turn')
+      } else {
+        if (transition === 'close') {
+          await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+        }
+        const currentInput = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]'); assert.ok(currentInput)
+        assert.equal(currentInput.disabled, false, 'completion must release the pending send')
+        assert.equal(currentInput.value, '', 'old drafts must not be restored after identity reset')
+        const panel = document.querySelector('[aria-label="Phoenix session"]'); assert.ok(panel)
+        if (transition === 'identity') {
+          assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 0)
+          assert.equal(panel.querySelector('[role="alert"]'), null)
+        } else {
+          assert.match(panel.textContent ?? '', /OLD THREAD RESPONSE/)
+        }
+      }
+    } finally {
+      if (!unmounted) await view.unmount()
+      globalThis.fetch = originalFetch
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
