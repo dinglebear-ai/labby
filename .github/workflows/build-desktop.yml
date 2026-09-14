@@ -1,0 +1,129 @@
+name: Build desktop candidates
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Desktop (${{ matrix.kind }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: macos-arm64
+            runner: macos-15
+            asset: labby-desktop-macos-arm64.tar.gz
+            target: aarch64-apple-darwin
+          - kind: linux-x86_64
+            runner: ubuntu-22.04
+            asset: labby-desktop-linux-x86_64.AppImage
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "lts/*"
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 9.15.9
+          run_install: false
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.97.1"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/labby-desktop/src-tauri
+          shared-key: labby-desktop-release-${{ matrix.kind }}
+          cache-on-failure: true
+      - name: Install desktop frontend dependencies
+        run: pnpm --dir apps/labby-desktop install --frozen-lockfile
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$KEYCHAIN_PASSWORD" ]] || {
+            echo "::error::macOS desktop releases require APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_KEYCHAIN_PASSWORD"
+            exit 1
+          }
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          identity="$(security find-identity -v -p codesigning build.keychain | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
+          [[ -n "$identity" ]] || { echo "::error::Developer ID Application identity was not imported"; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build notarized macOS desktop app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]] || {
+            echo "::error::macOS desktop releases require APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID for notarization"
+            exit 1
+          }
+          pnpm --dir apps/labby-desktop exec tauri build --bundles app --target aarch64-apple-darwin
+          app="apps/labby-desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Labby.app"
+          [[ -d "$app" ]] || { echo "::error::missing Labby.app bundle"; exit 1; }
+          tar -C "$(dirname "$app")" -czf "${{ matrix.asset }}" Labby.app
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - name: Build Linux AppImage
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/labby-desktop exec tauri build --bundles appimage
+          appimage="$(find apps/labby-desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          [[ -n "$appimage" ]] || { echo "::error::missing Labby AppImage"; exit 1; }
+          cp "$appimage" "${{ matrix.asset }}"
+          sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - name: Attest desktop artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+      - name: Upload desktop candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lab-desktop-${{ matrix.kind }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+          if-no-files-found: error
+          retention-days: 1
