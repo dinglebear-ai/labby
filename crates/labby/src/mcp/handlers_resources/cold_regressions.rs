@@ -294,26 +294,57 @@ async fn assert_documents(client: &RunningService<RoleClient, ResourceClient>, m
 }
 
 #[tokio::test]
-async fn native_http_cold_list_then_read_modern_and_legacy() {
-    for modern in [true, false] {
-        let fixture = QaUpstream::default();
-        let provider = serve_upstream(fixture.clone()).await;
-        let (server, pool) = gateway(vec![upstream("qa", &provider)], 2000, 2).await;
-        let http = serve_gateway(server).await;
-        let client = client(&http, modern).await;
-        assert_eq!(
-            pool.connection_count_for_tests().await,
-            0,
-            "handshake must leave discovery cold"
-        );
-        assert_documents(&client, modern).await;
-        assert_eq!(
-            fixture.probes.load(Ordering::SeqCst),
-            3,
-            "one discovery plus two isolated read relays"
-        );
-        client.cancel().await.unwrap();
-    }
+async fn native_http_cold_list_then_read_modern_and_rejects_legacy_initialize() {
+    let fixture = QaUpstream::default();
+    let provider = serve_upstream(fixture.clone()).await;
+    let (server, pool) = gateway(vec![upstream("qa", &provider)], 2000, 2).await;
+    let http = serve_gateway(server).await;
+    let client = client(&http, true).await;
+    assert_eq!(
+        pool.connection_count_for_tests().await,
+        0,
+        "handshake must leave discovery cold"
+    );
+    assert_documents(&client, true).await;
+    assert_eq!(
+        fixture.probes.load(Ordering::SeqCst),
+        3,
+        "one discovery plus two isolated read relays"
+    );
+    client.cancel().await.unwrap();
+
+    let legacy_fixture = QaUpstream::default();
+    let legacy_provider = serve_upstream(legacy_fixture.clone()).await;
+    let (legacy_server, legacy_pool) =
+        gateway(vec![upstream("qa", &legacy_provider)], 2000, 2).await;
+    let legacy_http = serve_gateway(legacy_server).await;
+    let version = ProtocolVersion::V_2025_11_25;
+    let worker = StreamableHttpClientWorker::new(
+        reqwest::Client::new(),
+        StreamableHttpClientTransportConfig::with_uri(legacy_http.url.clone()),
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        ResourceClient(version).serve_with_lifecycle(worker, ClientLifecycleMode::Initialize),
+    )
+    .await
+    .unwrap();
+    let error = match result {
+        Ok(service) => {
+            service.cancel().await.unwrap();
+            panic!("historical HTTP initialize must be rejected")
+        }
+        Err(error) => error,
+    };
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("Unsupported protocol version"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("2025-11-25"), "{rendered}");
+    assert!(rendered.contains("2026-07-28"), "{rendered}");
+    assert_eq!(legacy_pool.connection_count_for_tests().await, 0);
+    assert_eq!(legacy_fixture.probes.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
