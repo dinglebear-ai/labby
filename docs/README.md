@@ -20,6 +20,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Verification toolkit](./plans/verification-toolkit/README.md) — proposed design for a reusable Rust correctness-engineering toolkit (invariant catalog, scenario replay, backend adapters). Not implemented.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
+- [Privilege-exposure runbook](./runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md) — tamper review, credential rotation, owner re-verification, and config rollback after an admin-scope exposure.
 
 ## Current Product Services
 
@@ -27,7 +28,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 
 | Service | Product doc | Notes |
 | --- | --- | --- |
-| `access` | [access-control/](./access-control/) | Principals, Teams, Projects, memberships, roles, and effective authority |
+| `access` | [services/ACCESS.md](./services/ACCESS.md) and [access-control/](./access-control/) | Principals, Teams, invitations, platform administration, onboarding, and owner recovery; design packet and data model |
 | `projects` | [services/ACCESS.md#projects](./services/ACCESS.md#projects) | Team-scoped Project lifecycle: list, create, get, update, archive |
 | `agents` | [services/AGENTS.md](./services/AGENTS.md) | Operator-approved harnesses, immutable Agent definitions, bounded sessions, and revocation |
 | `tasks` | [services/TASKS.md](./services/TASKS.md) | Durable Agent Tasks, schedules, timezones, retries, and recovery |
@@ -43,7 +44,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
 | `artifacts`, `bundles`, `jobs`, `sources`, `uploads` | [services/SKILLS.md](./services/SKILLS.md) and [artifacts/](./artifacts/) | Durable Artifact library, provider-backed control-plane projections, and native Agent Skills projection |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
-| access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md) | Browser-only explicit creation of the first access-control owner; distinct from the registered `access` service |
+| access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md#owner-bootstrap) | Explicit creation of the first access-control owner (browser or offline proof); distinct from the registered `access` service |
 | direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.

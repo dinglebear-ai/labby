@@ -237,6 +237,24 @@ impl AccessRuntime {
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
 
+    /// Read-only check of an admission bucket. Unlike
+    /// [`Self::admit_security_operation`] it never consumes an attempt, so
+    /// callers can gate on the budget and charge it only for failures.
+    pub(crate) async fn security_operation_exhausted(
+        &self,
+        class: String,
+        bucket: [u8; 32],
+        now: i64,
+        window_seconds: i64,
+        limit: i64,
+    ) -> Result<bool, AccessRuntimeError> {
+        self.security_store()
+            .await?
+            .security_operation_exhausted(class, bucket, now, window_seconds, limit)
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
     pub(crate) async fn record_security_event(
         &self,
         event_kind: String,

@@ -1,11 +1,21 @@
 ---
 title: "Access Control, Workspaces, and Artifact Distribution"
 created: "2026-08-22"
-updated: "2026-08-22"
+updated: "2026-09-13"
 status: "design"
 ---
 
 # Access Control, Workspaces, and Artifact Distribution
+
+> **Status (2026-09-13).** This packet mixes the original design with parts
+> that are now implemented. Implemented today: the access store at schema v7
+> ([DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)), owner bootstrap (browser
+> and offline proof), Teams, invitations, platform administration, Project
+> memberships, and the v1 contract in
+> [MULTI_USER_AUTHORITY.md](./MULTI_USER_AUTHORITY.md). Operator behavior is in
+> [services/ACCESS.md](../services/ACCESS.md). [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
+> and [PROGRESS.md](./PROGRESS.md) are historical. Treat other sections as design
+> unless code confirms them.
 
 This folder is the canonical design packet for first-class multi-user authorization in Labby. It defines how organizations, departments/teams, projects, users, service accounts, Loadouts, Artifacts, and runtime MCP capabilities compose into an effective workspace.
 
@@ -25,7 +35,7 @@ The goal is not merely to add roles. Labby must be able to answer, consistently 
 - [SPEC.md](./SPEC.md) defines product behavior, user stories, invariants, and acceptance criteria.
 - [CONTRACT.md](./CONTRACT.md) defines the normative domain contract and cross-surface behavior.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) defines component boundaries and how the resolver integrates with current Labby runtime filtering.
-- [DATA_MODEL.md](./DATA_MODEL.md) defines the proposed persisted entities, identifiers, relationships, versioning, and migration rules.
+- [DATA_MODEL.md](./DATA_MODEL.md) records the current schema v7 table inventory plus the broader proposed entities, identifiers, relationships, versioning, and migration rules.
 - [PERMISSIONS.md](./PERMISSIONS.md) defines permission vocabulary, roles, inheritance, masking, and authorization evaluation.
 - [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md) defines request/route/session-scoped Project binding across HTTP, CLI, web, MCP, Code Mode, background jobs, caches, and runtime credentials.
 - [ARTIFACT_DISTRIBUTION.md](./ARTIFACT_DISTRIBUTION.md) defines Add to My Labby, managed mirrors, pin/follow/fork/export/reshare semantics, and revocation.
