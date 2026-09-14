@@ -111,6 +111,9 @@ pub struct AppState {
     /// startup replaces it after resolving and observing the configured store.
     pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
     pub(crate) file_stash_runtime: Arc<crate::file_stash::FileStashRuntime>,
+    /// Subsystems that started degraded. Defaults to the process-wide record
+    /// written by `labby serve`; tests inject an isolated instance.
+    pub(crate) subsystem_health: Arc<crate::runtime_health::SubsystemHealth>,
     /// Daemon-owned proof lifecycle orchestration. `None` fails closed and
     /// keeps the local bootstrap routes unavailable until startup wires L6.
     pub(crate) access_bootstrap_proof:
@@ -197,6 +200,7 @@ impl AppState {
             http_bind_host: None,
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             file_stash_runtime: Arc::new(crate::file_stash::FileStashRuntime::blocked()),
+            subsystem_health: crate::runtime_health::SubsystemHealth::process(),
             access_bootstrap_proof: None,
             access_credential_adapter: None,
             #[cfg(feature = "skills")]
@@ -205,6 +209,17 @@ impl AppState {
             skill_library_imports: None,
             server_start: std::time::Instant::now(),
         }
+    }
+
+    /// Replace the degraded-subsystem record (tests use an isolated instance).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_subsystem_health(
+        mut self,
+        health: Arc<crate::runtime_health::SubsystemHealth>,
+    ) -> Self {
+        self.subsystem_health = health;
+        self
     }
 
     /// Attach the resolved auth configuration.

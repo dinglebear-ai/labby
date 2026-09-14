@@ -130,6 +130,16 @@ Readiness verification requires both an active `labby.service` unit and a
 successful loopback `/ready` response. This prevents stale processes from
 masking failed service restarts.
 
+`/ready` returns 503 with `status: "not_ready"` and `pending` until the
+readiness predicates pass. After that it returns 200 with `status: "ready"`
+only when nothing is degraded. It returns 200 with `status: "degraded"` and a
+`degraded` list of stable codes when an optional subsystem is unavailable. The
+codes are `artifacts_unavailable`, `access_setup_pending`, and
+`access_blocked`. `curl -f` accepts a degraded process. A gate that must refuse
+degraded deploys checks `status == "ready"`. For the cause, run
+`doctor system.checks` (`subsystem:<code>` findings) or `labby setup check`
+(`config` check).
+
 ## Post-Provision Checklist
 
 After bootstrap or provisioning:

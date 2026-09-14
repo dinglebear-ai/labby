@@ -64,6 +64,7 @@ pub mod process;
 pub mod proxy;
 #[allow(unreachable_pub)]
 pub mod registry;
+pub(crate) mod runtime_health;
 mod self_update;
 #[cfg(feature = "skills")]
 pub(crate) mod skills;
