@@ -307,11 +307,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 "sleep 30\n"
             )
             (install / "labby").chmod(0o755)
-            (commands / "curl").write_text(
-                "#!/bin/sh\n"
-                f"pid=$(cut -f1 {str(work / 'labby.pid')!r})\n"
-                "kill -0 \"$pid\" 2>/dev/null\n"
-            )
+            # Readiness precedes publication of the verified identity file.
+            # The following identity check remains the authority that the
+            # ready listener is the expected candidate executable.
+            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
             (commands / "curl").chmod(0o755)
             env = os.environ | {
                 "RUNNER_TEMP": str(runner_temp),
@@ -351,6 +350,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                         f"{victim.pid} (other) S {'0 ' * 18}99999\n"
                     )
                     (proc / "exe").symlink_to("/usr/bin/other")
+                else:
+                    # A missing proc entry is confirmed process teardown. A
+                    # malformed entry models a live PID whose identity cannot
+                    # be verified and must therefore fail closed.
+                    (proc / "stat").write_text("malformed\n")
                 (work / "labby.pid").write_text(
                     f"{victim.pid}\t12345\t{work / 'bin/labby'}\n"
                 )
@@ -371,7 +375,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                     expected = (
                         "process identity changed; refusing to signal it"
                         if case == "identity-mismatch"
-                        else "cannot read process stat"
+                        else "malformed process stat"
                     )
                     self.assertIn(expected, result.stderr)
                 finally:
