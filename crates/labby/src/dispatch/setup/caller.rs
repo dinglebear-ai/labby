@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn every_auth_catalog_key_is_reserved_for_the_operator() {
         let schema = super::super::settings::env_schema().unwrap();
-        let auth_keys: Vec<&str> = schema
+        let reserved_service_entries: Vec<&str> = schema
             .iter()
             .filter(|spec| spec.service == AUTH_SERVICE)
             .map(|spec| spec.key.as_str())
@@ -159,16 +159,16 @@ mod tests {
             "LABBY_GOOGLE_CLIENT_SECRET",
         ] {
             assert!(
-                auth_keys.contains(&required),
+                reserved_service_entries.contains(&required),
                 "{required} must be an auth key"
             );
         }
-        for key in &auth_keys {
+        for entry in &reserved_service_entries {
             let error = SetupCaller::Delegated
-                .ensure_may_write([*key])
-                .expect_err(key);
-            assert_eq!(error.kind(), "forbidden", "{key}");
-            SetupCaller::Operator.ensure_may_write([*key]).unwrap();
+                .ensure_may_write([*entry])
+                .expect_err("delegated caller must not write operator-reserved settings");
+            assert_eq!(error.kind(), "forbidden");
+            SetupCaller::Operator.ensure_may_write([*entry]).unwrap();
         }
         SetupCaller::Delegated
             .ensure_may_write(["LABBY_LOG"])
