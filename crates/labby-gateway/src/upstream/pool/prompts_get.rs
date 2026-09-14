@@ -22,15 +22,15 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::PromptCatalogGeneration;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call_str;
+use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::capability_call::{
     RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
 };
 use super::catalog_pagination;
 use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
-    bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
-    upstream_transport,
+    bare_upstream_prompt_name, estimate_prompt_result_size, merge_upstream_prompts,
+    prefixed_upstream_prompt_name, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
@@ -442,8 +442,19 @@ impl UpstreamPool {
     pub async fn get_prompt(
         &self,
         upstream_name: &str,
-        mut params: GetPromptRequestParams,
+        params: GetPromptRequestParams,
     ) -> Option<Result<GetPromptResult, String>> {
+        self.get_prompt_typed(upstream_name, params)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn get_prompt_typed(
+        &self,
+        upstream_name: &str,
+        mut params: GetPromptRequestParams,
+    ) -> Option<Result<GetPromptResult, CapabilityCallError>> {
         let start = Instant::now();
         // The gateway namespaces upstream prompt names as `{upstream}/{name}`,
         // but the upstream only knows the bare name — strip the prefix before
@@ -465,9 +476,11 @@ impl UpstreamPool {
                 kind = "prompt_not_exposed",
                 "upstream prompt get blocked by exposure policy"
             );
-            return Some(Err(format!(
-                "prompt `{prompt_name}` is not exposed by upstream `{upstream_name}`"
-            )));
+            return Some(Err(CapabilityCallError::Other {
+                message: format!(
+                    "prompt `{prompt_name}` is not exposed by upstream `{upstream_name}`"
+                ),
+            }));
         }
         let event = UpstreamRequestLog::prompt(upstream_name, &prompt_name, false);
         let peer = self
@@ -478,14 +491,14 @@ impl UpstreamPool {
 
         let timeout_ms = self.request_timeout.as_millis();
         Some(
-            timed_capability_call_str(
+            timed_capability_call(
                 self,
                 upstream_name,
                 UpstreamCapability::Prompts,
                 event,
                 start,
                 peer.get_prompt(params),
-                |_result: &GetPromptResult| 0, // prompts have no size cap
+                estimate_prompt_result_size,
                 None,
                 |e| format!("upstream prompt get failed: {e}"),
                 format!("upstream prompt get timed out after {timeout_ms}ms"),
@@ -502,8 +515,20 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: &str,
-        mut params: GetPromptRequestParams,
+        params: GetPromptRequestParams,
     ) -> Result<GetPromptResult, String> {
+        self.subject_scoped_get_prompt_typed(config, subject, params)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn subject_scoped_get_prompt_typed(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        mut params: GetPromptRequestParams,
+    ) -> Result<GetPromptResult, CapabilityCallError> {
         let start = Instant::now();
         // Strip the `{upstream}/` namespace before forwarding the bare name.
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
@@ -524,10 +549,12 @@ impl UpstreamPool {
                 kind = "prompt_not_exposed",
                 "upstream prompt get blocked by exposure policy"
             );
-            return Err(format!(
-                "prompt `{prompt_name}` is not exposed by upstream `{}`",
-                config.name
-            ));
+            return Err(CapabilityCallError::Other {
+                message: format!(
+                    "prompt `{prompt_name}` is not exposed by upstream `{}`",
+                    config.name
+                ),
+            });
         }
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, true)
             .with_transport(upstream_transport(config));
@@ -550,18 +577,20 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Err(error.to_string());
+                return Err(CapabilityCallError::Other {
+                    message: error.to_string(),
+                });
             }
         };
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_str(
+        timed_capability_call(
             self,
             &config.name,
             UpstreamCapability::Prompts,
             event,
             start,
             peer.get_prompt(params),
-            |_result: &GetPromptResult| 0, // prompts have no size cap
+            estimate_prompt_result_size,
             Some(subject),
             |e| format!("upstream prompt get failed: {e}"),
             format!("upstream prompt get timed out after {timeout_ms}ms"),
@@ -588,6 +617,35 @@ mod tests {
     use super::super::testsupport::*;
     use super::ExactPromptCallError;
     use crate::upstream::types::{CIRCUIT_BREAKER_THRESHOLD, ToolExposurePolicy, UpstreamHealth};
+
+    #[derive(Clone)]
+    struct MisleadingPromptError;
+
+    impl ServerHandler for MisleadingPromptError {
+        async fn get_prompt(
+            &self,
+            request: GetPromptRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            Err(ErrorData::invalid_params(request.name.to_string(), None))
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_prompt_get_preserves_application_error_despite_gateway_phrases() {
+        let pool = catalog_pool_with_server("alpha", MisleadingPromptError).await;
+        for detail in ["cancelled", "timed out", "response too large"] {
+            let error = pool
+                .get_prompt_typed("alpha", GetPromptRequestParams::new(detail))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                matches!(error, super::CapabilityCallError::Mcp { .. }),
+                "{error:?}"
+            );
+        }
+    }
 
     #[derive(Clone)]
     struct DelayedGetPromptServer {
@@ -654,6 +712,27 @@ mod tests {
         calls: Arc<AtomicUsize>,
         delay: Duration,
         started: Option<Arc<Notify>>,
+    }
+
+    #[test]
+    fn prompt_response_size_uses_the_serialized_wire_shape() {
+        let result = GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            "bounded prompt body",
+        )]);
+        assert_eq!(
+            super::super::helpers::estimate_prompt_result_size(&result),
+            serde_json::to_vec(&result).unwrap().len()
+        );
+
+        let oversized = GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            "x".repeat(super::super::helpers::max_response_bytes() + 1),
+        )]);
+        assert!(
+            super::super::helpers::estimate_prompt_result_size(&oversized)
+                > super::super::helpers::max_response_bytes()
+        );
     }
 
     impl ServerHandler for SlowCountingPromptServer {

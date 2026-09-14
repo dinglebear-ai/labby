@@ -1,25 +1,24 @@
 [package]
 name = "verify-runner"
+description = "Target registration, bounded finite replay, and normalization."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 repository.workspace = true
-authors.workspace = true
-readme = "../../README.md"
-keywords = ["verification", "replay", "cli", "testing"]
-categories = ["development-tools"]
-publish = false
-description = "Target registry, replay engine, and the `verify` command line."
 
 [dependencies]
-verify-core = { workspace = true }
-verify-scenario = { workspace = true }
-verify-report = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-clap = { workspace = true }
-thiserror = { workspace = true }
+verify-core = { path = "../verify-core", version = "=0.1.0" }
+verify-scenario = { path = "../verify-scenario", version = "=0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "verify"
+path = "src/main.rs"
 
 [lints]
 workspace = true

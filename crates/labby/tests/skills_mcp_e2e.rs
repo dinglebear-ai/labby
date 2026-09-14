@@ -82,6 +82,14 @@ async fn verify_skill_roundtrip(
     client: &rmcp::service::Peer<rmcp::RoleClient>,
     expected_uri: &str,
 ) {
+    let server = client.peer_info().expect("Skills discover response");
+    let instructions = server.instructions.as_deref().unwrap_or_default();
+    assert!(
+        instructions.contains("io.modelcontextprotocol/skills")
+            && instructions.contains("skills/list")
+            && instructions.contains("skills/get"),
+        "Skills extension must be explicitly advertised before use: {instructions:?}"
+    );
     let list: SkillsListResult = client
         .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
             "skills/list",
@@ -164,6 +172,18 @@ async fn verify_skill_roundtrip(
     assert!(
         matches!(unknown, rmcp::service::ServiceError::McpError(error)
             if error.code == rmcp::model::ErrorCode::INVALID_PARAMS)
+    );
+    let invalid_cursor = client
+        .send_request_as::<SkillsListResult>(ClientRequest::CustomRequest(CustomRequest::new(
+            "skills/list",
+            Some(json!({"cursor": "not-a-valid-skills-cursor"})),
+        )))
+        .await
+        .expect_err("hostile Skills cursor must be rejected");
+    assert!(
+        matches!(invalid_cursor, rmcp::service::ServiceError::McpError(ref error)
+            if error.code == rmcp::model::ErrorCode::INVALID_PARAMS),
+        "unexpected Skills cursor error: {invalid_cursor:?}"
     );
 }
 

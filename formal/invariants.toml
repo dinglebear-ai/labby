@@ -1,0 +1,59 @@
+schema = 1
+project = "labby"
+namespace = "LABBY"
+
+[[invariant]]
+id = "LABBY-REQ-001"
+title = "A browser request has at most one authoritative terminal outcome."
+kind = "safety"
+severity = "critical"
+model = "browser_request"
+owner = "browser"
+
+[invariant.checks]
+stateright = ["request_single_terminal"]
+kani = ["request_single_terminal"]
+
+[[invariant]]
+id = "LABBY-REQ-002"
+title = "A terminal browser request is no longer active."
+kind = "safety"
+severity = "critical"
+model = "browser_request"
+owner = "browser"
+
+[invariant.checks]
+stateright = ["request_terminal_cleanup"]
+
+[[invariant]]
+id = "LABBY-REQ-003"
+title = "A late response cannot overwrite a terminal outcome."
+kind = "safety"
+severity = "critical"
+model = "browser_request"
+owner = "browser"
+
+[invariant.checks]
+stateright = ["request_terminal_immutable"]
+
+[[invariant]]
+id = "LABBY-REQ-004"
+title = "Only the current owning connection generation can complete a request."
+kind = "safety"
+severity = "critical"
+model = "browser_request"
+owner = "browser"
+
+[invariant.checks]
+stateright = ["request_generation_owner"]
+
+[[invariant]]
+id = "LABBY-REQ-005"
+title = "Cancellation before dispatch leaves no executable request."
+kind = "safety"
+severity = "high"
+model = "browser_request"
+owner = "browser"
+
+[invariant.checks]
+stateright = ["request_cancel_before_dispatch"]

@@ -154,7 +154,7 @@ impl InboundProviderRuntime {
             }
             Self::Authelia(provider) => {
                 provider
-                    .exchange_code(code, verifier, &crate::util::fingerprint(state))
+                    .exchange_code(code, verifier, &crate::util::oauth_provider_nonce(state))
                     .await
             }
         }

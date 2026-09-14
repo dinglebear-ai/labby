@@ -136,6 +136,7 @@ pub(crate) fn destructive_confirmation(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
 
     use rmcp::model::{
         CallToolRequestParams, ClientCapabilities, ElicitationCapability,
@@ -143,7 +144,10 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{DestructiveConfirmation, MAX_CONFIRMATIONS_PER_OWNER, destructive_confirmation};
+    use super::{
+        DestructiveConfirmation, MAX_CONFIRMATIONS_PER_OWNER, destructive_confirmation,
+        pending_confirmations,
+    };
 
     fn elicitation_request() -> CallToolRequestParams {
         let capabilities = ClientCapabilities::builder()
@@ -292,6 +296,45 @@ mod tests {
 
         assert!(matches!(
             destructive_confirmation(&request, "danger", "danger.delete", "binding-c", "owner-d"),
+            DestructiveConfirmation::Refused
+        ));
+    }
+
+    #[test]
+    fn destructive_confirmation_refuses_expired_request_state() {
+        let mut request = elicitation_request();
+        let DestructiveConfirmation::InputRequired(challenge) = destructive_confirmation(
+            &request,
+            "danger",
+            "danger.delete",
+            "binding-expired",
+            "owner-expired",
+        ) else {
+            panic!("expected input_required");
+        };
+        let state = challenge.request_state.expect("request state");
+        pending_confirmations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&state)
+            .expect("pending confirmation")
+            .expires = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("test clock supports an already-expired confirmation");
+        request.request_state = Some(state);
+        request.input_responses = Some(BTreeMap::from([(
+            "destructive_confirmation".to_string(),
+            json!({"action": "accept", "content": {"confirm": true}}),
+        )]));
+
+        assert!(matches!(
+            destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                "binding-expired",
+                "owner-expired"
+            ),
             DestructiveConfirmation::Refused
         ));
     }

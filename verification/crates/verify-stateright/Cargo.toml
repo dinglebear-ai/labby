@@ -1,0 +1,18 @@
+[package]
+name = "verify-stateright"
+description = "Bounded Stateright model-checking adapter and scenario projection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+verify-core = { path = "../verify-core", version = "=0.1.0" }
+verify-scenario = { path = "../verify-scenario", version = "=0.1.0" }
+serde_json.workspace = true
+stateright.workspace = true
+
+[lints]
+workspace = true

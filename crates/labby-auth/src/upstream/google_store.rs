@@ -2,15 +2,18 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use oauth2::{AccessToken, RefreshToken, Scope, TokenResponse as _, basic::BasicTokenType};
 use rmcp::transport::auth::{
-    AuthError, CredentialStore, OAuthTokenResponse, StoredCredentials, VendorExtraTokenFields,
+    AuthError, CredentialRefreshGuard, CredentialStore, OAuthTokenResponse, StoredCredentials,
+    VendorExtraTokenFields,
 };
 use rmcp_client as rmcp;
+use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::google::{GoogleProvider, merge_google_scopes};
@@ -19,17 +22,30 @@ use crate::types::{GoogleProviderCredentialRow, GoogleProviderCredentialUpdate};
 use crate::upstream::types::OauthError;
 use crate::util::fingerprint;
 
-#[cfg(test)]
-static SAVE_CAS_PAUSE_ENABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
-static SAVE_CAS_OBSERVED: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(0));
-#[cfg(test)]
-static SAVE_CAS_RESUME: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(0));
-
 const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+const REFRESH_OPERATION_LOCK_STRIPES: usize = 2_048;
+
+static REFRESH_OPERATION_LOCKS: OnceLock<[Arc<Mutex<()>>; REFRESH_OPERATION_LOCK_STRIPES]> =
+    OnceLock::new();
+
+/// Return the process-wide refresh-operation mutex for one stable credential.
+///
+/// This lock is deliberately distinct from `google_refresh::lock`. rmcp holds
+/// it across load, token exchange, and save, while `save` acquires the shorter
+/// persistence lock. Using the same mutex for both would deadlock during save.
+/// SQLite CAS and revocation fencing reject stale cross-process persistence,
+/// but do not serialize rotating-token exchanges across processes.
+/// Fixed stripes keep memory bounded without changing an active identity's
+/// mutex when capacity changes. Hash collisions serialize unrelated refreshes;
+/// they never share credential data or change store/provider/subject checks.
+pub(super) fn refresh_operation_lock(credential_identity: &str) -> Arc<Mutex<()>> {
+    let locks =
+        REFRESH_OPERATION_LOCKS.get_or_init(|| std::array::from_fn(|_| Arc::new(Mutex::new(()))));
+    let digest = Sha256::digest(credential_identity.as_bytes());
+    let stripe =
+        usize::from(u16::from_be_bytes([digest[0], digest[1]])) % REFRESH_OPERATION_LOCK_STRIPES;
+    Arc::clone(&locks[stripe])
+}
 
 #[derive(Clone)]
 pub struct GoogleProviderCredentialStore {
@@ -39,7 +55,7 @@ pub struct GoogleProviderCredentialStore {
     expected_client_id: String,
     required_scopes: Vec<String>,
     authorization_fence_epoch: Arc<AtomicI64>,
-    refresh_guard: Option<Arc<(String, tokio::sync::OwnedMutexGuard<()>)>>,
+    refresh_attempt: Arc<std::sync::Mutex<Option<(String, i64)>>>,
 }
 
 impl std::fmt::Debug for GoogleProviderCredentialStore {
@@ -69,19 +85,23 @@ impl GoogleProviderCredentialStore {
             expected_client_id,
             required_scopes: normalize_scopes(required_scopes),
             authorization_fence_epoch: Arc::new(AtomicI64::new(-1)),
-            refresh_guard: None,
+            refresh_attempt: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
-    /// Transfer the account transaction lock into the store used by rmcp.
-    /// Its refresh saves execute inside this transaction, without re-locking it.
-    pub(crate) fn with_refresh_guard(
-        mut self,
-        subject: String,
-        guard: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Self {
-        self.refresh_guard = Some(Arc::new((subject, guard)));
-        self
+    #[cfg(test)]
+    fn refresh_attempt(&self) -> Option<(String, i64)> {
+        self.refresh_attempt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn take_refresh_attempt(&self) -> Option<(String, i64)> {
+        self.refresh_attempt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     pub async fn credential_row(&self) -> Result<Option<GoogleProviderCredentialRow>, OauthError> {
@@ -239,6 +259,10 @@ impl CredentialStore for GoogleProviderCredentialStore {
         Self: 'async_trait,
     {
         Box::pin(async move {
+            *self
+                .refresh_attempt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             let fence_epoch = self
                 .store
                 .google_provider_fence_epoch()
@@ -249,6 +273,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
             let Some(row) = self.load_row_for_rmcp().await? else {
                 return Ok(None);
             };
+            *self
+                .refresh_attempt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((row.subject.clone(), row.generation));
             let token_received_at = row.token_received_at.unwrap_or(0).max(0) as u64;
             let expires_in = row
                 .access_token_expires_at
@@ -290,6 +319,10 @@ impl CredentialStore for GoogleProviderCredentialStore {
         Self: 'async_trait,
     {
         Box::pin(async move {
+            // Bind persistence to the generation that supplied the token used
+            // for this exchange. Reloading below is only for merge inputs; it
+            // must never advance the CAS generation past this attempt.
+            let attempted = self.take_refresh_attempt();
             if credentials.client_id != self.expected_client_id {
                 return Err(AuthError::AuthorizationRequired);
             }
@@ -307,11 +340,13 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 return Err(AuthError::AuthorizationRequired);
             }
             let (subject, email) = self.identity_for_save(token, existing.as_ref()).await?;
-            let _provider_guard = match &self.refresh_guard {
-                Some(guard) if guard.0 == subject => None,
-                Some(_) => return Err(AuthError::AuthorizationRequired),
-                None => Some(crate::google_refresh::lock(&subject).lock_owned().await),
-            };
+            if attempted
+                .as_ref()
+                .is_some_and(|(attempted_subject, _)| attempted_subject != &subject)
+            {
+                return Err(AuthError::AuthorizationRequired);
+            }
+            let _provider_guard = crate::google_refresh::lock(&subject).lock_owned().await;
             let observed_revocation_epoch = self.authorization_fence_epoch.load(Ordering::Acquire);
             if observed_revocation_epoch < 0 {
                 return Err(AuthError::AuthorizationRequired);
@@ -321,15 +356,6 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .find_google_provider_credential(&subject)
                 .await
                 .map_err(|error| AuthError::InternalError(error.to_string()))?;
-            #[cfg(test)]
-            if SAVE_CAS_PAUSE_ENABLED.load(Ordering::Acquire) {
-                SAVE_CAS_OBSERVED.add_permits(1);
-                SAVE_CAS_RESUME
-                    .acquire()
-                    .await
-                    .expect("test semaphore open")
-                    .forget();
-            }
             let refresh_token = token
                 .refresh_token()
                 .map(|value| value.secret().to_string())
@@ -373,9 +399,13 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 scope_upgraded,
             };
             let update_subject = update.subject.clone();
-            let persisted = if let Some(existing) = existing.as_ref() {
+            let observed_generation = attempted
+                .as_ref()
+                .map(|(_, generation)| *generation)
+                .or_else(|| existing.as_ref().map(|row| row.generation));
+            let persisted = if let Some(generation) = observed_generation {
                 self.store
-                    .replace_google_provider_token_bundle_if_generation(update, existing.generation)
+                    .replace_google_provider_token_bundle_if_generation(update, generation)
                     .await
             } else {
                 self.store
@@ -396,11 +426,43 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .map_err(|error| AuthError::InternalError(error.to_string()))?;
             warn!(
                 subject_id = %fingerprint(&update_subject),
-                observed_provider_generation = ?existing.as_ref().map(|row| row.generation),
+                observed_provider_generation = ?observed_generation,
                 replacement_provider_credential_present = replacement_present,
                 "upstream google credential save discarded stale token bundle after generation changed"
             );
             Err(AuthError::AuthorizationRequired)
+        })
+    }
+
+    fn acquire_refresh_guard<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<CredentialRefreshGuard>, AuthError>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let credential_identity = self
+                .credential_row()
+                .await
+                .map_err(|error| AuthError::CredentialStoreError(error.to_string()))?
+                .map(|row| row.subject)
+                .or_else(|| self.account.clone())
+                .ok_or_else(|| {
+                    AuthError::CredentialStoreError(
+                        "cannot coordinate an unbound Google credential identity".to_string(),
+                    )
+                })?;
+            let guard = refresh_operation_lock(&format!("google:{credential_identity}"))
+                .lock_owned()
+                .await;
+            Ok(Some(CredentialRefreshGuard::new(guard)))
         })
     }
 
@@ -434,6 +496,43 @@ pub fn missing_scopes(required: &[String], granted: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_operation_identity_survives_capacity_recovery() {
+        let mut retained: Vec<_> = (0..REFRESH_OPERATION_LOCK_STRIPES)
+            .map(|index| refresh_operation_lock(&format!("capacity-fixture:{index}")))
+            .collect();
+        let first = refresh_operation_lock("capacity-fixture:overflow");
+        let guard = Arc::clone(&first).try_lock_owned().unwrap();
+
+        // Release a formerly occupied registry slot while the overflow caller
+        // still owns its guard. Another lookup must retain the same lock.
+        drop(retained.pop());
+        let second = refresh_operation_lock("capacity-fixture:overflow");
+        assert!(
+            Arc::clone(&second).try_lock_owned().is_err(),
+            "capacity recovery must not split one credential across two locks"
+        );
+        assert!(Arc::ptr_eq(&first, &second));
+        drop(guard);
+        assert!(second.try_lock_owned().is_ok());
+    }
+
+    #[test]
+    fn refresh_operation_hash_collisions_only_serialize_callers() {
+        let mut seen = std::collections::HashMap::new();
+        let (first, second) = (0..=REFRESH_OPERATION_LOCK_STRIPES)
+            .find_map(|index| {
+                let lock = refresh_operation_lock(&format!("collision-fixture:{index}"));
+                seen.insert(Arc::as_ptr(&lock), Arc::clone(&lock))
+                    .map(|previous| (previous, lock))
+            })
+            .expect("more identities than stripes must include a collision");
+        let guard = first.try_lock_owned().unwrap();
+        assert!(Arc::clone(&second).try_lock_owned().is_err());
+        drop(guard);
+        assert!(second.try_lock_owned().is_ok());
+    }
 
     async fn test_store() -> SqliteStore {
         let path = tempfile::tempdir().unwrap().keep().join("auth.db");
@@ -527,18 +626,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_store_generation_loss_fails_without_overwriting_fresh_credential() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth.db");
-        let key = || {
-            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
-                "google-store-test-key",
-            ))
-        };
-        let store = SqliteStore::open_with_key(path.clone(), key())
-            .await
-            .unwrap();
-        let peer_store = SqliteStore::open_with_key(path, key()).await.unwrap();
+    async fn failed_refresh_attempt_generation_cannot_invalidate_fresh_replacement() {
+        let store = test_store().await;
         insert_bundle(&store, vec!["openid".to_string()]).await;
         let adapter = GoogleProviderCredentialStore::new(
             store.clone(),
@@ -548,12 +637,67 @@ mod tests {
             vec!["openid".to_string()],
         );
         assert!(CredentialStore::load(&adapter).await.unwrap().is_some());
+        let (attempted_subject, attempted_generation) =
+            adapter.refresh_attempt().expect("attempt generation");
+
+        let now = crate::util::now_unix();
+        assert!(
+            store
+                .replace_google_provider_token_bundle_if_generation(
+                    GoogleProviderCredentialUpdate {
+                        subject: "google-subject".to_string(),
+                        email: Some("admin@example.com".to_string()),
+                        client_id: "google-client".to_string(),
+                        granted_scopes: vec!["openid".to_string()],
+                        access_token: "replacement-access".to_string(),
+                        refresh_token: "replacement-refresh".to_string(),
+                        token_received_at: now,
+                        access_token_expires_at: now + 3600,
+                        issuer: Some(GOOGLE_ISSUER.to_string()),
+                        refreshed: true,
+                        scope_upgraded: false,
+                    },
+                    attempted_generation,
+                )
+                .await
+                .unwrap()
+        );
+
+        let invalidation = store
+            .invalidate_google_provider_credential(&attempted_subject, attempted_generation)
+            .await
+            .unwrap();
+        assert!(!invalidation.invalidated);
+        let credential = store
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .expect("fresh replacement survives");
+        assert_eq!(credential.refresh_token, "replacement-refresh");
+    }
+
+    #[tokio::test]
+    async fn refresh_guard_does_not_deadlock_credential_save() {
+        let store = test_store().await;
+        insert_bundle(&store, vec!["openid".to_string()]).await;
+        let adapter = GoogleProviderCredentialStore::new(
+            store,
+            provider(),
+            Some("google-subject".to_string()),
+            "google-client".to_string(),
+            vec!["openid".to_string()],
+        );
+        assert!(CredentialStore::load(&adapter).await.unwrap().is_some());
+        let guard = CredentialStore::acquire_refresh_guard(&adapter)
+            .await
+            .unwrap()
+            .expect("Google credentials coordinate refresh operations");
         let mut token = OAuthTokenResponse::new(
-            AccessToken::new("stale-access".to_string()),
+            AccessToken::new("refreshed-access".to_string()),
             BasicTokenType::Bearer,
             VendorExtraTokenFields::default(),
         );
-        token.set_refresh_token(Some(RefreshToken::new("stale-refresh".to_string())));
+        token.set_refresh_token(Some(RefreshToken::new("refreshed-token".to_string())));
         let credentials = StoredCredentials::new(
             "google-client".to_string(),
             Some(token),
@@ -561,55 +705,102 @@ mod tests {
             Some(crate::util::now_unix().max(0) as u64),
         );
 
-        SAVE_CAS_PAUSE_ENABLED.store(true, Ordering::Release);
-        let save = tokio::spawn(async move { CredentialStore::save(&adapter, credentials).await });
-        tokio::time::timeout(Duration::from_secs(2), SAVE_CAS_OBSERVED.acquire())
-            .await
-            .expect("save reached generation CAS")
-            .unwrap()
-            .forget();
-        let generation = peer_store
-            .find_google_provider_credential("google-subject")
-            .await
-            .unwrap()
-            .unwrap()
-            .generation;
-        let now = crate::util::now_unix();
-        assert!(
-            peer_store
-                .replace_google_provider_token_bundle_if_generation(
-                    GoogleProviderCredentialUpdate {
-                        subject: "google-subject".to_string(),
-                        email: Some("admin@example.com".to_string()),
-                        client_id: "google-client".to_string(),
-                        granted_scopes: vec!["openid".to_string()],
-                        access_token: "fresh-access".to_string(),
-                        refresh_token: "fresh-refresh".to_string(),
-                        token_received_at: now,
-                        access_token_expires_at: now + 3600,
-                        issuer: Some(GOOGLE_ISSUER.to_string()),
-                        refreshed: true,
-                        scope_upgraded: false,
-                    },
-                    generation,
-                )
-                .await
-                .unwrap()
-        );
-        SAVE_CAS_PAUSE_ENABLED.store(false, Ordering::Release);
-        SAVE_CAS_RESUME.add_permits(1);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            CredentialStore::save(&adapter, credentials),
+        )
+        .await
+        .expect("refresh save must not reacquire its operation guard")
+        .unwrap();
+        drop(guard);
+    }
 
-        let result = save.await.unwrap();
-        assert!(
-            matches!(result, Err(AuthError::AuthorizationRequired)),
-            "stale save result: {result:?}"
+    #[tokio::test]
+    async fn refresh_guards_serialize_same_identity_but_not_distinct_stripes() {
+        let first_store = test_store().await;
+        insert_bundle(&first_store, vec!["openid".to_string()]).await;
+        let first = GoogleProviderCredentialStore::new(
+            first_store.clone(),
+            provider(),
+            Some("google-subject".to_string()),
+            "google-client".to_string(),
+            vec!["openid".to_string()],
         );
-        let credential = store
-            .find_google_provider_credential("google-subject")
+        let same = first.clone();
+
+        let other_store = test_store().await;
+        let now = crate::util::now_unix();
+        other_store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "other-google-subject".to_string(),
+                email: Some("other@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "other-access".to_string(),
+                refresh_token: "other-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some(GOOGLE_ISSUER.to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
+        let other = GoogleProviderCredentialStore::new(
+            other_store,
+            provider(),
+            Some("other-google-subject".to_string()),
+            "google-client".to_string(),
+            vec!["openid".to_string()],
+        );
+
+        let first_guard = CredentialStore::acquire_refresh_guard(&first)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(credential.refresh_token, "fresh-refresh");
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                CredentialStore::acquire_refresh_guard(&same),
+            )
+            .await
+            .is_err(),
+            "the same credential identity must wait for the active refresh"
+        );
+        let other_guard = tokio::time::timeout(
+            Duration::from_secs(2),
+            CredentialStore::acquire_refresh_guard(&other),
+        )
+        .await
+        .expect("credentials on distinct stripes must not be serialized")
+        .unwrap()
+        .unwrap();
+        drop(other_guard);
+        drop(first_guard);
+        let _released_guard = tokio::time::timeout(
+            Duration::from_secs(2),
+            CredentialStore::acquire_refresh_guard(&same),
+        )
+        .await
+        .expect("same-identity waiter proceeds after release")
+        .unwrap()
+        .expect("Google refresh guard");
+    }
+
+    #[tokio::test]
+    async fn refresh_guard_reports_unbound_identity_as_store_error() {
+        let adapter = GoogleProviderCredentialStore::new(
+            test_store().await,
+            provider(),
+            None,
+            "google-client".to_string(),
+            vec!["openid".to_string()],
+        );
+        assert!(matches!(
+            CredentialStore::acquire_refresh_guard(&adapter).await,
+            Err(AuthError::CredentialStoreError(message))
+                if message == "cannot coordinate an unbound Google credential identity"
+        ));
     }
 
     #[test]

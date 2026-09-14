@@ -1,0 +1,47 @@
+name: Publish verification summary (opt-in)
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        required: true
+        type: string
+      publish-comment:
+        description: Requires an explicitly authorized caller with pull-requests write permission
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    # Never execute repository code in this write-capable job. Forks have no
+    # publication path; the original execution/artifacts remain authoritative.
+    if: inputs.publish-comment && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: verification-report
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = 'verification-report/report.markdown';
+            const stat = fs.lstatSync(path);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 60000) {
+              throw new Error('Missing, unsafe, or oversized verification summary');
+            }
+            const body = fs.readFileSync(path, 'utf8');
+            if (!body.trim()) throw new Error('Empty verification summary');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Verification evidence for ${context.sha}\n\n${body}`
+            });

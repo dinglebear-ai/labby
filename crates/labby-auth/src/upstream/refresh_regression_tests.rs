@@ -188,7 +188,7 @@ async fn existing_ordinary_credential_refreshes_without_schema_migration() {
 }
 
 #[tokio::test]
-async fn google_refresh_persists_while_owning_account_transaction_lock() {
+async fn google_refresh_operation_guard_is_distinct_from_persistence_lock() {
     let db = database().await;
     db.upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
         subject: "account".into(),
@@ -211,25 +211,29 @@ async fn google_refresh_persists_while_owning_account_transaction_lock() {
         url::Url::parse("http://127.0.0.1/callback").unwrap(),
     )
     .unwrap();
-    let guard = crate::google_refresh::lock("account").lock_owned().await;
     let store = GoogleProviderCredentialStore::new(
         db.clone(),
         Arc::new(provider),
         Some("account".into()),
         "client".into(),
         vec!["openid".into()],
-    )
-    .with_refresh_guard("account".into(), guard);
+    );
     let (uri, started, release, server) = fixture().await;
     let manager = manager(&uri, store).await;
     let refresh = tokio::spawn(async move { manager.refresh_token().await });
     tokio::time::timeout(Duration::from_secs(5), started.notified())
         .await
         .unwrap();
+
+    let persistence_guard = crate::google_refresh::lock("account")
+        .try_lock_owned()
+        .expect("rmcp's refresh-operation guard must not reuse the persistence mutex");
+    drop(persistence_guard);
+
     release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), refresh)
         .await
-        .expect("refresh must not re-lock its account mutex")
+        .expect("refresh must persist after the provider exchange completes")
         .unwrap()
         .unwrap();
     assert_eq!(

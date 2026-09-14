@@ -266,6 +266,12 @@ impl HeaderRecoveryMetricsStore {
     }
 }
 
+/// Acquired bulkhead permit plus authoritative admission-path observation.
+pub(super) struct AcquiredUpstreamCallPermit {
+    pub(super) permit: tokio::sync::OwnedSemaphorePermit,
+    pub(super) queued: bool,
+}
+
 /// Upstream connection pool — holds live connections and discovered tool catalogs.
 #[derive(Clone)]
 pub struct UpstreamPool {
@@ -713,6 +719,15 @@ impl UpstreamPool {
         &self,
         upstream_name: &str,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.acquire_upstream_call_permit_observed(upstream_name)
+            .await
+            .map(|acquired| acquired.permit)
+    }
+
+    pub(super) async fn acquire_upstream_call_permit_observed(
+        &self,
+        upstream_name: &str,
+    ) -> Result<AcquiredUpstreamCallPermit, String> {
         let semaphore = if let Some(existing) = self.call_semaphores.read().await.get(upstream_name)
         {
             Arc::clone(existing)
@@ -726,10 +741,23 @@ impl UpstreamPool {
                     }),
             )
         };
-        semaphore
-            .acquire_owned()
-            .await
-            .map_err(|_| format!("upstream `{upstream_name}` concurrency gate was closed"))
+        match Arc::clone(&semaphore).try_acquire_owned() {
+            Ok(permit) => Ok(AcquiredUpstreamCallPermit {
+                permit,
+                queued: false,
+            }),
+            Err(tokio::sync::TryAcquireError::NoPermits) => semaphore
+                .acquire_owned()
+                .await
+                .map(|permit| AcquiredUpstreamCallPermit {
+                    permit,
+                    queued: true,
+                })
+                .map_err(|_| format!("upstream `{upstream_name}` concurrency gate was closed")),
+            Err(tokio::sync::TryAcquireError::Closed) => Err(format!(
+                "upstream `{upstream_name}` concurrency gate was closed"
+            )),
+        }
     }
 
     /// Return the exact stdio child generation backing a pooled or

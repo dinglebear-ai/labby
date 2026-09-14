@@ -18,6 +18,7 @@ use crate::envelope::Scenario;
 /// merely weaker at deduplication — wrongly declaring commutativity silently
 /// merges genuinely distinct counterexamples.
 pub trait Commutes {
+    /// Returns true only when swapping these adjacent steps preserves behavior.
     fn commutes(&self, a: &Value, b: &Value) -> bool;
 }
 
@@ -40,10 +41,8 @@ impl Commutes for NeverCommutes {
 pub fn normalize_syntactic(scenario: &Scenario, commutes: &dyn Commutes) -> Scenario {
     let mut out = scenario.clone();
     let mut renamer = Renamer::default();
-    if let Some(initial) = out.initial.as_mut() {
-        for value in initial.values_mut() {
-            renamer.rewrite(value);
-        }
+    for value in out.initial.values_mut() {
+        renamer.rewrite(value);
     }
     for step in &mut out.steps {
         renamer.rewrite(step);

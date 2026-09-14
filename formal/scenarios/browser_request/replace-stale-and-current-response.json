@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "project": "labby",
+  "model": "browser_request",
+  "invariant": "LABBY-REQ-004",
+  "origin": { "kind": "manual", "reference": "replacement socket generation" },
+  "initial": {},
+  "steps": [
+    { "action": "connect", "generation": "browser-old" },
+    { "action": "admit", "request": "old-call" },
+    { "action": "dispatch", "request": "old-call" },
+    { "action": "replace_connection", "generation": "browser-current" },
+    { "action": "complete_success", "request": "old-call", "generation": "browser-old" },
+    { "action": "admit", "request": "current-call" },
+    { "action": "dispatch", "request": "current-call" },
+    { "action": "complete_success", "request": "current-call", "generation": "browser-old" },
+    { "action": "complete_success", "request": "current-call", "generation": "browser-current" }
+  ],
+  "expect": "invariant_holds",
+  "status": "active"
+}

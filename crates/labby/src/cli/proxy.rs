@@ -1,7 +1,11 @@
 //! Stdio MCP proxy command.
 
 use std::ffi::OsString;
+#[cfg(feature = "gateway")]
+use std::future::Future;
 use std::path::PathBuf;
+#[cfg(feature = "gateway")]
+use std::pin::Pin;
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -132,6 +136,22 @@ fn tailscale_options(
         options.executable = executable.into();
     }
     options
+}
+
+#[cfg(feature = "gateway")]
+async fn poll_signal_once<F: Future>(mut signal: Pin<&mut F>) -> Option<F::Output> {
+    std::future::poll_fn(|context| {
+        std::task::Poll::Ready(match signal.as_mut().poll(context) {
+            std::task::Poll::Ready(result) => Some(result),
+            std::task::Poll::Pending => None,
+        })
+    })
+    .await
+}
+
+#[cfg(feature = "gateway")]
+fn should_publish_ready<T>(early_signal: &Option<T>) -> bool {
+    early_signal.is_none()
 }
 
 #[cfg(feature = "gateway")]
@@ -413,6 +433,13 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             None,
         )
     };
+
+    // Install Tokio's process-wide Ctrl+C handler before publishing readiness.
+    // `ctrl_c()` installs the handler on its first poll, so constructing it only
+    // inside the wait below leaves a small window where callers can observe the
+    // ready output and send a signal before the handler exists.
+    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
+    let early_signal = poll_signal_once(ctrl_c.as_mut()).await;
     let info = proxy.info().clone();
     let mut tailscale = oauth_tailscale;
     let public_url = tailscale
@@ -434,7 +461,9 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         crate::proxy::config::ProxyAuthMode::None => "none",
     };
 
-    let ready_output = if format.is_json() {
+    let ready_output = if !should_publish_ready(&early_signal) {
+        Ok(())
+    } else if format.is_json() {
         print(
             &ProxyReadyOutput {
                 url: public_url.to_string(),
@@ -498,28 +527,30 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         ));
     }
 
-    let failure = if let (Some(serve), Some(lease)) = (tailscale.as_mut(), oauth_lease.as_mut()) {
+    let failure = if let Some(signal) = early_signal {
+        Some(signal.map_err(anyhow::Error::from))
+    } else if let (Some(serve), Some(lease)) = (tailscale.as_mut(), oauth_lease.as_mut()) {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            signal = &mut ctrl_c => Some(signal.map_err(anyhow::Error::from)),
             result = proxy.wait_for_failure() => Some(result),
             result = serve.wait_for_failure() => Some(result),
             result = lease.wait_for_failure() => Some(result),
         }
     } else if let Some(lease) = oauth_lease.as_mut() {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            signal = &mut ctrl_c => Some(signal.map_err(anyhow::Error::from)),
             result = proxy.wait_for_failure() => Some(result),
             result = lease.wait_for_failure() => Some(result),
         }
     } else if let Some(serve) = tailscale.as_mut() {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            signal = &mut ctrl_c => Some(signal.map_err(anyhow::Error::from)),
             result = proxy.wait_for_failure() => Some(result),
             result = serve.wait_for_failure() => Some(result),
         }
     } else {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            signal = &mut ctrl_c => Some(signal.map_err(anyhow::Error::from)),
             result = proxy.wait_for_failure() => Some(result),
         }
     };
@@ -580,6 +611,8 @@ pub async fn run(_args: ProxyArgs, _config: &LabConfig, _format: OutputFormat) -
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use clap::Parser;
 
     use super::*;
@@ -731,5 +764,37 @@ mod tests {
             local_runtime_preferences(&prefs).unwrap().auth,
             crate::proxy::config::ProxyAuthMode::Oauth
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn signal_is_polled_before_readiness_can_be_published() {
+        let polls = Cell::new(0_u8);
+        let signal = std::future::poll_fn(|context| {
+            let count = polls.get() + 1;
+            polls.set(count);
+            if count == 1 {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        });
+        tokio::pin!(signal);
+
+        assert_eq!(poll_signal_once(signal.as_mut()).await, None);
+        assert_eq!(polls.get(), 1, "signal handler must be armed once");
+        signal.await;
+        assert_eq!(polls.get(), 2, "the armed signal future remains reusable");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn observed_signal_suppresses_readiness() {
+        assert!(!should_publish_ready(&Some(Ok::<(), std::io::Error>(()))));
+        assert!(!should_publish_ready(&Some(Err::<(), _>(
+            std::io::Error::other("signal registration failed"),
+        ))));
+        assert!(should_publish_ready(&None::<std::io::Result<()>>));
     }
 }
