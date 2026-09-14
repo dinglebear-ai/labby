@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 import yaml
@@ -229,6 +230,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('labby_home="$user_home/.labby"', unix)
         self.assertEqual(1, unix.count('LABBY_HOME="$labby_home"'))
         self.assertEqual(1, unix.count('HOME="$user_home" LABBY_HOME="$labby_home"'))
+        self.assertIn('scripts/ci/verified-process.py" identity', unix)
+        self.assertIn('scripts/ci/verified-process.py" stop', unix)
         windows = self.text("scripts/ci/n-minus-one/windows")
         self.assertIn('labby_home="$user_home/.labby"', windows)
         self.assertEqual(1, windows.count("\\$env:HOME='$pwsh_user_home'; \\$env:LABBY_HOME='$pwsh_labby_home'"))
@@ -250,6 +253,249 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-RedirectStandardOutput '$pwsh_work_root", windows)
         self.assertIn("-RedirectStandardError '$pwsh_work_root", windows)
         self.assertIn('"$root"/*/service*.log', self.text("scripts/ci/n-minus-one-diagnostics.sh"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
+    def test_unix_restart_waits_for_prior_daemon_exit_before_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            commands = runner_temp / "commands"
+            install.mkdir(parents=True)
+            commands.mkdir()
+            proc_root = runner_temp / "proc"
+            proc_root.mkdir()
+            identity_ready = runner_temp / "identity-ready"
+            ready = runner_temp / "old-ready"
+            stopped = runner_temp / "old-stopped"
+            old = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,signal,time,pathlib\n"
+                    f"p=pathlib.Path({str(stopped)!r})\n"
+                    f"ready=pathlib.Path({str(ready)!r})\n"
+                    f"identity=pathlib.Path({str(identity_ready)!r})\n"
+                    f"proc=pathlib.Path({str(proc_root)!r})/str(os.getpid())\n"
+                    "while not identity.exists(): time.sleep(.01)\n"
+                    "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(.4), p.touch(), __import__('shutil').rmtree(proc), os._exit(0)))\n"
+                    "ready.touch()\n"
+                    "time.sleep(30)\n",
+                ]
+            )
+            reaper = threading.Thread(target=old.wait, daemon=True)
+            reaper.start()
+            old_proc = proc_root / str(old.pid)
+            old_proc.mkdir()
+            (old_proc / "stat").write_text(f"{old.pid} (labby) S {'0 ' * 18}12345\n")
+            (old_proc / "exe").symlink_to(install / "labby")
+            identity_ready.touch()
+            deadline = time.monotonic() + 2
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "old daemon did not install its TERM handler")
+            (work / "labby.pid").write_text(f"{old.pid}\t12345\t{install / 'labby'}\n")
+            (install / "labby").write_text(
+                "#!/bin/sh\n"
+                f"proc={str(proc_root)!r}/$$\n"
+                "mkdir -p \"$proc\"\n"
+                "start=$(sed 's/.*) //' /proc/$$/stat | awk '{print $20}')\n"
+                f"printf '%s (labby) S {'0 ' * 18}%s\\n' \"$$\" \"$start\" >\"$proc/stat\"\n"
+                "ln -s \"$0\" \"$proc/exe\"\n"
+                "trap 'rm -rf \"$proc\"; exit 0' TERM\n"
+                f"test -f {str(stopped)!r} || exit 42\n"
+                "sleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            # Readiness precedes publication of the verified identity file.
+            # The following identity check remains the authority that the
+            # ready listener is the expected candidate executable.
+            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "curl").chmod(0o755)
+            env = os.environ | {
+                "RUNNER_TEMP": str(runner_temp),
+                "LABBY_N_MINUS_ONE_PROC_ROOT": str(proc_root),
+                "LABBY_N_MINUS_ONE_LAUNCH_PROC_ROOT": "/proc",
+                "PATH": f"{commands}:{os.environ['PATH']}",
+            }
+            try:
+                subprocess.run(
+                    [str(ROOT / "scripts/ci/n-minus-one/unix"), "restart"],
+                    check=True,
+                    env=env,
+                    timeout=15,
+                )
+                self.assertTrue(stopped.exists())
+            finally:
+                pid_path = work / "labby.pid"
+                if pid_path.exists():
+                    os.kill(int(pid_path.read_text().split("\t", 1)[0]), 15)
+                if old.poll() is None:
+                    old.kill()
+                reaper.join(timeout=2)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
+    def test_unix_restart_refuses_reused_or_uninspectable_pid(self) -> None:
+        for case in ("identity-mismatch", "unknown-proc"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                runner_temp = Path(tmp)
+                work = runner_temp / "labby-n-minus-one" / "unix"
+                proc_root = runner_temp / "proc"
+                work.mkdir(parents=True)
+                victim = subprocess.Popen(["sleep", "30"])
+                proc = proc_root / str(victim.pid)
+                proc.mkdir(parents=True)
+                if case == "identity-mismatch":
+                    (proc / "stat").write_text(
+                        f"{victim.pid} (other) S {'0 ' * 18}99999\n"
+                    )
+                    (proc / "exe").symlink_to("/usr/bin/other")
+                else:
+                    # A missing proc entry is confirmed process teardown. A
+                    # malformed entry models a live PID whose identity cannot
+                    # be verified and must therefore fail closed.
+                    (proc / "stat").write_text("malformed\n")
+                (work / "labby.pid").write_text(
+                    f"{victim.pid}\t12345\t{work / 'bin/labby'}\n"
+                )
+                env = os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "LABBY_N_MINUS_ONE_PROC_ROOT": str(proc_root),
+                }
+                try:
+                    result = subprocess.run(
+                        [str(ROOT / "scripts/ci/n-minus-one/unix"), "restart"],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIsNone(victim.poll(), "unverified PID was signaled")
+                    expected = (
+                        "process identity changed; refusing to signal it"
+                        if case == "identity-mismatch"
+                        else "malformed process stat"
+                    )
+                    self.assertIn(expected, result.stderr)
+                finally:
+                    victim.terminate()
+                    victim.wait(timeout=2)
+
+    def test_verified_process_classifies_zombie_and_partial_proc_teardown(self) -> None:
+        helper = ROOT / "scripts/ci/verified-process.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = Path(tmp)
+            proc = proc_root / "123"
+            proc.mkdir()
+            stat = proc / "stat"
+            stat.write_text(f"123 (labby worker) Z {'0 ' * 18}12345\n")
+            zombie = subprocess.run(
+                [str(helper), "identity", "--pid", "123", "--proc-root", str(proc_root),
+                 "--executable", "/tmp/labby"],
+                capture_output=True,
+            )
+            self.assertEqual(1, zombie.returncode)
+
+            stat.write_text(f"123 (labby worker) S {'0 ' * 18}12345\n")
+            partial = subprocess.run(
+                [str(helper), "identity", "--pid", "123", "--proc-root", str(proc_root),
+                 "--executable", "/tmp/labby"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(2, partial.returncode)
+            self.assertIn("cannot read process executable", partial.stderr)
+
+    def test_initial_identity_failure_exits_before_daemon_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            install.mkdir(parents=True)
+            launched = runner_temp / "daemon-launched"
+            (install / "labby").write_text(
+                f"#!/bin/sh\ntouch {str(launched)!r}\nsleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            result = subprocess.run(
+                [str(ROOT / "scripts/ci/n-minus-one/unix"), "authenticated-action"],
+                env=os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "LABBY_N_MINUS_ONE_PROC_ROOT": str(runner_temp / "unreadable-proc"),
+                },
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(launched.exists())
+            self.assertFalse((work / "labby.pid").exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
+    def test_startup_cleanup_refuses_reused_child_pid_and_accepts_disappearance(self) -> None:
+        helper = ROOT / "scripts/ci/verified-process.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = Path(tmp)
+            victim = subprocess.Popen(["sleep", "30"])
+            proc = proc_root / str(victim.pid)
+            proc.mkdir()
+            (proc / "stat").write_text(
+                f"{victim.pid} (replacement) S {'0 ' * 18}99999\n"
+            )
+            (proc / "exe").symlink_to("/usr/bin/sleep")
+            try:
+                reused = subprocess.run(
+                    [str(helper), "stop", "--pid", str(victim.pid),
+                     "--proc-root", str(proc_root), "--start", "12345"],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(2, reused.returncode)
+                self.assertIn("identity changed; refusing to signal", reused.stderr)
+                self.assertIsNone(victim.poll())
+            finally:
+                victim.terminate()
+                victim.wait(timeout=2)
+
+            disappeared = subprocess.run(
+                [str(helper), "stop", "--pid", "999999",
+                 "--proc-root", str(proc_root), "--start", "12345"],
+                capture_output=True,
+            )
+            self.assertEqual(0, disappeared.returncode)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "proc identity is Linux-specific")
+    def test_unix_start_identity_failure_cleans_unpublished_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            commands = runner_temp / "commands"
+            install.mkdir(parents=True)
+            commands.mkdir()
+            launched = runner_temp / "launched-pid"
+            (install / "labby").write_text(
+                f"#!/bin/sh\necho $$ > {str(launched)!r}\nsleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            (commands / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "curl").chmod(0o755)
+            result = subprocess.run(
+                [str(ROOT / "scripts/ci/n-minus-one/unix"), "authenticated-action"],
+                env=os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "PATH": f"{commands}:{os.environ['PATH']}",
+                },
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertNotEqual(0, result.returncode)
+            pid = int(launched.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            self.assertFalse((work / "labby.pid").exists())
 
     def test_release_sboms_satisfy_the_manifest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
