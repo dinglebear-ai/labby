@@ -299,7 +299,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 f"proc={str(proc_root)!r}/$$\n"
                 "mkdir -p \"$proc\"\n"
-                f"printf '%s (labby) S {'0 ' * 18}777\\n' \"$$\" >\"$proc/stat\"\n"
+                "start=$(sed 's/.*) //' /proc/$$/stat | awk '{print $20}')\n"
+                f"printf '%s (labby) S {'0 ' * 18}%s\\n' \"$$\" \"$start\" >\"$proc/stat\"\n"
                 "ln -s \"$0\" \"$proc/exe\"\n"
                 "trap 'rm -rf \"$proc\"; exit 0' TERM\n"
                 f"test -f {str(stopped)!r} || exit 42\n"
@@ -315,6 +316,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             env = os.environ | {
                 "RUNNER_TEMP": str(runner_temp),
                 "LABBY_N_MINUS_ONE_PROC_ROOT": str(proc_root),
+                "LABBY_N_MINUS_ONE_LAUNCH_PROC_ROOT": "/proc",
                 "PATH": f"{commands}:{os.environ['PATH']}",
             }
             try:
@@ -400,6 +402,31 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             )
             self.assertEqual(2, partial.returncode)
             self.assertIn("cannot read process executable", partial.stderr)
+
+    def test_initial_identity_failure_exits_before_daemon_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_temp = Path(tmp)
+            work = runner_temp / "labby-n-minus-one" / "unix"
+            install = work / "bin"
+            install.mkdir(parents=True)
+            launched = runner_temp / "daemon-launched"
+            (install / "labby").write_text(
+                f"#!/bin/sh\ntouch {str(launched)!r}\nsleep 30\n"
+            )
+            (install / "labby").chmod(0o755)
+            result = subprocess.run(
+                [str(ROOT / "scripts/ci/n-minus-one/unix"), "authenticated-action"],
+                env=os.environ | {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "LABBY_N_MINUS_ONE_PROC_ROOT": str(runner_temp / "unreadable-proc"),
+                },
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(launched.exists())
+            self.assertFalse((work / "labby.pid").exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "pidfd is Linux-specific")
     def test_startup_cleanup_refuses_reused_child_pid_and_accepts_disappearance(self) -> None:
