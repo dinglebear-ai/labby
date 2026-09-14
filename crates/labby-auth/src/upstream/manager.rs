@@ -1919,6 +1919,8 @@ mod url_tests {
                 UpstreamConfig {
                     enabled: true,
                     name: name.to_string(),
+                    display_name: None,
+                    lifecycle: None,
                     url: Some(upstream_url.clone()),
                     transport: None,
                     socket_path: None,
