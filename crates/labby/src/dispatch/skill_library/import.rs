@@ -200,6 +200,7 @@ impl ImportCoordinator {
             depot: BTreeMap::new(),
             repository: BTreeMap::new(),
             catalog_project: None,
+            import_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
         };
         let policy = match crate::dispatch::depot::manager::host_policy(&config.depot) {
             Ok(policy) => policy,
