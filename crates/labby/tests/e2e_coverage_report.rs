@@ -437,20 +437,20 @@ mod tests {
 
     #[test]
     fn dedicated_contract_requires_the_exact_action_reason_and_error_kind() {
-        let mut accepted = event("action::Api::gateway:gateway.clients.list", false, false);
+        let mut accepted = event("action::Api::browser:browser.call", false, false);
         accepted.outcome_kind =
-            "dedicated_contract:catalog_dispatch_mismatch:unknown_action".into();
+            "dedicated_contract:requires_live_consented_browser_document:stale_document".into();
         assert!(is_accepted_dedicated_contract(
-            "gateway:gateway.clients.list",
+            "browser:browser.call",
             crate::action_matrix::Surface::Api,
             &accepted
         ));
 
         let mut arbitrary = accepted.clone();
         arbitrary.outcome_kind =
-            "dedicated_contract:catalog_dispatch_mismatch:internal_error".into();
+            "dedicated_contract:requires_live_consented_browser_document:internal_error".into();
         assert!(!is_accepted_dedicated_contract(
-            "gateway:gateway.clients.list",
+            "browser:browser.call",
             crate::action_matrix::Surface::Api,
             &arbitrary
         ));
