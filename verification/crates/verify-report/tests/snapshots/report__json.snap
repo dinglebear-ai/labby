@@ -1,0 +1,110 @@
+---
+source: crates/verify-report/tests/report.rs
+expression: render_json(&report)
+---
+{
+  "schema": 1,
+  "project": "labby <dev>",
+  "catalog": {
+    "id": "formal/invariants.toml",
+    "revision": "rev-1",
+    "unavailable_reason": null
+  },
+  "coverage": {
+    "invariant_ids": [
+      "LABBY-SAFE-001",
+      "LABBY-SAFE-002"
+    ],
+    "replay_uncovered_ids": [
+      "LABBY-SAFE-002"
+    ],
+    "unconfigured_backend_ids": [
+      "LABBY-SAFE-002"
+    ],
+    "backend_uncovered_ids": [
+      "LABBY-SAFE-001",
+      "LABBY-SAFE-002"
+    ]
+  },
+  "scenarios": {
+    "total": 2,
+    "by_expectation": {
+      "invariant_holds": 1,
+      "invariant_violated": 1
+    },
+    "by_status": {
+      "active": 1,
+      "quarantined": 1,
+      "unreproduced": 0
+    }
+  },
+  "observations": [
+    {
+      "id": "replay-1",
+      "lane": "model_replay",
+      "requirement": "required",
+      "verdict": "passed",
+      "invariant_ids": [
+        "LABBY-SAFE-001"
+      ],
+      "scenario_ids": [
+        "b3:scenario"
+      ],
+      "sources": [
+        {
+          "source": "labby",
+          "revision": "abc123",
+          "dirty": false,
+          "dirty_unavailable_reason": null,
+          "unavailable_reason": null
+        }
+      ],
+      "binary": null,
+      "fixtures": [],
+      "seed": 7,
+      "bounds": {
+        "steps": 4
+      },
+      "deadline_ms": 1000,
+      "cleanup": null,
+      "diagnostic": "literal result"
+    },
+    {
+      "id": "browser|fake",
+      "lane": "browser_emulation",
+      "requirement": "optional",
+      "verdict": "passed",
+      "invariant_ids": [
+        "LABBY-SAFE-001"
+      ],
+      "scenario_ids": [],
+      "sources": [
+        {
+          "source": "browser fixture",
+          "revision": "fixture-source-1",
+          "dirty": null,
+          "dirty_unavailable_reason": "generated fixture",
+          "unavailable_reason": null
+        }
+      ],
+      "binary": null,
+      "fixtures": [
+        {
+          "id": "fake-dom",
+          "revision": "rev-1",
+          "unavailable_reason": null
+        }
+      ],
+      "seed": null,
+      "bounds": {
+        "tabs": 1
+      },
+      "deadline_ms": 2000,
+      "cleanup": {
+        "completed": true,
+        "detail": "closed <tab>"
+      },
+      "diagnostic": "untrusted | <script>alert(1)</script>\nnext"
+    }
+  ]
+}

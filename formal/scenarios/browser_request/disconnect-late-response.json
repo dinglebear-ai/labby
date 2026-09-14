@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "project": "labby",
+  "model": "browser_request",
+  "invariant": "LABBY-REQ-001",
+  "origin": { "kind": "manual", "reference": "socket disconnect" },
+  "initial": {},
+  "steps": [
+    { "action": "connect", "generation": "browser-a" },
+    { "action": "admit", "request": "call-a" },
+    { "action": "dispatch", "request": "call-a" },
+    { "action": "disconnect", "generation": "browser-a" },
+    { "action": "complete_success", "request": "call-a", "generation": "browser-a" }
+  ],
+  "expect": "invariant_holds",
+  "status": "active"
+}

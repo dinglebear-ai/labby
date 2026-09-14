@@ -911,6 +911,34 @@ async fn handle_oauth_actions(
             let url = require_str(&params_value, "url")?;
             to_json(crate::gateway::oauth::probe(manager, url).await?)
         }
+        "gateway.oauth.authorize" => {
+            reject_shared_oauth_subject_override(&params_value)?;
+            let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
+            let subject = enrichment_scope.oauth_subject.as_deref()
+                .filter(|subject| !subject.is_empty() && *subject != SHARED_GATEWAY_OAUTH_SUBJECT)
+                .ok_or_else(|| ToolError::Forbidden {
+                    message: "Personal OAuth authorization requires an authenticated non-admin caller; operators use gateway.oauth.start".into(),
+                    required_scopes: Vec::new(),
+                })?;
+            let config = manager
+                .upstream_config(&params.upstream)
+                .await
+                .filter(|config| {
+                    config.enabled
+                        && config
+                            .oauth
+                            .as_ref()
+                            .is_some_and(|oauth| !oauth.credential.is_google_provider())
+                })
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "unknown_upstream".into(),
+                    message: "OAuth upstream is unavailable".into(),
+                })?;
+            to_json(
+                crate::gateway::oauth::begin_authorization(manager, &config.name, subject).await?,
+            )
+        }
         "gateway.oauth.start" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;

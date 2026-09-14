@@ -294,9 +294,16 @@ impl GatewayManager {
         let subject = upstream.oauth.as_ref().and(oauth_subject);
         pool.ensure_tools_for_upstream(upstream, subject, owner)
             .await
-            .map_err(|err| ToolError::Sdk {
-                sdk_kind: "upstream_connect_error".to_string(),
-                message: format!("failed to connect upstream `{upstream_name}`: {err}"),
+            .map_err(|err| {
+                let recovery = if subject.is_some_and(|subject| subject != SHARED_GATEWAY_OAUTH_SUBJECT)
+                    && upstream.oauth.as_ref().is_some_and(|oauth| !oauth.credential.is_google_provider())
+                {
+                    " If credentials are missing, use the native gateway action gateway.oauth.authorize with this upstream name from a lab-scoped connector for the same account (lab:read alone cannot create credentials), open its authorization_url in a browser signed into the same Labby account, then retry. Do not repeat shared gateway authorization or request admin scope for a restricted connector."
+                } else { "" };
+                ToolError::Sdk {
+                    sdk_kind: "upstream_connect_error".to_string(),
+                    message: format!("failed to connect upstream `{upstream_name}`: {err}{recovery}"),
+                }
             })?;
         Ok(())
     }

@@ -236,7 +236,8 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                     .collect(),
                 returns: action.returns.to_string(),
                 surface_availability: action_surfaces,
-                requires_http_subject: service.name == "fs" && action.name == "fs.preview",
+                requires_http_subject: (service.name == "fs" && action.name == "fs.preview")
+                    || (service.name == "gateway" && action.name == "gateway.oauth.authorize"),
                 auth_posture: auth_posture(service.name, action.name, action.requires_admin),
                 inventory_scope: "global_inventory_not_active_runtime_exposure".to_string(),
                 builtin: false,
@@ -531,6 +532,8 @@ mod tests {
 fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
     if service == "fs" && action == "fs.preview" {
         "HTTP-only admin/browser session path; intentionally unavailable on MCP".to_string()
+    } else if service == "gateway" && action == "gateway.oauth.authorize" {
+        "requires authenticated personal identity and scope.manage; rejects shared credentials and subject overrides".to_string()
     } else if requires_admin {
         "requires lab:admin in addition to the selected transport authentication".to_string()
     } else {

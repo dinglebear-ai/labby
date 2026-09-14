@@ -13,6 +13,50 @@ check:
 test:
     cargo nextest run --workspace --all-features
 
+# Incubating verification toolkit: separate workspace and lockfile.
+verify-check:
+    cargo check --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked
+
+verify-test:
+    python3 -m unittest discover -s verification/tests -p 'test_*.py' -v
+    cargo test --manifest-path verification/Cargo.toml --workspace --all-features --locked
+
+verify-lint:
+    cargo clippy --manifest-path verification/Cargo.toml --workspace --all-features --all-targets --locked -- -D warnings
+    cargo fmt --manifest-path verification/Cargo.toml --all -- --check
+
+verify-fmt:
+    cargo fmt --manifest-path verification/Cargo.toml --all
+
+verify-deny:
+    cargo deny --manifest-path verification/Cargo.toml --config verification/deny.toml --locked check
+
+# Labby model adoption gate; build time is separate from the 60-second CI replay cap.
+verify-t0:
+    cargo run --manifest-path verification/Cargo.toml -p labby-verify --locked -- t0 formal
+
+# Bounded model checking; not implementation conformance or universal proof.
+verify-t1:
+    cargo run --manifest-path verification/Cargo.toml -p labby-verify --locked -- t1 formal
+
+# Regenerate the authoritative invariant schema and design-document mirror.
+verify-schema:
+    cargo run --manifest-path verification/Cargo.toml -p verify-core --example invariants-schema --locked -- --write
+    cargo run --manifest-path verification/Cargo.toml -p verify-scenario --example scenario-schema --locked -- --write
+
+# Validate pinned specification extraction and reviewed applicability, not compliance.
+mcp-spec-check spec_checkout:
+    python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout {{quote(spec_checkout)}}
+    python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
+
+# Execute all registered oracles; coverage gaps remain explicit in the report.
+mcp-spec-oracles spec_checkout:
+    python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout {{quote(spec_checkout)}}
+
+# Strict full-compliance gate: missing/unreviewed requirements fail.
+mcp-spec-compliance spec_checkout:
+    python3 scripts/ci/mcp_spec_compliance.py run --spec-checkout {{quote(spec_checkout)}}
+
 # Regenerate code-owned documentation inventories
 docs-generate:
     cargo run --package labby --bin labby --all-features -- docs generate

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::Response;
 use axum::{Router, http::StatusCode, routing::get};
 use dashmap::DashMap;
 use labby_auth::config::AuthConfig;
@@ -423,11 +423,15 @@ async fn stdio_oauth_callback(
 }
 
 fn callback_response(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        Html(format!("<html><body><p>{message}</p></body></html>")),
-    )
-        .into_response()
+    let (page, title) = if status.is_success() {
+        (
+            labby_auth::pages::OAuthPage::Success,
+            "Authorization Complete",
+        )
+    } else {
+        (labby_auth::pages::OAuthPage::Error, "Authorization Failed")
+    };
+    labby_auth::pages::response(status, page, title, message)
 }
 
 fn authorization_state(authorization_url: &str) -> Result<String, OauthError> {
@@ -476,6 +480,28 @@ mod tests {
         CALLBACK_PATH, PendingFlow, PendingFlowGuard, StdioOauthCoordinator, authorization_state,
         unix_now,
     };
+
+    #[tokio::test]
+    async fn callback_pages_preserve_outcome_and_escape_messages() {
+        for (status, heading) in [
+            (axum::http::StatusCode::OK, "Authorization Complete"),
+            (axum::http::StatusCode::BAD_GATEWAY, "Authorization Failed"),
+        ] {
+            let response = super::callback_response(status, "<script>untrusted</script>");
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response.headers()[axum::http::header::CACHE_CONTROL],
+                "no-store"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 512 * 1024)
+                .await
+                .unwrap();
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(html.contains(heading));
+            assert!(html.contains("&lt;script&gt;untrusted&lt;/script&gt;"));
+            assert!(!html.contains("<script>"));
+        }
+    }
 
     #[test]
     fn callback_path_is_loopback_only_surface() {

@@ -33,7 +33,7 @@ Rules:
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, `StateMachine`, backend-capability vocabulary | serde, thiserror only |
+| `verify-core` | invariant identity, catalog parse/validate, verdicts, `ScenarioTarget`, backend-capability vocabulary | serde, serde_json, thiserror, toml; schema generation via schemars |
 | `verify-scenario` | scenario envelope, step encoding, normalization, shrink-stability, on-disk corpus layout | `verify-core` |
 | `verify-runner` | discovery, replay engine, target registry, backend registry, orchestration, `verify` CLI | `verify-core`, `verify-scenario`, `verify-report` |
 | `verify-report` | coverage matrix, text/JSON/HTML/Markdown renderers, CI summary | `verify-core`, `verify-scenario` |
@@ -145,6 +145,7 @@ Bounded    verified only up to a bound the backend reports
 Skipped    backend unavailable in this environment (tool not installed)
 Error      backend failed for reasons unrelated to the property
 Uncovered  no backend claims this invariant
+Incomplete backend stopped before completing its declared search; explored bounds retained
 ```
 
 `Bounded` is distinct from `Verified` on purpose. A Kani proof at `k = 5` and a
@@ -187,8 +188,8 @@ Contracts:
 2. `origin.kind` is one of `stateright | kani | loom | shuttle | alloy | tla |
    fuzz | incident | manual`. Provenance is retained; it never changes replay
    semantics.
-3. `expect` is exactly two values: `invariant_violated` (a regression scenario
-   reproducing a bug) or `invariant_holds` (a golden trace pinned against
+3. `expect` is exactly two values: `invariant_violated` (a counterexample
+   reproduction, not proof of a fixed product) or `invariant_holds` (a golden trace pinned against
    regression). Both replay through the same engine.
    Reproduction status is a **separate** axis, carried by `status`:
    `active` (replay matches `expect`; gated in T0), `quarantined` (failed the
@@ -248,7 +249,13 @@ pub trait ScenarioTarget {
         -> Result<StepOutcome, ScenarioError>;
 
     /// Evaluate one catalogued invariant against the current state.
-    fn check(&self, id: InvariantId, state: &Self::State) -> InvariantResult;
+    fn check(&self, id: &InvariantId, state: &Self::State)
+        -> Result<InvariantResult, ScenarioError>;
+
+    /// Opaque ID renaming is project-owned; default preserves initial and steps.
+    fn canonicalize(&self, initial: &serde_json::Value, steps: &[Self::Step])
+        -> Result<(serde_json::Value, Vec<Self::Step>), ScenarioError>
+    { Ok((initial.clone(), steps.to_vec())) }
 
     /// Optional: declare commutativity to improve normalization (§5.1).
     fn commutes(&self, _a: &Self::Step, _b: &Self::Step) -> bool { false }
@@ -293,6 +300,7 @@ Every backend implements:
 pub trait Backend {
     fn id(&self) -> BackendId;
     fn capabilities(&self) -> Capabilities;      // safety? liveness? concurrency? bounded?
+    fn has_handle(&self, model: &str, handle: &str) -> bool;
     fn availability(&self) -> Availability;      // Ready | Missing(reason)
     fn run(&self, plan: &CheckPlan) -> BackendReport;
 }
@@ -313,6 +321,14 @@ Contracts:
 4. Backends never write to the corpus directly. They return scenarios; the
    runner normalizes, dedups, and decides what lands.
 
+M1 validates catalog bindings using metadata only: `has_handle` must not run
+or install a tool, and validation never calls `availability` or `run`.
+`CheckPlan` includes a nonzero deadline, bounds, and optional seed. Until M2
+defines the scenario crate, `BackendReport.scenarios` carries opaque JSON for
+the runner to decode and validate, preserving the core's dependency direction.
+`InvariantResult::Incomplete` represents unresolved observations; unknown
+invariant IDs and harness failures use `ScenarioError`, never a Holds result.
+
 ## 8. Replay Engine
 
 ```
@@ -320,18 +336,36 @@ scenario file
   → resolve target by (project, model)
   → deserialize steps into target::Step
   → init state
+  → evaluate the initial state
   → apply each step, recording per-step invariant evaluations
-  → compare final verdict against `expect`
+  → aggregate the trace verdict and compare against `expect`
   → emit ReplayReport
 ```
 
 Verdict handling is driven by `status`, not by `expect` alone:
 
+For safety/security predicates, any violation in the initial state or after any
+step is sticky: a later valid state cannot erase it. Report the first failing
+step and retain subsequent observations. Test a trace that violates then
+recovers, an initially invalid state, and a valid empty trace. Invalid input,
+failed initialization, and harness errors are errors, not counterexamples.
+Finite replay cannot establish unbounded liveness: temporal checks require an
+explicit monitor, bounds, and fairness assumptions, and unresolved obligations
+remain incomplete rather than passing as proved. Refinement checks use the
+project's declared observation relation (§11).
+
+Counterexample reproduction and fixed-product regression are separate runs.
+Retain the original reproduction target/revision and expectation. A linked
+fixed-product regression reuses the input trace but expects `invariant_holds`;
+record the source fingerprint and both target/revision identities in the run
+manifest. Deliberately broken fixtures are harness self-tests only. Never make
+a surviving product bug green by expecting `invariant_violated` against it.
+
 | `status` | replay matches `expect` | replay does not match |
 | --- | --- | --- |
 | `active` | pass | **T0 failure** |
 | `quarantined` | pass, reported | reported, never fails T0 |
-| `unreproduced` | promote to `active` and say so | pass, reported |
+| `unreproduced` | report suggested promotion to `active`; do not mutate corpus | reported, not reproduced |
 
 An `unreproduced` scenario that starts matching `expect` is the interesting
 case: the model has grown the step it was missing, and the runner surfaces the
@@ -368,6 +402,14 @@ Uncovered ............   4     LABBY-CAT-009 LABBY-SEC-004 …
 Emitted as text, JSON, Markdown (for PR comments), and a static HTML matrix.
 The JSON form is the stable contract; everything else renders from it.
 
+Report model checking, counterexample reproduction, implementation conformance,
+real-process E2E, browser emulation, and actual-host qualification separately.
+Each run records source revisions, binary/fixture identities, invariant and
+scenario IDs, seeds, bounds, deadlines, observed results, and cleanup evidence.
+A missing host or backend is `Skipped`; a deadline-limited search is incomplete
+with its explored bounds, never `Verified`. Required qualification skips block
+that qualification. See [product qualification](QUALIFICATION.md).
+
 The `Uncovered` line names ids rather than printing a count, because a count is
 easy to ignore and a name is not.
 
@@ -380,8 +422,8 @@ verification" job is wrong.
 | --- | --- | --- | --- |
 | T0 | every PR | catalog validation, scenario replay, coverage report | < 60s |
 | T1 | every PR | Stateright bounded search, Loom harnesses | < 5 min |
-| T2 | merge queue / nightly | Kani proofs, Shuttle long runs | < 45 min |
-| T3 | nightly / weekly | Alloy, TLC/Apalache, deep Stateright, fuzz→scenario | unbounded |
+| T2 | nightly | Kani proofs, Shuttle long runs | < 45 min |
+| T3 | nightly / weekly | Alloy, TLC/Apalache, deep Stateright, fuzz→scenario | 60 min/backend, 120 min/job |
 
 T0 is the only tier that is a hard gate at adoption time. T1 becomes a gate once
 its runtime is proven stable. T2/T3 report and file, they do not block.
@@ -395,14 +437,25 @@ copy-pasted 200-line YAML.
 The honest limitation: backends verify the *model*, and a verified model with a
 divergent implementation buys nothing.
 
-The toolkit does not solve this generically, but it provides the hook: a
-`ConformanceTarget` that drives the real implementation through the same `Step`
-vocabulary and asserts the model's state predicate after each step. Whether an
-adopting project wires it is its own decision, per model. Labby should wire it
-for the request-lifecycle model first, where the step vocabulary is smallest.
+The toolkit provides a `ConformanceTarget` contract; the project supplies the
+adapter and observation relation. **Labby's lifecycle conformance is required
+in v1 (C1), after M3/M4, not an optional future hook.** Drive the real compiled
+product through public boundaries using the model's step vocabulary. Compare
+observable outcomes after every controlled step, allowing explicitly documented
+internal/stuttering transitions rather than assuming identical internal state.
 
-This is stated as a limitation, not as a feature, because a coverage dashboard
-that implies more assurance than exists is worse than none.
+Use fixture barriers and event acknowledgements, not sleeps, for dispatch,
+disconnect, cancellation, and late responses. Assert at most one authoritative
+terminal outcome, no late response overwriting a cancelled outcome, and eventual
+cleanup within a deadline. Distinguish cancellation before dispatch from
+cancellation after an upstream may already have performed a side effect; do not
+claim cancellation undoes that effect. Include a deliberately divergent adapter
+self-test proving the comparison fails, plus a real-product passing trace.
+
+The adapter belongs in Labby's test support; product code must not depend on
+`labby-model`. C1 completion requires trace-pinned real-process evidence, not
+merely another model implementation. Broader E2E qualification remains a
+separate evidence lane and need not invent formal models for every UI journey.
 
 ## 12. Production Incidents As Scenarios
 
@@ -432,19 +485,21 @@ Contracts:
 
 ## 13. Labby As First Adopter
 
-Labby adds, and nothing else:
+Labby's initial model artifacts are:
 
 ```
 formal/
   invariants.toml
-  scenarios/gateway/
+  scenarios/browser_request/
   alloy/
   tla/
-crates/labby-model/          # 12th workspace member, dev-facing
+crates/labby-model/          # 13th workspace member, dev-facing
 ```
 
-Plus one edit outside those paths: the workspace-member table in the root
-`CLAUDE.md` goes from 11 rows to 12 (§14).
+Integration also updates Cargo membership, Justfile recipes, CI, and the root
+`CLAUDE.md` workspace-member table together (§14), and adds the C1 test adapter
+and qualification fixtures. M3 implements the browser bridge request-lifecycle
+model and T0 replay; C1 conformance and broader qualification remain separate.
 
 `labby-model` sits at the same dependency depth as `labby-primitives`: it may
 depend on `labby-primitives` for shared vocabulary and on `verify-core` /
@@ -461,7 +516,8 @@ Candidate first models, smallest step-vocabulary first:
 3. **capability/scope authority** — `lab:read` / `lab` / `lab:admin` monotonicity
    and the admin-gated stdio spawn guard.
 
-Explicitly deferred: Code Mode runtime bounds, OAuth token lifecycle. Both are
+Explicitly deferred as formal models, not as E2E coverage: Code Mode runtime
+bounds and OAuth token lifecycle. Both are
 attractive and both have large step alphabets; they are not where to learn the
 toolkit.
 
@@ -477,12 +533,14 @@ dependency trees out of `cargo check --workspace --all-features`. But
 `verify-core` and `verify-scenario` — the two pure, leaf-shaped crates, and only
 those. So the product workspace does change:
 
-- workspace members go from 11 to 12, and the table in the root `CLAUDE.md`
+- workspace members go from 12 to 13 (including `labby-browser`), and the table in the root `CLAUDE.md`
   must be updated in the same change (M3), not left stale;
 - `labby-model` depends on the toolkit by path during incubation and by version
   after extraction;
-- backend crates are `dev-dependencies` of the model's own test targets, never
-  of the product workspace, so the default `cargo check` path is unaffected.
+- backend harness binaries live in the separate `verification/` workspace;
+  the product model depends only on pure core/scenario crates. Do not place
+  backend dev-dependencies on the product model: workspace all-target checks
+  can compile those too. Ordinary product gates do not execute external tools.
 
 If that dependency direction ever needs to reverse — product code depending on
 `labby-model` — the model has stopped being a model.

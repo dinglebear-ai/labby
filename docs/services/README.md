@@ -4,6 +4,7 @@ This directory documents Labby's current first-party product services. The gener
 
 | Service | Documentation |
 | --- | --- |
+| `access`, `projects`, owner bootstrap | [ACCESS.md](./ACCESS.md) |
 | `artifacts`, `sources`, `jobs`, `uploads`, `bundles` | [SKILLS.md](./SKILLS.md) |
 | `browser` | [BROWSER.md](./BROWSER.md) |
 | `doctor` | [DOCTOR.md](./DOCTOR.md) |

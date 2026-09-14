@@ -4,8 +4,12 @@
 //! relay behavior can be tested without depending on an external MCP server.
 
 #![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
@@ -22,6 +26,96 @@ struct FixtureServer {
     forge: bool,
     schema_revision: u64,
     invocation_count: AtomicU64,
+    forge_ledger: Option<PathBuf>,
+}
+
+impl FixtureServer {
+    fn begin_forge_invocation(&self) -> Result<ForgeEffectGuard, ErrorData> {
+        match self.forge_ledger.as_deref() {
+            Some(path) => {
+                update_ledger(path, 1, 1)?;
+                Ok(ForgeEffectGuard(Some(path.to_owned())))
+            }
+            None => {
+                self.invocation_count.fetch_add(1, Ordering::SeqCst);
+                Ok(ForgeEffectGuard(None))
+            }
+        }
+    }
+
+    fn observed_effects(&self) -> Result<(u64, u64), ErrorData> {
+        match self.forge_ledger.as_deref() {
+            Some(path) => update_ledger(path, 0, 0),
+            None => Ok((self.invocation_count.load(Ordering::SeqCst), 0)),
+        }
+    }
+}
+
+struct ForgeEffectGuard(Option<PathBuf>);
+
+impl Drop for ForgeEffectGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.as_deref() {
+            drop(update_ledger(path, 0, -1));
+        }
+    }
+}
+
+fn update_ledger(
+    path: &Path,
+    invocation_delta: u64,
+    active_delta: i64,
+) -> Result<(u64, u64), ErrorData> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| ErrorData::internal_error("forge ledger unavailable", None))?;
+    file.lock()
+        .map_err(|_| ErrorData::internal_error("forge ledger unavailable", None))?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(33)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ErrorData::internal_error("forge ledger unavailable", None))?;
+    if bytes.len() > 32 {
+        return Err(ErrorData::internal_error("forge ledger is invalid", None));
+    }
+    let (invocations, active) = if bytes.is_empty() {
+        (0, 0)
+    } else {
+        let value = std::str::from_utf8(&bytes)
+            .map_err(|_| ErrorData::internal_error("forge ledger is invalid", None))?;
+        let mut fields = value.split_ascii_whitespace();
+        let invocations = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .ok_or_else(|| ErrorData::internal_error("forge ledger is invalid", None))?;
+        let active = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .ok_or_else(|| ErrorData::internal_error("forge ledger is invalid", None))?;
+        if fields.next().is_some() {
+            return Err(ErrorData::internal_error("forge ledger is invalid", None));
+        }
+        (invocations, active)
+    };
+    let invocations = invocations
+        .checked_add(invocation_delta)
+        .ok_or_else(|| ErrorData::internal_error("forge ledger exhausted", None))?;
+    let active = active
+        .checked_add_signed(active_delta)
+        .ok_or_else(|| ErrorData::internal_error("forge ledger active count is invalid", None))?;
+    if invocation_delta != 0 || active_delta != 0 {
+        file.set_len(0)
+            .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
+            .and_then(|()| write!(file, "{invocations} {active}").map(|_| ()))
+            .and_then(|()| file.sync_data())
+            .map_err(|_| ErrorData::internal_error("forge ledger unavailable", None))?;
+    }
+    Ok((invocations, active))
 }
 
 impl ServerHandler for FixtureServer {
@@ -73,6 +167,12 @@ impl ServerHandler for FixtureServer {
                     .destructive(false)
                     .idempotent(true),
             );
+            let mut pending = Tool::new(
+                "forge.pending",
+                "Read-only pending operation for cancellation qualification",
+                object(serde_json::Map::new()),
+            );
+            pending.annotations = safe.annotations.clone();
             let mut destructive = Tool::new(
                 "forge.destructive",
                 "Destructive Forge fixture",
@@ -86,6 +186,7 @@ impl ServerHandler for FixtureServer {
             let mutable_property = format!("optional_v{}", self.schema_revision);
             tools.extend([
                 safe,
+                pending,
                 Tool::new(
                     "forge.unsupported",
                     "Unsupported nested Forge schema",
@@ -134,7 +235,7 @@ impl ServerHandler for FixtureServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if request.name.as_ref() == "fixture.echo" {
             let payload = serde_json::json!({
@@ -152,7 +253,18 @@ impl ServerHandler for FixtureServer {
         if !self.forge || !request.name.as_ref().starts_with("forge.") {
             return Err(ErrorData::invalid_params("unknown fixture tool", None));
         }
-        self.invocation_count.fetch_add(1, Ordering::SeqCst);
+        let _effect = self.begin_forge_invocation()?;
+        if request.name.as_ref() == "forge.pending" {
+            // rmcp signals request cancellation through the context token;
+            // handlers must cooperate. An unconditional sleep would measure
+            // fixture behavior rather than gateway cancellation delivery.
+            tokio::select! {
+                () = context.ct.cancelled() => {
+                    return Err(ErrorData::internal_error("fixture request cancelled", None));
+                }
+                () = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+            }
+        }
         if request.name.as_ref() == "forge.delay" {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
@@ -194,12 +306,16 @@ impl ServerHandler for FixtureServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
         if request.uri == "fixture://forge-status" && self.forge {
+            let (invocation_count, active_count) = self.observed_effects()?;
+            let mut status = serde_json::json!({
+                "invocation_count": invocation_count,
+                "schema_revision": self.schema_revision,
+            });
+            if self.forge_ledger.is_some() {
+                status["active_count"] = serde_json::json!(active_count);
+            }
             return Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                serde_json::json!({
-                    "invocation_count": self.invocation_count.load(Ordering::SeqCst),
-                    "schema_revision": self.schema_revision,
-                })
-                .to_string(),
+                status.to_string(),
                 request.uri,
             )])
             .into());
@@ -258,6 +374,7 @@ async fn main() -> anyhow::Result<()> {
     let mut saw_non_utf8_argument = false;
     let mut forge = false;
     let mut schema_revision = 1;
+    let mut forge_ledger = None;
     while let Some(arg) = args.next() {
         if arg == "--pid-file" {
             let path = args
@@ -273,6 +390,12 @@ async fn main() -> anyhow::Result<()> {
                 .next()
                 .and_then(|value| value.to_string_lossy().parse().ok())
                 .unwrap_or(1);
+        } else if arg == "--forge-ledger" {
+            forge_ledger = Some(
+                args.next()
+                    .ok_or_else(|| anyhow::anyhow!("missing forge ledger path"))?
+                    .into(),
+            );
         }
     }
 
@@ -281,9 +404,52 @@ async fn main() -> anyhow::Result<()> {
         forge,
         schema_revision,
         invocation_count: AtomicU64::new(0),
+        forge_ledger,
     }
     .serve((tokio::io::stdin(), tokio::io::stdout()))
     .await?;
     running.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    #[test]
+    fn durable_ledger_serializes_concurrent_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("effects.count");
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        let guard = update_ledger(path, 1, 1).unwrap();
+                        assert!(guard.1 > 0);
+                        update_ledger(path, 0, -1).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(update_ledger(&path, 0, 0).unwrap(), (160, 0));
+    }
+
+    #[test]
+    fn durable_ledger_rejects_malformed_state() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("effects.count");
+        std::fs::write(&path, "not-a-ledger").unwrap();
+        let error = update_ledger(&path, 0, 0).unwrap_err();
+        assert_eq!(error.message, "forge ledger is invalid");
+    }
+
+    #[test]
+    fn durable_ledger_rejects_oversized_state_instead_of_accepting_a_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("effects.count");
+        std::fs::write(&path, format!("1 0{}", " ".repeat(30))).unwrap();
+        let error = update_ledger(&path, 0, 0).unwrap_err();
+        assert_eq!(error.message, "forge ledger is invalid");
+    }
 }

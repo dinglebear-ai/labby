@@ -7,3 +7,5 @@ pub mod public_relay;
 pub mod target;
 pub mod upstream;
 pub mod upstream_stdio;
+
+pub(crate) mod cli_session;

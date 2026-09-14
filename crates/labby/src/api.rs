@@ -37,6 +37,9 @@ pub mod auth_helpers;
 /// `GET /health` and `GET /ready` liveness/readiness probes.
 pub mod health;
 
+/// Public native operator OAuth client metadata.
+mod cli_oauth;
+
 /// HTTP auth helpers for bearer-or-OAuth mode (metadata, WWW-Authenticate).
 pub mod oauth;
 

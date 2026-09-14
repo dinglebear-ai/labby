@@ -23,6 +23,11 @@ export type BrowserSessionState =
       authorityState?: SessionAuthorityState
       /** Server-provided recovery guidance for the non-ready authority states. */
       remediation?: string
+      /**
+       * True only when no owner exists yet and the server says this caller may
+       * claim ownership. Every other non-ready session gets no bootstrap form.
+       */
+      ownerBootstrapAvailable?: boolean
       /** Compatibility presentation flag derived only from server-projected capabilities. */
       isAdmin?: boolean
       projectId?: string
@@ -46,6 +51,7 @@ type SessionPayload =
       csrf_token: string
       authority_state?: string | null
       remediation?: string | null
+      owner_bootstrap_available?: boolean | null
       project_id?: string | null
       principal_id?: string | null
       active_owner?: { kind?: string; id?: string } | null
@@ -142,6 +148,8 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     ...(authorityState !== 'ready' && typeof payload.remediation === 'string' && payload.remediation
       ? { remediation: payload.remediation }
       : {}),
+    // Fail closed: bootstrap is only ever offered before an owner exists.
+    ownerBootstrapAvailable: authorityState === 'transport' && payload.owner_bootstrap_available === true,
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
     // Project-bound sessions can carry an explicit server-selected project
     // without the durable authority projection. Preserve that binding without

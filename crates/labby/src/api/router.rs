@@ -4,6 +4,9 @@
 #[path = "domain_viewer.rs"]
 mod domain_viewer;
 
+#[path = "platform_admin_elevation.rs"]
+mod platform_admin_elevation;
+
 #[cfg(feature = "gateway")]
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
@@ -447,6 +450,7 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 /// three services under paths that differ from `/v1/{service}`; every
 /// consumer that needs the mounted path (OpenAPI, tests) reads it here.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn service_dispatch_path(service: &str) -> String {
     match service {
         "access" => "/v1/access/admin".to_owned(),
@@ -925,10 +929,16 @@ pub(crate) fn build_router_with_external_auth(
     };
     let v1_protected = if credential_auth_configured {
         v1_group.map_router(|router| {
+            // route_layer order is inside-out: AuthLayer runs first, then
+            // durable platform-admin elevation, then domain Viewer admission.
             router
                 .route_layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     domain_viewer::provision,
+                ))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    platform_admin_elevation::elevate,
                 ))
                 .route_layer(make_auth_layer(true))
         })
@@ -968,6 +978,10 @@ pub(crate) fn build_router_with_external_auth(
             ),
             get(labby_discovery),
         );
+    let public_core = public_core.route(
+        crate::api::cli_oauth::descriptor(),
+        get(crate::api::cli_oauth::metadata),
+    );
     let mut route_group = public_core.merge(v1_protected);
     if !integrated_trusted_host {
         route_group = route_group
@@ -2407,6 +2421,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), expected);
+    }
+
+    #[tokio::test]
+    async fn cli_client_metadata_is_public_and_uses_configured_authority() {
+        let state = AppState::new().with_auth_config(labby_auth::config::AuthConfig {
+            public_url: Some(url::Url::parse("https://lab.example/").unwrap()),
+            ..Default::default()
+        });
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/labby-cli-client.json")
+                    .header("host", "localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=300"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            document["client_id"],
+            "https://lab.example/.well-known/labby-cli-client.json"
+        );
+        assert_eq!(
+            document["redirect_uris"],
+            serde_json::json!(["http://127.0.0.1/auth/upstream/callback"])
+        );
+        assert_eq!(document["token_endpoint_auth_method"], "none");
+        assert!(document.get("client_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn cli_client_metadata_requires_configured_https_authority() {
+        let app = build_router_with_bearer(AppState::new(), Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/labby-cli-client.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

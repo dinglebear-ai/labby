@@ -24,14 +24,36 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
-use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
+use crate::dispatch::upstream::pool::{
+    CapabilityCallError, UpstreamPool, redact_resource_uri_for_logging,
+};
 use crate::mcp::context::{
     auth_context_from_extensions, forwardable_client_capabilities,
     oauth_upstream_subject_for_request, redacted_oauth_subject_label,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::resource_errors::render as resource_render_error;
+use crate::mcp::resource_errors::{
+    classify_fetch_failure as classify_resource_fetch_failure,
+    fetch_classified as resource_fetch_classified, render as resource_render_error,
+};
 use crate::mcp::server::LabMcpServer;
+
+fn classified_resource_fetch_error(
+    uri: &str,
+    error: &CapabilityCallError,
+) -> (LoggingLevel, &'static str, &'static str, ErrorData) {
+    let (kind, summary) = classify_resource_fetch_failure(error);
+    let level = match kind {
+        "cancelled" | "response_too_large" => LoggingLevel::Warning,
+        _ => LoggingLevel::Error,
+    };
+    (
+        level,
+        kind,
+        summary,
+        resource_fetch_classified(uri, kind, summary),
+    )
+}
 
 impl LabMcpServer {
     /// Warm only regular resource upstreams before taking a listing snapshot.
@@ -266,7 +288,7 @@ impl LabMcpServer {
         };
         let result = match (relay_config, relay_capabilities) {
             (Some(config), Some(capabilities)) => {
-                pool.read_resource_relayed(
+                pool.read_resource_relayed_typed(
                     &config,
                     None,
                     request,
@@ -278,13 +300,17 @@ impl LabMcpServer {
                 )
                 .await
             }
-            _ => pool
-                .read_upstream_resource_request_allowed(
+            _ => match pool
+                .read_upstream_resource_request_allowed_typed(
                     request,
                     self.route_scope.allowed_upstreams(),
                 )
                 .await
-                .map(|outcome| outcome.map(Into::into)),
+            {
+                Some(Ok(result)) => Some(Ok(result.into())),
+                Some(Err(error)) => Some(Err(error)),
+                None => None,
+            },
         };
         match result {
             Some(Ok(result)) => {
@@ -315,6 +341,7 @@ impl LabMcpServer {
             }
             Some(Err(message)) => {
                 let elapsed_ms = start.elapsed().as_millis();
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 let upstream = uri
                     .strip_prefix("lab://upstream/")
                     .and_then(|rest| rest.split('/').next())
@@ -326,8 +353,8 @@ impl LabMcpServer {
                     upstream,
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "internal_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "resource proxy failed"
                 );
                 self.emit_dispatch_notification(
@@ -336,12 +363,12 @@ impl LabMcpServer {
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Error,
-                        kind: "internal_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
                 )
                 .await;
-                Err(ErrorData::internal_error(message, None))
+                Err(error)
             }
             None => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -474,7 +501,7 @@ impl LabMcpServer {
             "dispatch route selected"
         );
         let result = pool
-            .read_upstream_ui_resource_allowed(&uri, self.route_scope.allowed_upstreams())
+            .read_upstream_ui_resource_allowed_typed(&uri, self.route_scope.allowed_upstreams())
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
@@ -491,22 +518,23 @@ impl LabMcpServer {
                 (DispatchLogOutcome::Success, Ok(result.into()))
             }
             Some(Err(message)) => {
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 tracing::warn!(
                     surface = "mcp",
                     service = "labby",
                     action = "read_resource",
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "internal_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "ui resource proxy failed"
                 );
                 (
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Error,
-                        kind: "internal_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
-                    Err(ErrorData::internal_error(message, None)),
+                    Err(error),
                 )
             }
             None => {
@@ -562,20 +590,26 @@ impl LabMcpServer {
         );
         let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
         let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-            pool.read_resource_relayed(
-                config,
-                Some(oauth_subject),
-                request,
-                context.peer.clone(),
-                context.id.clone(),
-                context.ct.clone(),
-                self.relay_session_id,
-                capabilities,
-            )
-            .await
-            .unwrap_or_else(|| Err(format!("relayed upstream `{}` connect failed", config.name)))
+            match pool
+                .read_resource_relayed_typed(
+                    config,
+                    Some(oauth_subject),
+                    request,
+                    context.peer.clone(),
+                    context.id.clone(),
+                    context.ct.clone(),
+                    self.relay_session_id,
+                    capabilities,
+                )
+                .await
+            {
+                Some(outcome) => outcome,
+                None => Err(CapabilityCallError::Other {
+                    message: format!("relayed upstream `{}` connect failed", config.name),
+                }),
+            }
         } else {
-            pool.subject_scoped_read_resource_request(config, oauth_subject, request)
+            pool.subject_scoped_read_resource_request_typed(config, oauth_subject, request)
                 .await
                 .map(Into::into)
         };
@@ -605,6 +639,7 @@ impl LabMcpServer {
             }
             Err(message) => {
                 let elapsed_ms = start.elapsed().as_millis();
+                let (level, kind, summary, error) = classified_resource_fetch_error(&uri, &message);
                 tracing::warn!(
                     surface = "mcp",
                     service = "labby",
@@ -612,8 +647,8 @@ impl LabMcpServer {
                     upstream = %config.name,
                     resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
-                    kind = "upstream_error",
-                    error = %message,
+                    kind,
+                    failure_summary = summary,
                     "subject-scoped resource proxy failed"
                 );
                 self.emit_dispatch_notification(
@@ -622,12 +657,12 @@ impl LabMcpServer {
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Warning,
-                        kind: "upstream_error".into(),
+                        level,
+                        kind: kind.into(),
                     },
                 )
                 .await;
-                Err(ErrorData::invalid_params(message, None))
+                Err(error)
             }
         }
     }

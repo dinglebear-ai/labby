@@ -35,6 +35,27 @@ therefore `requires_admin` on every surface, and an action whose required
 capability is scope-level is not: the two axes are one fact expressed twice
 and must never disagree.
 
+Where the ceiling comes from depends on the caller kind:
+
+- **Static bearer** (`LABBY_MCP_HTTP_TOKEN`): the configured static-token scopes
+  (default `lab:read lab:admin`).
+- **OAuth JWT** (MCP clients): the scopes granted in the token.
+- **Browser session**: the admission kind. The session whose verified email
+  equals `LABBY_AUTH_ADMIN_EMAIL` receives the configured static-token scopes.
+  Every other allowlisted identity receives them with each `<prefix>:admin`
+  lowered to `<prefix>` (default `lab:read lab`). A session admitted only by
+  the Viewer domain policy receives `lab:read`. An allowlist entry is admission,
+  not an administrative grant.
+- **Durable elevation (browser sessions on `/v1` only)**: a browser session
+  whose Principal holds durable `platform.manage` is raised to `lab:admin` from
+  the access store when the access runtime is Ready. Elevation does not apply
+  to MCP routes, OAuth JWTs, or static bearer, and it never fires when the store
+  is unavailable.
+
+So platform administration for a browser user other than the configured admin
+is granted with `access.platform_admin.grant`, never by adding the email to
+the allowlist.
+
 ## Entity relationship model
 
 ```text

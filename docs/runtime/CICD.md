@@ -12,13 +12,74 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
+The incubating verification toolkit has a separate path-triggered advisory
+workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
+workspace boundary tests, core tests (including generated-schema freshness),
+Clippy, formatting, and a pinned cargo-deny audit of its own lockfile/policy on
+`ubuntu-24.04` within 15 minutes. It never regenerates
+schemas to hide drift. Both `verification/**` and the design-schema mirror are
+inputs, along with `crates/labby-model/**` and `formal/**`. Its broad toolkit
+checks remain advisory; failures are visible, not swallowed. The pure
+`verify-core`/`verify-scenario` leaves and their inherited workspace manifest
+also route product Rust checks because the dev-facing `labby-model` consumes
+them. Runner/backend/host sources do not enter the product dependency graph.
+
+Corpus adoption adds the unconditional reusable `verification-t0.yml` call in
+`ci.yml`, required by `ci-gate` even on documentation-only and fork PRs. It
+audits the isolated lockfile with pinned cargo-deny, builds the isolated
+`labby-verify` host with a separate 12-minute build cap,
+then runs catalog validation, golden-coverage checks and scenario replay under
+a 60-second external timeout (5-second kill grace; 20-minute job cap including
+setup/upload margin). Evidence
+contains the source revision/dirty state, binary SHA-256 and model replay JSON.
+Missing required golden coverage, invalid input, timeout or active mismatch
+fails T0. This is model-only evidence, not backend proof or product conformance.
+
+The unconditional reusable `verification-t1.yml` call runs bounded Stateright
+search outside `ci-gate` while runtime stability is established. It audits the
+same isolated lockfile, gives compilation 12 minutes separately, and caps model
+execution at 290 seconds plus five seconds of kill grace inside a 25-minute job.
+An incomplete/error/falsified result fails that advisory job; it is never
+converted to a successful bounded result. T0 and T1 retain evidence-separated
+JSON, text, Markdown and HTML reports and publish a job summary without changing
+the original execution status. The separate `verification-report.yml` PR-comment
+publisher is opt-in, disabled by default, fork-excluding and does not execute
+checkout code with its write token. No current caller enables publication.
+
+The unconditional `verification-conformance.yml` call is required by `ci-gate`.
+It builds the real product and lifecycle test target under a separate 15-minute
+cap, then runs the controlled HTTP/WebSocket/owned-audit conformance suite under
+a five-minute process timeout with five-second kill grace (25-minute total job
+cap). Nine required case artifacts cover the terminal outcomes, cancellation
+before and after dispatch, replacement ownership, and a deliberately divergent
+real adapter. Validation binds every trace hash and per-step observation to
+independently captured source/binary identity, requires successful cleanup, and
+retains the negative adapter's actual divergence instead of calling it product
+success. Missing cases, incomplete observations, failed cleanup or mismatched
+provenance fail the required lane. Artifacts are retained for 14 days, including
+on failure; this lane does not substitute for the wider Q1–Q6 qualification.
+The same job also builds the isolated incident host, captures its separate
+binary digest, and runs the nine real daemon lifecycle prefixes through incident
+reduction, replay and bounded Stateright exploration under a 200-second process
+cap. Each observed prefix must map to applied model transitions with canonical
+identifiers. These controlled traces are explicitly unreproduced incidents, not
+claims of discovering or reproducing a production incident.
+The unconditional workflow-policy job also runs the conformance and incident
+evidence validators' negative unit tests using repository-root module discovery.
+Those tests supplement, but do not replace, the real-process evidence lane.
+
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
 `palette`, `browser_extension`, `npm`, `docker`, `security`,
-`javascript_advisories`, `release`, and
-`unraid`. Scheduled and manual runs enable every category so periodic/manual
+`javascript_advisories`, `release`, `unraid`, and `verification`. Scheduled and manual runs enable every category so periodic/manual
 validation stays broad.
+
+The independent `verification/` Cargo workspace has its own build, lint, test,
+and dependency-audit job. Changes under that tree enable `verification` without
+enabling the product Rust matrix. Its inherited `rust-toolchain.toml`,
+`clippy.toml`, `.cargo/` configuration, and `Justfile` recipes also enable the
+job. Ordinary product Rust source changes do not build the toolkit.
 
 On pull requests the `changes` job runs the classifier from the pull request's
 **base commit** rather than the branch's own copy. Be precise about what that
@@ -154,6 +215,7 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
+| macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
@@ -195,6 +257,15 @@ parse failures, warnings, and errors all fail the stable `ci-gate`.
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
 [MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
+
+That job also checks the complete dated specification inventory against the
+immutable source revision in `conformance/mcp-spec-sources.json`, then executes
+the registered oracles with `mcp_spec_compliance.py run --gate oracles`.
+The `mcp-spec-compliance` artifact retains receipts and explicit coverage gaps.
+This is a regression gate for the registered oracles, not a claim of full
+protocol compliance; the strict full-compliance command still fails while
+requirements remain unreviewed or uncovered. See
+[Testing: MCP specification oracles](../dev/TESTING.md#mcp-specification-oracles).
 
 The advisory `MCP upstream drift` workflow watches both the MCP specification
 repository and the latest rmcp release. Its pinned inputs live in

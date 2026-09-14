@@ -118,7 +118,7 @@ pub(crate) fn build_authelia_authorize_url(
         .append_pair("state", &request.state)
         .append_pair("code_challenge", &request.code_challenge)
         .append_pair("code_challenge_method", &request.code_challenge_method);
-    pairs.append_pair("nonce", &crate::util::fingerprint(&request.state));
+    pairs.append_pair("nonce", &crate::util::oauth_provider_nonce(&request.state));
     if request.force_consent {
         pairs.append_pair("prompt", "consent");
     }
@@ -360,6 +360,14 @@ mod tests {
         );
         assert_eq!(pairs.get("scope").map(String::as_str), Some("openid email"));
         assert!(pairs.contains_key("nonce"));
+        assert_eq!(
+            pairs.get("nonce"),
+            Some(&crate::util::oauth_provider_nonce("state"))
+        );
+        assert_ne!(
+            pairs.get("nonce"),
+            Some(&crate::util::oauth_state_diagnostic_id("state"))
+        );
         assert_eq!(pairs.get("state").map(String::as_str), Some("state"));
         assert_eq!(pairs.get("prompt").map(String::as_str), Some("consent"));
     }

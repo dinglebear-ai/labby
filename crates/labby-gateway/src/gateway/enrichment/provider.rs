@@ -724,7 +724,10 @@ head -c 256 /dev/zero | tr '\0' x >&2
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 1_000, 64),
+                // Process startup approached the one-second deadline under a loaded full-suite
+                // run. Keep the content cap exact while giving this process-bound assertion a
+                // deadline that measures output classification rather than scheduler latency.
+                &runner(script, 5_000, 64),
             )
             .await,
         );

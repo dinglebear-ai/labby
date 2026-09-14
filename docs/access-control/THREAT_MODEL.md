@@ -78,6 +78,31 @@ Mitigations:
 - code review lint/tests forbid known shortcut checks where feasible;
 - matrix tests cover each intersection of read/admin transport scope and domain role.
 
+Variant (implemented mitigation): an allowlist entry is treated as an
+administrative grant. Before PR #637, every email-allowlisted browser session
+received the full configured static-token scopes (default `lab:read lab:admin`),
+so any allowlisted identity could reach `requires_admin` actions such as
+`setup` `draft.set`/`draft.commit`, which write the live `.env`.
+
+Current mitigations:
+
+- only the browser session whose verified email equals `LABBY_AUTH_ADMIN_EMAIL`
+  receives the configured static-token scopes; every other allowlisted or
+  Authelia domain-allowlisted session receives the same list with each
+  `<prefix>:admin` lowered to `<prefix>` (default `lab:read lab`); a session
+  admitted only by the Viewer domain policy receives `lab:read`
+  (`crates/labby-auth/src/middleware.rs`, `without_admin_scopes`);
+- on `/v1` routes, a browser session whose durable Principal holds
+  `platform.manage` (for example through `access.platform_admin.grant`) is
+  elevated to `lab:admin` from the access store; if the access runtime is not
+  Ready the elevation does not happen (`crates/labby/src/api/platform_admin_elevation.rs`);
+- tests: `non_admin_allowlisted_sessions_lose_every_admin_scope`
+  (`middleware.rs`) and `durable_platform_admin_session_is_elevated`
+  (`platform_admin_elevation.rs`).
+
+State written during the exposure window is not undone by the fix. See the
+[privilege-exposure runbook](../runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md).
+
 ### T4: Email-based identity takeover/rebinding
 
 Attack: authorization is keyed by mutable/case-insensitive email and a new identity obtains another person's grants.

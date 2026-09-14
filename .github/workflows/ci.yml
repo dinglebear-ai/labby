@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      run_windows:
+        description: Run all Windows installer, workspace, and desktop checks
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '23 9 * * 1'
   push:
@@ -53,7 +59,7 @@ jobs:
           --allow-arm64
       - name: Verify workflow policy tests and Node toolchain sync
         run: |
-          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py
+          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py scripts/ci/test_verification_workflow.py scripts/ci/test_conformance_workflow.py scripts/ci/test_incident_evidence.py scripts/ci/test_mcp_spec_workflow.py
           python scripts/ci/check_node_toolchain_sync.py
       - name: Enforce shared-cache capability boundary
         run: >-
@@ -94,6 +100,7 @@ jobs:
       security: ${{ steps.classify.outputs.security }}
       javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
       release: ${{ steps.classify.outputs.release }}
+      verification: ${{ steps.classify.outputs.verification }}
       # Comma-separated routing keys this workflow gates on that the trusted
       # base-branch classifier could not emit. The classify step already forced
       # them to `true`; this output only reports the drift to `ci-gate`.
@@ -336,7 +343,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     needs: changes
-    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && (needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true') }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -351,15 +358,21 @@ jobs:
   macos-installer:
     name: macOS installer behavioral contracts
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: changes
-    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' || needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Run installer contracts on macOS
         run: scripts/tests/installers.sh
+      - name: Run macOS updater and recovery lifecycle tests
+        run: |
+          cargo test -p labby --all-features --locked self_update::tests
+          cargo test -p labby --all-features --locked --test gateway_auto_reconnect
 
   frontend-assets:
     name: Frontend assets
@@ -945,6 +958,58 @@ jobs:
           install_args: just
       - run: just docs-check
 
+  verification:
+    name: Verification workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: changes
+    # `verification/` is a separate Cargo workspace, so none of the product Rust
+    # jobs above touch it. Without this job and its routing key a change
+    # confined to that directory would build and test nothing while CI reported
+    # green. See verification/CLAUDE.md.
+    if: ${{ needs.changes.outputs.verification == 'true' || needs.changes.outputs.workflow == 'true' }}
+    env:
+      CARGO_DENY_VERSION: "0.19.8"
+      CARGO_DENY_SHA256: "70e769ae3872e34d45132b17040859175e11401dc12dddb0303e0b8c7d088f3f"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just cargo:cargo-nextest
+      - run: just verify-lint
+      - run: just verify-check
+      - run: just verify-test
+      # The root `Cargo Deny` job reads the root lockfile only and never sees
+      # verification/Cargo.lock. A license gate nobody runs is worse than none.
+      #
+      # Installed from the same pinned release and checksum as that job rather
+      # than through `just verify-deny`, which assumes a cargo-deny already on
+      # PATH. The pin is a supply-chain control and applies to both workspaces.
+      - name: Run pinned Cargo Deny against the verification workspace
+        run: |
+          set -euo pipefail
+          tool_dir="$(mktemp -d)"
+          trap 'rm -rf "$tool_dir"' EXIT
+          archive="$tool_dir/cargo-deny.tar.gz"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 300 \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          printf '%s  %s\n' "$CARGO_DENY_SHA256" "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" -C "$tool_dir" --strip-components=1
+          "$tool_dir/cargo-deny" --version
+          "$tool_dir/cargo-deny" \
+            --log-level warn \
+            --manifest-path ./verification/Cargo.toml \
+            --all-features \
+            check
+
   rustdoc:
     name: Rustdoc
     runs-on: ubuntu-24.04
@@ -1103,6 +1168,28 @@ jobs:
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts
         run: python3 scripts/ci/mcp_auth_normative_conformance.py
+      - name: Checkout immutable MCP specification source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: modelcontextprotocol/modelcontextprotocol
+          ref: 5f5440bb26a62e2cf3440b92da5a667efa03b267
+          path: target/mcp-spec-source
+          persist-credentials: false
+      - name: Fetch locked dependencies for offline evidence binding
+        run: cargo fetch --locked
+      - name: Validate full specification inventory and fail-closed reporter
+        run: |
+          python3 -m unittest scripts.ci.test_extract_mcp_spec_requirements scripts.ci.test_extract_mcp_schema_requirements scripts.ci.test_mcp_spec_compliance scripts.ci.test_mcp_oracle_runner
+          python3 scripts/ci/mcp_spec_compliance.py check --spec-checkout target/mcp-spec-source
+      - name: Run registered specification oracles (not a full-compliance claim)
+        run: python3 scripts/ci/mcp_spec_compliance.py run --gate oracles --spec-checkout target/mcp-spec-source
+      - name: Preserve specification coverage gaps and execution receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mcp-spec-compliance
+          path: target/mcp-spec-compliance
+          if-no-files-found: warn
       - name: Run dated protocol and extension suites
         run: |
           python3 -m unittest scripts/ci/test_mcp_conformance_script.py
@@ -1229,9 +1316,9 @@ jobs:
     name: Test (Windows)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # Windows filesystem and process-containment behavior is platform-specific;
-    # Rust changes must prove it natively before the shared gate can pass.
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # Windows filesystem and process-containment behavior is platform-specific
+    # and runs only when explicitly selected from workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1523,9 +1610,9 @@ jobs:
     name: Labby desktop Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
-    # only. Native Rust test-windows is separately required on pull requests.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.desktop == 'true' }}
+    # Advisory, excluded from ci-gate, and only runs when explicitly selected
+    # from workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows == true && needs.changes.outputs.desktop == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
@@ -1610,6 +1697,24 @@ jobs:
       - name: Run isolated real-Authelia flow
         run: bash tests/authelia/run.sh
 
+  verification-t0:
+    name: Verification T0
+    uses: ./.github/workflows/verification-t0.yml
+    permissions:
+      contents: read
+
+  verification-conformance:
+    name: Lifecycle implementation conformance
+    uses: ./.github/workflows/verification-conformance.yml
+    permissions:
+      contents: read
+
+  verification-t1:
+    name: Verification T1 (advisory)
+    uses: ./.github/workflows/verification-t1.yml
+    permissions:
+      contents: read
+
   ci-gate:
     name: ci-gate
     runs-on: ubuntu-24.04
@@ -1617,6 +1722,8 @@ jobs:
     if: always()
     needs:
       - fleet-policy
+      - verification-t0
+      - verification-conformance
       - changes
       - unraid-plugin-check
       - actionlint
@@ -1636,6 +1743,7 @@ jobs:
       - extracted-crate-slices
       - docs-check
       - rustdoc
+      - verification
       - clippy
       - test
       - test-windows
@@ -1703,6 +1811,8 @@ jobs:
             esac
           }
           require_success fleet-policy "${{ needs.fleet-policy.result }}"
+          require_success verification-t0 "${{ needs.verification-t0.result }}"
+          require_success verification-conformance "${{ needs.verification-conformance.result }}"
           require_success changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
@@ -1722,6 +1832,7 @@ jobs:
           require_success_or_skipped extracted-crate-slices "${{ needs.extracted-crate-slices.result }}"
           require_success_or_skipped docs-check "${{ needs.docs-check.result }}"
           require_success_or_skipped rustdoc "${{ needs.rustdoc.result }}"
+          require_success_or_skipped verification "${{ needs.verification.result }}"
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped test-windows "${{ needs.test-windows.result }}"

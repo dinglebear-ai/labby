@@ -53,7 +53,7 @@ test('AuthBootstrap renders the auth_error login screen instead of the generic e
   assert.match(markup, /Authentication Error/)
   assert.match(markup, /auth store unavailable/)
   assert.match(markup, /Request ID: req-auth-123/)
-  assert.match(markup, /Sign in again/)
+  assert.match(markup, /Sign In Again/)
 })
 
 test('AuthBootstrap does not bypass hosted auth when NEXT_PUBLIC_API_TOKEN is set', () => {
@@ -93,6 +93,7 @@ test('AuthBootstrap shows owner setup instead of the app while owner bootstrap i
   __setBrowserSessionStateForTests({
     ...signedIn,
     authorityState: 'transport',
+    ownerBootstrapAvailable: true,
     remediation: 'Complete owner bootstrap to enable multi-user authority.',
   })
 
@@ -107,13 +108,36 @@ test('AuthBootstrap shows owner setup instead of the app while owner bootstrap i
   assert.equal(markup.includes('Authentication Error'), false)
 })
 
-test('AuthBootstrap shows the no-access state for an unprovisioned identity', () => {
-  __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'unprovisioned' })
+function assertNoBootstrapForm(markup: string) {
+  assert.equal(markup.includes('name="organization_name"'), false)
+  assert.equal(markup.includes('name="project_name"'), false)
+  assert.equal(markup.includes('Complete owner bootstrap'), false)
+  assert.match(markup, /Sign out/)
+  assert.equal(markup.includes('children'), false)
+}
+
+test('AuthBootstrap never offers owner bootstrap to an unprovisioned identity', () => {
+  // Even a stale or forged availability flag cannot surface the form once an
+  // owner exists: unprovisioned is only reachable after bootstrap completed.
+  __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'unprovisioned', ownerBootstrapAvailable: true })
 
   const markup = renderGate()
   assert.match(markup, /No access yet/)
   assert.match(markup, /Ask an administrator/)
-  assert.equal(markup.includes('children'), false)
+  assertNoBootstrapForm(markup)
+})
+
+test('AuthBootstrap withholds owner bootstrap from an ineligible caller before setup', () => {
+  __setBrowserSessionStateForTests({
+    ...signedIn,
+    authorityState: 'transport',
+    remediation: 'Complete owner bootstrap to enable multi-user authority.',
+  })
+
+  const markup = renderGate()
+  assert.match(markup, /No access yet/)
+  assert.match(markup, /Only its configured owner account can finish setup/)
+  assertNoBootstrapForm(markup)
 })
 
 test('AuthBootstrap renders the app for a ready session', () => {

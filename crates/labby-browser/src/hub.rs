@@ -57,6 +57,16 @@ struct PendingCall {
     catalog_digest: String,
     generation: Uuid,
     reply: oneshot::Sender<Result<Value>>,
+    audit_terminal: Arc<Mutex<Option<AuditTerminal>>>,
+}
+
+type AuditTerminal = (&'static str, Option<String>);
+
+fn set_audit_terminal(slot: &Mutex<Option<AuditTerminal>>, result: &Result<Value>) {
+    *slot.lock().expect("audit terminal lock") = Some(match result {
+        Ok(_) => ("succeeded", None),
+        Err(error) => ("failed", Some(error.kind().to_string())),
+    });
 }
 
 struct CallGuard {
@@ -64,17 +74,26 @@ struct CallGuard {
     call_id: String,
     generation: Uuid,
     audit_id: Option<String>,
+    browser_id: String,
+    tab_id: i64,
+    document_id: String,
+    tool_name: String,
+    catalog_revision: i64,
     started: Instant,
     armed: bool,
+    audit_terminal: Arc<Mutex<Option<AuditTerminal>>>,
 }
 
 impl CallGuard {
-    fn set_audit_id(&mut self, audit_id: String) {
-        self.audit_id = Some(audit_id);
-    }
-
     fn disarm(&mut self) {
         self.armed = false;
+    }
+
+    fn mark_terminal(&mut self, result: &Result<Value>) {
+        *self.audit_terminal.lock().expect("audit terminal lock") = Some(match result {
+            Ok(_) => ("succeeded", None),
+            Err(error) => ("failed", Some(error.kind().to_string())),
+        });
     }
 }
 
@@ -83,7 +102,14 @@ impl Drop for CallGuard {
         if !self.armed {
             return;
         }
-        if let Err(error) = self.bridge.cancel_pending(&self.call_id, self.generation) {
+        let terminal_audit = self
+            .audit_terminal
+            .lock()
+            .ok()
+            .and_then(|value| value.clone());
+        if terminal_audit.is_none()
+            && let Err(error) = self.bridge.cancel_pending(&self.call_id, self.generation)
+        {
             tracing::warn!(
                 call_id = self.call_id,
                 error_kind = error.kind(),
@@ -94,24 +120,43 @@ impl Drop for CallGuard {
             return;
         };
         let Some(cleanup_permit) = self.bridge.store.try_acquire_cancellation_cleanup() else {
-            tracing::warn!(
-                audit_id,
-                "cancelled browser call audit cleanup deferred until process restart: backlog full"
-            );
+            tracing::warn!(audit_id, "browser call audit cleanup dropped: backlog full");
             return;
         };
         let store = self.bridge.store.clone();
+        let browser_id = self.browser_id.clone();
+        let tab_id = self.tab_id;
+        let document_id = self.document_id.clone();
+        let tool_name = self.tool_name.clone();
+        let catalog_revision = self.catalog_revision;
         let duration = i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             tracing::warn!(
                 audit_id,
-                "cancelled browser call audit cleanup deferred until process restart"
+                "cancelled browser call audit cleanup dropped: no async runtime"
             );
             return;
         };
         runtime.spawn(async move {
             let _cleanup_permit = cleanup_permit;
-            if let Err(error) = store.abandon_invocation(&audit_id, duration).await {
+            let cleanup = if let Some((outcome, error_kind)) = terminal_audit {
+                store
+                    .finish_invocation_outcome(&audit_id, outcome, error_kind, duration)
+                    .await
+            } else {
+                store
+                    .abandon_invocation(
+                        &audit_id,
+                        &browser_id,
+                        tab_id,
+                        &document_id,
+                        &tool_name,
+                        catalog_revision,
+                        duration,
+                    )
+                    .await
+            };
+            if let Err(error) = cleanup {
                 tracing::warn!(
                     audit_id,
                     error_kind = error.kind(),
@@ -126,8 +171,11 @@ impl Drop for CallGuard {
 #[derive(Default)]
 struct CallTestHooks {
     pause_after_pending: AtomicBool,
+    fail_persistence_after_pending: AtomicBool,
+    fail_revalidation_after_pending: AtomicBool,
     pending_inserted: tokio::sync::Notify,
     resume_after_pending: tokio::sync::Notify,
+    terminal_audit_started: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -255,7 +303,21 @@ impl BrowserBridge {
             .connections
             .insert(browser.id.clone(), LiveConnection { generation, sender })
         {
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "replaced",
+                generation_id = %generation,
+                previous_generation_id = %replaced.generation,
+                "browser connection generation replaced"
+            );
             finish_generation(&mut state, &replaced);
+        } else {
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "connected",
+                generation_id = %generation,
+                "browser connection generation established"
+            );
         }
         let connection = BrowserConnection {
             browser_id: browser.id,
@@ -275,6 +337,12 @@ impl BrowserBridge {
             .get(browser_id)
             .is_some_and(|connection| connection.generation.to_string() == connection_id);
         if owns_current && let Some(connection) = state.connections.remove(browser_id) {
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "disconnected",
+                generation_id = %connection.generation,
+                "browser connection generation disconnected"
+            );
             finish_generation(&mut state, &connection);
         }
         Ok(())
@@ -355,6 +423,19 @@ impl BrowserBridge {
             return Ok(false);
         }
         let pending = state.pending.remove(&call_id).expect("pending call exists");
+        set_audit_terminal(&pending.audit_terminal, &outcome);
+        let phase = if outcome.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        tracing::debug!(
+            action = "browser.call.lifecycle",
+            phase,
+            call_id,
+            generation_id = %pending.generation,
+            "browser call completed"
+        );
         drop(pending.reply.send(outcome));
         Ok(true)
     }
@@ -374,6 +455,7 @@ impl BrowserBridge {
         let started = Instant::now();
         let call_id = Uuid::new_v4().to_string();
         let (reply, wait) = oneshot::channel();
+        let audit_terminal = Arc::new(Mutex::new(None));
         let (sender, generation, catalog_fingerprint) = {
             let _authority = self.authority.lock().await;
             let catalog_fingerprint = self
@@ -406,19 +488,34 @@ impl BrowserBridge {
                     catalog_digest: catalog_digest.clone(),
                     generation,
                     reply,
+                    audit_terminal: Arc::clone(&audit_terminal),
                 },
+            );
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "admitted",
+                call_id,
+                generation_id = %generation,
+                "browser call admitted before durable audit and page dispatch"
             );
             (sender, generation, catalog_fingerprint)
         };
-        // Install cancellation cleanup before any await that follows pending
-        // publication. The audit id is attached only after persistence starts.
+        // Install cancellation cleanup, including a preallocated audit identity,
+        // before any await that follows pending publication.
+        let audit_id = Uuid::new_v4().to_string();
         let mut guard = CallGuard {
             bridge: self.clone(),
             call_id: call_id.clone(),
             generation,
-            audit_id: None,
+            audit_id: Some(audit_id.clone()),
+            browser_id: browser_id.to_string(),
+            tab_id,
+            document_id: document_id.clone(),
+            tool_name: tool_name.clone(),
+            catalog_revision,
             started,
             armed: true,
+            audit_terminal,
         };
         #[cfg(test)]
         if self
@@ -441,46 +538,104 @@ impl BrowserBridge {
                 arguments,
             },
         ));
-        let audit_id = self
-            .store
-            .begin_invocation(
-                browser_id,
-                tab_id,
-                &document_id,
-                &tool_name,
-                catalog_revision,
-            )
-            .await?;
-        guard.set_audit_id(audit_id.clone());
-        let send_result = {
-            let _authority = self.authority.lock().await;
+        #[cfg(test)]
+        let fail_persistence = self
+            .call_test_hooks
+            .fail_persistence_after_pending
+            .swap(false, Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail_persistence = false;
+        let begin_result = if fail_persistence {
+            Err(BrowserError::InvalidRequest(
+                "controlled persistence failure".into(),
+            ))
+        } else {
             self.store
-                .validate_call(
+                .begin_invocation(
+                    &audit_id,
                     browser_id,
                     tab_id,
                     &document_id,
-                    catalog_revision,
-                    &catalog_digest,
                     &tool_name,
+                    catalog_revision,
                 )
-                .await?;
-            // Observation or disconnect may have cancelled admission while audit IO ran.
-            if !self
-                .lock_state()?
-                .pending
-                .get(&call_id)
-                .is_some_and(|call| call.generation == generation)
-            {
-                return Err(BrowserError::StaleDocument);
+                .await
+        };
+        if let Err(error) = begin_result {
+            self.remove_pending(&call_id, generation, "persistence_failed")?;
+            guard.disarm();
+            return Err(error);
+        }
+        let send_result = {
+            let _authority = self.authority.lock().await;
+            #[cfg(test)]
+            let fail_revalidation = self
+                .call_test_hooks
+                .fail_revalidation_after_pending
+                .swap(false, Ordering::SeqCst);
+            #[cfg(not(test))]
+            let fail_revalidation = false;
+            let validation = if fail_revalidation {
+                Err(BrowserError::InvalidRequest(
+                    "controlled revalidation failure".into(),
+                ))
+            } else {
+                self.store
+                    .validate_call(
+                        browser_id,
+                        tab_id,
+                        &document_id,
+                        catalog_revision,
+                        &catalog_digest,
+                        &tool_name,
+                    )
+                    .await
+            };
+            match validation {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    // Observation or disconnect may have cancelled admission while audit IO ran.
+                    let state = self.lock_state()?;
+                    if !state
+                        .pending
+                        .get(&call_id)
+                        .is_some_and(|call| call.generation == generation)
+                    {
+                        Err(BrowserError::StaleDocument)
+                    } else {
+                        let result = sender.try_send(event);
+                        if result.is_ok() {
+                            tracing::debug!(
+                                action = "browser.call.lifecycle",
+                                phase = "dispatched",
+                                call_id,
+                                generation_id = %generation,
+                                "browser call dispatched"
+                            );
+                        }
+                        Ok(result)
+                    }
+                }
             }
-            sender.try_send(event)
+        };
+        let send_result = match send_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.remove_pending(&call_id, generation, "revalidation_failed")?;
+                let result = Err(error);
+                guard.mark_terminal(&result);
+                self.finish_audit(&audit_id, &result, started).await;
+                guard.disarm();
+                return result;
+            }
         };
         if let Err(error) = send_result {
-            self.remove_pending(&call_id, generation)?;
+            self.remove_pending(&call_id, generation, "dispatch_failed")?;
             let result = Err(match error {
                 mpsc::error::TrySendError::Full(_) => BrowserError::ServerBusy,
                 mpsc::error::TrySendError::Closed(_) => BrowserError::BrowserOffline,
             });
+            guard.mark_terminal(&result);
             self.finish_audit(&audit_id, &result, started).await;
             guard.disarm();
             return result;
@@ -490,7 +645,7 @@ impl BrowserBridge {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(BrowserError::ConnectionClosed),
             Err(_) => {
-                self.remove_pending(&call_id, generation)?;
+                self.remove_pending(&call_id, generation, "timed_out")?;
                 if sender
                     .send(BrowserEvent(BrowserEnvelope::new(
                         None,
@@ -510,6 +665,7 @@ impl BrowserBridge {
                 Err(BrowserError::ToolTimeout)
             }
         };
+        guard.mark_terminal(&result);
         self.finish_audit(&audit_id, &result, started).await;
         guard.disarm();
         result
@@ -528,6 +684,12 @@ impl BrowserBridge {
         let browser = self.store.revoke_browser(browser_id).await?;
         let mut state = self.lock_state()?;
         if let Some(connection) = state.connections.remove(browser_id) {
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "disconnected",
+                generation_id = %connection.generation,
+                "revoked browser connection generation disconnected"
+            );
             finish_generation(&mut state, &connection);
         }
         Ok(browser)
@@ -561,6 +723,12 @@ impl BrowserBridge {
         let mut state = self.lock_state()?;
         for browser_id in superseded {
             if let Some(connection) = state.connections.remove(&browser_id) {
+                tracing::debug!(
+                    action = "browser.call.lifecycle",
+                    phase = "disconnected",
+                    generation_id = %connection.generation,
+                    "superseded browser connection generation disconnected"
+                );
                 finish_generation(&mut state, &connection);
             }
         }
@@ -586,6 +754,14 @@ impl BrowserBridge {
             let Some(call) = state.pending.remove(&id) else {
                 continue;
             };
+            set_audit_terminal(&call.audit_terminal, &Err(BrowserError::StaleDocument));
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "invalidated",
+                call_id = id,
+                generation_id = %call.generation,
+                "browser call invalidated"
+            );
             if let Some(connection) = state.connections.get(browser_id)
                 && connection.generation == call.generation
                 && connection
@@ -615,31 +791,54 @@ impl BrowserBridge {
             .get(call_id)
             .is_some_and(|call| call.generation == generation)
             && let Some(call) = state.pending.remove(call_id)
-            && let Some(connection) = state.connections.get(&call.browser_id)
-            && connection.generation == generation
-            && connection
-                .sender
-                .try_send(BrowserEvent(BrowserEnvelope::new(
-                    None,
-                    BrowserMessage::ToolCancel {
-                        call_id: call_id.to_string(),
-                    },
-                )))
-                .is_err()
         {
-            tracing::warn!(call_id, "browser caller cancellation delivery failed");
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase = "cancelled",
+                call_id,
+                generation_id = %generation,
+                "browser call cancelled by caller"
+            );
+            if let Some(connection) = state.connections.get(&call.browser_id)
+                && connection.generation == generation
+                && connection
+                    .sender
+                    .try_send(BrowserEvent(BrowserEnvelope::new(
+                        None,
+                        BrowserMessage::ToolCancel {
+                            call_id: call_id.to_string(),
+                        },
+                    )))
+                    .is_err()
+            {
+                tracing::warn!(call_id, "browser caller cancellation delivery failed");
+            }
         }
         Ok(())
     }
 
-    fn remove_pending(&self, call_id: &str, generation: Uuid) -> Result<()> {
+    fn remove_pending(&self, call_id: &str, generation: Uuid, phase: &'static str) -> Result<()> {
         let mut state = self.lock_state()?;
         if state
             .pending
             .get(call_id)
             .is_some_and(|pending| pending.generation == generation)
         {
-            state.pending.remove(call_id);
+            let pending = state.pending.remove(call_id).expect("pending call exists");
+            let error = match phase {
+                "timed_out" => BrowserError::ToolTimeout,
+                "dispatch_failed" => BrowserError::ServerBusy,
+                "revalidation_failed" => BrowserError::StaleDocument,
+                _ => BrowserError::InvalidRequest("pre-dispatch failure".into()),
+            };
+            set_audit_terminal(&pending.audit_terminal, &Err(error));
+            tracing::debug!(
+                action = "browser.call.lifecycle",
+                phase,
+                call_id,
+                generation_id = %generation,
+                "browser call terminalized"
+            );
         }
         Ok(())
     }
@@ -664,6 +863,8 @@ impl BrowserBridge {
     }
 
     async fn finish_audit(&self, audit_id: &str, result: &Result<Value>, started: Instant) {
+        #[cfg(test)]
+        self.call_test_hooks.terminal_audit_started.notify_one();
         if let Err(error) = self
             .store
             .finish_invocation(
@@ -692,6 +893,7 @@ fn finish_generation(state: &mut HubState, connection: &LiveConnection) {
         .collect();
     for call_id in call_ids {
         if let Some(pending) = state.pending.remove(&call_id) {
+            set_audit_terminal(&pending.audit_terminal, &Err(BrowserError::BrowserOffline));
             if connection
                 .sender
                 .try_send(BrowserEvent(BrowserEnvelope::new(
@@ -716,8 +918,535 @@ fn finish_generation(state: &mut HubState, connection: &LiveConnection) {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
+    use std::collections::BTreeMap;
+    use tracing::{Event, Metadata, Subscriber, field::Visit, span};
 
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+
+    #[derive(Clone, Default)]
+    struct EventCapture(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    struct FieldCapture(BTreeMap<String, String>);
+
+    impl Visit for FieldCapture {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().into(), value.into());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().into(), format!("{value:?}"));
+        }
+    }
+
+    impl Subscriber for EventCapture {
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+        fn event(&self, event: &Event<'_>) {
+            let mut fields = FieldCapture(BTreeMap::new());
+            event.record(&mut fields);
+            if fields
+                .0
+                .get("action")
+                .is_some_and(|value| value == "browser.call.lifecycle")
+            {
+                self.0.lock().unwrap().push(fields.0);
+            }
+        }
+        fn enter(&self, _: &span::Id) {}
+        fn exit(&self, _: &span::Id) {}
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_events_are_authoritative_ordered_and_redacted() {
+        let capture = EventCapture::default();
+        let events = capture.0.clone();
+        let _subscriber = tracing::subscriber::set_default(capture);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
+        let browser_id = connection.browser_id.clone();
+        let generation = connection.connection_id.clone();
+        enable_tool(
+            &bridge,
+            &browser_id,
+            &generation,
+            7,
+            3,
+            "sensitive-tool-name",
+        )
+        .await;
+        let task_bridge = bridge.clone();
+        let task_browser = browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &task_browser,
+                    7,
+                    "doc".into(),
+                    3,
+                    current_digest(&task_bridge).await,
+                    "sensitive-tool-name".into(),
+                    serde_json::json!({"secret":"must-not-appear"}),
+                    Some(Duration::from_secs(2)),
+                )
+                .await
+        });
+        let event = connection.receiver.recv().await.unwrap().0;
+        let BrowserMessage::ToolCall { call_id, .. } = event.message else {
+            unreachable!()
+        };
+        assert!(
+            bridge
+                .complete(
+                    &browser_id,
+                    &generation,
+                    BrowserMessage::ToolResult {
+                        call_id,
+                        result: Value::Null
+                    },
+                )
+                .unwrap()
+        );
+        task.await.unwrap().unwrap();
+        assert!(
+            !bridge
+                .complete(
+                    &browser_id,
+                    &generation,
+                    BrowserMessage::ToolResult {
+                        call_id: "untrusted-incoming-call-id".into(),
+                        result: Value::Null,
+                    },
+                )
+                .unwrap()
+        );
+        bridge
+            .disconnect(&browser_id, "untrusted-incoming-generation-id")
+            .unwrap();
+        let pending_bridge = bridge.clone();
+        let pending_browser = browser_id.clone();
+        let pending = tokio::spawn(async move {
+            pending_bridge
+                .call(
+                    &pending_browser,
+                    7,
+                    "doc".into(),
+                    3,
+                    current_digest(&pending_bridge).await,
+                    "sensitive-tool-name".into(),
+                    Value::Null,
+                    Some(Duration::from_secs(2)),
+                )
+                .await
+        });
+        let BrowserMessage::ToolCall { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        let signing = SigningKey::from_bytes(&[9; 32]);
+        let replacement = authenticate_browser(&bridge, &browser_id, &signing).await;
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(BrowserError::BrowserOffline)
+        ));
+        bridge
+            .disconnect(&browser_id, &replacement.connection_id)
+            .unwrap();
+
+        let events = events.lock().unwrap();
+        let phases: Vec<_> = events
+            .iter()
+            .filter_map(|event| event.get("phase").map(String::as_str))
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                "connected",
+                "admitted",
+                "dispatched",
+                "succeeded",
+                "admitted",
+                "dispatched",
+                "replaced",
+                "disconnected"
+            ]
+        );
+        for event in events.iter() {
+            assert!(event.contains_key("generation_id"));
+            assert!(event.keys().all(|key| matches!(
+                key.as_str(),
+                "message"
+                    | "action"
+                    | "phase"
+                    | "call_id"
+                    | "generation_id"
+                    | "previous_generation_id"
+            )));
+            let rendered = format!("{event:?}");
+            for secret in [
+                "sensitive-tool-name",
+                "must-not-appear",
+                "untrusted-incoming-call-id",
+                "untrusted-incoming-generation-id",
+            ] {
+                assert!(!rendered.contains(secret));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_events_cover_each_terminal_transition() {
+        let capture = EventCapture::default();
+        let events = capture.0.clone();
+        let _subscriber = tracing::subscriber::set_default(capture);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
+        let browser_id = connection.browser_id.clone();
+        let generation = connection.connection_id.clone();
+        enable_tool(&bridge, &browser_id, &generation, 7, 3, "search").await;
+
+        let start_call = |timeout| {
+            let bridge = bridge.clone();
+            let browser_id = browser_id.clone();
+            tokio::spawn(async move {
+                bridge
+                    .call(
+                        &browser_id,
+                        7,
+                        "doc".into(),
+                        3,
+                        current_digest(&bridge).await,
+                        "search".into(),
+                        Value::Null,
+                        Some(timeout),
+                    )
+                    .await
+            })
+        };
+
+        let failed = start_call(Duration::from_secs(2));
+        let BrowserMessage::ToolCall { call_id, .. } =
+            connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        assert!(
+            bridge
+                .complete(
+                    &browser_id,
+                    &generation,
+                    BrowserMessage::ToolError {
+                        call_id,
+                        kind: "controlled".into(),
+                        message: "controlled".into()
+                    }
+                )
+                .unwrap()
+        );
+        assert!(failed.await.unwrap().is_err());
+
+        let cancelled = start_call(Duration::from_secs(2));
+        let BrowserMessage::ToolCall { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        let BrowserMessage::ToolCancel { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+
+        let timed_out = start_call(Duration::from_millis(100));
+        let BrowserMessage::ToolCall { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            timed_out.await.unwrap(),
+            Err(BrowserError::ToolTimeout)
+        ));
+        let BrowserMessage::ToolCancel { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+
+        let invalidated = start_call(Duration::from_secs(2));
+        let BrowserMessage::ToolCall { .. } = connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        bridge
+            .close_document(&browser_id, &generation, 7, "doc")
+            .await
+            .unwrap();
+        assert!(matches!(
+            invalidated.await.unwrap(),
+            Err(BrowserError::StaleDocument)
+        ));
+
+        let phases: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event.get("phase").cloned())
+            .collect();
+        for terminal in ["failed", "cancelled", "timed_out", "invalidated"] {
+            assert!(
+                phases.iter().any(|phase| phase == terminal),
+                "missing {terminal}: {phases:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_dispatch_failures_are_not_reported_as_dispatch_or_cancellation() {
+        let capture = EventCapture::default();
+        let events = capture.0.clone();
+        let _subscriber = tracing::subscriber::set_default(capture);
+
+        for expected in ["persistence_failed", "revalidation_failed"] {
+            let bridge = BrowserBridge::memory().await.unwrap();
+            let connection = pair_and_authenticate(&bridge).await;
+            enable_tool(
+                &bridge,
+                &connection.browser_id,
+                &connection.connection_id,
+                1,
+                1,
+                "search",
+            )
+            .await;
+            match expected {
+                "persistence_failed" => bridge
+                    .call_test_hooks
+                    .fail_persistence_after_pending
+                    .store(true, Ordering::SeqCst),
+                _ => bridge
+                    .call_test_hooks
+                    .fail_revalidation_after_pending
+                    .store(true, Ordering::SeqCst),
+            }
+            assert!(
+                bridge
+                    .call(
+                        &connection.browser_id,
+                        1,
+                        "doc".into(),
+                        1,
+                        current_digest(&bridge).await,
+                        "search".into(),
+                        Value::Null,
+                        None,
+                    )
+                    .await
+                    .is_err()
+            );
+            let phases: Vec<_> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| event.get("phase").cloned())
+                .collect();
+            assert_eq!(phases[phases.len() - 2..], ["admitted", expected]);
+        }
+
+        for full in [true, false] {
+            let bridge = BrowserBridge::memory().await.unwrap();
+            let mut connection = pair_and_authenticate(&bridge).await;
+            enable_tool(
+                &bridge,
+                &connection.browser_id,
+                &connection.connection_id,
+                1,
+                1,
+                "search",
+            )
+            .await;
+            if full {
+                let sender = bridge
+                    .lock_state()
+                    .unwrap()
+                    .connections
+                    .get(&connection.browser_id)
+                    .unwrap()
+                    .sender
+                    .clone();
+                for index in 0..128 {
+                    sender
+                        .try_send(BrowserEvent(BrowserEnvelope::new(
+                            None,
+                            BrowserMessage::ToolCancel {
+                                call_id: format!("fill-{index}"),
+                            },
+                        )))
+                        .unwrap();
+                }
+            } else {
+                connection.receiver.close();
+            }
+            assert!(
+                bridge
+                    .call(
+                        &connection.browser_id,
+                        1,
+                        "doc".into(),
+                        1,
+                        current_digest(&bridge).await,
+                        "search".into(),
+                        Value::Null,
+                        None,
+                    )
+                    .await
+                    .is_err()
+            );
+            let phases: Vec<_> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| event.get("phase").cloned())
+                .collect();
+            assert_eq!(phases[phases.len() - 2..], ["admitted", "dispatch_failed"]);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn disconnect_is_the_only_terminal_event_for_its_pending_generation() {
+        let capture = EventCapture::default();
+        let events = capture.0.clone();
+        let _subscriber = tracing::subscriber::set_default(capture);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
+        enable_tool(
+            &bridge,
+            &connection.browser_id,
+            &connection.connection_id,
+            1,
+            1,
+            "search",
+        )
+        .await;
+        let task_bridge = bridge.clone();
+        let browser_id = connection.browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &browser_id,
+                    1,
+                    "doc".into(),
+                    1,
+                    current_digest(&task_bridge).await,
+                    "search".into(),
+                    Value::Null,
+                    None,
+                )
+                .await
+        });
+        assert!(matches!(
+            connection.receiver.recv().await.unwrap().0.message,
+            BrowserMessage::ToolCall { .. }
+        ));
+        bridge
+            .disconnect(&connection.browser_id, &connection.connection_id)
+            .unwrap();
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(BrowserError::BrowserOffline)
+        ));
+        let phases: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event.get("phase").cloned())
+            .collect();
+        assert_eq!(
+            phases,
+            ["connected", "admitted", "dispatched", "disconnected"]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn administrative_generation_end_emits_one_authoritative_disconnect() {
+        for approve_replacement in [false, true] {
+            let capture = EventCapture::default();
+            let events = capture.0.clone();
+            let _subscriber = tracing::subscriber::set_default(capture);
+            let bridge = BrowserBridge::memory().await.unwrap();
+            let mut connection = pair_and_authenticate(&bridge).await;
+            enable_tool(
+                &bridge,
+                &connection.browser_id,
+                &connection.connection_id,
+                1,
+                1,
+                "search",
+            )
+            .await;
+            let pairing = if approve_replacement {
+                // A replacement is another pairing for the same browser
+                // identity. Using a different key creates an independent
+                // browser and therefore must not disconnect this generation.
+                let signing = SigningKey::from_bytes(&[9; 32]);
+                let public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(signing.verifying_key().as_bytes());
+                Some(
+                    bridge
+                        .request_pairing("replacement", EXTENSION_ID, &public_key)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let task_bridge = bridge.clone();
+            let browser_id = connection.browser_id.clone();
+            let task = tokio::spawn(async move {
+                task_bridge
+                    .call(
+                        &browser_id,
+                        1,
+                        "doc".into(),
+                        1,
+                        current_digest(&task_bridge).await,
+                        "search".into(),
+                        Value::Null,
+                        None,
+                    )
+                    .await
+            });
+            assert!(matches!(
+                connection.receiver.recv().await.unwrap().0.message,
+                BrowserMessage::ToolCall { .. }
+            ));
+            if let Some(pairing) = pairing {
+                bridge
+                    .approve_pairing(&pairing.id, &pairing.pairing_fingerprint())
+                    .await
+                    .unwrap();
+            } else {
+                bridge.revoke_browser(&connection.browser_id).await.unwrap();
+            }
+            assert!(matches!(
+                task.await.unwrap(),
+                Err(BrowserError::BrowserOffline)
+            ));
+            let phases: Vec<_> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| event.get("phase").cloned())
+                .collect();
+            assert_eq!(
+                phases,
+                ["connected", "admitted", "dispatched", "disconnected"]
+            );
+        }
+    }
 
     #[tokio::test]
     async fn dropping_transport_owner_removes_its_exact_connection() {
@@ -1054,6 +1783,96 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         assert!(bridge.lock_state().unwrap().pending.is_empty());
         drop(store_permit);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            bridge.store().wait_for_cancellation_cleanups_for_test(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            bridge
+                .store()
+                .audit_outcomes_for_tool_for_test("slow")
+                .await
+                .unwrap(),
+            vec![(
+                "abandoned".to_string(),
+                Some("caller_cancelled".to_string())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_terminal_audit_preserves_selected_success() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
+        enable_tool(
+            &bridge,
+            &connection.browser_id,
+            &connection.connection_id,
+            1,
+            1,
+            "terminal-audit",
+        )
+        .await;
+        let task_bridge = bridge.clone();
+        let browser_id = connection.browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &browser_id,
+                    1,
+                    "doc".into(),
+                    1,
+                    current_digest(&task_bridge).await,
+                    "terminal-audit".into(),
+                    Value::Null,
+                    None,
+                )
+                .await
+        });
+        let BrowserMessage::ToolCall { call_id, .. } =
+            connection.receiver.recv().await.unwrap().0.message
+        else {
+            unreachable!()
+        };
+        let store_permit = bridge.store().hold_executor_for_test().await;
+        assert!(
+            bridge
+                .complete(
+                    &connection.browser_id,
+                    &connection.connection_id,
+                    BrowserMessage::ToolResult {
+                        call_id,
+                        result: Value::Null,
+                    },
+                )
+                .unwrap()
+        );
+        bridge
+            .call_test_hooks
+            .terminal_audit_started
+            .notified()
+            .await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(store_permit);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let outcomes = bridge
+                    .store()
+                    .audit_outcomes_for_tool_for_test("terminal-audit")
+                    .await
+                    .unwrap();
+                if outcomes == vec![("succeeded".to_string(), None)] {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1063,13 +1882,13 @@ mod tests {
         let bridge = BrowserBridge::open(&database).await.unwrap();
         let mut audit_ids = Vec::new();
         for index in 0..=crate::store::MAX_CANCELLATION_AUDIT_CLEANUPS {
-            audit_ids.push(
-                bridge
-                    .store()
-                    .begin_invocation("browser", index as i64, "doc", "tool", 1)
-                    .await
-                    .unwrap(),
-            );
+            let audit_id = Uuid::new_v4().to_string();
+            bridge
+                .store()
+                .begin_invocation(&audit_id, "browser", index as i64, "doc", "tool", 1)
+                .await
+                .unwrap();
+            audit_ids.push(audit_id);
         }
         let store_permit = bridge.store().hold_executor_for_test().await;
         let generation = Uuid::new_v4();
@@ -1080,8 +1899,14 @@ mod tests {
                 call_id: format!("call-{index}"),
                 generation,
                 audit_id: Some(audit_id.clone()),
+                browser_id: "browser".into(),
+                tab_id: index as i64,
+                document_id: "doc".into(),
+                tool_name: "tool".into(),
+                catalog_revision: 1,
                 started: Instant::now(),
                 armed: true,
+                audit_terminal: Arc::new(Mutex::new(None)),
             });
         }
 
@@ -1119,6 +1944,62 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn terminal_audit_retry_respects_cleanup_backlog_bound() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut audit_ids = Vec::new();
+        for index in 0..crate::store::MAX_CANCELLATION_AUDIT_CLEANUPS {
+            let audit_id = Uuid::new_v4().to_string();
+            bridge
+                .store()
+                .begin_invocation(&audit_id, "browser", index as i64, "doc", "blocked", 1)
+                .await
+                .unwrap();
+            audit_ids.push(audit_id);
+        }
+        let store_permit = bridge.store().hold_executor_for_test().await;
+        for (index, audit_id) in audit_ids.into_iter().enumerate() {
+            drop(CallGuard {
+                bridge: bridge.clone(),
+                call_id: format!("blocked-{index}"),
+                generation: Uuid::new_v4(),
+                audit_id: Some(audit_id),
+                browser_id: "browser".into(),
+                tab_id: index as i64,
+                document_id: "doc".into(),
+                tool_name: "blocked".into(),
+                catalog_revision: 1,
+                started: Instant::now(),
+                armed: true,
+                audit_terminal: Arc::new(Mutex::new(None)),
+            });
+        }
+        assert_eq!(bridge.store().available_cancellation_cleanups(), 0);
+
+        let terminal_id = Uuid::new_v4().to_string();
+        let terminal = Arc::new(Mutex::new(Some(("succeeded", None))));
+        drop(CallGuard {
+            bridge: bridge.clone(),
+            call_id: "terminal".into(),
+            generation: Uuid::new_v4(),
+            audit_id: Some(terminal_id),
+            browser_id: "browser".into(),
+            tab_id: 999,
+            document_id: "doc".into(),
+            tool_name: "terminal".into(),
+            catalog_revision: 1,
+            started: Instant::now(),
+            armed: true,
+            audit_terminal: terminal,
+        });
+        assert_eq!(bridge.store().available_cancellation_cleanups(), 0);
+        drop(store_permit);
+        bridge
+            .store()
+            .wait_for_cancellation_cleanups_for_test()
+            .await;
+    }
+
     #[test]
     fn dropping_armed_call_guard_without_runtime_does_not_panic() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1137,6 +2018,7 @@ mod tests {
                 catalog_digest: "digest".into(),
                 generation,
                 reply,
+                audit_terminal: Arc::new(Mutex::new(None)),
             },
         );
         let guard = CallGuard {
@@ -1144,8 +2026,14 @@ mod tests {
             call_id: "call".into(),
             generation,
             audit_id: Some("audit".into()),
+            browser_id: "browser".into(),
+            tab_id: 1,
+            document_id: "doc".into(),
+            tool_name: "tool".into(),
+            catalog_revision: 1,
             started: Instant::now(),
             armed: true,
+            audit_terminal: Arc::new(Mutex::new(None)),
         };
         drop(runtime);
 

@@ -38,6 +38,17 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Changed
 
+- **auth/access (breaking for operators):** browser sessions for allowlisted
+  identities other than `LABBY_AUTH_ADMIN_EMAIL` no longer receive `lab:admin`;
+  they receive the static-token scopes with admin scopes lowered (default
+  `lab:read lab`). Allowlisted colleagues therefore lose `requires_admin`
+  actions (`setup`, `snippets`, `server_logs`, `doctor`, `fs`, `browser`). Grant
+  durable platform administration with `access.platform_admin.grant`; on `/v1`
+  such sessions are elevated to `lab:admin` from the access store.
+  `/auth/session` adds `owner_bootstrap_available`, and the owner-setup screen is
+  offered only when it is true. Product-credential rate limiting now charges only
+  failed verifications. See `docs/runtime/OAUTH.md` (browser session scopes) and
+  `docs/runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md`.
 - **skills/artifacts (breaking):** durable Skill Library lifecycle actions use the
   `artifacts.*` namespace and `/v1/artifacts`; legacy `skill_library.*` configuration
   and action names are not valid. Exact acquisition sources are configured under
@@ -81,6 +92,50 @@ identifiers were removed. Commit links remain the authoritative historical recor
 ### Licensing
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
+
+## [1.19.0](https://github.com/dinglebear-ai/labby/compare/v1.18.2...v1.19.0) (2026-09-14)
+
+
+### Added
+
+* **verification:** add toolkit workspace, CI routing, and boundary docs ([#609](https://github.com/dinglebear-ai/labby/issues/609)) ([5202e2c](https://github.com/dinglebear-ai/labby/commit/5202e2cba43c78f51e5f2d6053625b67bbc425be))
+
+
+### Fixed
+
+* **access:** stop admitting allowlisted users as admins ([#637](https://github.com/dinglebear-ai/labby/issues/637)) ([d685ba1](https://github.com/dinglebear-ai/labby/commit/d685ba179a14a0fc00e3c6de0cb7f3e5f7ca61e7))
+* **ci:** wait for Unix daemon shutdown ([#649](https://github.com/dinglebear-ai/labby/issues/649)) ([9b8e7ae](https://github.com/dinglebear-ai/labby/commit/9b8e7ae67f379a2f7c3660822ba23248a0e3950e))
+
+## [1.18.2](https://github.com/dinglebear-ai/labby/compare/v1.18.1...v1.18.2) (2026-09-13)
+
+
+### Fixed
+
+* **host-service:** restore prior service generation ([#633](https://github.com/dinglebear-ai/labby/issues/633)) ([83eb284](https://github.com/dinglebear-ai/labby/commit/83eb2848a9608740ce7ee0365452f347b2e7667d))
+
+## [1.18.1](https://github.com/dinglebear-ai/labby/compare/v1.18.0...v1.18.1) (2026-09-13)
+
+
+### Fixed
+
+* complete automatic update and reconnect lifecycle recovery ([#628](https://github.com/dinglebear-ai/labby/issues/628)) ([903bec9](https://github.com/dinglebear-ai/labby/commit/903bec96c0b39ba73dd6735900abacc7a7afa791))
+* make release PR refreshes atomic ([#627](https://github.com/dinglebear-ai/labby/issues/627)) ([d4ce107](https://github.com/dinglebear-ai/labby/commit/d4ce107c581888430346cf31652dd4fb01280e08))
+* **oauth:** support personal upstream authorization without admin escalation ([#623](https://github.com/dinglebear-ai/labby/issues/623)) ([d5e328c](https://github.com/dinglebear-ai/labby/commit/d5e328c308d1f09d987e7af2cd4b76fc89ae3b1e))
+* tolerate release PR head propagation ([#631](https://github.com/dinglebear-ai/labby/issues/631)) ([f2bc51e](https://github.com/dinglebear-ai/labby/commit/f2bc51ed3131c55ac99e9a196542a465b2b05025))
+
+## [1.18.0](https://github.com/dinglebear-ai/labby/compare/v1.17.3...v1.18.0) (2026-09-13)
+
+
+### Added
+
+* **auth:** native operator login and Aurora OAuth screens ([#621](https://github.com/dinglebear-ai/labby/issues/621)) ([3190855](https://github.com/dinglebear-ai/labby/commit/3190855b291fc263c8aae2468cfaa16167339c37))
+
+
+### Fixed
+
+* **ci:** separate host-service qualification restart phases ([#620](https://github.com/dinglebear-ai/labby/issues/620)) ([c340a18](https://github.com/dinglebear-ai/labby/commit/c340a18597cef29dc5c043df841c252872809ac2))
+* give agents actionable and safe error recovery ([#625](https://github.com/dinglebear-ai/labby/issues/625)) ([9704cd3](https://github.com/dinglebear-ai/labby/commit/9704cd3e81975f8723d22a351fd5becebd6d4084))
+* **release:** make stable pointer verification and rollback durable ([#622](https://github.com/dinglebear-ai/labby/issues/622)) ([53d161e](https://github.com/dinglebear-ai/labby/commit/53d161ea159261866174fe3c0840d98ccbc0313b))
 
 ## [1.17.3](https://github.com/dinglebear-ai/labby/compare/v1.17.2...v1.17.3) (2026-09-13)
 

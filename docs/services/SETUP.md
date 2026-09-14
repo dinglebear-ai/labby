@@ -38,12 +38,15 @@ The installer enables `labby serve --auto-update`, preserves a stable `LABBY_HOM
 (default `~/.labby`), and records the executable search path for release verification.
 After the server passes its health check, it removes `net.labby.auto-update`, the
 standalone updater job. Existing user configuration and durable state remain in
-`LABBY_HOME`. The installer can restore the prior service if startup fails.
+`LABBY_HOME`. If startup or the scheduler handoff fails, the installer removes
+the new combined service and restores the prior service state.
 
 The server checks 60 seconds after startup and then every 24 hours. An unsuccessful
 check leaves the server running until the next check. Installation has a 15-minute
 deadline. Stopping the server cancels an in-flight installer before another update
-can start; an interrupted activation is recovered by the next installer run.
+can start. The next automatic check recovers any interrupted activation offline
+before reading the installed version or contacting the release service. A dry run
+reports required recovery without changing the installation.
 A verified newer stable release replaces the executable atomically. The server stops accepting connections,
 allows existing requests up to 30 seconds to finish, and exits. launchd restarts
 the updated executable. Long-lived connections must reconnect after the restart.
@@ -51,7 +54,10 @@ The update applies to the local executable, not Incus containers.
 
 Server and updater messages use `~/.labby/serve.log` and `~/.labby/serve.error.log`
 (or the configured `LABBY_STATE_DIR`). The existing verified installer retains
-its rollback receipt under `<install-dir>/.labby-install/`.
+its rollback receipt under `<install-dir>/.labby-install/`. Manual, automatic,
+and direct installer entry points share one process-level transaction lock. The
+installer flushes each activation boundary before advancing the journal and
+retains only the current and immediately previous verified executable artifacts.
 
 To disable automatic updates while keeping the server:
 
