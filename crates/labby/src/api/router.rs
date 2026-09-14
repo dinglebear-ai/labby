@@ -449,6 +449,7 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 /// Mounted `POST` dispatch path for a registry service. The router mounts
 /// three services under paths that differ from `/v1/{service}`; every
 /// consumer that needs the mounted path (OpenAPI, tests) reads it here.
+#[allow(dead_code)]
 #[must_use]
 pub(crate) fn service_dispatch_path(service: &str) -> String {
     match service {

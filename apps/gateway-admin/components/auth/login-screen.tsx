@@ -64,7 +64,7 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
             <span className="mt-1 block text-xs text-aurora-text-muted">Control Plane</span>
           </div>
         </div>
-        <p className={AURORA_MUTED_LABEL}>{errorMessage ? 'Authentication error' : 'Authentication required'}</p>
+        <p className={AURORA_MUTED_LABEL}>{errorMessage ? 'Authentication Error' : 'Authentication Required'}</p>
         <h1 className={cn(AURORA_DISPLAY_1, 'mt-2 text-aurora-text-primary')}>Sign in</h1>
         <p className="mt-2 text-sm leading-[1.5] text-aurora-text-muted">{introCopy}</p>
 
@@ -118,7 +118,7 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
 
         {authUnavailable ? (
           <Button className="mt-5 w-full" size="lg" onClick={() => window.location.reload()} type="button">
-            Retry
+            Sign In Again
           </Button>
         ) : null}
 
