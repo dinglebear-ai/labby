@@ -218,7 +218,12 @@ grep --fixed-strings --line-regexp "Labby multi-hop conformance passed" \
 # suite calls synthetic image/audio/resource/prompt tools that must not be
 # exposed by a production Labby catalog.
 conformance_token="mcp-conformance-test-token"
-HOME="${work_dir}/home" LABBY_MCP_HTTP_TOKEN="$conformance_token" \
+# This smoke test asserts the direct gateway descriptor, independently of the
+# product default catalog regime. Bind its configuration to an isolated home.
+smoke_home="${work_dir}/home"
+mkdir -p "$smoke_home"
+printf '[code_mode]\nenabled = false\n' >"${smoke_home}/config.toml"
+HOME="$smoke_home" LABBY_HOME="$smoke_home" LABBY_MCP_HTTP_TOKEN="$conformance_token" \
   LABBY_LOG="labby=warn,labby_auth=warn" \
   "${cargo_target_dir}/debug/labby" serve \
   --host 127.0.0.1 --port "$MCP_CONFORMANCE_LABBY_PORT" \

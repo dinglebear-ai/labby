@@ -636,6 +636,11 @@ fn write_config(home: &Path, upstream: UpstreamConfig) -> Result<()> {
         std::fs::set_permissions(state_root, std::fs::Permissions::from_mode(0o700))?;
     }
     let config = LabConfig {
+        // Conformance exercises direct multi-hop forwarding and gateway.reload.
+        code_mode: labby::config::CodeModeConfig {
+            enabled: false,
+            ..Default::default()
+        },
         gateway: GatewayPreferences {
             disable_spawn_guard: true,
             upstream_stderr_level: Some("warn".to_string()),
