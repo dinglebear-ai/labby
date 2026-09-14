@@ -21,6 +21,7 @@ use crate::output::{OutputFormat, print};
 const SERVER_ENV: &str = "/home/labby/.labby/.env";
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
+#[cfg(target_os = "macos")]
 const MACOS_SERVICE_INSTALLER: &str =
     include_str!("../../../../../scripts/install-macos-service.sh");
 
