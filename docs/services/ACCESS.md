@@ -103,7 +103,10 @@ does.
      It creates the Principal and a Project membership with role `member`;
    - the [automatic Viewer policy](#automatic-viewer-membership) (Google only):
      the first `/v1` request after a qualifying sign-in creates the Principal
-     with a Viewer membership on the host-selected Project.
+     with a Viewer membership on the host-selected Project. The web UI's
+     "No access yet" screen makes that request itself (a read-only
+     `GET /v1/catalog`) and reloads the session, so a qualifying teammate
+     only needs to sign in.
 
    There is no action that creates a Principal for a browser-only teammate.
    This is a known product gap.
@@ -294,7 +297,7 @@ viewer_project_id = "existing-project-id"
 
 The policy is disabled by default and currently supports Google browser sign-in only. Enabling it with another provider is a configuration error. `LABBY_AUTH_VIEWER_EMAIL_DOMAINS` overrides the domain list; the project remains selected by the host configuration, never by a browser request. This policy is separate from the legacy login/admin allowlist.
 
-After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
+After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. An unprovisioned session otherwise calls only `/auth/session`, so the web UI's no-access screen issues one read-only `GET /v1/catalog` and then reloads the session; the server alone decides admission. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
 
 New memberships receive Viewer, not Member or Admin. Existing active roles remain unchanged. Repeat or concurrent admission is idempotent. Disabled or suspended memberships, principals, projects, organizations, and revoked identity links are never reactivated by this policy.
 
