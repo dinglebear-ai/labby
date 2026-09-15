@@ -1,15 +1,17 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Boxes, Database, Loader2, Play, RefreshCw, Search, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Boxes, Database, GitBranch, Loader2, PackageSearch, Play, RefreshCw, Search, ShieldCheck, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
 import { AURORA_MUTED_LABEL, AURORA_PAGE_FRAME } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { AdministrationOverview } from './administration-overview'
+import { DepotSourceAdministration } from './source-administration'
+import { ArtifactControlPlane } from '@/components/skills/artifact-control-plane'
 import { DashboardPanel } from '@/components/dashboard/panel'
-import { initialOperationForm, isDestructiveOperation, operationParams, type OperationFormState, type OperationProperty } from '@/components/depot/operation-form'
+import { initialOperationForm, isDestructiveOperation, isNullableOperationProperty, operationParams, operationPropertyType, type OperationFormState, type OperationFormValue, type OperationProperty } from '@/components/depot/operation-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -17,23 +19,26 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { depotCall, depotOperations, depotStatus, type DepotOperation, type DepotStatus } from '@/lib/api/depot-client'
+import { depotCall, depotOperations, depotSession, depotStatus, type DepotOperation, type DepotSession, type DepotStatus } from '@/lib/api/depot-client'
 import { cn, getErrorMessage } from '@/lib/utils'
 
-type Workspace = 'overview' | 'catalog' | 'access' | 'operations'
+type Workspace = 'overview' | 'sources' | 'artifacts' | 'catalog' | 'access' | 'operations'
+type OperationWorkspace = Exclude<Workspace, 'overview' | 'sources' | 'artifacts'>
 
 const WORKSPACES: Array<{ id: Workspace; label: string; icon: typeof Boxes }> = [
   { id: 'overview', label: 'Overview', icon: Activity },
+  { id: 'sources', label: 'Sources', icon: GitBranch },
+  { id: 'artifacts', label: 'Artifacts', icon: PackageSearch },
   { id: 'catalog', label: 'Catalog', icon: Boxes },
   { id: 'access', label: 'Access', icon: ShieldCheck },
   { id: 'operations', label: 'Operations', icon: Wrench },
 ]
 
-function operationWorkspace(operation: DepotOperation): Exclude<Workspace, 'overview'> {
+function operationWorkspace(operation: DepotOperation): OperationWorkspace {
   return operation.group ?? 'catalog'
 }
 
-export function OperationGrid({ operations, workspace }: { operations: DepotOperation[]; workspace: Exclude<Workspace, 'overview'> }) {
+export function OperationGrid({ operations, workspace }: { operations: DepotOperation[]; workspace: OperationWorkspace }) {
   const [selected, setSelected] = useState<DepotOperation | null>(null)
   const [form, setForm] = useState<OperationFormState>({})
   const [confirmed, setConfirmed] = useState(false)
@@ -62,6 +67,10 @@ export function OperationGrid({ operations, workspace }: { operations: DepotOper
 
   const execute = async () => {
     if (!selected) return
+    if (selected.transportAvailable === false) {
+      toast.error('This Depot operation is host-local and has no remote API transport yet.')
+      return
+    }
     const operation = selected
     const generation = ++runGeneration.current
     runController.current?.abort()
@@ -106,9 +115,12 @@ export function OperationGrid({ operations, workspace }: { operations: DepotOper
       {visible.map(operation => {
         const readOnly = operation.annotations?.readOnlyHint === true
         const destructive = isDestructiveOperation(operation.annotations)
+        const hostLocal = operation.transportAvailable === false
+        const writeScopedRead = readOnly && operation.requiredScope === 'write'
         return <button key={operation.name} type="button" onClick={() => open(operation)} className="group flex min-w-0 flex-col gap-2 rounded-xl border border-[color-mix(in_srgb,var(--aurora-border-default)_60%,var(--aurora-page-bg))] bg-aurora-control-surface p-3.5 text-left transition-colors duration-150 hover:border-[color-mix(in_srgb,var(--aurora-accent-primary)_40%,transparent)] hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
-          <div className="flex w-full items-start justify-between gap-2.5"><span className="font-display text-sm font-[760] text-aurora-text-primary">{operation.title}</span><Badge variant="outline" className={cn('h-[18px] shrink-0 rounded border-[color-mix(in_srgb,currentColor_30%,transparent)] bg-[color-mix(in_srgb,currentColor_11%,transparent)] px-[7px] text-[9px] font-bold uppercase tracking-[.1em]', destructive ? 'text-aurora-error' : readOnly ? 'text-aurora-success' : 'text-aurora-warn')}>{destructive ? 'Destructive' : readOnly ? 'Read' : 'Admin'}</Badge></div>
+          <div className="flex w-full items-start justify-between gap-2.5"><span className="font-display text-sm font-[760] text-aurora-text-primary">{operation.title}</span><Badge variant="outline" className={cn('h-[18px] shrink-0 rounded border-[color-mix(in_srgb,currentColor_30%,transparent)] bg-[color-mix(in_srgb,currentColor_11%,transparent)] px-[7px] text-[9px] font-bold uppercase tracking-[.1em]', hostLocal || destructive ? 'text-aurora-error' : readOnly ? 'text-aurora-success' : 'text-aurora-warn')}>{hostLocal ? 'Host local' : destructive ? 'Destructive' : readOnly ? 'Read' : 'Admin'}</Badge></div>
           <p className="text-pretty text-xs leading-[1.55] text-aurora-text-muted">{operation.description}</p>
+          <div className="flex flex-wrap gap-1">{writeScopedRead ? <Badge variant="secondary" className="text-[9px] uppercase tracking-[.08em]">Write authority</Badge> : null}{operation.transports?.map(transport => <Badge key={transport} variant="outline" className="text-[9px] uppercase tracking-[.08em]">{transport}</Badge>)}</div>
           <code className="block max-w-full truncate font-mono text-[10.5px] text-aurora-accent-strong">{operation.name}</code>
         </button>
       })}
@@ -119,27 +131,30 @@ export function OperationGrid({ operations, workspace }: { operations: DepotOper
     <Dialog open={Boolean(selected)} onOpenChange={openState => !openState && close()}>
       <DialogContent className="max-h-[min(780px,calc(100vh-2rem))] max-w-2xl overflow-y-auto border-aurora-border-strong bg-aurora-panel-medium">
         <DialogHeader><DialogTitle>{selected?.title}</DialogTitle><DialogDescription>{selected?.description}</DialogDescription></DialogHeader>
-        <div className="grid gap-5"><div><p className={AURORA_MUTED_LABEL}>Canonical operation</p><code className="mt-1 block text-sm text-aurora-accent-primary">{selected?.name}</code></div>
+        <div className="grid gap-5"><div><p className={AURORA_MUTED_LABEL}>Canonical operation</p><code className="mt-1 block text-sm text-aurora-accent-primary">{selected?.name}</code><div className="mt-2 flex flex-wrap gap-1">{selected?.requiredScope ? <Badge variant="secondary">Scope: {selected.requiredScope}</Badge> : null}{selected?.transports?.map(transport => <Badge key={transport} variant="outline">{transport}</Badge>)}</div>{selected?.transportAvailable === false ? <p className="mt-3 rounded-md border border-aurora-warn/40 bg-aurora-warn/10 px-3 py-2 text-sm text-aurora-warn">Depot currently exposes this capability only through a host-local transport. It is catalogued here so the control-plane gap is visible, but Labby will not pretend it can execute it remotely.</p> : null}</div>
           <div className="grid gap-4 sm:grid-cols-2">{Object.entries(selected?.inputSchema.properties ?? {}).map(([name, raw]) => {
             const property: OperationProperty = raw
+            const type = operationPropertyType(property)
+            const nullable = isNullableOperationProperty(property)
             const required = selected?.inputSchema.required?.includes(name) ?? false
             const id = `depot-operation-${name}`
             const value = form[name]
-            const setValue = (next: string | boolean) => setForm(current => ({ ...current, [name]: next }))
-            return <div key={name} className={cn('grid content-start gap-1.5', property.type === 'object' || property.type === 'array' ? 'sm:col-span-2' : '')}>
+            const setValue = (next: OperationFormValue) => setForm(current => ({ ...current, [name]: next }))
+            return <div key={name} className={cn('grid content-start gap-1.5', type === 'object' || type === 'array' ? 'sm:col-span-2' : '')}>
               <label className="text-sm font-semibold text-aurora-text-primary" htmlFor={id}>{name}{required ? <span className="ml-1 text-aurora-warn">*</span> : null}</label>
-              {property.type === 'boolean' && !required ? <Select value={value === undefined ? 'unset' : String(value)} onValueChange={next => setForm(current => ({ ...current, [name]: next === 'unset' ? undefined : next === 'true' }))}><SelectTrigger id={id}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unset">Use Labby default</SelectItem><SelectItem value="true">Enabled</SelectItem><SelectItem value="false">Disabled</SelectItem></SelectContent></Select>
-                : property.type === 'boolean' ? <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm text-aurora-text-muted" htmlFor={id}><Checkbox id={id} checked={value === true} onCheckedChange={checked => setValue(checked === true)} />Enabled</label>
-                : Array.isArray(property.enum) ? <Select value={typeof value === 'string' ? value : ''} onValueChange={setValue}><SelectTrigger id={id}><SelectValue placeholder="Select a value" /></SelectTrigger><SelectContent>{property.enum.map(option => <SelectItem key={String(option)} value={String(option)}>{String(option)}</SelectItem>)}</SelectContent></Select>
-                : property.type === 'object' || property.type === 'array' ? <Textarea id={id} value={typeof value === 'string' ? value : ''} onChange={event => setValue(event.target.value)} className="min-h-24 font-mono text-[13px]" placeholder={property.type === 'array' ? 'Comma-separated values or JSON array' : '{ }'} spellCheck={false} />
-                : <Input id={id} type={property.type === 'integer' || property.type === 'number' ? 'number' : 'text'} step={property.type === 'integer' ? 1 : property.type === 'number' ? 'any' : undefined} min={property.minimum} max={property.maximum} minLength={property.minLength} maxLength={property.maxLength} pattern={property.pattern} value={typeof value === 'string' ? value : ''} onChange={event => setValue(event.target.value)} />}
+              {type === 'boolean' && (!required || nullable) ? <Select value={value === null ? 'null' : typeof value === 'boolean' ? String(value) : required ? '' : 'unset'} onValueChange={next => setForm(current => ({ ...current, [name]: next === 'unset' ? undefined : next === 'null' ? null : next === 'true' }))}><SelectTrigger id={id}><SelectValue placeholder="Select a value" /></SelectTrigger><SelectContent>{!required ? <SelectItem value="unset">Use Depot default</SelectItem> : null}<SelectItem value="true">Enabled</SelectItem><SelectItem value="false">Disabled</SelectItem>{nullable ? <SelectItem value="null">Clear (null)</SelectItem> : null}</SelectContent></Select>
+                : type === 'boolean' ? <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm text-aurora-text-muted" htmlFor={id}><Checkbox id={id} checked={value === true} onCheckedChange={checked => setValue(checked === true)} />Enabled</label>
+                : Array.isArray(property.enum) ? <Select disabled={value === null} value={typeof value === 'string' ? value : ''} onValueChange={setValue}><SelectTrigger id={id}><SelectValue placeholder="Select a value" /></SelectTrigger><SelectContent>{property.enum.map(option => <SelectItem key={String(option)} value={String(option)}>{String(option)}</SelectItem>)}</SelectContent></Select>
+                : type === 'object' || type === 'array' ? <Textarea id={id} disabled={value === null} value={typeof value === 'string' ? value : ''} onChange={event => setValue(event.target.value)} className="min-h-24 font-mono text-[13px]" placeholder={type === 'array' ? 'Comma-separated values or JSON array' : '{ }'} spellCheck={false} />
+                : <Input id={id} disabled={value === null} type={type === 'integer' || type === 'number' ? 'number' : 'text'} step={type === 'integer' ? 1 : type === 'number' ? 'any' : undefined} min={property.minimum} max={property.maximum} minLength={property.minLength} maxLength={property.maxLength} pattern={property.pattern} value={typeof value === 'string' ? value : ''} onChange={event => setValue(event.target.value)} />}
+              {nullable && type !== 'boolean' ? <label className="flex min-h-8 items-center gap-2 rounded-md border border-aurora-border-subtle bg-aurora-control-surface px-2.5 text-xs text-aurora-text-muted" htmlFor={id + '-null'}><Checkbox id={id + '-null'} checked={value === null} onCheckedChange={checked => setValue(checked === true ? null : '')} />Send null (clear)</label> : null}
               {property.description ? <p className="text-xs leading-5 text-aurora-text-subtle">{property.description}</p> : null}
             </div>
           })}</div>
           {selected && Object.keys(selected.inputSchema.properties ?? {}).length === 0 ? <p className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface px-4 py-3 text-sm text-aurora-text-muted">This operation does not require parameters.</p> : null}
           {selected && isDestructiveOperation(selected.annotations) ? <label className="flex items-start gap-3 rounded-aurora-2 border border-destructive/40 bg-destructive/10 p-4 text-sm" htmlFor="depot-destructive-confirm"><Checkbox id="depot-destructive-confirm" checked={confirmed} onCheckedChange={checked => setConfirmed(checked === true)} /><span><strong className="block text-aurora-text-primary">Confirm permanent operation</strong><span className="mt-1 block text-aurora-text-muted">I understand this action can remove or irreversibly change Labby catalog data.</span></span></label> : null}
           {result !== null && result.operation === selected?.name ? <div aria-live="polite"><p className={AURORA_MUTED_LABEL}>Result</p><pre className="mt-2 max-h-72 overflow-auto rounded-aurora-2 border border-aurora-border-subtle bg-aurora-control-surface p-4 text-xs leading-5 text-aurora-text-muted">{JSON.stringify(result.value, null, 2)}</pre></div> : null}</div>
-        <DialogFooter><Button variant="outline" onClick={close}>Close</Button><Button onClick={() => void execute()} disabled={running || Boolean(selected && isDestructiveOperation(selected.annotations) && !confirmed)}>{running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{isDestructiveOperation(selected?.annotations) ? 'Run destructive operation' : selected?.annotations?.readOnlyHint === true ? 'Run operation' : 'Review and run'}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={close}>Close</Button><Button onClick={() => void execute()} disabled={running || selected?.transportAvailable === false || Boolean(selected && isDestructiveOperation(selected.annotations) && !confirmed)}>{running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{selected?.transportAvailable === false ? 'Host-local only' : isDestructiveOperation(selected?.annotations) ? 'Run destructive operation' : selected?.annotations?.readOnlyHint === true ? 'Run operation' : 'Review and run'}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   </>
@@ -148,6 +163,7 @@ export function OperationGrid({ operations, workspace }: { operations: DepotOper
 export function DepotAdministrationPage() {
   const [workspace, setWorkspace] = useState<Workspace>('overview')
   const [status, setStatus] = useState<DepotStatus | null>(null)
+  const [session, setSession] = useState<DepotSession | null>(null)
   const [operations, setOperations] = useState<DepotOperation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -161,12 +177,13 @@ export function DepotAdministrationPage() {
     loadController.current = controller
     setLoading(true); setError(null)
     try {
-      const [nextStatus, nextOperations] = await Promise.all([depotStatus(controller.signal), depotOperations(controller.signal)])
+      const [nextStatus, nextSession, nextOperations] = await Promise.all([depotStatus(controller.signal), depotSession(controller.signal), depotOperations(controller.signal)])
       if (generation !== loadGeneration.current) return
-      setStatus(nextStatus); setOperations(nextOperations)
+      setStatus(nextStatus); setSession(nextSession); setOperations(nextOperations)
     } catch (cause) {
       if (controller.signal.aborted || generation !== loadGeneration.current) return
       setStatus(null)
+      setSession(null)
       setOperations([])
       setError(getErrorMessage(cause, 'Unable to load Labby administration.'))
     }
@@ -175,22 +192,32 @@ export function DepotAdministrationPage() {
   useEffect(() => { void load(); return () => loadController.current?.abort() }, [load])
 
   const counts = useMemo(() => ({
+    sources: operations.filter(operation => operation.name.startsWith('depot.sources.') || operation.name.startsWith('depot.ingest.')).length,
+    artifacts: operations.filter(operation => operation.name.startsWith('depot.artifacts.') || operation.name.startsWith('depot.uploads.') || operation.name.startsWith('depot.bundles.')).length,
     catalog: operations.filter(operation => operationWorkspace(operation) === 'catalog').length,
     access: operations.filter(operation => operationWorkspace(operation) === 'access').length,
     operations: operations.filter(operation => operationWorkspace(operation) === 'operations').length,
   }), [operations])
-  const authority = !status?.enabled ? 'offline' : status.authority ?? (operations.length === 0 ? 'unknown' : operations.some(operation => operation.annotations?.readOnlyHint === false) ? 'write' : 'read')
+  const authority = !status?.enabled ? 'offline' : status.mutationAuthority ? 'delegated' : status.authority ?? (operations.length === 0 ? 'unknown' : 'read')
+  const controlTarget = session?.backend.deploymentId ?? '—'
+  const controlScope = session?.backend.teamId ? [session.backend.tenantId ?? 'tenant', session.backend.teamId].join('/') : session?.backend.tenantId ?? '—'
 
-  return <><AppHeader breadcrumbs={[{ label: 'Labby', href: '/depot/' }, { label: 'Administration' }]} /><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
-    <ConsoleHero eyebrow="Labby · Control room" title="Administration" description="Operate every capability published by the selected Labby catalog authority through Labby’s authenticated control plane." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? 'Authority connected' : 'Authority unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" asChild><a href="/settings/depot/"><Database className="size-[13px]" />Authorities</a></Button><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[13px] animate-spin" /> : <RefreshCw className="size-[13px]" />}Refresh</Button></div>} stats={[
+  return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
+    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate Depot’s canonical control catalog through Labby, with dedicated source workflows and explicit authority and transport boundaries." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? (session?.backend.deploymentId ? session.backend.deploymentId + ' connected' : 'Control target connected') : 'Control target unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" asChild><a href="/settings/depot/"><Database className="size-[13px]" />Discovery providers</a></Button><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[13px] animate-spin" /> : <RefreshCw className="size-[13px]" />}Refresh</Button></div>} stats={[
       { label: 'Canonical operations', value: loading || error ? '—' : operations.length },
+      { label: 'Sources', value: loading || error ? '—' : counts.sources, tone: 'var(--aurora-accent-strong)' },
+      { label: 'Artifacts', value: loading || error ? '—' : counts.artifacts, tone: 'var(--aurora-accent-strong)' },
       { label: 'Catalog', value: loading || error ? '—' : counts.catalog, tone: 'var(--aurora-accent-strong)' },
       { label: 'Access', value: loading || error ? '—' : counts.access, tone: 'var(--aurora-warn)' },
       { label: 'Operations', value: loading || error ? '—' : counts.operations, tone: 'var(--aurora-success)' },
+      { label: 'Control target', value: loading || error ? '—' : controlTarget },
+      { label: 'Tenant / team', value: loading || error ? '—' : controlScope },
       { label: 'Authority', value: authority },
     ]} footer={<nav aria-label="Labby administration workspaces" style={{ background: 'var(--gw0-0_30)' }} className="aurora-scrollbar flex gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-default px-5">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-[13px]" />{label}{id !== 'overview' ? <span className={cn('inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums', workspace === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted')}>{counts[id]}</span> : null}</button>)}</nav>} />
     {error ? <DashboardPanel title="Labby catalog unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
     {!error && workspace === 'overview' ? <AdministrationOverview onOpen={setWorkspace} /> : null}
-    {!error && workspace !== 'overview' ? <OperationGrid key={workspace} operations={operations} workspace={workspace} /> : null}
+    {!error && workspace === 'sources' ? <DepotSourceAdministration onOpenCatalog={() => setWorkspace('catalog')} /> : null}
+    {!error && workspace === 'artifacts' ? <ArtifactControlPlane mode="administration" /> : null}
+    {!error && workspace !== 'overview' && workspace !== 'sources' && workspace !== 'artifacts' ? <OperationGrid key={workspace} operations={operations} workspace={workspace} /> : null}
   </div></>
 }

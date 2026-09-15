@@ -279,13 +279,25 @@ test('Depot Administration renders live schemas and guards destructive operation
 
   await page.route('**/v1/depot/status', route => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify({ depot: { configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 } }),
+    body: JSON.stringify({ depot: { configured: true, enabled: true, mutationAuthority: true, authority: 'read', maxResponseBytes: 1_048_576 } }),
+  }))
+  await page.route('**/v1/depot/session', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      contractVersion: 1,
+      authenticated: true,
+      backend: { deploymentId: 'team-depot', backendId: 'tootie-incus', kind: 'hosted', mode: 'remote', accountId: 'lime-technology', tenantId: 'lime-technology-team', teamId: 'skills-team' },
+      principal: { id: 'service-reader' },
+      authority: { generation: 'a'.repeat(64), audience: 'https://depot.dinglebear.ai', actor: null, delegated: false },
+      mutationPolicy: 'read_only',
+    }),
   }))
   await page.route('**/v1/depot/operations', async route => {
     if (route.request().method() === 'GET') {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ operations: [
         { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', group: 'access', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.', items: { type: 'string' } } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
         { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', group: 'access', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+        { name: 'depot.artifacts.set_license', title: 'Set Artifact license policy', description: 'Set authoritative license review state.', group: 'catalog', requiredScope: 'write', transportAvailable: true, inputSchema: { type: 'object', properties: { artifactId: { type: 'string', description: 'Hosted Artifact ID.', minLength: 1 }, expectedVersion: { type: 'string', description: 'Mutable Artifact state version.', minLength: 1 }, declared: { type: ['string', 'null'], description: 'Declared license; null clears it.', minLength: 1 }, detected: { type: 'array', description: 'Detected license evidence.', items: {} } }, required: ['artifactId', 'expectedVersion'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false } },
         { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', group: 'operations', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
       ] }) })
       return
@@ -296,6 +308,9 @@ test('Depot Administration renders live schemas and guards destructive operation
 
   await page.goto(`${baseUrl}/administration/`, { waitUntil: 'networkidle' })
   await assert.doesNotReject(() => page.getByText('Canonical operations').waitFor())
+  await assert.doesNotReject(() => page.getByText('team-depot', { exact: true }).waitFor())
+  await assert.doesNotReject(() => page.getByText('lime-technology-team/skills-team').waitFor())
+  assert.match(await page.locator('body').innerText(), /delegated/i)
   await page.getByRole('button', { name: /^Access/ }).click()
   await page.getByRole('button', { name: /Create access token/ }).click()
   await page.getByLabel('name').fill('labby-admin')
@@ -330,13 +345,24 @@ test('Depot Administration renders live schemas and guards destructive operation
   assert.deepEqual(calls[2]?.params, { tokenId: 'token-2' })
   assert.notEqual(calls[2]?.destructiveIntent?.idempotencyKey, calls[1]?.destructiveIntent?.idempotencyKey)
 
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /^Catalog/ }).click()
+  await page.getByRole('button', { name: /Set Artifact license policy/ }).click()
+  await page.getByLabel('artifactId').fill('artifact-1')
+  await page.getByLabel('expectedVersion').fill('version-7')
+  await page.getByLabel('detected').fill('[{"kind":"license","value":"MIT"}]')
+  await page.getByLabel('Send null (clear)').check()
+  await page.getByRole('button', { name: 'Review and run' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[3], { operation: 'depot.artifacts.set_license', params: { artifactId: 'artifact-1', expectedVersion: 'version-7', declared: null, detected: [{ kind: 'license', value: 'MIT' }] } })
+
   await page.keyboard.press('Escape')
   await page.setViewportSize({ width: 390, height: 844 })
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   assert.equal(hasHorizontalOverflow, false)
   await page.getByRole('button', { name: /^Overview/ }).focus()
   await page.keyboard.press('Tab')
-  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Catalog/)
+  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Sources/)
 })
 
 test('mock Depot Discovery labels Add as preview-only and never submits an import', { concurrency: false }, async (t) => {

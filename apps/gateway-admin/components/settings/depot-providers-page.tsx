@@ -39,7 +39,7 @@ export function DepotProvidersPage() {
   if (session.status === 'loading') return <p className="flex items-center gap-2 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Checking permission…</p>
   if (session.status !== 'authenticated' || !session.isAdmin) return <div role="alert" className="flex gap-2 text-sm text-aurora-error"><ShieldAlert className="size-4" />Administrator permission is required for Labby catalog provider settings.</div>
   return <div className="space-y-4">
-    <SettingsPageHeader title="Labby catalog providers" description="Manage the provider connections used by this Labby instance." />
+    <SettingsPageHeader title="Depot discovery providers" description="Manage read/discovery provider connections. These providers do not select Administration’s server-owned Depot control authority." />
     <SettingsCard title="Provider connections" action={<div className="flex gap-2"><Button size="sm" variant="outline" onClick={()=>setEditing(null)}><Plus className="size-4" />Add provider</Button><Button size="sm" variant="outline" disabled={loading} onClick={load}><RefreshCw className="size-4" />Refresh</Button></div>}>
       {error ? <p role="alert" className="p-4 text-sm text-aurora-error">{error}</p> : null}
       {loading && providers.length === 0 ? <p className="flex items-center gap-2 p-4 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Loading providers…</p> : null}
