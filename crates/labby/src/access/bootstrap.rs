@@ -1,5 +1,5 @@
 use labby_auth::{PrincipalLink, VerifiedIdentity};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::error::{AccessStoreError, AccessStoreResult};
 
@@ -80,24 +80,74 @@ pub(super) fn bootstrap_owner(
         return Err(AccessStoreError::BootstrapConflict);
     }
     let now = unix_now()?;
-    transaction.execute("INSERT INTO organizations(organization_id,name,status,policy_epoch,created_at,updated_at) VALUES(?1,?2,'active',0,?3,?3)", params![ORGANIZATION_ID,input.organization_name,now]).map_err(super::store::map_sqlite_error)?;
-    let owner_label = format!("{} owner", input.organization_name);
-    transaction.execute("INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',?3,?4,?4)", params![PRINCIPAL_ID,ORGANIZATION_ID,owner_label,now]).map_err(super::store::map_sqlite_error)?;
-    match input.identity.principal_link() {
-        PrincipalLink::External { issuer, subject } => transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES('bootstrap-owner-link',?1,'external',?2,?3,NULL,'active',?4,?5,?6,?6)", params![PRINCIPAL_ID,issuer,subject,i64::try_from(VerifiedIdentity::VERIFICATION_SCHEMA_VERSION).map_err(|_| AccessStoreError::InvalidBootstrapInput)?,i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION).map_err(|_| AccessStoreError::InvalidBootstrapInput)?,now]),
-        PrincipalLink::LocalCredential { credential_id } => transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES('bootstrap-owner-link',?1,'local_credential',NULL,NULL,?2,'active',?3,?4,?5,?5)", params![PRINCIPAL_ID,credential_id,i64::try_from(VerifiedIdentity::VERIFICATION_SCHEMA_VERSION).map_err(|_| AccessStoreError::InvalidBootstrapInput)?,i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION).map_err(|_| AccessStoreError::InvalidBootstrapInput)?,now]),
-    }.map_err(super::store::map_sqlite_error)?;
-    transaction.execute("INSERT INTO projects(project_id,organization_id,name,status,project_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,'active',0,?4,?4)", params![PROJECT_ID,ORGANIZATION_ID,input.project_name,now]).map_err(super::store::map_sqlite_error)?;
-    transaction.execute("INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES('bootstrap-owner-membership',?1,?2,?3,'owner','active',?3,?4,?4)", params![ORGANIZATION_ID,PROJECT_ID,PRINCIPAL_ID,now]).map_err(super::store::map_sqlite_error)?;
-    transaction.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES('bootstrap-owner-audit',?1,NULL,?2,?3,?4,'access.bootstrap_owner','project',?5,'allow','explicit_owner_bootstrap',0,'{}')", params![now,PRINCIPAL_ID,ORGANIZATION_ID,PROJECT_ID,fingerprint]).map_err(super::store::map_sqlite_error)?;
-    let changed = transaction.execute("UPDATE access_metadata SET global_revision=global_revision+1, bootstrap_generation=1, bootstrap_identity_fingerprint=?1, updated_at=?2 WHERE singleton=1 AND bootstrap_generation=0 AND bootstrap_identity_fingerprint IS NULL AND global_revision=0", params![fingerprint,now]).map_err(super::store::map_sqlite_error)?;
-    if changed != 1 {
-        return Err(AccessStoreError::BootstrapConflict);
-    }
+    seed_bootstrap_owner(
+        &transaction,
+        &BootstrapSeed {
+            organization_name: &input.organization_name,
+            project_name: &input.project_name,
+            link: input.identity.principal_link(),
+            verification_generation: i64::try_from(VerifiedIdentity::VERIFICATION_SCHEMA_VERSION)
+                .map_err(|_| AccessStoreError::InvalidBootstrapInput)?,
+            link_generation: i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION)
+                .map_err(|_| AccessStoreError::InvalidBootstrapInput)?,
+            identity_fingerprint: &fingerprint,
+            now,
+        },
+        |_| Ok(()),
+    )?;
     transaction
         .commit()
         .map_err(super::store::map_sqlite_error)?;
     Ok(BootstrapOutcome::Created)
+}
+
+/// Values for the reserved owner-bootstrap rows.
+pub(super) struct BootstrapSeed<'a> {
+    pub(super) organization_name: &'a str,
+    pub(super) project_name: &'a str,
+    pub(super) link: &'a PrincipalLink,
+    pub(super) verification_generation: i64,
+    pub(super) link_generation: i64,
+    pub(super) identity_fingerprint: &'a str,
+    pub(super) now: i64,
+}
+
+/// The only writer of the reserved owner-bootstrap rows.
+///
+/// Both lifecycle entry points (browser owner bootstrap and proof consumption)
+/// call this inside their own `IMMEDIATE` transaction after proving the store is
+/// pristine. It inserts the reserved organization, owner principal, owner link,
+/// default project, owner membership, and owner audit row, then flips
+/// `access_metadata` with a compare-and-swap that requires a pristine
+/// generation-0, revision-0 row and exactly one changed row. The
+/// `seed_bootstrap_team_authority` trigger fires on that flip.
+///
+/// `extra` runs after the membership and before the audit row, so a caller can
+/// add its own rows (proof bootstrap adds its loadout, credential, and
+/// credential link) without a second writer of the reserved rows.
+pub(super) fn seed_bootstrap_owner(
+    transaction: &Transaction<'_>,
+    seed: &BootstrapSeed<'_>,
+    extra: impl FnOnce(&Transaction<'_>) -> AccessStoreResult<()>,
+) -> AccessStoreResult<()> {
+    let map = super::store::map_sqlite_error;
+    let now = seed.now;
+    transaction.execute("INSERT INTO organizations(organization_id,name,status,policy_epoch,created_at,updated_at) VALUES(?1,?2,'active',0,?3,?3)", params![ORGANIZATION_ID,seed.organization_name,now]).map_err(map)?;
+    let owner_label = format!("{} owner", seed.organization_name.trim());
+    transaction.execute("INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',?3,?4,?4)", params![PRINCIPAL_ID,ORGANIZATION_ID,owner_label,now]).map_err(map)?;
+    match seed.link {
+        PrincipalLink::External { issuer, subject } => transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'external',?3,?4,NULL,'active',?5,?6,?7,?7)", params![LINK_ID,PRINCIPAL_ID,issuer,subject,seed.verification_generation,seed.link_generation,now]),
+        PrincipalLink::LocalCredential { credential_id } => transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'local_credential',NULL,NULL,?3,'active',?4,?5,?6,?6)", params![LINK_ID,PRINCIPAL_ID,credential_id,seed.verification_generation,seed.link_generation,now]),
+    }.map_err(map)?;
+    transaction.execute("INSERT INTO projects(project_id,organization_id,name,status,project_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,'active',0,?4,?4)", params![PROJECT_ID,ORGANIZATION_ID,seed.project_name,now]).map_err(map)?;
+    transaction.execute("INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,'owner','active',?4,?5,?5)", params![MEMBERSHIP_ID,ORGANIZATION_ID,PROJECT_ID,PRINCIPAL_ID,now]).map_err(map)?;
+    extra(transaction)?;
+    transaction.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,?5,'access.bootstrap_owner','project',?6,'allow','explicit_owner_bootstrap',0,'{}')", params![AUDIT_ID,now,PRINCIPAL_ID,ORGANIZATION_ID,PROJECT_ID,seed.identity_fingerprint]).map_err(map)?;
+    let changed = transaction.execute("UPDATE access_metadata SET global_revision=global_revision+1, bootstrap_generation=1, bootstrap_identity_fingerprint=?1, updated_at=?2 WHERE singleton=1 AND bootstrap_generation=0 AND bootstrap_identity_fingerprint IS NULL AND global_revision=0", params![seed.identity_fingerprint,now]).map_err(map)?;
+    if changed != 1 {
+        return Err(AccessStoreError::BootstrapConflict);
+    }
+    Ok(())
 }
 
 fn any_business_state(connection: &Connection) -> AccessStoreResult<bool> {
@@ -192,6 +242,33 @@ mod tests {
             (1, 1, 1, 1, 1, 3)
         );
         assert_eq!(reopened.bootstrap_metadata_for_test().await.unwrap().0, 1);
+    }
+
+    /// AR-H3: a store seeded by the browser owner-bootstrap path passes
+    /// integrity validation on reopen. The proof path's counterpart lives in
+    /// `credential_store` tests next to its fixtures.
+    #[tokio::test]
+    async fn browser_seeded_store_reopens_with_valid_bootstrap_integrity() {
+        let directory = secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let owner = input(
+            VerifiedIdentity::external(
+                Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                "operator-1",
+            )
+            .unwrap(),
+        );
+        store.bootstrap_owner(owner.clone()).await.unwrap();
+        drop(store);
+
+        let reopened = AccessStore::open_existing_current(path).await.unwrap();
+        assert_eq!(reopened.bootstrap_metadata_for_test().await.unwrap().0, 1);
+        assert_eq!(
+            reopened.bootstrap_owner(owner).await.unwrap(),
+            BootstrapOutcome::AlreadyApplied
+        );
     }
 
     #[tokio::test]
