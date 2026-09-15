@@ -24,12 +24,15 @@ class NpmPointerTests(unittest.TestCase):
 p = pathlib.Path(os.environ["TEST_TAGS"])
 f = pathlib.Path(os.environ["TEST_FAIL"])
 a = sys.argv[1:]
-if a[:2] == ["dist-tag", "ls"]:
+if a[:1] == ["view"] and a[2:4] == ["dist-tags", "--json"]:
     if f.exists() and f.read_text() == "read-fail":
         f.unlink()
         raise SystemExit(1)
     projection = os.environ.get("TEST_STALE_READ")
     print(projection if projection is not None else p.read_text())
+elif a[:2] == ["dist-tag", "ls"]:
+    # Real npm ignores --json here and prints `tag: version` lines.
+    for tag, value in json.loads(p.read_text()).items(): print(f"{tag}: {value}")
 elif a[:2] == ["dist-tag", "add"]:
     tags = json.loads(p.read_text()); tags["latest"] = a[2].rsplit("@",1)[1]
     p.write_text(json.dumps(tags))
