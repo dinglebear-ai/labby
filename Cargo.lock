@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "labby-apis"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "futures",
  "jiff",
@@ -2186,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "labby-auth"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "labby-browser"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "base64 0.23.0",
  "ed25519-dalek",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "labby-codemode"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "labby-gateway"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "labby-model"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "labby-openapi"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "futures",
  "labby-primitives",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "labby-primitives"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "base64 0.23.0",
  "getrandom 0.4.2",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "labby-runtime"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "atomic-write-file",
  "base64 0.23.0",
@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "labby-web"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.18",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "labby-winjob"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "tempfile",
  "tracing",
@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",
