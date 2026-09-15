@@ -129,7 +129,7 @@ test('column keyboard and drag moves persist while responsive hiding retains all
     assert.deepEqual(columns(), ['endpoint', 'exposed'])
     const row = view.container.querySelector<HTMLElement>('[data-gwrow]')!
     assert.equal(row.style.gridTemplateColumns, view.container.querySelector<HTMLElement>('[data-gwhead]')!.style.gridTemplateColumns)
-    assert.ok(row.children[3].textContent?.includes('Tools:'))
+    assert.ok(row.querySelector('[data-gateway-cell="exposed"]')?.textContent?.includes('Tools:'))
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500 })
     await act(async () => { window.dispatchEvent(new Event('resize')) })
     assert.deepEqual(columns(), ['endpoint', 'exposed', 'uptime'])

@@ -135,15 +135,17 @@ test('sort menu exposes only supported loaded-result orders', async () => {
   } finally { await view.unmount() }
 })
 
-test('Library section tabs expose existing routes and only supplied counts', async () => {
+test('Library section tabs expose existing routes and reserve unknown count geometry', async () => {
   const { LibraryTabs } = await import('./depot-workspace-pages.tsx')
   const unknown = renderToStaticMarkup(<LibraryTabs active="artifacts" attached />)
   for (const href of ['/library', '/loadouts', '/snippets', '/tools']) assert.ok(unknown.includes(`href="${href}"`))
   assert.equal((unknown.match(/aria-current="page"/g) ?? []).length, 1)
-  assert.doesNotMatch(unknown, /tabular-nums/)
+  assert.equal((unknown.match(/tabular-nums/g) ?? []).length, 4)
+  assert.equal((unknown.match(/>—<\/span>/g) ?? []).length, 4)
   const known = renderToStaticMarkup(<LibraryTabs active="artifacts" attached counts={{ artifacts: 42 }} />)
   assert.match(known, />42<\/span>/)
-  assert.equal((known.match(/tabular-nums/g) ?? []).length, 1)
+  assert.equal((known.match(/tabular-nums/g) ?? []).length, 4)
+  assert.equal((known.match(/>—<\/span>/g) ?? []).length, 3)
 })
 const envelope = (result: unknown) => Response.json(result)
 function deferred() {

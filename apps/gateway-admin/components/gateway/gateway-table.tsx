@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { Fragment, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   Check,
@@ -21,6 +21,7 @@ import {
   MessageSquare,
   BookOpen,
   Wrench,
+  GripVertical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,6 +49,14 @@ import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
 import {
+  GATEWAY_COLUMN_ORDER_KEY,
+  GATEWAY_COLUMN_WIDTH,
+  normalizeGatewayColumns,
+  visibleGatewayColumns,
+  moveGatewayColumn,
+  type GatewayColumn,
+} from './gateway-column-model'
+import {
   AURORA_GATEWAY_DISABLED_ROW,
   gatewayActionTone,
   gatewayStatusTone,
@@ -72,10 +81,6 @@ const GW_CARD =
 
 const GW_GRID =
   'grid items-center'
-
-const GW_GRID_STYLE = {
-  gridTemplateColumns: 'minmax(0,1fr) 80px minmax(140px,300px) 170px 130px 18px',
-} as CSSProperties
 
 /**
  * The `--gw*` scrim ramp carries underscores in its token names, which Tailwind
@@ -174,6 +179,37 @@ export function GatewayTable({
   onBatchSetEnabled,
   onBatchReload,
 }: GatewayTableProps) {
+  const [columnOrder, setColumnOrder] = useState(() => normalizeGatewayColumns(null))
+  const [viewportWidth, setViewportWidth] = useState(1600)
+  const draggedColumn = useRef<GatewayColumn | null>(null)
+  const [layoutWarning, setLayoutWarning] = useState(false)
+
+  useEffect(() => {
+    try {
+      setColumnOrder(normalizeGatewayColumns(JSON.parse(window.localStorage.getItem(GATEWAY_COLUMN_ORDER_KEY) ?? 'null')))
+    } catch {
+      setLayoutWarning(true)
+    }
+    const resize = () => setViewportWidth(window.innerWidth)
+    resize()
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [])
+
+  const visibleColumns = visibleGatewayColumns(columnOrder, viewportWidth)
+  const gridStyle = {
+    gridTemplateColumns: `minmax(0,1fr) 80px ${visibleColumns.map((column) => GATEWAY_COLUMN_WIDTH[column]).join(' ')} 18px`,
+  } as CSSProperties
+  const moveColumn = (source: GatewayColumn, target: GatewayColumn) => {
+    const next = moveGatewayColumn(columnOrder, source, target)
+    setColumnOrder(next)
+    try {
+      window.localStorage.setItem(GATEWAY_COLUMN_ORDER_KEY, JSON.stringify(next))
+    } catch {
+      setLayoutWarning(true)
+    }
+  }
+
   const [loadingAction, setLoadingAction] = useState<{ id: string; action: string } | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
@@ -445,7 +481,7 @@ export function GatewayTable({
     const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
 
     const columnCells = {
-      endpoint: (<div className="min-w-0 max-w-full justify-self-center px-2.5 text-center">
+      endpoint: (<div data-gateway-cell="endpoint" className="min-w-0 max-w-full justify-self-center px-2.5 text-center">
           <button
             type="button"
             onClick={() => copyCommand(gateway, endpointPreview)}
@@ -461,7 +497,7 @@ export function GatewayTable({
             {endpointPreview}
           </button>
         </div>),
-      exposed: (<div className="min-w-0 justify-self-center">
+      exposed: (<div data-gateway-cell="exposed" className="min-w-0 justify-self-center">
           <span
             className="grid grid-cols-[40px_40px_40px] items-center gap-x-[6px]"
             title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
@@ -498,7 +534,7 @@ export function GatewayTable({
             </span>
           </span>
         </div>),
-      uptime: (<div className="min-w-0 justify-self-center">
+      uptime: (<div data-gateway-cell="uptime" className="min-w-0 justify-self-center">
           <span
             className={cn('text-[10.5px] [font-weight:650] tabular-nums', GW_EMPTY_TONE)}
             title="Uptime is not reported by the gateway API"
@@ -513,7 +549,7 @@ export function GatewayTable({
       <Fragment key={gateway.id}>
         <div
           data-gwrow="1"
-          style={GW_GRID_STYLE}
+          style={gridStyle}
           data-hoverrow="1"
           className={cn(
             GW_GRID,
@@ -711,9 +747,9 @@ export function GatewayTable({
           <span className="sr-only">Clients:</span>
           {EM_DASH}
         </div>
-        {columnCells.endpoint}
-        {columnCells.exposed}
-        {columnCells.uptime}
+        {visibleColumns.map((column) => (
+          <Fragment key={column}>{columnCells[column]}</Fragment>
+        ))}
 
         </div>
         {isExpanded ? (
@@ -898,19 +934,56 @@ export function GatewayTable({
           <div data-gwtable="1" className="min-w-[1010px]">
             <div
               data-gwhead="1"
-              style={GW_GRID_STYLE}
+              style={gridStyle}
               className={cn(
                 GW_GRID,
                 'sticky top-0 z-[18] h-10 border-b border-aurora-border-strong bg-[var(--gw-head)] pl-5',
               )}
             >
               <SortHeader label="Server" sort="name" align="start" />
-              <div data-gateway-column="clients" className="justify-self-center">
+              <div className="justify-self-center">
                 <SortHeader label="Clients" sort="clients" />
               </div>
-              <SortHeader label="Endpoint" sort="endpoint" />
-              <SortHeader label="Exposed" sort="exposed" />
-              <SortHeader label="Uptime" sort="uptime" />
+              {visibleColumns.map((column) => (
+                <div
+                  key={column}
+                  data-gateway-column={column}
+                  className="group/column flex min-w-0 items-center justify-center gap-1"
+                  onDragOver={(event) => {
+                    if (draggedColumn.current) event.preventDefault()
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    if (draggedColumn.current) moveColumn(draggedColumn.current, column)
+                    draggedColumn.current = null
+                  }}
+                >
+                  <button
+                    type="button"
+                    draggable
+                    aria-label={`Reorder ${column === 'uptime' ? 'runtime age' : column} column`}
+                    title="Drag to reorder; use left/right arrow keys to move"
+                    onDragStart={() => { draggedColumn.current = column }}
+                    onDragEnd={() => { draggedColumn.current = null }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                      event.preventDefault()
+                      const index = visibleColumns.indexOf(column)
+                      const target = visibleColumns[index + (event.key === 'ArrowLeft' ? -1 : 1)]
+                      if (!target) return
+                      if (event.key === 'ArrowRight') moveColumn(target, column)
+                      else moveColumn(column, target)
+                    }}
+                    className="rounded p-0.5 text-aurora-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"
+                  >
+                    <GripVertical className="size-[9px]" aria-hidden="true" />
+                  </button>
+                  <SortHeader
+                    label={column === 'uptime' ? 'Uptime' : column === 'endpoint' ? 'Endpoint' : 'Exposed'}
+                    sort={column}
+                  />
+                </div>
+              ))}
             </div>
 
             <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
@@ -989,6 +1062,7 @@ export function GatewayTable({
             {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
             {exposureTotals.exposed}/{exposureTotals.discovered} tools
             {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
+            {layoutWarning ? ' · Column layout could not be read or saved on this device.' : ''}
           </span>
         </div>
       </section>

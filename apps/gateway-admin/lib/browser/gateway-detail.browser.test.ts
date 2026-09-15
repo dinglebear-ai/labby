@@ -186,7 +186,7 @@ test('gateway detail uses a compact summary and endpoint control in mock preview
   await assert.doesNotReject(() => page.getByText('Resources').first().waitFor())
   await assert.doesNotReject(() => page.getByText('Prompts').first().waitFor())
   await assert.doesNotReject(() =>
-    page.getByRole('button', { name: 'Copy command' }).and(
+    page.getByRole('button', { name: 'Copy HTTP target' }).and(
       page.locator('[title="http://localhost:3001/mcp"]'),
     ).waitFor(),
   )
@@ -339,75 +339,28 @@ test('Depot Administration renders live schemas and guards destructive operation
   assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Catalog/)
 })
 
-test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {
+test('mock Depot Discovery labels Add as preview-only and never submits an import', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const actionCalls: Array<{ action: string; params: Record<string, unknown> }> = []
-  let connections = [{ id: 'different-depot' }]
-  let libraryVersion: unknown = 12
-
-  await page.route('**/v1/depot/providers', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify([{ id: 'team-depot', name: 'Team Depot', enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }]),
-  }))
-  await page.route('**/v1/depot/discover', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch-1',
-      items: [{ providerId: 'team-depot', artifactId: 'artifact-1', id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' }],
-      providerOutcomes: [{ providerId: 'team-depot', state: 'exhausted' }], failures: [], coverageComplete: true,
-      knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null,
-    }),
-  }))
-  await page.route('**/v1/depot/artifacts/detail', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      schemaVersion: 'labby.depot-compatibility/v2', providerId: 'team-depot', artifactId: 'artifact-1',
-      artifact: { id: 'artifact-1', kind: 'skill', name: 'Release helper', currentRevisionId: 'revision-7' },
-    }),
-  }))
   await page.route('**/v1/artifacts', async route => {
     const call = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
     actionCalls.push(call)
-    if (call.action === 'artifacts.list_connections') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ connections }) })
-    } else if (call.action === 'artifacts.list') {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifacts: [], library_version: libraryVersion }) })
-    } else {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ artifact: { id: 'local-1' }, library_version: 13 }) })
-    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({}) })
   })
 
-  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
-  await assert.doesNotReject(() => page.getByRole('link', { name: /Release helper/ }).waitFor())
-  await page.goto(`${baseUrl}/depot/?artifactProvider=team-depot&artifact=artifact-1`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/depot/?artifactProvider=mcp-registry&artifact=unraid-ops`, { waitUntil: 'networkidle' })
+  const add = page.getByRole('button', { name: 'Add to Library' })
+  await assert.doesNotReject(() => add.waitFor())
+  await add.click()
+  await page.getByText('Preview: unraid-ops would be added to Library', { exact: true }).waitFor()
 
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Configure an Artifact acquisition connection named “team-depot” before importing from this provider.').waitFor()
   assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
-
-  connections = [{ id: 'team-depot' }]
-  libraryVersion = 'not-a-version'
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Labby did not return a valid current library version.').waitFor()
-  assert.equal(actionCalls.some(call => call.action === 'artifacts.import'), false)
-  await assert.doesNotReject(async () => assert.equal(await page.getByRole('button', { name: 'Add to Library' }).isEnabled(), true))
-
-  libraryVersion = 12
-  await page.getByRole('button', { name: 'Add to Library' }).click()
-  await page.getByText('Exact Artifact imported into Labby').waitFor()
-
-  const importCall = actionCalls.find(call => call.action === 'artifacts.import')
-  assert.ok(importCall)
-  assert.deepEqual(importCall.params.source, {
-    kind: 'depot', connection_id: 'team-depot', artifact_id: 'artifact-1', revision_id: 'revision-7',
-  })
-  assert.equal(importCall.params.expected_library_version, 12)
-  assert.match(String(importCall.params.idempotency_key), /^depot-import-[0-9a-f-]{36}$/)
+  assert.equal(await page.getByRole('button', { name: 'Add to Library' }).count(), 1)
+  assert.equal(await page.getByRole('button', { name: 'Already in Library' }).count(), 0)
 })
 
 test('overview metrics and volume bars drill into exact Usage slices', { concurrency: false }, async (t) => {
@@ -530,7 +483,7 @@ test('compact actions retain labels, responsive targets, and working menus', { c
   await page.getByRole('button', { name: 'All artifacts', exact: true }).click()
   await page.keyboard.press('Escape')
 
-  const textOnly = page.getByRole('link', { name: 'Artifacts', exact: true })
+  const textOnly = page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: /^Artifacts/ })
   assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
 
   await page.goto(`${baseUrl}/create/`, { waitUntil: 'networkidle' })
@@ -825,7 +778,7 @@ test('stale Loadouts clients hard-navigate after a new static build is deployed'
   page.on('request', (request) => { navigationEvents.push(`${request.method()} ${request.url()}`) })
   await Promise.all([
     page.waitForURL((url) => /^\/snippets\/?$/.test(url.pathname), { waitUntil: 'networkidle' }),
-    page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: 'Snippets', exact: true }).click(),
+    page.getByRole('navigation', { name: 'Library sections', exact: true }).getByRole('link', { name: /^Snippets/ }).click(),
   ]).catch(async (error) => { throw new Error(`${error}\nURL: ${page.url()}\nMarker: ${await page.evaluate(() => '__labbySkewMarker' in window)}\nRequests: ${navigationEvents.join('\n')}\nBody: ${(await page.locator('body').innerText()).slice(0, 1600)}`) })
 
   const staleDocumentSurvived = await page.evaluate(

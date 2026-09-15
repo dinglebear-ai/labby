@@ -60,6 +60,26 @@ export function exactImportConnection(providerId: string, connections: Array<{ i
   throw new Error(`Configure an Artifact acquisition connection named “${providerId}” before importing from this provider.`)
 }
 
+export function exactImportParams(
+  artifact: Pick<FederatedArtifact, 'providerId' | 'artifactId' | 'id' | 'currentRevisionId' | 'currentRevision'>,
+  connections: Array<{ id: string }>,
+  libraryVersion: unknown,
+  idempotencyKey: string,
+) {
+  const artifactId = artifact.artifactId || artifact.id
+  const revisionId = artifact.currentRevisionId || artifact.currentRevision?.id
+  if (!artifactId || !revisionId) throw new Error('Labby catalog did not provide an exact Artifact and revision identity.')
+  const connectionId = exactImportConnection(artifact.providerId, connections)
+  if (typeof libraryVersion !== 'number' || !Number.isSafeInteger(libraryVersion) || libraryVersion < 0) {
+    throw new Error('Labby did not return a valid current library version.')
+  }
+  return {
+    source: { kind: 'depot' as const, connection_id: connectionId, artifact_id: artifactId, revision_id: revisionId },
+    expected_library_version: libraryVersion,
+    idempotency_key: idempotencyKey,
+  }
+}
+
 export function DepotPageContent() {
   const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   return <SessionDepotPage key={sessionEpoch} />
@@ -86,7 +106,6 @@ function SessionDepotPage() {
   const [cursorIndex, setCursorIndex] = useState(-1)
   const [compareOpen, setCompareOpen] = useState(false)
   const [now, setNow] = useState<number>()
-  const [mockAddedKeys, setMockAddedKeys] = useState<string[]>([])
   const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const paginationControllerRef = useRef<AbortController>(null)
@@ -191,22 +210,20 @@ function SessionDepotPage() {
         controlPlaneAction<{library_version?:number}>('artifacts','artifacts.list',{limit:1}),
       ])
       if(!isCurrent())return
-      const connectionId=exactImportConnection(artifact.providerId,connectionResult.connections??[])
-      if(!Number.isSafeInteger(libraryResult.library_version)||Number(libraryResult.library_version)<0)throw new Error('Labby did not return a valid current library version.')
-      await controlPlaneAction('artifacts','artifacts.import',{
-        source:{kind:'depot',connection_id:connectionId,artifact_id:artifactId,revision_id:revisionId},
-        expected_library_version:libraryResult.library_version,
-        idempotency_key:`depot-import-${crypto.randomUUID()}`,
-      })
+      const importParams=exactImportParams(
+        artifact,
+        connectionResult.connections??[],
+        libraryResult.library_version,
+        `depot-import-${crypto.randomUUID()}`,
+      )
+      await controlPlaneAction('artifacts','artifacts.import',importParams)
       if(isCurrent())toast.success('Exact Artifact imported into Labby')
     }catch(error){if(isCurrent())toast.error(error instanceof Error?error.message:String(error))}
     finally{importPending.current=false;setImporting(false)}
   },[])
   const addArtifactToLibrary=useCallback(async(artifact:FederatedArtifact)=>{
-    const key=artifactKey(artifact.providerId,artifact.artifactId)
     if(USE_MOCK_DATA){
-      setMockAddedKeys(current=>current.includes(key)?current:[...current,key])
-      toast.success(`${artifact.name??artifact.title??artifact.artifactId} added to your Library`)
+      toast.success(`Preview: ${artifact.name??artifact.title??artifact.artifactId} would be added to Library`)
       return
     }
     await importArtifact(artifact)
@@ -214,7 +231,7 @@ function SessionDepotPage() {
   const previewFork=useCallback((artifact:FederatedArtifact)=>{toast.success(`Forked ${artifact.name??artifact.title??artifact.artifactId} — preview only`)},[])
   const previewSend=useCallback((artifact:FederatedArtifact)=>{toast.success(`${artifact.name??artifact.title??artifact.artifactId} sent to Labby — preview only`)},[])
   const previewInstallFormat=useCallback((artifact:FederatedArtifact,format:string)=>{toast.success(`${artifact.name??artifact.title??artifact.artifactId} → ${format} · preview only`)},[])
-  const isArtifactInLibrary=useCallback((artifact:FederatedArtifact)=>USE_MOCK_DATA&&(mockDepotLibraryArtifactIds.has(artifact.artifactId)||mockAddedKeys.includes(artifactKey(artifact.providerId,artifact.artifactId))),[mockAddedKeys])
+  const isArtifactInLibrary=useCallback((artifact:FederatedArtifact)=>USE_MOCK_DATA&&mockDepotLibraryArtifactIds.has(artifact.artifactId),[])
   const visible = visibleArtifacts(state.window)
   const [sort, setSort] = useState<DiscoverySort>('relevance')
   const visibilityResults = visibility === 'all' ? visible.items : visible.items.filter(artifact => artifact.publication?.visibility?.toLowerCase() === visibility)
