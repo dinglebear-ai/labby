@@ -55,6 +55,7 @@ services:
       DEPOT_BACKEND_ID: r2
     volumes:
       - team-depot-data:/data
+      - ${TEAM_DEPOT_GIT_CREDENTIALS_FILE:?set TEAM_DEPOT_GIT_CREDENTIALS_FILE to the Team Depot Git credential JSON}:/run/secrets/team-depot-git-credentials.json:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=1g,uid=1000,gid=1000
     networks: [backend]

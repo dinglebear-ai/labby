@@ -72,6 +72,10 @@ const operationSchema = z.object({
   annotations: z.object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional(), idempotentHint: z.boolean().optional(), openWorldHint: z.boolean().optional() }).passthrough().optional(),
   outputSchema: z.record(z.string(), z.unknown()).refine(schema => new TextEncoder().encode(JSON.stringify(schema)).length <= 65_536, 'output schema exceeds 65536 bytes').optional(),
   group: z.enum(['catalog', 'access', 'operations']).optional(),
+  requiredScope: z.enum(['none', 'read', 'write', 'operator', 'local']).optional(),
+  transports: z.array(z.enum(['api', 'cli', 'mcp', 'ui'])).max(8).optional(),
+  transportAvailable: z.boolean().optional(),
+  authorized: z.boolean().optional(),
   // Depot control-plane contract (docs/contracts/depot-control-plane.md):
   // every public operation may declare the contract version it was published
   // under and the sha256 of its canonical `inputSchema`. The browser only
@@ -209,6 +213,91 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
   if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
   if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
   return validate(genericResultSchema, value, 'operation response') as T
+}
+
+const sourceArgsSchema = z.record(z.string(), z.unknown())
+const depotSourceSchema = z.object({
+  version: z.number().int().positive().optional(),
+  id: bounded(512).min(1),
+  kind: bounded(128).min(1),
+  args: sourceArgsSchema,
+  enabled: z.boolean(),
+  intervalSeconds: z.number().int().positive(),
+  insertedAt: optionalCatalogText,
+  updatedAt: optionalCatalogText,
+  lastAttemptAt: optionalCatalogText,
+  lastSuccessAt: optionalCatalogText,
+  lastError: optionalCatalogText,
+  lastJobId: optionalCatalogText,
+  resolvedRevision: optionalCatalogText,
+  artifactRevision: optionalCatalogText,
+  nextAttemptAt: optionalCatalogText,
+  consecutiveFailures: z.number().int().nonnegative().optional(),
+  snapshot: z.unknown().optional(),
+  drift: z.unknown().optional(),
+}).passthrough()
+const depotSourcesResultSchema = z.object({ sources: z.array(depotSourceSchema).max(10_000) }).passthrough()
+const depotIngestJobSchema = z.object({
+  id: bounded(512).min(1),
+  status: bounded(128).min(1),
+  kind: bounded(128).optional(),
+  createdAt: optionalCatalogText,
+  startedAt: optionalCatalogText,
+  finishedAt: optionalCatalogText,
+  error: z.unknown().optional(),
+  result: z.unknown().optional(),
+}).passthrough()
+const depotIngestJobsResultSchema = z.object({ jobs: z.array(depotIngestJobSchema).max(100) }).passthrough()
+
+export type DepotSource = z.infer<typeof depotSourceSchema>
+export type DepotIngestJob = z.infer<typeof depotIngestJobSchema>
+export type DepotRepoInput = { url: string; namespace: string; ref?: string; subdir?: string; credential?: string }
+
+function operationResult<T>(value: unknown, schema: z.ZodType<T, z.ZodTypeDef, unknown>, label: string): T {
+  const envelope = validate(genericResultSchema, value, label)
+  return validate(schema, envelope.result, label)
+}
+
+function mutationKey(prefix: string): string {
+  return prefix + '-' + crypto.randomUUID()
+}
+
+export async function depotSources(signal?: AbortSignal): Promise<DepotSource[]> {
+  const value = await depotCall<unknown>('depot.sources.list', {}, signal)
+  return operationResult(value, depotSourcesResultSchema, 'source list response').sources
+}
+
+export async function depotIngestJobs(limit = 25, signal?: AbortSignal): Promise<DepotIngestJob[]> {
+  const value = await depotCall<unknown>('depot.ingest.list', { limit }, signal)
+  return operationResult(value, depotIngestJobsResultSchema, 'ingest job list response').jobs
+}
+
+export async function startDepotRepoIngest(input: DepotRepoInput, signal?: AbortSignal): Promise<unknown> {
+  const arguments_: Record<string, string> = { url: input.url.trim(), namespace: input.namespace.trim() }
+  if (input.ref?.trim()) arguments_.ref = input.ref.trim()
+  if (input.subdir?.trim()) arguments_.subdir = input.subdir.trim()
+  if (input.credential?.trim()) arguments_.credential = input.credential.trim()
+  return depotCall('depot.ingest.start', { kind: 'repo', arguments: arguments_, idempotencyKey: mutationKey('repo-ingest') }, signal)
+}
+
+export async function configureDepotSource(sourceId: string, changes: { enabled?: boolean; intervalSeconds?: number }, signal?: AbortSignal): Promise<unknown> {
+  return depotCall('depot.sources.configure', { sourceId, ...changes }, signal, { confirmed: true, idempotencyKey: mutationKey('source-configure') })
+}
+
+export async function refreshDepotSource(sourceId: string, signal?: AbortSignal): Promise<unknown> {
+  return depotCall('depot.sources.refresh', { sourceId }, signal, { confirmed: true, idempotencyKey: mutationKey('source-refresh') })
+}
+
+export async function deleteDepotSource(sourceId: string, signal?: AbortSignal): Promise<unknown> {
+  return depotCall('depot.sources.delete', { sourceId }, signal, { confirmed: true, idempotencyKey: mutationKey('source-delete') })
+}
+
+export async function retryDepotIngestJob(jobId: string, signal?: AbortSignal): Promise<unknown> {
+  return depotCall('depot.ingest.retry', { jobId }, signal, { confirmed: true, idempotencyKey: mutationKey('ingest-retry') })
+}
+
+export async function cancelDepotIngestJob(jobId: string, signal?: AbortSignal): Promise<unknown> {
+  return depotCall('depot.ingest.cancel', { jobId }, signal, { confirmed: true, idempotencyKey: mutationKey('ingest-cancel') })
 }
 
 const readmeSchema = z.discriminatedUnion('state', [
