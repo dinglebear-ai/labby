@@ -41,6 +41,7 @@ export interface BackendServerConfigSummaryView {
 export interface BackendServerView {
   id: string
   name: string
+  display_name?: string | null
   source: string
   configured?: boolean
   enabled?: boolean
@@ -67,6 +68,7 @@ export interface BackendVirtualServiceDiscovery {
 
 export interface BackendGatewayConfigView {
   name: string
+  display_name?: string | null
   enabled?: boolean
   url?: string | null
   command?: string | null
@@ -434,6 +436,7 @@ export function normalizeServerView(
   return {
     id: view.id,
     name: view.name,
+    ...(view.display_name?.trim() ? { display_name: view.display_name.trim() } : {}),
     source: view.source,
     configured: view.configured ?? true,
     enabled: view.enabled ?? true,
@@ -541,6 +544,7 @@ export function normalizeGateway(
   return {
     id: config.name,
     name: config.name,
+    ...(config.display_name?.trim() ? { display_name: config.display_name.trim() } : {}),
     transport: inferTransport(config),
     source: 'custom_gateway',
     configured: true,
@@ -662,6 +666,7 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
   const env = normalizeEnv(input.config.env)
   const spec: Record<string, unknown> = {
     name: input.name,
+    ...(input.display_name?.trim() ? { display_name: input.display_name.trim() } : {}),
     url: input.transport === 'http' ? input.config.url ?? null : null,
     command: input.transport === 'stdio' ? input.config.command ?? null : null,
     args: input.transport === 'stdio' ? normalizeArgs(input.config.args) : [],
@@ -713,6 +718,10 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
 
   if (input.name !== undefined) {
     patch.name = input.name
+  }
+
+  if (input.display_name !== undefined) {
+    patch.display_name = input.display_name?.trim() || null
   }
 
   if (input.transport === 'http') {

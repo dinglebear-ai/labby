@@ -203,6 +203,8 @@ mod tests {
 
     fn minimal_config() -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "upstream".to_string(),
             url: None,
@@ -322,6 +324,8 @@ mod tests {
         // cannot produce, and now correctly trips the same-URI collision guard.
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "acme-corp".to_string(),
                 ..minimal_config()
             },
@@ -343,6 +347,8 @@ mod tests {
     fn two_schemes_mint_to_distinct_reversible_uris() {
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -369,6 +375,8 @@ mod tests {
         let duplicate = upstream_skill("acme", "refunds");
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -393,6 +401,8 @@ mod tests {
         );
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "gh".to_string(),
                 ..minimal_config()
             },
@@ -430,6 +440,8 @@ mod tests {
             });
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "gh".into(),
                 ..minimal_config()
             },
@@ -446,6 +458,8 @@ mod tests {
         let published = upstream_skill("acme", "published");
         let result = mint_proxied_entries(
             &UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "gh".into(),
                 ..minimal_config()
             },

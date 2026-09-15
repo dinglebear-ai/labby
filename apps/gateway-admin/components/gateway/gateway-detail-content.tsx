@@ -63,6 +63,7 @@ import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations, useProtectedMcpRoutes } from '@/lib/hooks/use-gateways'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput } from '@/lib/types/gateway'
+import { gatewayLabel } from '@/lib/gateway-label'
 import {
   applyBulkExposureToDraft,
   buildExposurePolicyFromDraft,
@@ -995,7 +996,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       color: 'var(--aurora-text-primary)',
                     }}
                   >
-                    {gateway.name}
+                    {gatewayLabel(gateway)}
                   </h1>
                   {headerChips.map((chip) => (
                     <span
