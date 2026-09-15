@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -413,7 +413,66 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 18 {
+        migrate_v18(conn, fault)?;
+    }
     Ok(())
+}
+
+/// v18: one provider-generation row per inbound provider instead of a
+/// singleton, so several providers can be active and a configuration change
+/// revokes only that provider's grants. The existing singleton row is copied
+/// unchanged (same provider, issuer, fingerprint, and generation), so the
+/// upgrade itself revokes nothing.
+fn migrate_v18(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
+    conn.execute_batch("BEGIN IMMEDIATE;")
+        .map_err(sqlite_error)?;
+    let result = (|| {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS inbound_identity_providers (
+               provider TEXT PRIMARY KEY NOT NULL,
+               issuer TEXT NOT NULL UNIQUE,
+               config_fingerprint TEXT NOT NULL,
+               generation INTEGER NOT NULL CHECK (generation > 0),
+               updated_at INTEGER NOT NULL
+             );",
+        )
+        .map_err(sqlite_error)?;
+        if table_exists(conn, "inbound_identity_provider")? {
+            // Before v18 native results never recorded their issuer (the v15
+            // column default is Google's). Stamp the provider that minted them
+            // so per-issuer generation checks keep matching in-flight polls.
+            conn.execute_batch(
+                "UPDATE native_authorization_results
+                    SET identity_issuer = (SELECT issuer FROM inbound_identity_provider WHERE singleton = 1)
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider WHERE singleton = 1);",
+            )
+            .map_err(sqlite_error)?;
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO inbound_identity_providers
+                   (provider, issuer, config_fingerprint, generation, updated_at)
+                 SELECT provider, issuer, config_fingerprint, generation, updated_at
+                   FROM inbound_identity_provider WHERE singleton = 1;
+                 DROP TABLE inbound_identity_provider;",
+            )
+            .map_err(sqlite_error)?;
+        }
+        if fault == Some("v18_after_backfill") {
+            return Err(AuthError::Storage(
+                "injected v18 migration fault".to_string(),
+            ));
+        }
+        conn.execute_batch("PRAGMA user_version = 18;")
+            .map_err(sqlite_error)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite_error),
+        Err(error) => {
+            drop(conn.execute_batch("ROLLBACK;"));
+            Err(error)
+        }
+    }
 }
 
 fn migrate_v15(

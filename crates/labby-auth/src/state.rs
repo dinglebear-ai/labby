@@ -418,13 +418,28 @@ impl AuthState {
         .await?;
         let signing_keys = SigningKeys::load_or_create(&config.key_path)?;
         let config_fingerprint = config.inbound_provider_fingerprint()?;
-        let previous_provider = store.inbound_provider_state().await?;
+        let provider_name = match inbound_provider.kind() {
+            crate::config::InboundProviderKind::Google => "google",
+            crate::config::InboundProviderKind::Authelia => "authelia",
+        };
+        // Retire providers that are no longer configured first; this refuses
+        // (changing nothing) if a retiring provider still has live grants.
+        store
+            .retire_inbound_providers_except_checked(&[provider_name])
+            .await?;
+        let previous_provider = store
+            .inbound_provider_state_for(provider_name)
+            .await?
+            .unwrap_or_else(|| crate::types::InboundProviderState {
+                provider: provider_name.to_string(),
+                issuer: inbound_provider.issuer().to_string(),
+                config_fingerprint: String::new(),
+                generation: 0,
+                updated_at: 0,
+            });
         let activation = store
             .activate_inbound_provider_checked(
-                match inbound_provider.kind() {
-                    crate::config::InboundProviderKind::Google => "google",
-                    crate::config::InboundProviderKind::Authelia => "authelia",
-                },
+                provider_name,
                 inbound_provider.issuer(),
                 &config_fingerprint,
                 Some(inbound_provider.client_id()),

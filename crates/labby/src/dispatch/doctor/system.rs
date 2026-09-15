@@ -1750,10 +1750,19 @@ pub fn run_auth_checks_with_config(
                 if schema < 15 {
                     return Ok(None);
                 }
+                let map_row = |row: &rusqlite::Row<'_>| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?));
+                if schema < 18 {
+                    return conn.query_row(
+                        "SELECT provider, config_fingerprint, generation FROM inbound_identity_provider WHERE singleton = 1",
+                        [],
+                        map_row,
+                    ).map(Some);
+                }
+                // v18+: one row per provider; report the configured one.
                 conn.query_row(
-                    "SELECT provider, config_fingerprint, generation FROM inbound_identity_provider WHERE singleton = 1",
-                    [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+                    "SELECT provider, config_fingerprint, generation FROM inbound_identity_providers WHERE provider = ?1",
+                    [provider.as_str()],
+                    map_row,
                 ).map(Some)
             });
             match durable {

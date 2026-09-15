@@ -187,13 +187,14 @@ impl SqliteStore {
         request: AuthorizationRequestRow,
     ) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
+            identity_provider::require_sole_provider(conn)?;
             conn.execute(
                 "INSERT INTO authorization_requests (
                     state, client_id, redirect_uri, client_state, resource, scope, provider_code_verifier,
                     code_challenge, code_challenge_method, created_at, expires_at, native_poll_token_hash,
                     provider, identity_issuer, provider_generation
                  ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, provider, issuer, generation
-                     FROM inbound_identity_provider WHERE singleton = 1",
+                     FROM inbound_identity_providers WHERE true",
                 params![
                     request.state,
                     request.client_id,
@@ -227,8 +228,8 @@ impl SqliteStore {
                     provider_code_verifier, code_challenge, code_challenge_method,
                     created_at, expires_at, native_poll_token_hash, identity_issuer, provider_generation)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                    WHERE singleton = 1 AND issuer = ?13 AND generation = ?14)",
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                    WHERE issuer = ?13 AND generation = ?14)",
                 params![request.state, request.client_id, request.redirect_uri, request.client_state,
                     request.resource, request.scope, request.provider_code_verifier,
                     request.code_challenge, request.code_challenge_method, request.created_at,
@@ -251,7 +252,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_requests
                  WHERE state = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                  RETURNING state, client_id, redirect_uri, client_state, scope, provider_code_verifier,
                            code_challenge, code_challenge_method, created_at, expires_at, resource,
                            native_poll_token_hash",
@@ -278,7 +279,7 @@ impl SqliteStore {
             conn.query_row(
                 "DELETE FROM authorization_requests
                  WHERE state = ?1 AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                  RETURNING state, client_id, redirect_uri, client_state, scope, provider_code_verifier,
                            code_challenge, code_challenge_method, created_at, expires_at, resource,
                            native_poll_token_hash, identity_issuer, provider_generation",
@@ -311,8 +312,8 @@ impl SqliteStore {
                     code_challenge, code_challenge_method, provider_refresh_token,
                     created_at, expires_at, identity_issuer, provider_generation)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
-                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                    WHERE singleton = 1 AND issuer = ?12 AND generation = ?13)",
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                    WHERE issuer = ?12 AND generation = ?13)",
                     params![
                         code.code,
                         code.client_id,
@@ -343,13 +344,14 @@ impl SqliteStore {
 
     pub async fn insert_auth_code(&self, code: AuthorizationCodeRow) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
+            identity_provider::require_sole_provider(conn)?;
             conn.execute(
                 "INSERT INTO authorization_codes (
                     code, client_id, subject, redirect_uri, resource, scope,
                     code_challenge, code_challenge_method, provider_refresh_token,
                     created_at, expires_at, identity_issuer, provider_generation
                  ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, issuer, generation
-                     FROM inbound_identity_provider WHERE singleton = 1",
+                     FROM inbound_identity_providers WHERE true",
                 params![
                     code.code,
                     code.client_id,
@@ -384,7 +386,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_codes
                  WHERE code = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                  RETURNING code, client_id, subject, redirect_uri, scope,
                            code_challenge, code_challenge_method, provider_refresh_token,
                            created_at, expires_at, resource",
@@ -424,7 +426,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_codes
                  WHERE code = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                    AND client_id = ?3
                    AND redirect_uri = ?4
                    AND (?5 IS NULL OR resource = ?5)
@@ -476,7 +478,7 @@ impl SqliteStore {
         self.with_conn(move |conn| conn.query_row(
             "DELETE FROM authorization_codes
              WHERE code = ?1 AND expires_at > ?2
-               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+               AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                AND client_id = ?3 AND redirect_uri = ?4 AND (?5 IS NULL OR resource = ?5)
                AND code_challenge = ?6 AND code_challenge_method = ?7
              RETURNING code, client_id, subject, redirect_uri, scope, code_challenge,
@@ -561,7 +563,7 @@ impl SqliteStore {
                  FROM browser_sessions
                  WHERE session_id = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                 params![session_id, now],
                 row_to_browser_session,
             )
@@ -595,7 +597,7 @@ impl SqliteStore {
                         ) THEN 1 ELSE 0 END
                    FROM browser_sessions
                   WHERE session_id = ?1 AND expires_at > ?2
-                    AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                    AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                 params![session_id, now, admin_emails, domains],
                 |row| Ok((crate::types::ProviderBound {
                     value: row_to_browser_session(row)?,
@@ -617,7 +619,7 @@ impl SqliteStore {
             "SELECT session_id, subject, email, csrf_token, created_at, expires_at,
                     project_binding_json, identity_issuer, provider_generation
              FROM browser_sessions WHERE session_id = ?1 AND expires_at > ?2
-               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+               AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
             params![session_id, now],
             |row| Ok(crate::types::ProviderBound {
                 value: row_to_browser_session(row)?,
@@ -646,8 +648,8 @@ impl SqliteStore {
                 "INSERT INTO browser_sessions (session_id, subject, email, csrf_token, created_at,
                     expires_at, project_binding_json, identity_issuer, provider_generation)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                    WHERE singleton = 1 AND issuer = ?8 AND generation = ?9)",
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                    WHERE issuer = ?8 AND generation = ?9)",
                 params![session.session_id, session.subject, session.email, session.csrf_token,
                     session.created_at, session.expires_at, project_binding_json,
                     binding.identity_issuer, binding.provider_generation],
@@ -690,8 +692,8 @@ impl SqliteStore {
                  (poll_token_hash, redeem_code_hash, launch_code_challenge, session_id,
                   identity_issuer, provider_generation, expires_at)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-                 WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                   WHERE singleton = 1 AND issuer = ?5 AND generation = ?6)",
+                 WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                   WHERE issuer = ?5 AND generation = ?6)",
                     params![
                         handoff.poll_token_hash,
                         handoff.redeem_code_hash,
@@ -729,7 +731,7 @@ impl SqliteStore {
             let count = conn.execute("INSERT INTO desktop_login_states
               (state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,phase,identity_issuer,provider_generation,created_at,expires_at)
               SELECT ?1,?2,?3,?4,?5,?6,0,?7,?8,?9,?10 WHERE EXISTS
-              (SELECT 1 FROM inbound_identity_provider WHERE singleton=1 AND issuer=?7 AND generation=?8)", params![login.state_hash,login.return_to,login.provider_code_verifier,login.poll_token_hash,login.redeem_code_hash,login.launch_code_challenge,binding.identity_issuer,binding.provider_generation,login.created_at,login.expires_at]).map_err(sqlite_error)?;
+              (SELECT 1 FROM inbound_identity_providers WHERE issuer=?7 AND generation=?8)", params![login.state_hash,login.return_to,login.provider_code_verifier,login.poll_token_hash,login.redeem_code_hash,login.launch_code_challenge,binding.identity_issuer,binding.provider_generation,login.created_at,login.expires_at]).map_err(sqlite_error)?;
             if count == 1 { Ok(()) } else { Err(AuthError::InvalidGrant("inbound provider runtime is no longer active".into())) }
         }).await
     }
@@ -744,7 +746,7 @@ impl SqliteStore {
         let provider_hash = hash_token(provider_state);
         let verifier = verifier.to_owned();
         let now = now_unix();
-        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET state_hash=?2,provider_code_verifier=?3,phase=1 WHERE state_hash=?1 AND phase=0 AND expires_at>?4 AND identity_issuer=(SELECT issuer FROM inbound_identity_provider WHERE singleton=1) AND provider_generation=(SELECT generation FROM inbound_identity_provider WHERE singleton=1) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![launch_hash,provider_hash,verifier,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
+        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET state_hash=?2,provider_code_verifier=?3,phase=1 WHERE state_hash=?1 AND phase=0 AND expires_at>?4 AND provider_generation=(SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![launch_hash,provider_hash,verifier,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
     }
 
     pub async fn claim_desktop_login_state(
@@ -753,7 +755,7 @@ impl SqliteStore {
     ) -> Result<Option<crate::types::ProviderBound<DesktopLoginStateRow>>, AuthError> {
         let state_hash = hash_token(provider_state);
         let now = now_unix();
-        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET phase=2 WHERE state_hash=?1 AND phase=1 AND expires_at>?2 AND identity_issuer=(SELECT issuer FROM inbound_identity_provider WHERE singleton=1) AND provider_generation=(SELECT generation FROM inbound_identity_provider WHERE singleton=1) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![state_hash,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
+        self.with_conn(move |conn| conn.query_row("UPDATE desktop_login_states SET phase=2 WHERE state_hash=?1 AND phase=1 AND expires_at>?2 AND provider_generation=(SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer) RETURNING state_hash,return_to,provider_code_verifier,poll_token_hash,redeem_code_hash,launch_code_challenge,created_at,expires_at,identity_issuer,provider_generation",params![state_hash,now],desktop_login_state_from_row).optional().map_err(sqlite_error)).await
     }
 
     pub async fn desktop_session_handoff_status(
@@ -770,7 +772,8 @@ impl SqliteStore {
                    UNION ALL
                    SELECT 0 AS ready, expires_at, identity_issuer, provider_generation
                      FROM desktop_login_states WHERE poll_token_hash = ?1
-                 ) candidate JOIN inbound_identity_provider provider ON provider.singleton = 1
+                 ) candidate JOIN inbound_identity_providers provider
+                   ON provider.issuer = candidate.identity_issuer
                  WHERE candidate.expires_at > ?2
                    AND candidate.identity_issuer = provider.issuer
                    AND candidate.provider_generation = provider.generation
@@ -795,8 +798,7 @@ impl SqliteStore {
         self.with_conn(move |conn| conn.query_row(
             "DELETE FROM desktop_session_handoffs
              WHERE redeem_code_hash = ?1 AND launch_code_challenge = ?2 AND expires_at > ?3
-               AND identity_issuer = (SELECT issuer FROM inbound_identity_provider WHERE singleton = 1)
-               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+               AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
              RETURNING session_id",
             params![redeem_hash, verifier_challenge, now], |row| row.get(0))
             .optional().map_err(sqlite_error)).await
@@ -813,12 +815,13 @@ impl SqliteStore {
         login: BrowserLoginStateRow,
     ) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
+            identity_provider::require_sole_provider(conn)?;
             conn.execute(
                 "INSERT INTO browser_login_states (
                     state, return_to, provider_code_verifier, created_at, expires_at,
                     provider, identity_issuer, provider_generation
                  ) SELECT ?1, ?2, ?3, ?4, ?5, provider, issuer, generation
-                     FROM inbound_identity_provider WHERE singleton = 1",
+                     FROM inbound_identity_providers WHERE true",
                 params![
                     login.state,
                     login.return_to,
@@ -845,8 +848,8 @@ impl SqliteStore {
                     state, return_to, provider_code_verifier, created_at, expires_at,
                     identity_issuer, provider_generation)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                    WHERE singleton = 1 AND issuer = ?6 AND generation = ?7)",
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                    WHERE issuer = ?6 AND generation = ?7)",
                     params![
                         login.state,
                         login.return_to,
@@ -914,7 +917,7 @@ impl SqliteStore {
                 "DELETE FROM browser_login_states
                  WHERE state = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                  RETURNING state, return_to, provider_code_verifier, created_at, expires_at",
                 params![state, now],
                 row_to_browser_login_state,
@@ -933,7 +936,7 @@ impl SqliteStore {
         let now = now_unix();
         self.with_conn(move |conn| conn.query_row(
             "DELETE FROM browser_login_states WHERE state = ?1 AND expires_at > ?2
-               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+               AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
              RETURNING state, return_to, provider_code_verifier, created_at, expires_at,
                        identity_issuer, provider_generation",
             params![state, now],
@@ -959,15 +962,17 @@ impl SqliteStore {
         result: NativeAuthorizationResultRow,
     ) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
+            identity_provider::require_sole_provider(conn)?;
             conn.execute(
                 "INSERT INTO native_authorization_results
-                    (poll_token_hash, code, created_at, expires_at, provider_generation)
-                 SELECT ?1, ?2, ?3, ?4, generation
-                   FROM inbound_identity_provider WHERE singleton = 1
+                    (poll_token_hash, code, created_at, expires_at, identity_issuer, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, issuer, generation
+                   FROM inbound_identity_providers WHERE true
                  ON CONFLICT(poll_token_hash) DO UPDATE SET
                     code = excluded.code,
                     created_at = excluded.created_at,
                     expires_at = excluded.expires_at,
+                    identity_issuer = excluded.identity_issuer,
                     provider_generation = excluded.provider_generation",
                 params![
                     result.poll_token_hash,
@@ -991,12 +996,13 @@ impl SqliteStore {
             let count = conn
                 .execute(
                     "INSERT INTO native_authorization_results
-                   (poll_token_hash, code, created_at, expires_at, provider_generation)
-                 SELECT ?1, ?2, ?3, ?4, ?5
-                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                    WHERE singleton = 1 AND issuer = ?6 AND generation = ?5)
+                   (poll_token_hash, code, created_at, expires_at, provider_generation, identity_issuer)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                    WHERE issuer = ?6 AND generation = ?5)
                  ON CONFLICT(poll_token_hash) DO UPDATE SET code = excluded.code,
                    created_at = excluded.created_at, expires_at = excluded.expires_at,
+                   identity_issuer = excluded.identity_issuer,
                    provider_generation = excluded.provider_generation",
                     params![
                         result.poll_token_hash,
@@ -1031,7 +1037,7 @@ impl SqliteStore {
                 "DELETE FROM native_authorization_results
                  WHERE poll_token_hash = ?1
                    AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                  RETURNING poll_token_hash, code, created_at, expires_at",
                 params![poll_token_hash, now],
                 row_to_native_authorization_result,

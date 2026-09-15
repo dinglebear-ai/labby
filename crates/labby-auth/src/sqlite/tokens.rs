@@ -109,7 +109,7 @@ impl SqliteStore {
             let claimed = transaction.execute(
                 "UPDATE refresh_tokens SET refresh_claim_id = ?2, refresh_claim_expires_at = ?3
                  WHERE refresh_token_hash = ?1 AND expires_at > ?4
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)
                    AND (refresh_claim_id IS NULL OR refresh_claim_expires_at <= ?4)",
                 params![hash, claim_id, lease_expires_at, now],
             ).map_err(sqlite_error)?;
@@ -196,13 +196,14 @@ impl SqliteStore {
             .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
             .transpose()?;
         self.with_conn(move |conn| {
+            super::identity_provider::require_sole_provider(conn)?;
             conn.execute(
                 "INSERT INTO refresh_tokens (
                     refresh_token_hash, client_id, subject, resource, scope,
                     provider_refresh_token, created_at, expires_at,
                     identity_issuer, provider_generation
                  ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, issuer, generation
-                     FROM inbound_identity_provider WHERE singleton = 1
+                     FROM inbound_identity_providers WHERE true
                  ON CONFLICT(refresh_token_hash) DO UPDATE SET
                     client_id = excluded.client_id,
                     subject = excluded.subject,
@@ -251,8 +252,8 @@ impl SqliteStore {
                         provider_refresh_token, created_at, expires_at,
                         identity_issuer, provider_generation)
                      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
-                      WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
-                        WHERE singleton = 1 AND issuer = ?9 AND generation = ?10)
+                      WHERE EXISTS (SELECT 1 FROM inbound_identity_providers
+                        WHERE issuer = ?9 AND generation = ?10)
                      ON CONFLICT(refresh_token_hash) DO UPDATE SET
                         client_id = excluded.client_id,
                         subject = excluded.subject,
@@ -376,7 +377,7 @@ impl SqliteStore {
                        AND refresh_claim_expires_at > ?3
                        AND expires_at > ?3
                        AND identity_issuer = ?4 AND provider_generation = ?5
-                       AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                       AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                     params![old_hash, claim_id, now, binding.identity_issuer, binding.provider_generation],
                 )
                 .map_err(sqlite_error)?;
@@ -453,7 +454,7 @@ impl SqliteStore {
                        AND replay.expires_at > ?3
                        AND replacement.expires_at > ?3
                        AND replay.provider_generation = replacement.provider_generation
-                       AND replay.provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                       AND replay.provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                     params![predecessor_hash, client_id, now],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
@@ -493,7 +494,7 @@ impl SqliteStore {
                    AND replay.expires_at > ?2
                    AND replacement.expires_at > ?2
                    AND replay.provider_generation = replacement.provider_generation
-                   AND replay.provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                   AND replay.provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                 params![predecessor_hash, now],
                 |row| row.get(0),
             )
@@ -624,7 +625,7 @@ impl SqliteStore {
                 "SELECT client_id, subject, scope, provider_refresh_token, created_at, expires_at,
                         resource, identity_issuer, provider_generation
                  FROM refresh_tokens WHERE refresh_token_hash = ?1 AND expires_at > ?2
-                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                   AND provider_generation = (SELECT generation FROM inbound_identity_providers WHERE issuer = identity_issuer)",
                 params![hash, now],
                 |row| Ok(crate::types::ProviderBound {
                     value: RefreshTokenRow { refresh_token: plaintext, client_id: row.get(0)?,

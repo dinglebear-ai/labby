@@ -2215,7 +2215,7 @@ async fn v15_fault_rolls_back_and_future_schema_is_rejected() {
     drop(store);
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP TABLE inbound_identity_provider;
+        "DROP TABLE inbound_identity_providers;
          DROP INDEX idx_allowed_users_email_nocase;
          DROP INDEX idx_authorization_codes_identity_generation_expiry;
          DROP INDEX idx_authorization_requests_provider_generation_expiry;
@@ -3141,6 +3141,176 @@ async fn stale_provider_binding_cannot_install_native_result_after_switch() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn v18_upgrade_keeps_the_singleton_generation_and_revokes_nothing() {
+    let path = temp_db_path();
+    let store = SqliteStore::open(path.clone()).await.unwrap();
+    store
+        .activate_inbound_provider(
+            "google",
+            "https://accounts.google.com",
+            "google-fp",
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    store
+        .register_client(RegisteredClient {
+            client_id: "client".into(),
+            redirect_uris: vec!["http://127.0.0.1:7777/callback".into()],
+            created_at: now_unix(),
+            token_endpoint_auth_method: "none".into(),
+            token_endpoint_auth_methods: Vec::new(),
+            jwks: None,
+            jwks_uri: None,
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_refresh_token(sample_refresh_token("client", "refresh-kept"))
+        .await
+        .unwrap();
+    let before = store.inbound_provider_state().await.unwrap();
+    drop(store);
+
+    // Rewind to the v17 singleton layout.
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE inbound_identity_provider (
+           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+           provider TEXT NOT NULL, issuer TEXT NOT NULL,
+           config_fingerprint TEXT NOT NULL,
+           generation INTEGER NOT NULL CHECK (generation > 0),
+           updated_at INTEGER NOT NULL);
+         INSERT INTO inbound_identity_provider
+           SELECT 1, provider, issuer, config_fingerprint, generation, updated_at
+             FROM inbound_identity_providers;
+         DROP TABLE inbound_identity_providers;
+         PRAGMA user_version = 17;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let store = SqliteStore::open(path.clone()).await.unwrap();
+    assert_eq!(store.inbound_provider_state().await.unwrap(), before);
+    assert!(
+        store
+            .find_refresh_token("refresh-kept")
+            .await
+            .unwrap()
+            .is_some(),
+        "the upgrade must not revoke existing grants"
+    );
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        18
+    );
+    assert!(
+        !conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbound_identity_provider')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn providers_coexist_and_one_changing_or_retiring_never_revokes_the_other() {
+    let store = temp_store().await;
+    store
+        .activate_inbound_provider_checked(
+            "google",
+            "https://accounts.google.com",
+            "google-fp",
+            Some("google-client"),
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    store.insert_auth_code(sample_code()).await.unwrap();
+
+    let added = store
+        .activate_inbound_provider_checked(
+            "authelia",
+            "https://auth.example.test",
+            "authelia-fp-1",
+            None,
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added.revoked_authorization_codes, 0);
+    assert!(
+        store
+            .inbound_provider_state_for("google")
+            .await
+            .unwrap()
+            .is_some()
+            && store
+                .inbound_provider_state_for("authelia")
+                .await
+                .unwrap()
+                .is_some()
+    );
+    // Issuer-less legacy writes are ambiguous with two providers: fail closed.
+    assert!(matches!(
+        store.insert_auth_code(sample_code()).await,
+        Err(crate::error::AuthError::Config(_))
+    ));
+
+    let google_before = store
+        .inbound_provider_state_for("google")
+        .await
+        .unwrap()
+        .unwrap();
+    let bumped = store
+        .activate_inbound_provider_checked(
+            "authelia",
+            "https://auth.example.test",
+            "authelia-fp-2",
+            None,
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    assert!(bumped.generation > added.generation);
+    assert_eq!(bumped.revoked_authorization_codes, 0);
+    assert_eq!(
+        store
+            .inbound_provider_state_for("google")
+            .await
+            .unwrap()
+            .unwrap(),
+        google_before,
+        "changing Authelia must not touch Google"
+    );
+
+    // Google still has a live code, so retiring it at startup is refused.
+    assert!(
+        store
+            .retire_inbound_providers_except_checked(&["authelia"])
+            .await
+            .is_err()
+    );
+    // Retiring the grant-free Authelia provider succeeds and leaves Google's code valid.
+    store
+        .retire_inbound_providers_except_checked(&["google"])
+        .await
+        .unwrap();
+    assert!(
+        store
+            .inbound_provider_state_for("authelia")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.redeem_auth_code("code-123").await.is_ok());
 }
 
 // Ensure AllowedUserRow is importable as the right type in tests.
