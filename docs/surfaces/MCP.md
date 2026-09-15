@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-08-17"
+updated: "2026-09-14"
 ---
 
 # MCP Surface
@@ -16,6 +16,16 @@ MCP. The same service dispatch layer backs MCP, CLI, and HTTP.
 - Protected MCP routes: route-specific paths configured through the gateway
 
 See [TRANSPORT.md](./TRANSPORT.md) for transport and authentication boundaries.
+
+The hosted HTTP boundary implements request-scoped `2026-07-28` traffic only.
+It rejects unknown and SDK-known historical versions with the typed
+`UnsupportedProtocolVersionError` and advertises only `2026-07-28`. Direct
+stdio clients retain legacy support through the separate `initialize` lifecycle
+adapter; that compatibility does not add resumable HTTP sessions, GET/DELETE
+streams, or legacy protocol versions to the current HTTP request path. Hosted
+HTTP never negotiates through `initialize`: missing version/method metadata is
+HTTP 400 / `-32020`, an explicitly historical version is HTTP 400 / `-32022`,
+and a current-version `initialize` is HTTP 404 / `-32601`.
 
 ## Services
 

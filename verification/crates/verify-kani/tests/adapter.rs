@@ -38,13 +38,19 @@ fn plan(timeout_ms: u64, max_output_bytes: usize) -> CheckPlan {
     }
 }
 
-fn executable(directory: &TempDir, body: &str) -> std::path::PathBuf {
-    let path = directory.path().join("kani-driver");
+fn named_executable(directory: &TempDir, name: &str, body: &str) -> std::path::PathBuf {
+    let path = directory.path().join(name);
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&path, permissions).unwrap();
     path
+}
+
+fn executable(directory: &TempDir, body: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    named_executable(directory, &format!("kani-driver-{id}"), body)
 }
 
 fn backend(path: &Path) -> KaniBackend {
@@ -135,15 +141,15 @@ fn absent_or_wrong_version_is_skipped() {
 #[test]
 fn explicit_bundle_driver_can_resolve_its_sibling_tools() {
     let directory = tempfile::tempdir().unwrap();
-    let sibling = executable(
+    named_executable(
         &directory,
+        "goto-cc",
         "printf 'VERIFICATION:- SUCCESSFUL\\nComplete - 1 successfully verified harnesses, 0 failures, 1 total.\\n'",
     );
-    let sibling_path = directory.path().join("goto-cc");
-    fs::rename(sibling, &sibling_path).unwrap();
-    let driver = executable(
+    let driver = named_executable(
         &directory,
-        "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\ncommand -v goto-cc >/dev/null || exit 1\nprintf 'VERIFICATION:- SUCCESSFUL\\nComplete - 1 successfully verified harnesses, 0 failures, 1 total.\\n'",
+        "kani",
+        "if [ \"$1\" = --version ]; then printf 'kani 0.67.0\\n'; exit 0; fi\ncommand -v goto-cc >/dev/null || exit 1\nprintf 'VERIFICATION:- SUCCESSFUL\\nComplete - 1 successfully verified harnesses, 0 failures, 1 total.\\n'; exit 0",
     );
     let report = backend(&driver).run(&plan(500, 4096));
     assert!(
