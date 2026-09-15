@@ -93,6 +93,14 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.20.1](https://github.com/dinglebear-ai/labby/compare/v1.20.0...v1.20.1) (2026-09-15)
+
+
+### Fixed
+
+* **release:** read npm dist-tags with npm view so publish can succeed ([#662](https://github.com/dinglebear-ai/labby/issues/662)) ([611cd50](https://github.com/dinglebear-ai/labby/commit/611cd5056a88c5634a5e17a69532fb8feed42f5b))
+* **web:** let the no-access screen trigger team admission ([#661](https://github.com/dinglebear-ai/labby/issues/661)) ([69d1912](https://github.com/dinglebear-ai/labby/commit/69d1912930dc433104e47cc4667642abe8808d1a))
+
 ## [1.20.0](https://github.com/dinglebear-ai/labby/compare/v1.19.0...v1.20.0) (2026-09-15)
 
 
