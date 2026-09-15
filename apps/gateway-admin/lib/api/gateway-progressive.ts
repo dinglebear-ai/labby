@@ -1,6 +1,14 @@
 export type ProgressiveGatewayApi<TGateway> = {
   list: () => Promise<TGateway[]>
   hydrateRuntime: (gateways: TGateway[]) => Promise<TGateway[]>
+  hydrateToolInventory: (gateways: TGateway[]) => Promise<TGateway[]>
+}
+
+export function loadGatewayToolInventory<TGateway>(
+  api: ProgressiveGatewayApi<TGateway>,
+  gateways: TGateway[],
+): Promise<TGateway[]> {
+  return api.hydrateToolInventory(gateways)
 }
 
 export function loadGatewayConfiguration<TGateway>(

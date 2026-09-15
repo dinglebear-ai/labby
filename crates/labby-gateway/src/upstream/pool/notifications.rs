@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::catalog_pagination;
-use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
+use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri};
 use super::tools::MAX_UPSTREAM_TOOLS;
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
@@ -46,6 +46,7 @@ pub(super) fn subscription_listen_supported_protocol(version: &ProtocolVersion) 
 
 pub(super) fn terminal_subscription_listen_error(error: &ServiceError, retry_attempt: u32) -> bool {
     match error {
+        ServiceError::TransportClosed => true,
         ServiceError::McpError(error) if error.code == ErrorCode::METHOD_NOT_FOUND => true,
         ServiceError::McpError(error) if error.code == ErrorCode::INVALID_PARAMS => {
             retry_attempt > 0
@@ -92,34 +93,11 @@ impl UpstreamPool {
     /// contracts so both paths observe the updated tools without bypassing the
     /// visible-contract suppression invariant.
     pub async fn refresh_tools_after_list_changed(&self, upstream: &str) -> bool {
-        let upstream_name = {
-            let catalog = self.catalog.read().await;
-            catalog.get(upstream).map(|entry| Arc::clone(&entry.name))
-        };
-        let Some(upstream_name) = upstream_name else {
-            tracing::warn!(
-                upstream,
-                "cannot refresh tools after list-changed signal: catalog entry is missing"
-            );
+        let Some(observed) = self.observe_connection_catalog_entry(upstream).await else {
             return false;
         };
-
-        let peer = {
-            let connections = self.connections.read().await;
-            connections
-                .get(upstream)
-                .map(|connection| connection.peer.clone())
-        };
-        let Some(peer) = peer else {
-            let error = "cannot refresh tools after list-changed signal: connection is missing";
-            self.record_failure_for(upstream, UpstreamCapability::Tools, error)
-                .await;
-            tracing::warn!(upstream, error, "upstream tool-list refresh failed");
-            return false;
-        };
-
         let tools = match catalog_pagination::list_tools(
-            &peer,
+            &observed.peer,
             DISCOVERY_TIMEOUT,
             MAX_UPSTREAM_TOOLS,
         )
@@ -132,37 +110,23 @@ impl UpstreamPool {
                     "tool-list refresh after list-changed signal failed: {}",
                     error.bounded_text()
                 );
-                self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
-                    .await;
+                self.apply_to_observed_entry(&observed, |entry| {
+                    super::health::record_failure_on_entry(
+                        upstream,
+                        entry,
+                        UpstreamCapability::Tools,
+                        error.clone(),
+                    );
+                })
+                .await;
                 tracing::warn!(upstream, kind, error = %error, "upstream tool-list refresh failed");
                 return false;
             }
         };
         let tool_count = tools.len();
-        let tools = tools
-            .into_iter()
-            .map(|tool| cached_upstream_tool(tool, &upstream_name))
-            .collect::<HashMap<_, _>>();
-
-        let replaced = {
-            let mut catalog = self.catalog_write().await;
-            if let Some(entry) = catalog.get_mut(upstream) {
-                entry.tools = tools;
-                true
-            } else {
-                false
-            }
-        };
-        if !replaced {
-            tracing::warn!(
-                upstream,
-                "discarding refreshed tools because the catalog entry was removed"
-            );
+        if !self.publish_observed_tools(&observed, tools).await {
             return false;
         }
-
-        self.record_success_for(upstream, UpstreamCapability::Tools)
-            .await;
         tracing::debug!(
             upstream,
             tool_count,

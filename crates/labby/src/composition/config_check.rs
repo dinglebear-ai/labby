@@ -94,7 +94,7 @@ fn fatal_depot_checks(config: &LabConfig) -> Result<()> {
 
 #[cfg(feature = "skills")]
 fn skill_library_checks(config: &LabConfig) -> Result<()> {
-    crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+    crate::dispatch::artifact_control::ArtifactControlPlane::from_host_configs(
         &config.artifacts,
         &config.depot,
     )
@@ -157,11 +157,11 @@ mod tests {
         );
     }
 
-    /// The production incident: a private pinned address on an Artifact
-    /// authority source degraded the Skill Library while `setup check` passed.
+    /// Optional remote authority failures are isolated exactly as `labby serve`
+    /// isolates them; one unauthorized source must not degrade the local library.
     #[cfg(feature = "skills")]
     #[test]
-    fn private_artifact_authority_pin_degrades_artifacts() {
+    fn private_artifact_authority_pin_isolated_like_serve() {
         use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let config = LabConfig {
@@ -177,15 +177,6 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        let problems = validate_startup_config(&config);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(!problems[0].fatal);
-        assert!(
-            problems[0]
-                .message
-                .contains("Artifact authority pin must be a public address"),
-            "{}",
-            problems[0].message
-        );
+        assert!(validate_startup_config(&config).is_empty());
     }
 }

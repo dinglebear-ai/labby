@@ -223,6 +223,7 @@ export interface TestGatewayResult {
 
 export interface ReloadGatewayResult {
   success: boolean
+  pending?: boolean
   message: string
   previous_tool_count: number
   new_tool_count: number

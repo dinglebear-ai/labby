@@ -109,3 +109,62 @@ test('Discover hero counts only enabled sources and relabels the count once a qu
     globalThis.fetch = originalFetch
   }
 })
+
+test('Discover bounds deferred continuations, retains successful rows and cancels the timer on unmount', async () => {
+  const originalFetch = globalThis.fetch
+  const originalSetTimeout = window.setTimeout
+  const originalClearTimeout = window.clearTimeout
+  const pending = new Map<number, { callback: () => void; delay: number }>()
+  const delays: number[] = []
+  let nextTimer = 10000, lists = 0
+  window.setTimeout = ((callback: () => void, delay?: number) => {
+    if (delay && delay >= 500 && delay <= 8000) {
+      const id = ++nextTimer
+      pending.set(id, { callback, delay })
+      return id
+    }
+    return originalSetTimeout.call(window, callback, delay)
+  }) as typeof window.setTimeout
+  window.clearTimeout = ((id: number) => {
+    pending.delete(id)
+    originalClearTimeout.call(window, id)
+  }) as typeof window.clearTimeout
+  globalThis.fetch = async url => {
+    if (url === '/v1/depot/providers') return Response.json([])
+    if (url === '/v1/depot/discover') {
+      lists++
+      return Response.json({
+        schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch',
+        items: lists === 1 ? [{ id: 'retained', title: 'Successful provider result', providerId: 'team', artifactId: 'retained' }] : [],
+        providerOutcomes: [], failures: [], coverageComplete: false,
+        knownTotal: 1, totalIsExact: false, state: 'deferred', nextCursor: String(lists).padStart(43, 'a'),
+      })
+    }
+    throw new Error('unexpected endpoint')
+  }
+  const view = await renderClient(plainPage())
+  try {
+    await waitFor(() => assert.equal(pending.size, 1))
+    assert.equal(lists, 1, 'no immediate retries while continuation is deferred')
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const [id, timer] = [...pending][0]
+      pending.delete(id)
+      delays.push(timer.delay)
+      await act(async () => timer.callback())
+      await waitFor(() => assert.equal(lists, attempt + 2))
+      assert.match(view.container.textContent ?? '', /Successful provider result/)
+    }
+    assert.deepEqual(delays, [500, 1000, 2000, 4000, 8000])
+    assert.equal(pending.size, 0, 'retry budget stops the loop even as cursors change')
+    const retry = [...view.container.querySelectorAll('button')].find(button => button.textContent === 'Retry search')!
+    await act(async () => retry.click())
+    await waitFor(() => assert.equal(pending.size, 1))
+    await view.unmount()
+    assert.equal(pending.size, 0, 'unmount cancels the pending continuation')
+  } finally {
+    if (view.container.isConnected) await view.unmount()
+    globalThis.fetch = originalFetch
+    window.setTimeout = originalSetTimeout
+    window.clearTimeout = originalClearTimeout
+  }
+})

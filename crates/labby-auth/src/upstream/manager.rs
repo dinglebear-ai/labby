@@ -689,6 +689,19 @@ impl UpstreamOauthManager {
     /// short refresh buffer. Status checks need an explicit refresh so UI state
     /// cannot report a stale credential row as connected.
     pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
+        // Once admitted, persist a provider's rotated token even if the status
+        // request disappears. Dropping the JoinHandle detaches this bounded
+        // provider operation instead of cancelling between exchange and save.
+        let manager = self.clone();
+        let subject = subject.to_string();
+        tokio::spawn(async move { manager.refresh_auth_client_if_due_owned(&subject).await })
+            .await
+            .map_err(|error| {
+                OauthError::Internal(format!("OAuth status refresh task failed: {error}"))
+            })?
+    }
+
+    async fn refresh_auth_client_if_due_owned(&self, subject: &str) -> Result<bool, OauthError> {
         let started = std::time::Instant::now();
         self.preflight_shared_google_credential().await?;
 

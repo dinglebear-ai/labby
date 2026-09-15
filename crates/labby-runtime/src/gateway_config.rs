@@ -291,7 +291,7 @@ impl Default for CodeModeConfig {
 impl CodeModeConfig {
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !(1..=60_000).contains(&self.timeout_ms) {
+        if !(1..=300_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
             });
@@ -1431,7 +1431,7 @@ pub enum ConfigError {
         /// Explanation of the transport validation failure.
         reason: String,
     },
-    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
+    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=300000")]
     /// Code Mode timeout falls outside the supported range.
     InvalidCodeModeTimeout {
         /// Rejected timeout in milliseconds.
@@ -1991,6 +1991,17 @@ fn normalize_string_list(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_mode_accepts_bounded_long_running_upstreams() {
+        let mut config = CodeModeConfig {
+            timeout_ms: 180_000,
+            ..CodeModeConfig::default()
+        };
+        assert!(config.validate().is_ok());
+        config.timeout_ms = 300_001;
+        assert!(config.validate().is_err());
+    }
+
     #[test]
     fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
         let mut config: GatewayConfig = toml::from_str(

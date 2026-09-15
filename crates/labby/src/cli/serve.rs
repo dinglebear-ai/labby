@@ -165,7 +165,7 @@ fn bootstrap_skill_library(
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_configs(
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_host_configs(
             &config.artifacts,
             &config.depot,
         )
@@ -2918,7 +2918,7 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn failed_import_construction_can_retry_before_runtime_publication() {
+    fn invalid_import_source_isolated_before_runtime_publication() {
         use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let root = tempfile::tempdir().unwrap();
@@ -2935,7 +2935,7 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        assert!(configure_skill_library_imports(&config, root.path()).is_err());
+        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
 
         config.artifacts = ArtifactPreferences::default();
         assert!(configure_skill_library_imports(&config, root.path()).is_ok());

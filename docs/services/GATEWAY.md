@@ -341,7 +341,7 @@ Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
 
 Rules:
 
-- `code_mode.timeout_ms` is validated in the range `1..=60000`
+- `code_mode.timeout_ms` is validated in the range `1..=300000`
 - `code_mode.result_shape_policy` accepts `"off"` or `"truncate"`
 - `code_mode.max_response_bytes` is validated in the range `1024..=1048576`
 - `code_mode.max_response_tokens` is validated in the range `256..=256000`
@@ -1000,7 +1000,7 @@ ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 | `POST` | `/v1/gateway/oauth/start` | Begin authorization for the shared gateway subject `gateway`. Body `{ "upstream": "<name>" }`. Returns `{ "authorization_url": "..." }` (JSON only — no browser-redirect mode). |
 | `GET` | `/auth/upstream/callback` | Authorization-code callback. Validates the authenticated session, atomically takes the pending state row (bound to `(upstream, subject)`), exchanges the code, persists encrypted credentials, redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
 | `GET` | `/v1/gateway/oauth/status?upstream=<name>` | Returns `{ "authenticated": bool, "upstream": "<name>", "expires_within_5m": bool }`. Deliberately omits subject and raw expiry timestamp to avoid enumeration and fingerprinting. |
-| `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. In-flight requests complete naturally under the old credential (graceful drain by Rust ownership — not a designed protocol). |
+| `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. Matching cached clients and live peers are invalidated. Peer cleanup runs asynchronously; active calls may fail and callers must check side effects before retrying. |
 
 ### OAuth Operator Examples
 
@@ -1052,8 +1052,10 @@ Callback security invariants (enforced in code, spec-required):
   It does **not** delete persisted credential rows — `AuthClient`s are rebuilt
   on the next request using whatever credentials are in the store.
 - `clear_credentials` is the only way to invalidate a persisted credential.
-  It evicts the cache entry and deletes the row; in-flight `Arc<AuthClient>`
-  holders complete naturally under the old token.
+  It evicts the cache entry and deletes the row. Matching peers are detached
+  immediately and shut down asynchronously; in-flight calls may be interrupted.
+  Check operation outcomes before retrying a mutation. Late refresh responses
+  cannot restore a deleted or newly authorized credential.
 - Expired access-only credential rows (no refresh token) are pruned by the
   60-second `cleanup_expired` background task, alongside expired PKCE state.
 
