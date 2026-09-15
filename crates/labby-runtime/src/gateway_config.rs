@@ -28,6 +28,8 @@ pub const IN_PROCESS_UPSTREAM_PREFIX: &str = "__in_process__";
 
 /// Maximum characters retained from a Code Mode discovery hint.
 pub const CODE_MODE_HINT_MAX_CHARS: usize = 240;
+/// Maximum length of an upstream's operator-facing `display_name`.
+pub const UPSTREAM_DISPLAY_NAME_MAX_CHARS: usize = 80;
 /// Maximum words retained from a Code Mode discovery hint.
 pub const CODE_MODE_HINT_MAX_WORDS: usize = 24;
 /// Version tag for the Code Mode hint sanitization contract.
@@ -453,11 +455,32 @@ pub enum UpstreamTransport {
     UnixSocket,
 }
 
+/// Which MCP lifecycle Labby opens an upstream connection with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamLifecycle {
+    /// Try `server/discover` first and fall back to `initialize` only when the
+    /// peer proves it is legacy.
+    #[default]
+    Auto,
+    /// Always open with `initialize`. For legacy servers that terminate on an
+    /// unknown first request, which leaves no rejection to classify.
+    Initialize,
+}
+
 /// Configuration for a single upstream MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
-    /// Human-readable name for this upstream (used as tool-name prefix).
+    /// Stable identifier for this upstream (used as tool-name prefix, skill
+    /// origin label, OAuth state key, and route references).
     pub name: String,
+    /// Optional operator-facing label. Presentation only: it never affects
+    /// routing, tool naming, auth, or exposure, so it may be any short text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Handshake override. Omitted means [`UpstreamLifecycle::Auto`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<UpstreamLifecycle>,
     /// Whether this upstream is enabled for discovery and proxying. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -757,6 +780,21 @@ impl UpstreamConfig {
             return Err(ConfigError::InvalidName {
                 name: self.name.clone(),
                 reason: "must not exceed 128 characters".to_string(),
+            });
+        }
+        // The display name is free-form presentation text, but it is still
+        // rendered in operator surfaces, so keep it short and single-line.
+        if let Some(label) = &self.display_name
+            && (label.trim().is_empty()
+                || label.chars().count() > UPSTREAM_DISPLAY_NAME_MAX_CHARS
+                || label.chars().any(char::is_control))
+        {
+            return Err(ConfigError::InvalidName {
+                name: self.name.clone(),
+                reason: format!(
+                    "display_name must be 1-{UPSTREAM_DISPLAY_NAME_MAX_CHARS} characters with no \
+                     control characters"
+                ),
             });
         }
         // Name must use only safe ASCII characters.
@@ -2066,6 +2104,35 @@ expose_code_mode = true
             toml::from_str("name=\"upstream-2\"\nurl=\"https://x/mcp\"\nproxy_skills=true\n")
                 .unwrap();
         ok.validate().expect("a conforming label is accepted");
+    }
+
+    #[test]
+    fn display_name_is_free_form_but_bounded() {
+        // A label is presentation only, so it may carry what the ID cannot.
+        let labelled: UpstreamConfig = toml::from_str(
+            "name=\"asana\"\ndisplay_name=\"Asana (Work) — ✓\"\nurl=\"https://x/mcp\"\nproxy_skills=true\n",
+        )
+        .unwrap();
+        labelled
+            .validate()
+            .expect("any short single-line label is accepted");
+
+        let too_long = "x".repeat(UPSTREAM_DISPLAY_NAME_MAX_CHARS + 1);
+        for label in ["", "   ", "two\nlines", too_long.as_str()] {
+            let mut cfg: UpstreamConfig =
+                toml::from_str("name=\"asana\"\nurl=\"https://x/mcp\"\n").unwrap();
+            cfg.display_name = Some(label.to_string());
+            assert!(cfg.validate().is_err(), "{label:?} must be rejected");
+        }
+
+        let unlabelled: UpstreamConfig =
+            toml::from_str("name=\"asana\"\nurl=\"https://x/mcp\"\n").unwrap();
+        assert!(
+            !toml::to_string(&unlabelled)
+                .unwrap()
+                .contains("display_name"),
+            "configs without a label keep serializing byte-identically"
+        );
     }
 
     #[test]
