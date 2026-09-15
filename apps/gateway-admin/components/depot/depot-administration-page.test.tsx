@@ -16,6 +16,7 @@ test('administration uses compact attached workspace navigation and visible head
   assert.match(nav, />Artifacts</)
   assert.match(nav, /aria-current="page"/)
   assert.match(html, /href="\/settings\/depot\/"/)
+  assert.match(html, />Discovery providers</)
   assert.match(html, /Authority unavailable/)
   assert.doesNotMatch(html, /Authority connected/)
 })
