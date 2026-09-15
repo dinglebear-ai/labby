@@ -8,6 +8,7 @@
 
 pub(crate) mod access_bootstrap;
 mod bootstrap;
+mod caller;
 mod catalog;
 pub(crate) mod claude_plugins;
 mod client;
@@ -36,8 +37,9 @@ pub(crate) use bootstrap::bootstrap_at;
 pub use bootstrap::{
     BootstrapOutcome, bootstrap, bootstrap_action, ensure_oauth_encryption_key_at, should_bootstrap,
 };
+pub use caller::{SetupCaller, SetupCallerEvidence};
 pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
-pub use dispatch::dispatch;
+pub use dispatch::{dispatch, dispatch_for_caller};
 pub use token::generate_mcp_token;
 pub use types::{
     AccessBootstrapManifest, AccessBootstrapPrepare, AccessBootstrapPrepareOutcome, CommitOutcome,

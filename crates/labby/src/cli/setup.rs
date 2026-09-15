@@ -826,9 +826,12 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
             if let Err(err) = install_self() {
                 tracing::debug!(?err, "failed to refresh ~/.local/bin copy of labby");
             }
-            let value =
-                crate::dispatch::setup::dispatch("plugin_hook", json!({ "repair": !no_repair }))
-                    .await?;
+            let value = crate::dispatch::setup::dispatch_for_caller(
+                crate::dispatch::setup::SetupCaller::Operator,
+                "plugin_hook",
+                json!({ "repair": !no_repair }),
+            )
+            .await?;
             print(&value, format)?;
         }
         SetupCommand::PluginSync(args) => {
@@ -848,7 +851,12 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
                 args.yes,
                 format,
                 |action, params| async move {
-                    crate::dispatch::setup::dispatch(&action, params).await
+                    crate::dispatch::setup::dispatch_for_caller(
+                        crate::dispatch::setup::SetupCaller::Operator,
+                        &action,
+                        params,
+                    )
+                    .await
                 },
             )
             .await;
