@@ -1347,9 +1347,10 @@ impl AccessStore {
         &self,
         identity: labby_auth::VerifiedIdentity,
         role: super::AllowlistRole,
+        admitted_by: super::AllowlistAdmission,
     ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
         self.with_connection(move |connection| {
-            super::team_provision::provision_allowlisted(connection, &identity, role)
+            super::team_provision::provision_allowlisted(connection, &identity, role, admitted_by)
         })
         .await
     }

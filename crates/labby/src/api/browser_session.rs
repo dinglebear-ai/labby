@@ -603,7 +603,7 @@ async fn project_session(
     let mut authority =
         resolve_session_authority(state, caller.identity.clone(), caller.transport_admin).await?;
     if matches!(authority, SessionAuthority::Unprovisioned)
-        && admit_allowlisted_identity(state, &caller).await?
+        && admit_allowlisted_identity(state, &caller).await
     {
         authority =
             resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
@@ -618,19 +618,16 @@ async fn project_session(
 /// Principal was created or already existed, so the caller re-resolves
 /// authority. The session's display email is never consulted: evidence comes
 /// from the provider-verified identity row bound to this issuer and subject.
-async fn admit_allowlisted_identity(
-    state: &AppState,
-    caller: &SessionCaller,
-) -> Result<bool, ToolError> {
+async fn admit_allowlisted_identity(state: &AppState, caller: &SessionCaller) -> bool {
     let (Some(auth_state), Some(config)) = (oauth_state(state), state.auth_config.as_ref()) else {
-        return Ok(false);
+        return false;
     };
     if !caller.via_session {
-        return Ok(false);
+        return false;
     }
     let labby_auth::PrincipalLink::External { issuer, subject } = caller.identity.principal_link()
     else {
-        return Ok(false);
+        return false;
     };
     let email = match auth_state
         .store
@@ -638,7 +635,7 @@ async fn admit_allowlisted_identity(
         .await
     {
         Ok(Some(email)) => email,
-        Ok(None) => return Ok(false),
+        Ok(None) => return false,
         Err(error) => {
             // Fail closed to `unprovisioned`, but leave a trace; no email,
             // subject, or issuer is logged.
@@ -649,11 +646,14 @@ async fn admit_allowlisted_identity(
                 error = %error,
                 "verified identity lookup failed; session stays unprovisioned"
             );
-            return Ok(false);
+            return false;
         }
     };
-    let role = if config.is_admin_email(&email) {
-        Some(crate::access::AllowlistRole::Admin)
+    let admission = if config.is_admin_email(&email) {
+        Some((
+            crate::access::AllowlistRole::Admin,
+            crate::access::AllowlistAdmission::ConfiguredAdminEmail,
+        ))
     } else {
         let allowed = match auth_state.store.find_allowed_user(&email).await {
             Ok(allowed) => allowed,
@@ -667,31 +667,39 @@ async fn admit_allowlisted_identity(
                     error = %error,
                     "allowlist lookup failed; session stays unprovisioned"
                 );
-                return Ok(false);
+                return false;
             }
         };
         allowed.and_then(|row| match crate::access::AllowlistRole::parse(&row.role) {
-            Some(role) => Some(role),
+            // `added_by` is the adding administrator's provider subject: only
+            // its fingerprint is carried into the audit record.
+            Some(role) => Some((
+                role,
+                crate::access::AllowlistAdmission::AllowlistEntry {
+                    added_by_fingerprint: labby_auth::util::fingerprint(&row.added_by),
+                },
+            )),
             None => {
                 tracing::debug!(
                     surface = "api",
                     service = "auth",
                     action = "session.get",
+                    role = %row.role,
                     "allowlist entry has an unknown role; identity not admitted"
                 );
                 None
             }
         })
     };
-    let Some(role) = role else {
-        return Ok(false);
+    let Some((role, admitted_by)) = admission else {
+        return false;
     };
     match state
         .access_runtime
-        .provision_allowlisted(caller.identity.clone(), role)
+        .provision_allowlisted(caller.identity.clone(), role, admitted_by)
         .await
     {
-        Ok(_) => Ok(true),
+        Ok(_) => true,
         Err(error) => {
             // Fail closed to `unprovisioned`, but leave a trace; identity and
             // email are never logged.
@@ -702,7 +710,7 @@ async fn admit_allowlisted_identity(
                 error = %error,
                 "allowlist admission failed; session stays unprovisioned"
             );
-            Ok(false)
+            false
         }
     }
 }

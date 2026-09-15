@@ -69,6 +69,38 @@ impl AllowlistRole {
     }
 }
 
+/// Who authorized an allowlist admission. Recorded on the
+/// `access.allowlist.provision` audit row so a grant can be traced back to the
+/// administrator who allowed the email, or to the deployment's configured
+/// admin list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AllowlistAdmission {
+    /// An allowlist row, identified by the fingerprint of the provider subject
+    /// that added it. The raw subject is deliberately never stored here.
+    AllowlistEntry { added_by_fingerprint: String },
+    /// `LABBY_AUTH_ADMIN_EMAIL`; the deployment's configuration is the
+    /// authority, so there is no administrator subject to record.
+    ConfiguredAdminEmail,
+}
+
+impl AllowlistAdmission {
+    fn audit_metadata(&self, role: AllowlistRole) -> serde_json::Value {
+        match self {
+            Self::AllowlistEntry {
+                added_by_fingerprint,
+            } => serde_json::json!({
+                "role": role.as_str(),
+                "admitted_via": "allowlist",
+                "added_by_fp": added_by_fingerprint,
+            }),
+            Self::ConfiguredAdminEmail => serde_json::json!({
+                "role": role.as_str(),
+                "admitted_via": "configured_admin_email",
+            }),
+        }
+    }
+}
+
 /// Admit an allowlisted identity: a Principal (if missing), an Initial Team
 /// membership, a default-Project membership, and for `Admin` a platform
 /// administrator grant — one transaction, idempotent. Either an existing active
@@ -79,6 +111,7 @@ pub(super) fn provision_allowlisted(
     connection: &mut Connection,
     identity: &VerifiedIdentity,
     role: AllowlistRole,
+    admitted_by: AllowlistAdmission,
 ) -> AccessStoreResult<TeamMemberProvisionOutcome> {
     let project_id = super::bootstrap::PROJECT_ID;
     let now = unix_now()?;
@@ -164,7 +197,7 @@ pub(super) fn provision_allowlisted(
                     "team_membership\0{INITIAL_TEAM_ID}\0{principal_id}"
                 ))),
                 organization_epoch,
-                serde_json::json!({"role": role.as_str()}).to_string()
+                admitted_by.audit_metadata(role).to_string()
             ],
         )
         .map_err(map_sqlite_error)?;
@@ -389,6 +422,12 @@ mod tests {
         .unwrap()
     }
 
+    fn allowlist_entry() -> AllowlistAdmission {
+        AllowlistAdmission::AllowlistEntry {
+            added_by_fingerprint: "fp-of-adding-admin".to_owned(),
+        }
+    }
+
     async fn fixture() -> (tempfile::TempDir, AccessStore) {
         let directory = crate::access::test_support::secure_tempdir();
         let store = AccessStore::open(directory.path().join("access.db"))
@@ -467,7 +506,7 @@ mod tests {
         let eli = identity("eli");
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Member)
+                .provision_allowlisted(eli.clone(), AllowlistRole::Member, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::Created
@@ -485,7 +524,7 @@ mod tests {
         // Repeat sign-in is a no-op and never upgrades the role.
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -501,7 +540,7 @@ mod tests {
         let eli = identity("eli-admin");
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::Created
@@ -516,6 +555,27 @@ mod tests {
             vec![("bootstrap-default".to_owned(), "admin".to_owned())]
         );
         assert_eq!(admins, 1);
+        // The audit row records who authorized the grant, not only the role.
+        let metadata: String = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT metadata_json FROM access_audit WHERE action='access.allowlist.provision'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap(),
+            serde_json::json!({
+                "role": "admin",
+                "admitted_via": "allowlist",
+                "added_by_fp": "fp-of-adding-admin",
+            })
+        );
         let snapshot = store.session_authority(eli).await.unwrap();
         assert!(snapshot.platform_administrator);
     }
@@ -543,7 +603,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin, allowlist_entry())
                 .await
                 .unwrap(),
             TeamMemberProvisionOutcome::AlreadyActive
@@ -571,7 +631,11 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .provision_allowlisted(identity("rollback"), AllowlistRole::Admin)
+                .provision_allowlisted(
+                    identity("rollback"),
+                    AllowlistRole::Admin,
+                    allowlist_entry()
+                )
                 .await
                 .is_err()
         );

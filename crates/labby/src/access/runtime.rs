@@ -258,11 +258,12 @@ impl AccessRuntime {
         &self,
         identity: labby_auth::VerifiedIdentity,
         role: super::AllowlistRole,
+        admitted_by: super::AllowlistAdmission,
     ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
         let _writer = self.acquire_bootstrap_writer().await?;
         self.security_store()
             .await?
-            .provision_allowlisted(identity, role)
+            .provision_allowlisted(identity, role, admitted_by)
             .await
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
