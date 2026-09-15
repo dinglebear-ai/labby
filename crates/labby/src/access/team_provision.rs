@@ -71,19 +71,28 @@ impl AllowlistRole {
 
 /// Admit an allowlisted identity: a Principal (if missing), an Initial Team
 /// membership, a default-Project membership, and for `Admin` a platform
-/// administrator grant — one transaction, idempotent. An existing active
-/// Project membership means the identity was already admitted; nothing is
-/// upgraded and `AlreadyActive` is returned.
+/// administrator grant — one transaction, idempotent. Either an existing active
+/// default-Project membership or an existing Initial Team membership (in any
+/// status) means the identity was already admitted; nothing is upgraded and
+/// `AlreadyActive` is returned.
 pub(super) fn provision_allowlisted(
     connection: &mut Connection,
     identity: &VerifiedIdentity,
     role: AllowlistRole,
 ) -> AccessStoreResult<TeamMemberProvisionOutcome> {
     let project_id = super::bootstrap::PROJECT_ID;
+    let now = unix_now()?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
-    let (outcome, principal_id, organization_id) = provision_in_transaction(
+    // An identity that already holds an Initial Team membership was admitted
+    // before. Admitting it again must never rewrite that membership's role or
+    // grant platform administration, so the gate runs before any write.
+    if existing_initial_team_member(&transaction, identity)? {
+        transaction.commit().map_err(map_sqlite_error)?;
+        return Ok(TeamMemberProvisionOutcome::AlreadyActive);
+    }
+    let (outcome, principal_id, organization_id, organization_epoch) = provision_in_transaction(
         &transaction,
         identity,
         project_id,
@@ -91,6 +100,7 @@ pub(super) fn provision_allowlisted(
             AllowlistRole::Member => InitialRole::Member,
             AllowlistRole::Admin => InitialRole::Admin,
         },
+        now,
     )?;
     if outcome == TeamMemberProvisionOutcome::AlreadyActive {
         // The helper wrote nothing on this path, so committing only releases
@@ -98,16 +108,9 @@ pub(super) fn provision_allowlisted(
         transaction.commit().map_err(map_sqlite_error)?;
         return Ok(outcome);
     }
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| AccessStoreError::MalformedVocabulary)?
-            .as_secs(),
-    )
-    .unwrap_or(i64::MAX);
     transaction
         .execute(
-            "INSERT OR IGNORE INTO team_memberships(membership_id,organization_id,team_id,principal_id,role,status,membership_epoch,created_by,created_at,updated_at,revoked_at)
+            "INSERT INTO team_memberships(membership_id,organization_id,team_id,principal_id,role,status,membership_epoch,created_by,created_at,updated_at,revoked_at)
              VALUES(?1,?2,?3,?4,?5,'active',1,?4,?6,?6,NULL)",
             params![
                 format!("team-member-{INITIAL_TEAM_ID}-{principal_id}"),
@@ -150,14 +153,17 @@ pub(super) fn provision_allowlisted(
     transaction
         .execute(
             "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
-             VALUES(?1,?2,NULL,?3,?4,?5,'access.allowlist.provision','team_membership',?6,'allow','allowlist_admission',1,?7)",
+             VALUES(?1,?2,NULL,?3,?4,?5,'access.allowlist.provision','team_membership',?6,'allow','allowlist_admission',?7,?8)",
             params![
                 format!("allowlist-provision-{}", identity.safe_fingerprint().replace(':', "-")),
                 now,
                 principal_id,
                 organization_id,
                 project_id,
-                format!("{INITIAL_TEAM_ID}\0{principal_id}"),
+                hex::encode(Sha256::digest(format!(
+                    "team_membership\0{INITIAL_TEAM_ID}\0{principal_id}"
+                ))),
+                organization_epoch,
                 serde_json::json!({"role": role.as_str()}).to_string()
             ],
         )
@@ -185,30 +191,74 @@ impl InitialRole {
     }
 }
 
+fn unix_now() -> AccessStoreResult<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .map_err(|_| AccessStoreError::MalformedVocabulary)
+}
+
+/// True when the identity already resolves to an active Principal that holds an
+/// Initial Team membership in any status.
+fn existing_initial_team_member(
+    transaction: &rusqlite::Transaction<'_>,
+    identity: &VerifiedIdentity,
+) -> AccessStoreResult<bool> {
+    let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
+        return Err(AccessStoreError::NotAuthorized);
+    };
+    let principal_id: Option<String> = transaction
+        .query_row(
+            "SELECT l.principal_id
+             FROM principal_links l JOIN principals p ON p.principal_id=l.principal_id
+             WHERE l.link_kind='external' AND l.issuer=?1 AND l.subject=?2
+               AND l.status='active' AND p.status='active'",
+            params![issuer, subject],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some(principal_id) = principal_id else {
+        return Ok(false);
+    };
+    let existing: Option<i64> = transaction
+        .query_row(
+            "SELECT 1 FROM team_memberships WHERE team_id=?1 AND principal_id=?2",
+            params![INITIAL_TEAM_ID, principal_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    Ok(existing.is_some())
+}
+
 fn provision_with_role(
     connection: &mut Connection,
     identity: &VerifiedIdentity,
     project_id: &str,
     initial_role: InitialRole,
 ) -> AccessStoreResult<TeamMemberProvisionOutcome> {
+    let now = unix_now()?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
-    let (outcome, _, _) =
-        provision_in_transaction(&transaction, identity, project_id, initial_role)?;
+    let (outcome, _, _, _) =
+        provision_in_transaction(&transaction, identity, project_id, initial_role, now)?;
     transaction.commit().map_err(map_sqlite_error)?;
     Ok(outcome)
 }
 
 /// Creates the Principal (if missing) and the default-Project membership on the
 /// caller's transaction, so admission paths that add more state stay atomic.
-/// Returns the outcome plus the resolved principal and organization.
+/// Returns the outcome plus the resolved principal, organization, and the
+/// organization's policy epoch.
 fn provision_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
     identity: &VerifiedIdentity,
     project_id: &str,
     initial_role: InitialRole,
-) -> AccessStoreResult<(TeamMemberProvisionOutcome, String, String)> {
+    now: i64,
+) -> AccessStoreResult<(TeamMemberProvisionOutcome, String, String, i64)> {
     let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
         return Err(AccessStoreError::NotAuthorized);
     };
@@ -265,12 +315,12 @@ fn provision_in_transaction(
             let principal_id = format!("team-member-{identity_fingerprint}");
             let link_id = format!("team-link-{identity_fingerprint}");
             transaction.execute(
-                "INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',NULL,unixepoch(),unixepoch())",
-                params![principal_id, organization_id],
+                "INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',NULL,?3,?3)",
+                params![principal_id, organization_id, now],
             ).map_err(map_sqlite_error)?;
             transaction.execute(
-                "INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'external',?3,?4,NULL,'active',1,1,unixepoch(),unixepoch())",
-                params![link_id, principal_id, issuer, subject],
+                "INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'external',?3,?4,NULL,'active',1,1,?5,?5)",
+                params![link_id, principal_id, issuer, subject, now],
             ).map_err(map_sqlite_error)?;
             principal_id
         }
@@ -293,6 +343,7 @@ fn provision_in_transaction(
                 TeamMemberProvisionOutcome::AlreadyActive,
                 principal_id,
                 organization_id,
+                organization_epoch,
             ))
         }
         Some(_) => Err(AccessStoreError::NotAuthorized),
@@ -301,21 +352,22 @@ fn provision_in_transaction(
             let scoped_fingerprint = scoped_fingerprint(identity, &organization_id, project_id);
             let membership_id = format!("team-membership-{scoped_fingerprint}");
             transaction.execute(
-                "INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,unixepoch(),unixepoch())",
-                params![membership_id, organization_id, project_id, principal_id, role, creator],
+                "INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?7)",
+                params![membership_id, organization_id, project_id, principal_id, role, creator, now],
             ).map_err(map_sqlite_error)?;
             transaction.execute(
-                "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=unixepoch() WHERE singleton=1",
-                [],
+                "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1 WHERE singleton=1",
+                [now],
             ).map_err(map_sqlite_error)?;
             transaction.execute(
-                "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,unixepoch(),NULL,?2,?3,?4,'access.team_member.provision','project_membership',?5,'allow','verified_team_admission',?6,?7)",
-                params![format!("team-provision-{scoped_fingerprint}"), principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch, serde_json::json!({"role": role}).to_string()],
+                "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,?5,'access.team_member.provision','project_membership',?6,'allow','verified_team_admission',?7,?8)",
+                params![format!("team-provision-{scoped_fingerprint}"), now, principal_id, organization_id, project_id, scoped_fingerprint, organization_epoch, serde_json::json!({"role": role}).to_string()],
             ).map_err(map_sqlite_error)?;
             Ok((
                 TeamMemberProvisionOutcome::Created,
                 principal_id,
                 organization_id,
+                organization_epoch,
             ))
         }
     }
@@ -466,6 +518,44 @@ mod tests {
         assert_eq!(admins, 1);
         let snapshot = store.session_authority(eli).await.unwrap();
         assert!(snapshot.platform_administrator);
+    }
+
+    /// An identity that already holds an Initial Team membership was admitted
+    /// before: a later allowlist entry must not rewrite that role or grant
+    /// platform administration. The default-Project membership is removed so
+    /// the Initial Team membership is the only gate under test.
+    #[tokio::test]
+    async fn existing_team_member_is_not_upgraded_by_allowlist_admin() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli-existing");
+        store
+            .provision_team_member(eli.clone(), "bootstrap-default".into())
+            .await
+            .unwrap();
+        store
+            .execute_test_statement(
+                "INSERT INTO team_memberships(membership_id,organization_id,team_id,principal_id,role,status,membership_epoch,created_by,created_at,updated_at,revoked_at)
+                 SELECT 'seeded-team-member','bootstrap-local','bootstrap-initial-team',principal_id,'member','active',1,'bootstrap-owner',2,2,NULL
+                 FROM principals WHERE principal_id LIKE 'team-member-%';
+                 DELETE FROM project_memberships WHERE principal_id LIKE 'team-member-%';",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        let (teams, _, admins) = membership_rows(&store).await;
+        assert_eq!(
+            teams,
+            vec![("bootstrap-initial-team".to_owned(), "member".to_owned())]
+        );
+        assert_eq!(admins, 0);
+        let snapshot = store.session_authority(eli).await.unwrap();
+        assert!(!snapshot.platform_administrator);
     }
 
     /// A failure after the Principal and Project membership are written must
