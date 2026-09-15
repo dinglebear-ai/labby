@@ -61,9 +61,9 @@
     {
       "requirement_id": "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-028",
       "requirement_sha256": "2228a1a0629cf17f3ac296e070532c0c109a5cbc788b7e1fb22f84c614d77042",
-      "applicability": "conditional",
-      "rationale": "Conditional applicability unresolved: the literal test proves rejection for a modern request missing its header, but Labby also advertises historical protocol versions and adapts legacy initialize. This does not establish the pre-header-client exclusion antecedent. Preserve legacy compatibility pending a dedicated review; the policy test is not normative completion evidence.",
-      "review_reference": "lab-jfu6q.20.4.5",
+      "applicability": "applicable",
+      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28, so it must reject a current-version request missing MCP-Protocol-Version before dispatch. Legacy direct-stdio initialization and outbound fallback are separate transport-edge compatibility paths.",
+      "review_reference": "lab-jfu6q.20.7",
       "required_evidence": [
         {
           "role": "server",
@@ -89,9 +89,9 @@
     {
       "requirement_id": "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-081",
       "requirement_sha256": "0992e0eb4a5b8463a684fefc878cce2ccfffd721c39f8af0d70af9c7ea09346b",
-      "applicability": "conditional",
-      "rationale": "Conditional applicability unresolved: Labby intentionally rejects GET and DELETE on its stateless endpoint but advertises historical protocol versions. The source antecedent that the server supports only this revision is not established; retain the policy regression without claiming normative completion.",
-      "review_reference": "lab-jfu6q.20.4.5",
+      "applicability": "applicable",
+      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28, so older-client GET and DELETE traffic to that endpoint must return 405. Legacy direct-stdio initialization and outbound fallback do not add legacy HTTP streams.",
+      "review_reference": "lab-jfu6q.20.7",
       "required_evidence": [
         {
           "role": "server",
@@ -103,9 +103,23 @@
     {
       "requirement_id": "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-082",
       "requirement_sha256": "3ada7c9011e78fbffb34d3ec00a6b1bb65d16857fea7e1b0be86ec15241b0cbe",
-      "applicability": "conditional",
-      "rationale": "Conditional applicability unresolved: Labby ignores legacy session headers on its stateless endpoint but advertises historical protocol versions. The source antecedent that the server supports only this revision is not established; retain the policy regression without claiming normative completion.",
-      "review_reference": "lab-jfu6q.20.4.5",
+      "applicability": "applicable",
+      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28 and is stateless, so it must ignore an older client's Mcp-Session-Id header without minting or echoing a session ID. Legacy direct-stdio initialization and outbound fallback are separate compatibility paths.",
+      "review_reference": "lab-jfu6q.20.7",
+      "required_evidence": [
+        {
+          "role": "server",
+          "transport": "http",
+          "level": "product_wire"
+        }
+      ]
+    },
+    {
+      "requirement_id": "MCP-2026-SPEC-BASIC-TRANSPORTS-STREAMABLE-HTTP-083",
+      "requirement_sha256": "14e20f7fac944001688e64fdc64558ff589dcc401f5f7312a9d1fd103a2f823e",
+      "applicability": "applicable",
+      "rationale": "Labby's hosted HTTP request path supports only 2026-07-28. Product-wire checks prove Last-Event-ID leaves bounded JSON responses unchanged, POST subscriptions/listen starts a fresh SSE stream without event IDs, and the legacy GET resume path returns 405 with Allow: POST. This covers both configured response modes and proves streams are not resumable.",
+      "review_reference": "lab-jfu6q.20.7",
       "required_evidence": [
         {
           "role": "server",

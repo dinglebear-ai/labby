@@ -86,7 +86,7 @@ toml = "1.1"
 serde-saphyr = { version = "1.2.0", default-features = false, features = ["deserialize"] }
 
 # mcp
-rmcp = { version = "=3.3.0", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "0e1184b47645d5eb64d1df3bb84067b1d4a53340", features = [
+rmcp = { version = "=3.3.0", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "a30965679d27ba4f7d17e9d8efa7c95742eb6b42", features = [
   "server",
   "transport-io",
   "transport-child-process",
