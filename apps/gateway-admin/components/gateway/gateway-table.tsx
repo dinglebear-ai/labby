@@ -549,7 +549,7 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={gateway.display_name?.trim() ? `${displayName} · ${statusTone.label} · ID: ${gateway.name}` : `${displayName} · ${statusTone.label}`}
+              title={gateway.display_name?.trim() ? `${statusTone.label} · ID: ${gateway.name}` : `${gateway.name} · ${statusTone.label}`}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
               {displayName}
