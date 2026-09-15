@@ -986,6 +986,8 @@ mod tests {
     #[cfg(feature = "proxy-testkit")]
     fn test_upstream_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: name.to_string(),
             url: None,

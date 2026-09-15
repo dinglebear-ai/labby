@@ -668,6 +668,9 @@ export function useGatewayMutations() {
       const updated = {
         ...gateway,
         ...input,
+        display_name: input.display_name === undefined
+          ? gateway.display_name
+          : input.display_name?.trim() || undefined,
         config: {
           ...gateway.config,
           ...input.config,

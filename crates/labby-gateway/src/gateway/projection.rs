@@ -598,8 +598,11 @@ pub(super) async fn server_view_from_upstream(
         None => None,
     };
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
-    let catalog_warming =
-        catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
+    // OAuth upstreams list tools per authenticated subject, so the shared
+    // catalog stays empty by design; reporting it as warming would pin them in
+    // "needs attention" forever.
+    let catalog_warming = upstream.oauth.is_none()
+        && catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
     let mut warnings = match (&last_error, &dependency_hint) {
         (Some(message), Some(hint)) => {
             vec![super::view_models::ServerWarningView {
@@ -631,6 +634,7 @@ pub(super) async fn server_view_from_upstream(
     ServerView {
         id: upstream.name.clone(),
         name: upstream.name.clone(),
+        display_name: upstream.display_name.clone(),
         source: "custom_gateway".to_string(),
         configured: true,
         enabled,
@@ -734,6 +738,7 @@ pub(super) fn server_view_from_virtual_server(
     ServerView {
         id: record.id.clone(),
         name: service.clone(),
+        display_name: None,
         source: "in_process".to_string(),
         configured: true,
         enabled: record.enabled,
@@ -966,6 +971,8 @@ mod tests {
 
     fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture".to_string(),
             url: url.map(str::to_string),

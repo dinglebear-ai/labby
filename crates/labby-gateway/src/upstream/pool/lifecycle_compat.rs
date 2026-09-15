@@ -72,6 +72,21 @@ fn no_compatible_protocol_version(error: &anyhow::Error) -> bool {
     })
 }
 
+/// A legacy peer rejected `server/discover` with a JSON-RPC error whose id it
+/// could not correlate. The Python MCP SDK answers an unsupported
+/// `MCP-Protocol-Version` header with `"id": "server-error"`, and rmcp keeps
+/// only the ids, so the "unsupported protocol version" text never reaches the
+/// message match below. A modern peer echoes the request id, so an
+/// uncorrelated rejection of the discovery request is legacy evidence.
+fn discovery_rejected_without_correlation(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<ClientInitializeError>(),
+            Some(ClientInitializeError::UncorrelatedErrorResponse { .. })
+        )
+    })
+}
+
 fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let Some(ClientInitializeError::JsonRpcError(error)) =
@@ -112,7 +127,10 @@ pub(super) fn compatibility_retry(
     if modern_discovery_error_must_not_downgrade(error) {
         return None;
     }
-    if discovery_response_was_misclassified(error) || no_compatible_protocol_version(error) {
+    if discovery_response_was_misclassified(error)
+        || no_compatible_protocol_version(error)
+        || discovery_rejected_without_correlation(error)
+    {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
 
@@ -260,6 +278,23 @@ mod tests {
             assert_eq!(
                 compatibility_retry(&error, transport),
                 Some(LifecycleAttempt::LegacyInitialize)
+            );
+        }
+    }
+
+    #[test]
+    fn retries_when_discovery_is_rejected_with_an_uncorrelated_error() {
+        // Python MCP SDK servers (deepwiki, Windows-MCP) reject the 2026
+        // protocol header with `"id": "server-error"`.
+        let error = anyhow::Error::new(ClientInitializeError::UncorrelatedErrorResponse {
+            expected: rmcp::model::RequestId::Number(0),
+            received: rmcp::model::RequestId::String("server-error".into()),
+        });
+        for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
+            assert_eq!(
+                compatibility_retry(&error, transport),
+                Some(LifecycleAttempt::LegacyInitialize),
+                "{transport:?}"
             );
         }
     }

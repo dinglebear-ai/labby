@@ -31,6 +31,8 @@ fn namespaced(upstream: &str, prompt: &str) -> String {
 
 fn oauth_upstream_config(name: &str, expose_prompts: Option<Vec<&str>>) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         proxy_prompts: true,
         expose_prompts: expose_prompts
             .map(|patterns| patterns.into_iter().map(str::to_string).collect()),

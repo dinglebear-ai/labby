@@ -35,7 +35,7 @@ use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
 use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
-use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
+use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle, UpstreamTransport};
 
 use super::super::auth::{configured_bearer_token, websocket_authorization_header};
 use super::super::http_client;
@@ -569,6 +569,16 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    if config.lifecycle == Some(UpstreamLifecycle::Initialize) {
+        return connect_websocket_upstream_once(
+            url,
+            config,
+            handler,
+            LifecycleAttempt::LegacyInitialize,
+            notification_interceptor,
+        )
+        .await;
+    }
     match connect_websocket_upstream_once(
         url,
         config,
@@ -696,6 +706,19 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    if config.lifecycle == Some(UpstreamLifecycle::Initialize) {
+        return connect_http_upstream_once(
+            url,
+            config,
+            subject,
+            oauth_client_cache,
+            shared_client,
+            handler,
+            LifecycleAttempt::LegacyInitialize,
+            notification_interceptor,
+        )
+        .await;
+    }
     match connect_http_upstream_once(
         url,
         config,

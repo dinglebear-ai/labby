@@ -309,6 +309,9 @@ impl GatewayEnrichmentScope {
 pub(crate) struct GatewayUpdatePatch {
     #[serde(default)]
     pub name: Option<String>,
+    /// Absent leaves the label alone; `null` or blank clears it.
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub display_name: Option<Option<String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
