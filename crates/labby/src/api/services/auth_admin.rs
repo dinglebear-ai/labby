@@ -70,13 +70,13 @@ fn validate_email(raw: &str) -> Result<String, ToolError> {
 
 // ── admin guard ───────────────────────────────────────────────────────────────
 
-/// Verify the caller is a browser-session user whose email matches `admin_email`.
+/// Verify the caller is a browser-session user whose email is a configured admin.
 ///
 /// Returns `Err(forbidden)` for:
 /// - JWT bearer callers (`via_session == false`)
 /// - Browser-session callers with no email claim
-/// - Email that does not match `admin_email` (case-insensitive)
-fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> {
+/// - Email that is not in `admin_emails` (case-insensitive)
+fn require_admin(ctx: &AuthContext, admin_emails: &[String]) -> Result<(), ToolError> {
     if !ctx.via_session {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
@@ -89,7 +89,7 @@ fn require_admin(ctx: &AuthContext, admin_email: &str) -> Result<(), ToolError> 
             message: "session has no email — cannot verify admin access".to_string(),
         });
     };
-    if !email.eq_ignore_ascii_case(admin_email) {
+    if !labby_auth::config::is_listed_admin(admin_emails, email) {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: "caller is not the configured admin".to_string(),
@@ -111,14 +111,14 @@ fn require_oauth_state(state: &AppState) -> Result<&labby_auth::state::AuthState
     })
 }
 
-/// Extract `admin_email` from `auth_config`.
+/// Extract the configured admin emails from `auth_config`.
 ///
 /// Returns an `internal_error` ToolError if auth config is not mounted.
-fn require_admin_email(state: &AppState) -> Result<&str, ToolError> {
+fn require_admin_email(state: &AppState) -> Result<&[String], ToolError> {
     state
         .auth_config
         .as_ref()
-        .map(|cfg| cfg.admin_email.as_str())
+        .map(|cfg| cfg.admin_emails.as_slice())
         .ok_or_else(|| ToolError::internal_message("auth config not mounted"))
 }
 
@@ -452,7 +452,7 @@ async fn delete_allowed_email(
     // publication before committing the durable revocation. Holding this
     // write guard through the drain closes the DB-to-runtime reuse window.
     #[cfg(feature = "gateway")]
-    let gateway_manager = if email.eq_ignore_ascii_case(admin_email) {
+    let gateway_manager = if labby_auth::config::is_listed_admin(admin_email, &email) {
         None
     } else {
         match &state.gateway_manager {
@@ -478,7 +478,7 @@ async fn delete_allowed_email(
         None => None,
     };
 
-    let removal = if email.eq_ignore_ascii_case(admin_email) {
+    let removal = if labby_auth::config::is_listed_admin(admin_email, &email) {
         auth_state
             .store
             .remove_bootstrap_admin_allowlist_entry(&email)

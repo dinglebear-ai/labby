@@ -2558,6 +2558,41 @@ async fn browser_session_round_trip_succeeds() {
     assert_eq!(fetched.csrf_token, row.csrf_token);
 }
 
+#[tokio::test]
+async fn every_listed_admin_session_is_authorized_and_others_are_not() {
+    let store = temp_store().await;
+    for (id, email) in [
+        ("first", "first-admin@example.com"),
+        ("second", "Second-Admin@Example.com"),
+        ("stranger", "stranger@example.com"),
+    ] {
+        store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: format!("sess_{id}"),
+                subject: format!("sub_{id}"),
+                email: Some(email.into()),
+                csrf_token: format!("csrf_{id}"),
+                created_at: 1,
+                expires_at: now_unix() + 9_999,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+    }
+    let admins = vec![
+        "first-admin@example.com".to_owned(),
+        "second-admin@example.com".to_owned(),
+    ];
+    for (id, expected) in [("first", true), ("second", true), ("stranger", false)] {
+        let (_, authorized) = store
+            .find_authorized_bound_browser_session(&format!("sess_{id}"), &admins, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(authorized, expected, "{id}");
+    }
+}
+
 fn sample_upstream_credentials() -> UpstreamOauthCredentialRow {
     let now = now_unix();
     UpstreamOauthCredentialRow {

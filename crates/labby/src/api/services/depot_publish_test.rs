@@ -270,7 +270,7 @@ async fn publish_fixture_with_revocation(
             public_url: Some("https://labby.example".parse().unwrap()),
             sqlite_path: dir.path().join("google-auth.db"),
             key_path: dir.path().join("google-key.pem"),
-            admin_email: "owner@example.com".into(),
+            admin_emails: vec!["owner@example.com".into()],
             token_encryption_key: Some(
                 labby_auth::at_rest::TokenEncryptionKey::from_encoded(&"01".repeat(32)).unwrap(),
             ),

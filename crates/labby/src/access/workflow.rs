@@ -51,11 +51,12 @@ pub(crate) struct OwnerBootstrapCaller<'a> {
 /// The single owner-bootstrap admission rule.
 ///
 /// Admits only a browser-session caller whose verified identity is an external
-/// link for the same subject, who holds `lab:admin`, and whose email equals the
-/// configured admin email. `configured_admin_email` is `None` outside OAuth mode.
+/// link for the same subject, who holds `lab:admin`, and whose email is one of
+/// the configured admin emails. `configured_admin_emails` is `None` outside
+/// OAuth mode.
 pub(crate) fn owner_bootstrap_admission(
     caller: &OwnerBootstrapCaller<'_>,
-    configured_admin_email: Option<&str>,
+    configured_admin_emails: Option<&[String]>,
 ) -> Result<(), OwnerBootstrapError> {
     let identity_consistent = caller.via_session
         && caller.identity.authenticator() == Authenticator::BrowserSession
@@ -66,10 +67,10 @@ pub(crate) fn owner_bootstrap_admission(
     if !identity_consistent || !caller.scopes.iter().any(|scope| scope == ADMIN_SCOPE) {
         return Err(OwnerBootstrapError::IdentityNotEligible);
     }
-    let Some(admin_email) = configured_admin_email else {
+    let Some(admin_emails) = configured_admin_emails else {
         return Err(OwnerBootstrapError::NotConfigured);
     };
-    if !labby_auth::is_configured_admin_email(admin_email, caller.email) {
+    if !labby_auth::is_configured_admin_email(admin_emails, caller.email) {
         return Err(OwnerBootstrapError::IdentityNotEligible);
     }
     Ok(())
@@ -84,11 +85,11 @@ pub(crate) fn owner_bootstrap_admission(
 pub(crate) async fn bootstrap_owner(
     runtime: &AccessRuntime,
     caller: OwnerBootstrapCaller<'_>,
-    configured_admin_email: Option<&str>,
+    configured_admin_emails: Option<&[String]>,
     organization_name: String,
     project_name: String,
 ) -> Result<BootstrapOutcome, OwnerBootstrapError> {
-    owner_bootstrap_admission(&caller, configured_admin_email)?;
+    owner_bootstrap_admission(&caller, configured_admin_emails)?;
     let input = BootstrapOwnerInput::new(caller.identity.clone(), organization_name, project_name)
         .map_err(|_| OwnerBootstrapError::InvalidInput)?;
     runtime
@@ -157,23 +158,36 @@ mod tests {
         subject: &str,
     ) -> Result<BootstrapOutcome, OwnerBootstrapError> {
         let scopes = admin_scopes();
+        let admins = admins();
         bootstrap_owner(
             runtime,
             caller(identity, subject, &scopes, Some(ADMIN)),
-            Some(ADMIN),
+            Some(&admins),
             "Local".into(),
             "Default".into(),
         )
         .await
     }
 
+    fn admins() -> Vec<String> {
+        vec!["second-admin@example.com".to_owned(), ADMIN.to_owned()]
+    }
+
     #[test]
     fn admission_requires_every_rule_and_hides_which_one_failed() {
         let identity = browser_identity("subject");
         let admin = admin_scopes();
+        let admins = admins();
         let read = vec!["lab:read".to_owned()];
         let ok = caller(&identity, "subject", &admin, Some("OWNER@example.com"));
-        assert_eq!(owner_bootstrap_admission(&ok, Some(ADMIN)), Ok(()));
+        assert_eq!(owner_bootstrap_admission(&ok, Some(&admins)), Ok(()));
+        let second = caller(
+            &identity,
+            "subject",
+            &admin,
+            Some("second-admin@example.com"),
+        );
+        assert_eq!(owner_bootstrap_admission(&second, Some(&admins)), Ok(()));
 
         let bearer = VerifiedIdentity::external(
             Authenticator::OauthBearer,
@@ -200,7 +214,7 @@ mod tests {
         ];
         for refused in refused {
             assert_eq!(
-                owner_bootstrap_admission(&refused, Some(ADMIN)),
+                owner_bootstrap_admission(&refused, Some(&admins)),
                 Err(OwnerBootstrapError::IdentityNotEligible),
                 "{refused:?}"
             );
@@ -246,6 +260,7 @@ mod tests {
         .unwrap();
         let identity = browser_identity("owner");
         let scopes = admin_scopes();
+        let admins = admins();
 
         for (identity, email) in [
             (&bearer, Some(ADMIN)),
@@ -256,7 +271,7 @@ mod tests {
                 bootstrap_owner(
                     &runtime,
                     caller(identity, "owner", &scopes, email),
-                    Some(ADMIN),
+                    Some(&admins),
                     "Local".into(),
                     "Default".into(),
                 )

@@ -336,7 +336,7 @@ mod tests {
             public_url: Some(url::Url::parse("https://syslog.example.com").unwrap()),
             sqlite_path: dir.path().join("auth.db"),
             key_path: dir.path().join("auth.pem"),
-            admin_email: "admin@example.com".into(),
+            admin_emails: vec!["admin@example.com".into()],
             google: crate::config::GoogleConfig {
                 client_id: "id".into(),
                 client_secret: "secret".into(),

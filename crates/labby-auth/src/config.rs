@@ -167,12 +167,14 @@ pub struct AuthConfig {
     pub key_path: PathBuf,
     pub bootstrap_secret: Option<String>,
     pub allowed_client_redirect_uris: Vec<String>,
-    /// Single bootstrap admin email permitted to log in via the inbound provider.
-    /// Required when `mode == AuthMode::OAuth`. Additional users are granted
+    /// Configured administrator emails permitted to log in via the inbound
+    /// provider, lowercased and deduplicated. `{PREFIX}_AUTH_ADMIN_EMAIL`
+    /// accepts one address or a comma-separated list. At least one is required
+    /// when `mode == AuthMode::OAuth`. Additional non-admin users are granted
     /// through the SQLite-backed allowlist managed via the web UI.
-    pub admin_email: String,
+    pub admin_emails: Vec<String>,
     /// Verified identity domains whose members may log in, in addition to
-    /// [`Self::admin_email`] and the SQLite-backed per-email allowlist.
+    /// [`Self::admin_emails`] and the SQLite-backed per-email allowlist.
     ///
     /// Google matching uses the ID token's provider-asserted `hd` claim. Authelia
     /// does not expose an equivalent hosted-domain claim, so matching uses the
@@ -264,7 +266,7 @@ impl Default for AuthConfig {
             key_path: base_dir.join(DEFAULT_KEY_NAME),
             bootstrap_secret: None,
             allowed_client_redirect_uris: Vec::new(),
-            admin_email: String::new(),
+            admin_emails: Vec::new(),
             allowed_email_domains: Vec::new(),
             viewer_email_domains: Vec::new(),
             inbound_provider: None,
@@ -304,6 +306,13 @@ impl Default for AuthConfig {
 }
 
 impl AuthConfig {
+    /// Whether `email` is one of the configured administrators
+    /// (ASCII case-insensitive).
+    #[must_use]
+    pub fn is_admin_email(&self, email: &str) -> bool {
+        is_listed_admin(&self.admin_emails, email)
+    }
+
     #[cfg(feature = "http-axum")]
     pub(crate) fn viewer_domain_for_verified_email(
         &self,
@@ -482,11 +491,20 @@ impl AuthConfig {
             self.validate_oauth_public_url()?;
             self.validate_desktop_origin()?;
             self.resolved_inbound_provider()?;
-            if self.admin_email.is_empty() {
+            if self.admin_emails.is_empty() {
                 return Err(AuthError::Config(format!(
                     "{prefix}_AUTH_ADMIN_EMAIL is required when {prefix}_AUTH_MODE=oauth — \
-                     set the Google email of the bootstrap admin so no account \
-                     can log in unless explicitly permitted"
+                     set one or more comma-separated administrator emails so no \
+                     account can log in unless explicitly permitted"
+                )));
+            }
+            if !self
+                .admin_emails
+                .iter()
+                .all(|email| is_plausible_email(email))
+            {
+                return Err(AuthError::Config(format!(
+                    "{prefix}_AUTH_ADMIN_EMAIL entries must each be a single email address"
                 )));
             }
             if self.token_encryption_key.is_none() {
@@ -829,8 +847,8 @@ impl AuthConfigBuilder {
         let key_enterprise_issuers = env_key(&prefix, "AUTH_ENTERPRISE_ISSUERS_JSON");
 
         let mode = AuthMode::parse(vars.get(&key_mode).map(String::as_str), &key_mode)?;
-        let admin_email = read_string(&vars, &key_admin)
-            .map(|raw| raw.trim().to_ascii_lowercase())
+        let admin_emails = read_string(&vars, &key_admin)
+            .map(|raw| parse_admin_emails(&raw))
             .unwrap_or_default();
         let inbound_provider = read_string(&vars, &key_provider)
             .map(|provider| match provider.to_ascii_lowercase().as_str() {
@@ -879,7 +897,7 @@ impl AuthConfigBuilder {
                 .unwrap_or_else(|| base_dir.join(DEFAULT_KEY_NAME)),
             bootstrap_secret: read_string(&vars, &key_secret),
             allowed_client_redirect_uris: read_csv(&vars, &key_redirects).unwrap_or_default(),
-            admin_email,
+            admin_emails,
             viewer_email_domains: read_csv(&vars, &key_viewer_domains)
                 .map(|domains| {
                     domains
@@ -1020,6 +1038,44 @@ fn read_csv(vars: &HashMap<String, String>, key: &str) -> Option<Vec<String>> {
             .map(ToOwned::to_owned)
             .collect()
     })
+}
+
+/// Whether `email` appears in `admin_emails` (ASCII case-insensitive). The one
+/// comparison every admin check shares.
+#[must_use]
+pub fn is_listed_admin(admin_emails: &[String], email: &str) -> bool {
+    admin_emails
+        .iter()
+        .any(|admin| !admin.is_empty() && admin.eq_ignore_ascii_case(email))
+}
+
+/// Parse `{PREFIX}_AUTH_ADMIN_EMAIL`: one address or a comma-separated list,
+/// trimmed, lowercased, with blanks and case-insensitive duplicates dropped.
+/// Order is preserved so the first entry stays first.
+#[must_use]
+pub fn parse_admin_emails(raw: &str) -> Vec<String> {
+    let mut emails: Vec<String> = Vec::new();
+    for entry in raw.split(',') {
+        let email = entry.trim().to_ascii_lowercase();
+        if !email.is_empty() && !emails.contains(&email) {
+            emails.push(email);
+        }
+    }
+    emails
+}
+
+/// Structural check only: exactly one `@` with non-empty local and domain
+/// parts and no whitespace. Provider email verification is the real proof.
+fn is_plausible_email(email: &str) -> bool {
+    match email.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && !domain.is_empty()
+                && !domain.contains('@')
+                && !email.chars().any(char::is_whitespace)
+        }
+        None => false,
+    }
 }
 
 fn read_url(vars: &HashMap<String, String>, key: &str) -> Result<Option<Url>, AuthError> {
@@ -1315,7 +1371,56 @@ mod tests {
             ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
         ]))
         .unwrap();
-        assert_eq!(cfg.admin_email, "admin@example.com");
+        assert_eq!(cfg.admin_emails, vec!["admin@example.com".to_owned()]);
+    }
+
+    #[test]
+    fn admin_email_accepts_a_deduplicated_comma_separated_list() {
+        let cfg = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://lab.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            (
+                "LAB_AUTH_ADMIN_EMAIL",
+                " Owner@Example.com, second@example.com,,OWNER@example.com ",
+            ),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]))
+        .unwrap();
+        assert_eq!(
+            cfg.admin_emails,
+            vec![
+                "owner@example.com".to_owned(),
+                "second@example.com".to_owned()
+            ]
+        );
+        assert!(cfg.is_admin_email("SECOND@example.com"));
+        assert!(!cfg.is_admin_email("colleague@example.com"));
+        assert!(!cfg.is_admin_email(""));
+    }
+
+    #[test]
+    fn admin_email_list_rejects_malformed_entries() {
+        for raw in [
+            "owner@example.com, not-an-email",
+            "a@b@example.com",
+            "  ,  ",
+        ] {
+            let error = AuthConfig::from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_PUBLIC_URL", "https://lab.example.com"),
+                ("LAB_GOOGLE_CLIENT_ID", "id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+                ("LAB_AUTH_ADMIN_EMAIL", raw),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("LAB_AUTH_ADMIN_EMAIL"),
+                "{raw}: {error}"
+            );
+        }
     }
 
     #[test]

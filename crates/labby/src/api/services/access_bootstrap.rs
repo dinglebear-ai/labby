@@ -95,7 +95,7 @@ async fn bootstrap_owner(
     let (response, operational_failure) = match crate::access::bootstrap_owner(
         &state.access_runtime,
         bootstrap_caller(&auth, &identity),
-        configured_admin_email(&state),
+        configured_admin_emails(&state),
         request.organization_name,
         request.project_name,
     )
@@ -202,11 +202,11 @@ fn bootstrap_caller<'a>(
     }
 }
 
-fn configured_admin_email(state: &AppState) -> Option<&str> {
+fn configured_admin_emails(state: &AppState) -> Option<&[String]> {
     state
         .auth_config
         .as_ref()
-        .map(|config| config.admin_email.as_str())
+        .map(|config| config.admin_emails.as_slice())
 }
 
 /// Early HTTP gate: the shared admission rule mapped to a stable `ToolError`
@@ -218,7 +218,7 @@ pub(super) fn require_browser_admin(
 ) -> Result<(), ToolError> {
     crate::access::owner_bootstrap_admission(
         &bootstrap_caller(auth, identity),
-        configured_admin_email(state),
+        configured_admin_emails(state),
     )
     .map_err(admission_error)
 }
@@ -321,7 +321,7 @@ mod tests {
 
     fn state() -> AppState {
         let config = labby_auth::config::AuthConfig {
-            admin_email: "owner@example.com".into(),
+            admin_emails: vec!["owner@example.com".into()],
             ..Default::default()
         };
         AppState::new().with_auth_config(config)

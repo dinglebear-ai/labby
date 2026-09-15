@@ -73,7 +73,7 @@ impl Harness {
             sqlite_path: tmp.path().join("auth.db"),
             key_path: tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
-            admin_email: admin_email.clone(),
+            admin_emails: vec![admin_email.clone()],
             token_encryption_key: Some(
                 TokenEncryptionKey::from_encoded(
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -160,7 +160,7 @@ impl Harness {
             sqlite_path: self._tmp.path().join("auth.db"),
             key_path: self._tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
-            admin_email: self.admin_email.clone(),
+            admin_emails: vec![self.admin_email.clone()],
             token_encryption_key: Some(
                 TokenEncryptionKey::from_encoded(
                     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",

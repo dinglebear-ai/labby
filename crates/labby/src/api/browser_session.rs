@@ -597,7 +597,7 @@ async fn project_session(
         state
             .auth_config
             .as_ref()
-            .map(|config| config.admin_email.as_str()),
+            .map(|config| config.admin_emails.as_slice()),
     )
     .is_ok();
     let authority =
@@ -622,7 +622,7 @@ fn oauth_cookie_caller(
     identity: labby_auth::VerifiedIdentity,
 ) -> SessionCaller {
     let is_configured_admin = labby_auth::is_configured_admin_email(
-        &auth_state.config.admin_email,
+        &auth_state.config.admin_emails,
         session.email.as_deref(),
     );
     SessionCaller {
@@ -1012,7 +1012,7 @@ mod tests {
             public_url: Some("https://lab.example.com".parse().unwrap()),
             sqlite_path: directory.path().join("auth.db"),
             key_path: directory.path().join("auth-key.pem"),
-            admin_email: "owner@different.example".into(),
+            admin_emails: vec!["owner@different.example".into()],
             viewer_email_domains: vec!["example.org".into()],
             session_cookie_name: "__Host-labby-session".into(),
             google: labby_auth::config::GoogleConfig {
@@ -1273,7 +1273,7 @@ mod tests {
         let state = AppState::new()
             .with_access_runtime(runtime)
             .with_auth_config(labby_auth::config::AuthConfig {
-                admin_email: "owner@example.com".into(),
+                admin_emails: vec!["owner@example.com".into()],
                 ..Default::default()
             });
         let view = |sub: &str| SessionView {
@@ -1324,7 +1324,7 @@ mod tests {
         assert!(
             crate::access::owner_bootstrap_admission(
                 &admitted.bootstrap_caller(),
-                Some("owner@example.com")
+                Some(&["owner@example.com".to_owned()])
             )
             .is_ok()
         );
