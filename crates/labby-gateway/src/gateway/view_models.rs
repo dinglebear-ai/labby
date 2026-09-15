@@ -44,6 +44,10 @@ pub struct ServerConfigSummaryView {
 pub struct ServerView {
     pub id: String,
     pub name: String,
+    /// Operator-facing label; absent when the server has none. Presentation
+    /// only — callers must keep using `id`/`name` to address the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub source: String,
     #[serde(default)]
     pub configured: bool,
