@@ -94,17 +94,23 @@ Access actions use the canonical agent error envelope
    membership, and any platform-admin grant in one transaction
    (`crates/labby/src/access/team_provision.rs`, `provision_allowlisted`).
    The session projects `ready` immediately. Emails listed in
-   `LABBY_AUTH_ADMIN_EMAIL` are admitted as `admin` the same way.
+   `LABBY_AUTH_ADMIN_EMAIL` are admitted as `admin` the same way. An identity
+   that already has a Principal — for example one admitted earlier by the
+   Viewer domain policy or by MCP auto-provision — is never upgraded by the
+   allowlist; change its access with `access.team.member.role.set`,
+   `access.team.member.add`, or `access.platform_admin.grant`.
 3. **Later changes** use the `access` service: `access.team.member.role.set`,
    `access.platform_admin.grant` / `.revoke`, `access.team.member.remove`.
    Removing the allowlist entry (`DELETE /v1/auth/allowed-emails/:email`)
    signs the identity out and blocks future sign-in; it does not delete the
    Principal.
 
-"No access yet" now only appears for an identity that signed in but is on
-neither the allowlist nor the admin list, for example one admitted by
-`LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` alone. Add the email with a role to admit
-it.
+"No access yet" appears for an identity that signed in but is on neither the
+allowlist nor the admin list, for example one admitted by
+`LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` alone; add the email with a role to admit
+it. It also appears whenever admission could not complete — before owner
+bootstrap, or while the access store is unavailable — in which case the next
+session read retries.
 
 ### Using a second account (for example work and personal)
 
