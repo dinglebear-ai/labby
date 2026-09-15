@@ -217,6 +217,12 @@ fn is_ui_resource_uri(uri: &str) -> bool {
     uri.get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ui://"))
 }
+
+#[cfg(any(feature = "gateway", test))]
+fn is_lab_owned_ui_resource_uri(uri: &str) -> bool {
+    uri.get(..9)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ui://lab/"))
+}
 /// In-band discovery for the Skills extension (SEP-2640).
 ///
 /// Published so a client that does not speak the extension can still discover
@@ -993,6 +999,9 @@ impl LabMcpServer {
                     )
                     .await
                 {
+                    if is_lab_owned_ui_resource_uri(&listed.native_uri) {
+                        continue;
+                    }
                     if !is_ui_resource_uri(&listed.native_uri) {
                         regular_resource_provenance.push(ResourceProvenance {
                             upstream: listed.upstream_name.clone(),
@@ -1015,11 +1024,12 @@ impl LabMcpServer {
                     .subject_scoped_resources(&configs, oauth_subject.as_ref())
                     .await;
                 scoped_resources.retain(|resource| {
-                    resource
-                        .uri
-                        .strip_prefix("lab://upstream/")
-                        .and_then(|rest| rest.split('/').next())
-                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
+                    !is_lab_owned_ui_resource_uri(&resource.uri)
+                        && resource
+                            .uri
+                            .strip_prefix("lab://upstream/")
+                            .and_then(|rest| rest.split('/').next())
+                            .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
                 });
                 for resource in scoped_resources {
                     resources.accept(resource);
@@ -3186,6 +3196,9 @@ mod tests {
         assert!(is_ui_resource_uri("ui://widget/app"));
         assert!(is_ui_resource_uri("UI://widget/app"));
         assert!(!is_ui_resource_uri("file:///widget"));
+        assert!(is_lab_owned_ui_resource_uri("ui://lab/server-logs/viewer"));
+        assert!(is_lab_owned_ui_resource_uri("UI://LAB/settings/editor"));
+        assert!(!is_lab_owned_ui_resource_uri("ui://vendor/widget"));
     }
 
     fn complete_resource(response: ReadResourceResponse) -> ReadResourceResult {
