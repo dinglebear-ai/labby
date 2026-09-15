@@ -67,7 +67,8 @@ pub use auth_context::{AuthContext, auth_context, www_authenticate_value};
 pub use middleware::{
     ActorKeyDeriver, AuthLayer, AuthService, ProductAccessGrantResolutionFuture,
     ProductAccessGrantResolver, ProjectSessionRevalidationError, ProjectSessionRevalidationFuture,
-    ProjectSessionRevalidator, RequiredScopes, parse_bearer_token, tokens_equal,
+    ProjectSessionRevalidator, RequiredScopes, browser_session_scopes, is_configured_admin_email,
+    parse_bearer_token, tokens_equal,
 };
 pub use types::ProjectSessionBinding;
 

@@ -44,6 +44,7 @@ import { WarningsPill } from './warnings-pill'
 import { GatewaySelectionToolbar } from './gateway-selection-toolbar'
 import type { GatewayBatchCallbacks } from './gateway-selection-model'
 import type { Gateway } from '@/lib/types/gateway'
+import { gatewayLabel } from '@/lib/gateway-label'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import {
@@ -657,10 +658,10 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={statusTone.label}
+              title={gateway.display_name ? `${statusTone.label} · ID: ${gateway.name}` : statusTone.label}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
-              {gateway.name}
+              {gatewayLabel(gateway)}
             </Link>
             {isDisabled ? (
               <Badge

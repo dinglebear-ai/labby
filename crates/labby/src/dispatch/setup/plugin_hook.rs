@@ -17,6 +17,7 @@ use crate::access::{AccessHealthStatus, inspect_health};
 use crate::config::env_merge::{self, EnvEntry, MergeRequest};
 use crate::dispatch::error::ToolError;
 
+use super::caller::SetupCaller;
 use super::client::{env_path, key_matches_secret_suffix, lab_home};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,20 +195,33 @@ pub fn run(mode: Mode) -> Result<SetupReport, ToolError> {
         sdk_kind: "setup_check_failed".into(),
         message: "unable to resolve the access store path".to_string(),
     })?;
-    run_for_paths(mode, lab_home(), env_path(), access_store)
+    let config_candidates = crate::config::toml_candidates().map_err(|_| ToolError::Sdk {
+        sdk_kind: "setup_check_failed".into(),
+        message: "unable to resolve the config.toml location".to_string(),
+    })?;
+    run_for_paths_with(
+        mode,
+        lab_home(),
+        env_path(),
+        access_store,
+        Some(&config_candidates),
+    )
 }
 
 /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env.
 ///
 /// Only non-empty options are written; existing .env values are preserved
 /// when the corresponding option var is absent or empty.
-pub fn sync_plugin_env() -> Result<PluginSyncOutcome, ToolError> {
-    sync_plugin_env_to(env_path())
+pub fn sync_plugin_env(caller: SetupCaller) -> Result<PluginSyncOutcome, ToolError> {
+    sync_plugin_env_to(caller, env_path())
 }
 
-pub fn sync_plugin_env_to(env: PathBuf) -> Result<PluginSyncOutcome, ToolError> {
+pub fn sync_plugin_env_to(
+    caller: SetupCaller,
+    env: PathBuf,
+) -> Result<PluginSyncOutcome, ToolError> {
     let entries = plugin_entries_from(|option_var| std::env::var(option_var).ok());
-    sync_plugin_entries_to(env, entries)
+    sync_plugin_entries_to(caller, env, entries)
 }
 
 fn plugin_entries_from(mut read: impl FnMut(&str) -> Option<String>) -> Vec<EnvEntry> {
@@ -226,9 +240,11 @@ fn plugin_entries_from(mut read: impl FnMut(&str) -> Option<String>) -> Vec<EnvE
 }
 
 fn sync_plugin_entries_to(
+    caller: SetupCaller,
     env: PathBuf,
     entries: Vec<EnvEntry>,
 ) -> Result<PluginSyncOutcome, ToolError> {
+    caller.ensure_may_write(entries.iter().map(|entry| entry.key.as_str()))?;
     let options_found = entries.len();
     if options_found == 0 {
         return Ok(PluginSyncOutcome {
@@ -567,18 +583,32 @@ fn normalize_connectivity_base(raw: &str) -> Result<String, String> {
     Ok(base.as_str().trim_end_matches('/').to_ascii_lowercase())
 }
 
+#[cfg(test)]
 fn run_for_paths(
     mode: Mode,
     lab_home: PathBuf,
     env: PathBuf,
     access_store: PathBuf,
 ) -> Result<SetupReport, ToolError> {
-    let mut checks = Vec::with_capacity(3);
+    run_for_paths_with(mode, lab_home, env, access_store, None)
+}
+
+fn run_for_paths_with(
+    mode: Mode,
+    lab_home: PathBuf,
+    env: PathBuf,
+    access_store: PathBuf,
+    config_candidates: Option<&[PathBuf]>,
+) -> Result<SetupReport, ToolError> {
+    let mut checks = Vec::with_capacity(4);
     let mut changed = false;
 
     checks.push(check_lab_home(mode, &lab_home, &mut changed)?);
     checks.push(check_env_file(mode, &env, &mut changed)?);
     checks.push(check_access_store(&access_store));
+    if let Some(candidates) = config_candidates {
+        checks.push(check_config(candidates));
+    }
 
     let blocking_failures = checks
         .iter()
@@ -612,6 +642,38 @@ fn run_for_paths(
         advisory_failures,
         checks,
     })
+}
+
+/// Validate `config.toml` with the serve loader and startup validations.
+///
+/// Blocking whenever the config would stop `labby serve` or start it with a
+/// subsystem unavailable. The message carries the full error chain; each
+/// problem is prefixed `fatal:` or `degraded:`.
+fn check_config(candidates: &[PathBuf]) -> SetupCheck {
+    let path = candidates
+        .iter()
+        .find(|path| path.exists())
+        .or_else(|| candidates.first())
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let problems = crate::composition::config_check::check_config_candidates(candidates);
+    SetupCheck {
+        name: "config",
+        ok: problems.is_empty(),
+        severity: SetupSeverity::Blocking,
+        path,
+        repaired: None,
+        message: (!problems.is_empty()).then(|| {
+            problems
+                .iter()
+                .map(|problem| {
+                    let class = if problem.fatal { "fatal" } else { "degraded" };
+                    format!("{class}: {}", problem.message)
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        }),
+    }
 }
 
 fn check_access_store(path: &Path) -> SetupCheck {
@@ -826,7 +888,8 @@ mod tests {
             _ => None,
         });
 
-        let outcome = sync_plugin_entries_to(env.clone(), entries).expect("sync plugin env");
+        let outcome = sync_plugin_entries_to(SetupCaller::Operator, env.clone(), entries)
+            .expect("sync plugin env");
 
         assert_eq!(outcome.written, 1);
         assert_eq!(outcome.skipped.len(), 1);
@@ -845,6 +908,47 @@ mod tests {
             .expect("server_url export");
         assert_eq!(server_url.value.as_deref(), Some("https://new.example"));
         assert!(!server_url.sensitive);
+    }
+
+    #[test]
+    fn delegated_plugin_sync_refuses_auth_keys_before_writing_env() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env = temp.path().join(".env");
+        fs::write(&env, "UNRELATED=keep\n").expect("seed env");
+        let before = fs::read(&env).expect("read env before refusal");
+
+        let error = sync_plugin_entries_to(
+            SetupCaller::Delegated,
+            env.clone(),
+            vec![EnvEntry::new(
+                "LABBY_AUTH_ADMIN_EMAIL",
+                "attacker@example.com",
+            )],
+        )
+        .expect_err("delegated plugin sync must not write auth configuration");
+        assert_eq!(error.kind(), "forbidden");
+        assert_eq!(fs::read(&env).unwrap(), before);
+
+        let delegated = sync_plugin_entries_to(
+            SetupCaller::Delegated,
+            env.clone(),
+            vec![EnvEntry::new("LABBY_LOG", "labby=debug")],
+        )
+        .expect("delegated plugin sync may write non-auth configuration");
+        assert_eq!(delegated.written, 1);
+
+        let outcome = sync_plugin_entries_to(
+            SetupCaller::Operator,
+            env.clone(),
+            vec![EnvEntry::new("LABBY_AUTH_ADMIN_EMAIL", "owner@example.com")],
+        )
+        .expect("operator plugin sync may write auth configuration");
+        assert_eq!(outcome.written, 1);
+        assert!(
+            fs::read_to_string(&env)
+                .unwrap()
+                .contains("LABBY_AUTH_ADMIN_EMAIL=owner@example.com")
+        );
     }
 
     #[test]
@@ -1022,6 +1126,56 @@ mod tests {
         assert_eq!(report.checks[0].name, "lab_home");
         assert_eq!(report.checks[1].name, "env_file");
         assert_eq!(report.checks[2].name, "access_store");
+    }
+
+    #[test]
+    fn setup_check_config_passes_for_a_valid_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("lab-home");
+        fs::create_dir_all(&home).unwrap();
+        let config = home.join("config.toml");
+        fs::write(&config, "[mcp]\nport = 8765\n").unwrap();
+
+        let report = run_for_paths_with(
+            Mode::Check,
+            home.clone(),
+            home.join(".env"),
+            home.join("access.db"),
+            Some(std::slice::from_ref(&config)),
+        )
+        .expect("check report");
+
+        let check = report.checks.iter().find(|c| c.name == "config").unwrap();
+        assert!(check.ok, "{check:?}");
+        assert!(!report.blocking_failures.contains(&"config".to_string()));
+    }
+
+    #[test]
+    fn setup_check_config_blocks_on_a_startup_fatal_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("lab-home");
+        fs::create_dir_all(&home).unwrap();
+        let config = home.join("config.toml");
+        fs::write(&config, "[depot.private_hosts]\n\"depot.internal\" = []\n").unwrap();
+
+        let report = run_for_paths_with(
+            Mode::Check,
+            home.clone(),
+            home.join(".env"),
+            home.join("access.db"),
+            Some(std::slice::from_ref(&config)),
+        )
+        .expect("check report");
+
+        assert!(!report.ok);
+        assert_eq!(report.exit_policy, "blocking_failure");
+        assert!(report.blocking_failures.contains(&"config".to_string()));
+        let check = report.checks.iter().find(|c| c.name == "config").unwrap();
+        assert_eq!(check.severity, SetupSeverity::Blocking);
+        assert_eq!(
+            check.message.as_deref(),
+            Some("fatal: validate Depot host policy: invalid Depot host policy")
+        );
     }
 
     #[test]

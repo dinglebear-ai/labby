@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "labby-apis"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "futures",
  "jiff",
@@ -2186,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "labby-auth"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "labby-browser"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "base64 0.23.0",
  "ed25519-dalek",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "labby-codemode"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "labby-gateway"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "labby-model"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "labby-openapi"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "futures",
  "labby-primitives",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "labby-primitives"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "base64 0.23.0",
  "getrandom 0.4.2",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "labby-runtime"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "atomic-write-file",
  "base64 0.23.0",
@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "labby-web"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.18",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "labby-winjob"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "tempfile",
  "tracing",
@@ -3468,9 +3468,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -3531,9 +3531,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4040,7 +4040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",

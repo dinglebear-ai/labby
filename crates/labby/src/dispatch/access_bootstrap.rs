@@ -112,21 +112,7 @@ impl AccessBootstrapProofService for DaemonAccessBootstrapProofService {
                     | BootstrapConsumeError::Conflict
                     | BootstrapConsumeError::LoadoutUnavailable)
             ) {
-                let _ = self
-                    .runtime
-                    .record_bootstrap_semantic_failure(proof_id, proof_digest, now)
-                    .await;
-                let _ = self
-                    .runtime
-                    .record_security_event(
-                        "proof".into(),
-                        "deny".into(),
-                        "semantic_failure".into(),
-                        proof_digest,
-                        None,
-                        now,
-                    )
-                    .await;
+                record_semantic_failure(&self.runtime, proof_id, proof_digest, now).await?;
             }
             let outcome = outcome.map_err(|error| match error {
                 BootstrapConsumeError::Unauthorized
@@ -200,6 +186,34 @@ fn digest32(value: &str) -> Result<[u8; 32], ProofServiceError> {
         .map_err(|_| ProofServiceError::Denied)?
         .try_into()
         .map_err(|_| ProofServiceError::Denied)
+}
+
+/// Charge one semantic failure against an authenticated proof. The attempt
+/// counter bounds manifest retries, so it fails closed: when the attempt
+/// cannot be durably counted the caller gets `Unavailable`, never another
+/// uncounted retry. The companion security event is evidence only; its loss
+/// is logged (redacted) without changing the outcome.
+async fn record_semantic_failure(
+    runtime: &AccessRuntime,
+    proof_id: String,
+    proof_digest: [u8; 32],
+    now: i64,
+) -> Result<(), ProofServiceError> {
+    if let Err(error) = runtime
+        .record_bootstrap_semantic_failure(proof_id, proof_digest, now)
+        .await
+    {
+        tracing::error!(
+            subsystem = "access_bootstrap",
+            error = %error,
+            "bootstrap semantic failure not recorded; refusing the attempt"
+        );
+        return Err(ProofServiceError::Unavailable);
+    }
+    runtime
+        .record_security_event_or_warn("proof", "deny", "semantic_failure", proof_digest, None, now)
+        .await;
+    Ok(())
 }
 
 fn unix_seconds() -> Result<i64, ProofServiceError> {
@@ -562,6 +576,56 @@ mod tests {
                 now: 1,
             }),
             Err(BootstrapConsumeError::Invalid)
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_that_cannot_be_counted_fails_closed() {
+        let runtime = AccessRuntime::blocked_unavailable();
+        assert_eq!(
+            record_semantic_failure(&runtime, "proof-1".into(), [1; 32], 20).await,
+            Err(ProofServiceError::Unavailable)
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_failures_are_counted_until_the_proof_is_exhausted() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = crate::access::AccessStore::open(path.clone())
+            .await
+            .unwrap();
+        store
+            .activate_bootstrap_proof(crate::access::ActivateProofInput {
+                proof_id: "proof-1".into(),
+                prepare_id: "prepare-1".into(),
+                installation_id: "installation-1".into(),
+                installation_generation: 1,
+                proof_digest: [1; 32],
+                manifest_digest: [2; 32],
+                request_digest: [3; 32],
+                idempotency_digest: [4; 32],
+                credential_id: "credential-1".into(),
+                credential_digest: [5; 32],
+                proof_generation: 1,
+                created_at: 10,
+                expires_at: 100,
+            })
+            .await
+            .unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        for attempt in 0..8 {
+            assert_eq!(
+                record_semantic_failure(&runtime, "proof-1".into(), [1; 32], 20 + attempt).await,
+                Ok(())
+            );
+        }
+        // The exhausted proof can no longer count an attempt, so the ninth
+        // failure is refused rather than silently granting another retry.
+        assert_eq!(
+            record_semantic_failure(&runtime, "proof-1".into(), [1; 32], 30).await,
+            Err(ProofServiceError::Unavailable)
         );
     }
 }

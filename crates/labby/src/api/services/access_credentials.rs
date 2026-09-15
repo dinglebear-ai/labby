@@ -9,7 +9,10 @@ use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGr
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::access::{CredentialLifecycleError, IssueCredentialInput, MutationOutcome};
+use crate::access::{
+    CredentialLifecycleError, CredentialSnapshot, IssueCredentialInput, MutationOutcome,
+    SecurityAdmission, admit_credential_issue_attempt, credential_generation_sql, scopes_within,
+};
 use crate::api::state::AppState;
 
 #[derive(Deserialize)]
@@ -32,24 +35,6 @@ struct IssueResponse {
     credential_id: String,
     credential_generation: u64,
     expires_at: i64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SecurityAdmission {
-    Admitted,
-    RateLimited,
-    StoreUnavailable,
-}
-
-fn classify_security_admission<E>(
-    global: Result<bool, E>,
-    peer: Result<bool, E>,
-) -> SecurityAdmission {
-    match (global, peer) {
-        (Ok(true), Ok(true)) => SecurityAdmission::Admitted,
-        (Ok(_), Ok(_)) => SecurityAdmission::RateLimited,
-        (Err(_), _) | (_, Err(_)) => SecurityAdmission::StoreUnavailable,
-    }
 }
 
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
@@ -118,17 +103,8 @@ async fn issue(
         return denied();
     };
     let now = labby_auth::util::now_unix();
-    let global: [u8; 32] = Sha256::digest(b"labby-credential-issue-global-v1").into();
     let target: [u8; 32] = Sha256::digest(source.credential_id.as_bytes()).into();
-    let global_admission = state
-        .access_runtime
-        .admit_security_operation("credential_global".into(), global, now, 60, 64)
-        .await;
-    let peer_admission = state
-        .access_runtime
-        .admit_security_operation("credential_peer".into(), target, now, 60, 16)
-        .await;
-    match classify_security_admission(global_admission, peer_admission) {
+    match admit_credential_issue_attempt(&state.access_runtime, &source.credential_id, now).await {
         SecurityAdmission::Admitted => {}
         SecurityAdmission::RateLimited => {
             audit_denial(&state, "credential_issue", "rate_limited", target).await;
@@ -169,10 +145,7 @@ async fn issue(
             .ok()
             .is_none_or(|expiry| expiry > bound.expires_at)
         || !canonical_scopes(&request.scopes)
-        || !request
-            .scopes
-            .iter()
-            .all(|scope| bound.scopes.iter().any(|granted| granted == scope))
+        || !scopes_within(&request.scopes, &bound.scopes)
         || request.idempotency_key.is_empty()
         || request.idempotency_key.len() > 160
     {
@@ -200,9 +173,20 @@ async fn issue(
     request_hasher.update(credential_digest);
     let request_digest: [u8; 32] = request_hasher.finalize().into();
     let idempotency_digest: [u8; 32] = Sha256::digest(request.idempotency_key.as_bytes()).into();
+    let actor_credential_generation = match durable_generation(
+        &state,
+        "credential_issue",
+        target,
+        source.credential_generation,
+    )
+    .await
+    {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
     let input = IssueCredentialInput {
         actor_credential_id: source.credential_id,
-        actor_credential_generation: i64::try_from(source.credential_generation).unwrap_or(0),
+        actor_credential_generation,
         credential_id: request.credential_id.clone(),
         credential_digest,
         credential_generation: 1,
@@ -254,33 +238,40 @@ async fn self_introspect(
         return denied();
     };
     let target: [u8; 32] = Sha256::digest(source.credential_id.as_bytes()).into();
+    let generation = match durable_generation(
+        &state,
+        "credential_verify",
+        target,
+        source.credential_generation,
+    )
+    .await
+    {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
     match state
         .access_runtime
         .introspect_project_credential(
             source.credential_id,
-            i64::try_from(source.credential_generation).unwrap_or(0),
+            generation,
             labby_auth::util::now_unix(),
         )
         .await
     {
-        Ok(Some(snapshot)) if snapshot.project_id == bound.project_id => json(
-            StatusCode::OK,
-            &serde_json::json!({
-                "credential_id": snapshot.credential_id,
-                "credential_generation": snapshot.credential_generation,
-                "installation_id": snapshot.installation_id,
-                "organization_id": snapshot.organization_id,
-                "project_id": snapshot.project_id,
-                "loadout_id": snapshot.loadout_id,
-                "route_id": snapshot.route_id,
-                "resource": snapshot.resource,
-                "audience": snapshot.audience,
-                "scopes": serde_json::from_str::<Vec<String>>(&snapshot.scopes_json).unwrap_or_default(),
-                "expires_at": snapshot.expires_at,
-                "revocation_generation": snapshot.revocation_generation,
-                "status": "active"
-            }),
-        ),
+        Ok(Some(snapshot)) if snapshot.project_id == bound.project_id => {
+            match introspection_body(&snapshot) {
+                Some(body) => json(StatusCode::OK, &body),
+                None => {
+                    tracing::error!(
+                        phase = "credential_introspection",
+                        "stored credential scopes are corrupt"
+                    );
+                    audit_denial(&state, "credential_verify", "integrity_unavailable", target)
+                        .await;
+                    unavailable()
+                }
+            }
+        }
         Ok(_) | Err(CredentialLifecycleError::NotAuthorized) => {
             audit_denial(&state, "credential_verify", "self_denied", target).await;
             denied()
@@ -320,11 +311,22 @@ async fn revoke(
         audit_denial(&state, "credential_revoke", "binding_denied", target).await;
         return denied();
     }
+    let actor_generation = match durable_generation(
+        &state,
+        "credential_revoke",
+        target,
+        source.credential_generation,
+    )
+    .await
+    {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
     match state
         .access_runtime
         .revoke_project_credential(
             source.credential_id,
-            i64::try_from(source.credential_generation).unwrap_or(0),
+            actor_generation,
             target_id,
             labby_auth::util::now_unix(),
         )
@@ -351,28 +353,63 @@ async fn audit_denial(
     reason: &'static str,
     target: [u8; 32],
 ) {
-    observe_audit_result(
-        state
-            .access_runtime
-            .record_security_event(
-                event_kind.into(),
-                "deny".into(),
-                reason.into(),
-                target,
-                None,
-                labby_auth::util::now_unix(),
-            )
-            .await,
-    );
+    state
+        .access_runtime
+        .record_security_event_or_warn(
+            event_kind,
+            "deny",
+            reason,
+            target,
+            None,
+            labby_auth::util::now_unix(),
+        )
+        .await;
 }
 
-fn observe_audit_result<E>(result: Result<(), E>) -> bool {
-    if result.is_err() {
-        tracing::warn!(phase = "security_audit", "security event unavailable");
-        false
-    } else {
-        true
+/// Convert an authenticated credential generation into its durable form.
+/// An unrepresentable generation is an integrity failure: it is logged,
+/// audited, and answered as unavailable rather than as an authorization
+/// denial.
+async fn durable_generation(
+    state: &AppState,
+    event_kind: &'static str,
+    target: [u8; 32],
+    generation: u64,
+) -> Result<i64, Response> {
+    match credential_generation_sql(generation) {
+        Ok(generation) => Ok(generation),
+        Err(error) => {
+            tracing::error!(
+                phase = "credential_generation",
+                error = %error,
+                "credential integrity violation"
+            );
+            audit_denial(state, event_kind, "generation_out_of_range", target).await;
+            Err(unavailable())
+        }
     }
+}
+
+/// Self-introspection body, or `None` when the stored scopes are corrupt.
+/// Corrupt scopes must never be reported as an active credential with no
+/// scopes.
+fn introspection_body(snapshot: &CredentialSnapshot) -> Option<serde_json::Value> {
+    let scopes = serde_json::from_str::<Vec<String>>(&snapshot.scopes_json).ok()?;
+    Some(serde_json::json!({
+        "credential_id": snapshot.credential_id,
+        "credential_generation": snapshot.credential_generation,
+        "installation_id": snapshot.installation_id,
+        "organization_id": snapshot.organization_id,
+        "project_id": snapshot.project_id,
+        "loadout_id": snapshot.loadout_id,
+        "route_id": snapshot.route_id,
+        "resource": snapshot.resource,
+        "audience": snapshot.audience,
+        "scopes": scopes,
+        "expires_at": snapshot.expires_at,
+        "revocation_generation": snapshot.revocation_generation,
+        "status": "active"
+    }))
 }
 
 fn authenticated(
@@ -542,30 +579,53 @@ mod tests {
         assert!(!canonical_scopes(&["lab:read".into(), "lab:read".into()]));
     }
 
-    #[test]
-    fn credential_admission_distinguishes_allow_limit_and_store_failure() {
-        assert_eq!(
-            classify_security_admission::<()>(Ok(true), Ok(true)),
-            SecurityAdmission::Admitted
-        );
-        assert_eq!(
-            classify_security_admission::<()>(Ok(false), Ok(true)),
-            SecurityAdmission::RateLimited
-        );
-        assert_eq!(
-            classify_security_admission(Err::<bool, _>(()), Ok(true)),
-            SecurityAdmission::StoreUnavailable
-        );
-        assert_eq!(
-            classify_security_admission(Ok(true), Err::<bool, _>(())),
-            SecurityAdmission::StoreUnavailable
-        );
+    fn snapshot(scopes_json: &str) -> CredentialSnapshot {
+        CredentialSnapshot {
+            credential_id: "credential-1".into(),
+            installation_id: "installation-1".into(),
+            canonical_issuer: "https://issuer.example".into(),
+            subject: "operator-1".into(),
+            organization_id: "organization-1".into(),
+            principal_id: "principal-1".into(),
+            project_id: "project-1".into(),
+            loadout_id: "loadout-1".into(),
+            route_id: "route-1".into(),
+            resource: "lab://project-1".into(),
+            audience: "labby".into(),
+            scopes_json: scopes_json.into(),
+            credential_generation: 1,
+            membership_generation: 1,
+            organization_policy_epoch: 0,
+            project_policy_epoch: 0,
+            loadout_assignment_generation: 1,
+            expires_at: 100,
+            revocation_generation: 0,
+        }
     }
 
+    /// CQ-L5: corrupt stored scopes are an integrity failure, never an
+    /// active credential with an empty scope list.
     #[test]
-    fn audit_storage_failures_are_not_silently_discarded() {
-        assert!(observe_audit_result::<()>(Ok(())));
-        assert!(!observe_audit_result(Err::<(), _>(())))
+    fn corrupt_stored_scopes_are_not_reported_as_empty() {
+        let body = introspection_body(&snapshot(r#"["lab:read"]"#)).unwrap();
+        assert_eq!(body["scopes"], serde_json::json!(["lab:read"]));
+        assert!(introspection_body(&snapshot("not json")).is_none());
+        assert!(introspection_body(&snapshot(r#"{"lab:read":true}"#)).is_none());
+    }
+
+    /// CQ-L3: an unrepresentable generation is `Unavailable`, not a denial.
+    #[tokio::test]
+    async fn out_of_range_generation_is_an_integrity_failure() {
+        assert_eq!(
+            durable_generation(&AppState::new(), "credential_verify", [0; 32], 7)
+                .await
+                .ok(),
+            Some(7)
+        );
+        let response = durable_generation(&AppState::new(), "credential_verify", [0; 32], u64::MAX)
+            .await
+            .unwrap_err();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
