@@ -138,6 +138,21 @@ impl From<AccessStoreError> for TeamMemberProvisionError {
     }
 }
 
+/// Lifecycle answer to "would a browser owner bootstrap be accepted now?".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerBootstrapOffer {
+    /// No durable store is initialized and this process owns the lifecycle.
+    Available,
+    /// An owner already exists; bootstrap is never offered again.
+    AlreadyOwned,
+    /// A proof-based bootstrap is prepared; only proof consumption may finish it.
+    ProofPending,
+    /// This process is not the lifecycle owner (or the store is unavailable).
+    NotLifecycleOwner,
+    /// The store is blocked for another typed reason.
+    Blocked(AccessBlockedReason),
+}
+
 enum RuntimeState {
     SetupRequired(AccessSetupReason),
     Prepared,
@@ -465,6 +480,24 @@ impl AccessRuntime {
             }
             RuntimeState::Ready { .. } => AccessRuntimeStatus::Ready,
             RuntimeState::Blocked(reason) => AccessRuntimeStatus::Blocked(*reason),
+        }
+    }
+
+    /// Whether this process would accept a browser owner bootstrap right now.
+    ///
+    /// Observed under the same lifecycle lock that `bootstrap_owner` takes, and
+    /// classified exactly as `bootstrap_owner_owned` branches, so a surface that
+    /// offers bootstrap only on [`OwnerBootstrapOffer::Available`] never offers
+    /// it in a state the operation refuses.
+    pub(crate) async fn owner_bootstrap_offer(&self) -> OwnerBootstrapOffer {
+        match &*self.state.lock().await {
+            RuntimeState::SetupRequired(_) => OwnerBootstrapOffer::Available,
+            RuntimeState::Prepared => OwnerBootstrapOffer::ProofPending,
+            RuntimeState::Ready { .. } => OwnerBootstrapOffer::AlreadyOwned,
+            RuntimeState::Blocked(AccessBlockedReason::Unavailable) => {
+                OwnerBootstrapOffer::NotLifecycleOwner
+            }
+            RuntimeState::Blocked(reason) => OwnerBootstrapOffer::Blocked(*reason),
         }
     }
 
@@ -1173,6 +1206,82 @@ mod tests {
         );
         let store = AccessStore::open(path).await.unwrap();
         assert_eq!(store.metadata_for_test().await.unwrap(), before);
+    }
+
+    /// AR-H2: the offer is classified exactly as `bootstrap_owner_owned`
+    /// branches, so it is `Available` only where bootstrap is accepted.
+    #[tokio::test]
+    async fn owner_bootstrap_offer_tracks_the_lifecycle_state() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_test_path(&directory);
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+        assert_eq!(
+            runtime.owner_bootstrap_offer().await,
+            OwnerBootstrapOffer::Available
+        );
+        assert!(!path.exists(), "observing the offer never creates a store");
+        runtime
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(
+                    VerifiedIdentity::local_credential(
+                        Authenticator::StaticBearer,
+                        "static-bearer:primary",
+                    )
+                    .unwrap(),
+                    "Local",
+                    "Default",
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.owner_bootstrap_offer().await,
+            OwnerBootstrapOffer::AlreadyOwned
+        );
+
+        let prepared_directory = super::super::test_support::secure_tempdir();
+        let prepared_path = secure_test_path(&prepared_directory);
+        let store = AccessStore::open(prepared_path.clone()).await.unwrap();
+        store
+            .activate_bootstrap_proof(super::super::ActivateProofInput {
+                proof_id: "proof".into(),
+                prepare_id: "prepare".into(),
+                installation_id: "installation".into(),
+                installation_generation: 1,
+                proof_digest: [1; 32],
+                manifest_digest: [2; 32],
+                request_digest: [3; 32],
+                idempotency_digest: [4; 32],
+                credential_id: "credential".into(),
+                credential_digest: [5; 32],
+                proof_generation: 1,
+                created_at: 10,
+                expires_at: i64::MAX,
+            })
+            .await
+            .unwrap();
+        drop(store);
+        assert_eq!(
+            AccessRuntime::initialize(prepared_path)
+                .await
+                .owner_bootstrap_offer()
+                .await,
+            OwnerBootstrapOffer::ProofPending
+        );
+
+        assert_eq!(
+            AccessRuntime::blocked_unavailable()
+                .owner_bootstrap_offer()
+                .await,
+            OwnerBootstrapOffer::NotLifecycleOwner
+        );
+        assert_eq!(
+            AccessRuntime::blocked_for_test(AccessBlockedReason::Corrupt)
+                .owner_bootstrap_offer()
+                .await,
+            OwnerBootstrapOffer::Blocked(AccessBlockedReason::Corrupt)
+        );
     }
 
     #[tokio::test]

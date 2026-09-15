@@ -7,9 +7,7 @@
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use subtle::ConstantTimeEq as _;
 
-use super::bootstrap::{
-    AUDIT_ID, LINK_ID, MEMBERSHIP_ID, ORGANIZATION_ID, PRINCIPAL_ID, PROJECT_ID,
-};
+use super::bootstrap::{ORGANIZATION_ID, PRINCIPAL_ID, PROJECT_ID};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::store::{AccessStore, map_sqlite_error};
 
@@ -346,22 +344,34 @@ impl AccessStore {
                 || artifact_tombstoned(&transaction,"credential",&proof.2,&credential_digest)?
             { return Err(AccessStoreError::NotAuthorized); }
             ensure_pristine(&transaction)?;
-            transaction.execute("INSERT INTO organizations(organization_id,name,status,policy_epoch,created_at,updated_at) VALUES(?1,?2,'active',0,?3,?3)", params![ORGANIZATION_ID,input.organization_name,input.now]).map_err(map_sqlite_error)?;
-            let owner_label = format!("{} owner", input.organization_name.trim());
-            transaction.execute("INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at) VALUES(?1,?2,'user','active',?3,?4,?4)", params![PRINCIPAL_ID,ORGANIZATION_ID,owner_label,input.now]).map_err(map_sqlite_error)?;
-            transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'external',?3,?4,NULL,'active',1,1,?5,?5)", params![LINK_ID,PRINCIPAL_ID,input.canonical_issuer,input.subject,input.now]).map_err(map_sqlite_error)?;
-            transaction.execute("INSERT INTO projects(project_id,organization_id,name,status,project_policy_epoch,created_at,updated_at) VALUES(?1,?2,?3,'active',0,?4,?4)", params![PROJECT_ID,ORGANIZATION_ID,input.project_name,input.now]).map_err(map_sqlite_error)?;
-            transaction.execute("INSERT INTO project_memberships(membership_id,organization_id,project_id,principal_id,role,status,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,'owner','active',?4,?5,?5)", params![MEMBERSHIP_ID,ORGANIZATION_ID,PROJECT_ID,PRINCIPAL_ID,input.now]).map_err(map_sqlite_error)?;
-            transaction.execute("INSERT INTO project_loadouts(organization_id,project_id,loadout_name,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)", params![ORGANIZATION_ID,PROJECT_ID,input.loadout_id,PRINCIPAL_ID,input.now]).map_err(map_sqlite_error)?;
-            let policy_epoch = reconcile_policy(&transaction, PROJECT_ID, &input.loadout_policy_fingerprint, input.now)?;
+            let owner_link = labby_auth::PrincipalLink::External {
+                issuer: input.canonical_issuer.clone(),
+                subject: input.subject.clone(),
+            };
+            let seed_input = input.clone();
             let mut input = input;
-            input.loadout_generation = policy_epoch;
-            input.catalog_generation = policy_epoch;
-            input.route_generation = policy_epoch;
-            insert_credential(&transaction, &input, &proof)?;
-            transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'local_credential',NULL,NULL,?3,'active',1,1,?4,?4)", params![format!("credential-link:{}",proof.2),PRINCIPAL_ID,proof.2,input.now]).map_err(map_sqlite_error)?;
-            transaction.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,?5,'access.bootstrap_owner','project',?6,'allow','explicit_owner_bootstrap',0,'{}')", params![AUDIT_ID,input.now,PRINCIPAL_ID,ORGANIZATION_ID,PROJECT_ID,input.identity_fingerprint]).map_err(map_sqlite_error)?;
-            transaction.execute("UPDATE access_metadata SET global_revision=global_revision+1,bootstrap_generation=1,bootstrap_identity_fingerprint=?1,updated_at=?2 WHERE singleton=1 AND bootstrap_generation=0 AND bootstrap_identity_fingerprint IS NULL", params![input.identity_fingerprint,input.now]).map_err(map_sqlite_error)?;
+            super::bootstrap::seed_bootstrap_owner(
+                &transaction,
+                &super::bootstrap::BootstrapSeed {
+                    organization_name: &seed_input.organization_name,
+                    project_name: &seed_input.project_name,
+                    link: &owner_link,
+                    verification_generation: 1,
+                    link_generation: 1,
+                    identity_fingerprint: &seed_input.identity_fingerprint,
+                    now: seed_input.now,
+                },
+                |transaction| {
+                    transaction.execute("INSERT INTO project_loadouts(organization_id,project_id,loadout_name,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)", params![ORGANIZATION_ID,PROJECT_ID,input.loadout_id,PRINCIPAL_ID,input.now]).map_err(map_sqlite_error)?;
+                    let policy_epoch = reconcile_policy(transaction, PROJECT_ID, &input.loadout_policy_fingerprint, input.now)?;
+                    input.loadout_generation = policy_epoch;
+                    input.catalog_generation = policy_epoch;
+                    input.route_generation = policy_epoch;
+                    insert_credential(transaction, &input, &proof)?;
+                    transaction.execute("INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at) VALUES(?1,?2,'local_credential',NULL,NULL,?3,'active',1,1,?4,?4)", params![format!("credential-link:{}",proof.2),PRINCIPAL_ID,proof.2,input.now]).map_err(map_sqlite_error)?;
+                    Ok(())
+                },
+            )?;
             transaction.execute("UPDATE bootstrap_proofs SET status='consumed',consumed_at=?1,updated_at=?1 WHERE proof_id=?2 AND status='active'", params![input.now,input.proof_id]).map_err(map_sqlite_error)?;
             transaction.execute("INSERT INTO credential_idempotency(idempotency_digest,installation_id,operation,request_digest,proof_id,credential_id,status,created_at,updated_at) VALUES(?1,?2,'bootstrap_consume',?3,?4,?5,'committed',?6,?6)", params![input.idempotency_digest.as_slice(),proof.0,input.request_digest.as_slice(),input.proof_id,proof.2,input.now]).map_err(map_sqlite_error)?;
             transaction.execute("INSERT INTO access_security_events VALUES(?1,?2,'proof','allow','consumed',?3,NULL,'{}')",params![ulid::Ulid::new().to_string(),input.now,input.proof_digest.as_slice()]).map_err(map_sqlite_error)?;
@@ -852,6 +862,39 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// AR-H3: a store seeded by proof consumption shares the reserved-row
+    /// writer with the browser path and passes integrity validation on reopen.
+    #[tokio::test]
+    async fn proof_seeded_store_reopens_with_valid_bootstrap_integrity() {
+        let (directory, store) = store().await;
+        store.activate_bootstrap_proof(activation()).await.unwrap();
+        store.consume_bootstrap_proof(consumption()).await.unwrap();
+        drop(store);
+
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let reopened = AccessStore::open_existing_current(path).await.unwrap();
+        assert_eq!(reopened.bootstrap_metadata_for_test().await.unwrap().0, 1);
+    }
+
+    /// SEC-L1: proof consumption uses the same guarded metadata CAS as the
+    /// browser path, so a store whose revision already moved cannot be seeded.
+    #[tokio::test]
+    async fn proof_consume_refuses_a_store_whose_revision_moved() {
+        let (_directory, store) = store().await;
+        store.activate_bootstrap_proof(activation()).await.unwrap();
+        store
+            .execute_test_statement(
+                "UPDATE access_metadata SET global_revision=5 WHERE singleton=1;",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.consume_bootstrap_proof(consumption()).await,
+            Err(AccessStoreError::BootstrapConflict)
+        ));
+        assert_eq!(store.bootstrap_metadata_for_test().await.unwrap().0, 0);
     }
 
     #[tokio::test]
