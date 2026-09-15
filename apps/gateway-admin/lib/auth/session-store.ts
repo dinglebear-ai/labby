@@ -138,6 +138,20 @@ function normalizeAuthority(payload: Extract<SessionPayload, { authenticated: tr
   return hasProjection ? parseAuthoritySnapshot(payload as unknown as Record<string, unknown>) : undefined
 }
 
+/**
+ * The single client-side owner-bootstrap guard. The server decides
+ * availability; this only fails closed: bootstrap is offered only before an
+ * owner exists (`transport`) and only on an explicit `true`. Used both when a
+ * payload is normalized and by the auth gate, so injected or stale state can
+ * never surface the form.
+ */
+export function ownerBootstrapOffered(state: {
+  authorityState?: string | null
+  ownerBootstrapAvailable?: boolean
+}): boolean {
+  return state.authorityState === 'transport' && state.ownerBootstrapAvailable === true
+}
+
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
   if (!payload.authenticated) {
     return {
@@ -164,8 +178,10 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     ...(authorityState !== 'ready' && typeof payload.remediation === 'string' && payload.remediation
       ? { remediation: payload.remediation }
       : {}),
-    // Fail closed: bootstrap is only ever offered before an owner exists.
-    ownerBootstrapAvailable: authorityState === 'transport' && payload.owner_bootstrap_available === true,
+    ownerBootstrapAvailable: ownerBootstrapOffered({
+      authorityState,
+      ownerBootstrapAvailable: payload.owner_bootstrap_available === true,
+    }),
     isAdmin: authority?.capabilities.includes('platform.manage') ?? false,
     // Project-bound sessions can carry an explicit server-selected project
     // without the durable authority projection. Preserve that binding without

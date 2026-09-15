@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::access::{
     AccessBlockedReason, AccessRuntimeError, AccessRuntimeStatus, AccessStoreError,
-    SessionAuthoritySnapshot,
+    OwnerBootstrapCaller, OwnerBootstrapOffer, SessionAuthoritySnapshot,
 };
 use crate::api::ToolError;
 use crate::api::auth_helpers::{log_auth_dispatch, log_auth_dispatch_start, request_id};
@@ -14,13 +14,14 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 use crate::dispatch::access_errors::{map_runtime_error, map_store_error};
+use serde::Serialize;
 
 use labby_auth::browser_authority::BrowserAuthority;
 use labby_auth::reauth::ProofError;
 use labby_auth::reauth_browser::PurposeInput;
 use labby_auth::session::BROWSER_CSRF_HEADER_NAME;
 
-const DEV_SESSION_EXPIRES_AT: u64 = 253_402_300_799;
+const DEV_SESSION_EXPIRES_AT: i64 = 253_402_300_799;
 
 fn oauth_state(state: &AppState) -> Option<&labby_auth::state::AuthState> {
     state.oauth_state.as_ref().map(|state| state.as_ref())
@@ -354,16 +355,6 @@ fn scopes_grant_admin(scopes: &[String]) -> bool {
     scopes.iter().any(|scope| scope == "lab:admin")
 }
 
-/// Whether an OAuth browser identity is the configured admin, the only caller
-/// `POST /v1/access/bootstrap-owner` accepts. The session projection uses this
-/// so the UI never offers owner bootstrap to anyone the endpoint would refuse.
-fn is_configured_admin_email(state: &AppState, email: Option<&str>) -> bool {
-    let Some(config) = state.auth_config.as_ref() else {
-        return false;
-    };
-    email.is_some_and(|email| email.eq_ignore_ascii_case(&config.admin_email))
-}
-
 /// Identity for an OAuth-backed browser session row.
 ///
 /// Must stay identical to the derivation in `labby_auth::middleware` for the
@@ -445,110 +436,244 @@ async fn fallback_session_identity(
     }
 }
 
-fn wire_roles<'a>(
-    teams: impl Iterator<Item = &'a (String, crate::access::TeamRole, u64, u64)>,
-) -> Vec<serde_json::Value> {
-    teams
-        .map(|(id, role, membership_epoch, policy_epoch)| {
-            serde_json::json!({
-                "id": id,
-                "role": role.as_wire(),
-                "membership_epoch": membership_epoch,
-                "policy_epoch": policy_epoch,
-            })
-        })
-        .collect()
+/// Presentation fields for an authenticated session, independent of authority.
+struct SessionView {
+    login_available: bool,
+    user: SessionUser,
+    project_id: Option<String>,
+    expires_at: i64,
+    csrf_token: String,
 }
 
-/// Build the authenticated `/auth/session` body.
+#[derive(Serialize)]
+struct SessionUser {
+    sub: String,
+    email: Option<String>,
+}
+
+/// Transport facts about the authenticated caller.
+struct SessionCaller {
+    identity: labby_auth::VerifiedIdentity,
+    via_session: bool,
+    subject: String,
+    email: Option<String>,
+    scopes: Vec<String>,
+    /// Transport admin ceiling projected in the `transport` state.
+    transport_admin: bool,
+}
+
+impl SessionCaller {
+    fn bootstrap_caller(&self) -> OwnerBootstrapCaller<'_> {
+        OwnerBootstrapCaller {
+            via_session: self.via_session,
+            subject: &self.subject,
+            scopes: &self.scopes,
+            email: self.email.as_deref(),
+            identity: &self.identity,
+        }
+    }
+}
+
+/// The authenticated `/auth/session` wire contract.
 ///
-/// The `user`, `csrf_token`, and `expires_at` fields are emitted in both the
-/// ready and unprovisioned states so the UI can fail closed on authority
-/// while still holding a usable session.
-///
-/// `owner_bootstrap_available` is true only while no owner exists yet
-/// (`transport`) and the caller is eligible to claim ownership. Once an owner
-/// exists, every identity without authority is `unprovisioned` and is never
-/// offered bootstrap.
+/// Every authority state emits the same keys so the UI can fail closed on
+/// authority while still holding a usable session; `remediation` is present
+/// only when there is no durable authority.
+#[derive(Serialize)]
+struct SessionBody<'a> {
+    authenticated: bool,
+    login_available: bool,
+    bearer_login_available: bool,
+    authority_state: &'static str,
+    authority: Option<AuthorityRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remediation: Option<&'static str>,
+    is_admin: bool,
+    user: &'a SessionUser,
+    project_id: Option<&'a str>,
+    owner: Option<OwnerRef<'a>>,
+    organization_id: Option<&'a str>,
+    teams: Vec<TeamRoleWire<'a>>,
+    projects: Vec<ProjectRoleWire<'a>>,
+    project: Option<&'a str>,
+    capabilities: Vec<&'static str>,
+    authority_generation: Option<u64>,
+    expires_at: i64,
+    csrf_token: &'a str,
+    /// True only when the runtime would accept owner bootstrap now and the
+    /// caller passes the shared admission rule; see [`project_session`].
+    owner_bootstrap_available: bool,
+}
+
+#[derive(Serialize)]
+struct AuthorityRef<'a> {
+    principal_id: &'a str,
+    organization_id: &'a str,
+    authority_generation: u64,
+}
+
+#[derive(Serialize)]
+struct OwnerRef<'a> {
+    kind: &'static str,
+    id: &'a str,
+}
+
+#[derive(Serialize)]
+struct TeamRoleWire<'a> {
+    id: &'a str,
+    role: &'static str,
+    membership_epoch: u64,
+    policy_epoch: u64,
+}
+
+#[derive(Serialize)]
+struct ProjectRoleWire<'a> {
+    id: &'a str,
+    role: &'static str,
+}
+
 fn authenticated_session_body(
-    state: &AppState,
-    user: serde_json::Value,
-    project_id: Option<&str>,
-    expires_at: serde_json::Value,
-    csrf_token: &str,
+    view: &SessionView,
     authority: &SessionAuthority,
-    bootstrap_eligible: bool,
-) -> serde_json::Value {
-    let login_available = state.oauth_state.is_some();
-    let owner_bootstrap_available =
-        bootstrap_eligible && matches!(authority, SessionAuthority::Transport { .. });
-    let mut body = match authority {
-        SessionAuthority::Ready(authority) => serde_json::json!({
-            "authenticated": true,
-            "login_available": login_available,
-            "authority_state": "ready",
-            "authority": {
-                "principal_id": authority.principal_id,
-                "organization_id": authority.organization_id,
-                "authority_generation": authority.authority_generation,
-            },
+    owner_bootstrap_available: bool,
+    bearer_login_available: bool,
+) -> Result<serde_json::Value, ToolError> {
+    let project_id = view.project_id.as_deref();
+    let mut body = SessionBody {
+        authenticated: true,
+        login_available: view.login_available,
+        bearer_login_available,
+        authority_state: "transport",
+        authority: None,
+        remediation: None,
+        is_admin: false,
+        user: &view.user,
+        project_id,
+        owner: None,
+        organization_id: None,
+        teams: Vec::new(),
+        projects: Vec::new(),
+        project: project_id,
+        capabilities: Vec::new(),
+        authority_generation: None,
+        expires_at: view.expires_at,
+        csrf_token: &view.csrf_token,
+        owner_bootstrap_available,
+    };
+    match authority {
+        SessionAuthority::Ready(authority) => {
+            body.authority_state = "ready";
+            body.authority = Some(AuthorityRef {
+                principal_id: &authority.principal_id,
+                organization_id: &authority.organization_id,
+                authority_generation: authority.authority_generation,
+            });
+            body.capabilities = authority
+                .capabilities
+                .iter()
+                .map(|capability| capability.as_wire())
+                .collect();
             // OAuth scopes are only a transport ceiling. Domain administration
             // is projected from durable access authority, never inferred here.
-            "is_admin": authority.capabilities.iter().any(|capability| capability.as_wire() == "platform.manage"),
-            "user": user,
-            "project_id": project_id,
-            "owner": { "kind": "personal", "id": authority.principal_id },
-            "organization_id": authority.organization_id,
-            "teams": wire_roles(authority.teams.iter()),
-            "projects": authority.projects.iter().map(|(id, role)| serde_json::json!({"id":id,"role":role.as_wire()})).collect::<Vec<_>>(),
-            "project": project_id,
-            "capabilities": authority.capabilities.iter().map(|capability| capability.as_wire()).collect::<Vec<_>>(),
-            "authority_generation": authority.authority_generation,
-            "expires_at": expires_at,
-            "csrf_token": csrf_token,
-        }),
-        SessionAuthority::Transport { is_admin } => serde_json::json!({
-            "authenticated": true,
-            "login_available": login_available,
-            "authority_state": "transport",
-            "authority": serde_json::Value::Null,
-            "remediation": TRANSPORT_REMEDIATION,
-            "is_admin": is_admin,
-            "user": user,
-            "project_id": project_id,
-            "owner": serde_json::Value::Null,
-            "organization_id": serde_json::Value::Null,
-            "teams": Vec::<serde_json::Value>::new(),
-            "projects": Vec::<serde_json::Value>::new(),
-            "project": project_id,
-            "capabilities": Vec::<serde_json::Value>::new(),
-            "authority_generation": serde_json::Value::Null,
-            "expires_at": expires_at,
-            "csrf_token": csrf_token,
-        }),
-        SessionAuthority::Unprovisioned => serde_json::json!({
-            "authenticated": true,
-            "login_available": login_available,
-            "authority_state": "unprovisioned",
-            "authority": serde_json::Value::Null,
-            "remediation": UNPROVISIONED_REMEDIATION,
-            "is_admin": false,
-            "user": user,
-            "project_id": project_id,
-            "owner": serde_json::Value::Null,
-            "organization_id": serde_json::Value::Null,
-            "teams": Vec::<serde_json::Value>::new(),
-            "projects": Vec::<serde_json::Value>::new(),
-            "project": project_id,
-            "capabilities": Vec::<serde_json::Value>::new(),
-            "authority_generation": serde_json::Value::Null,
-            "expires_at": expires_at,
-            "csrf_token": csrf_token,
-        }),
-    };
-    body["bearer_login_available"] = serde_json::Value::Bool(static_bearer_login_available(state));
-    body["owner_bootstrap_available"] = serde_json::Value::Bool(owner_bootstrap_available);
-    body
+            body.is_admin = body.capabilities.contains(&"platform.manage");
+            body.owner = Some(OwnerRef {
+                kind: "personal",
+                id: &authority.principal_id,
+            });
+            body.organization_id = Some(&authority.organization_id);
+            body.teams = authority
+                .teams
+                .iter()
+                .map(|(id, role, membership_epoch, policy_epoch)| TeamRoleWire {
+                    id,
+                    role: role.as_wire(),
+                    membership_epoch: *membership_epoch,
+                    policy_epoch: *policy_epoch,
+                })
+                .collect();
+            body.projects = authority
+                .projects
+                .iter()
+                .map(|(id, role)| ProjectRoleWire {
+                    id,
+                    role: role.as_wire(),
+                })
+                .collect();
+            body.authority_generation = Some(authority.authority_generation);
+        }
+        SessionAuthority::Transport { is_admin } => {
+            body.remediation = Some(TRANSPORT_REMEDIATION);
+            body.is_admin = *is_admin;
+        }
+        SessionAuthority::Unprovisioned => {
+            body.authority_state = "unprovisioned";
+            body.remediation = Some(UNPROVISIONED_REMEDIATION);
+        }
+    }
+    serde_json::to_value(&body)
+        .map_err(|_| ToolError::internal_message("failed to encode session authority"))
+}
+
+/// Project one authenticated caller into the `/auth/session` body.
+///
+/// Owner bootstrap is offered only when the caller passes the shared
+/// admission rule (the same predicate `POST /v1/access/bootstrap-owner`
+/// enforces) and the access runtime reports it would accept bootstrap now.
+async fn project_session(
+    state: &AppState,
+    caller: SessionCaller,
+    view: SessionView,
+) -> Result<serde_json::Value, ToolError> {
+    let admitted = crate::access::owner_bootstrap_admission(
+        &caller.bootstrap_caller(),
+        state
+            .auth_config
+            .as_ref()
+            .map(|config| config.admin_email.as_str()),
+    )
+    .is_ok();
+    let authority =
+        resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
+    let owner_bootstrap_available = admitted
+        && state.access_runtime.owner_bootstrap_offer().await == OwnerBootstrapOffer::Available;
+    authenticated_session_body(
+        &view,
+        &authority,
+        owner_bootstrap_available,
+        static_bearer_login_available(state),
+    )
+}
+
+/// Transport facts for the anonymous OAuth cookie branch.
+///
+/// `/auth/session` is outside the auth layer, so no `AuthContext` exists here.
+/// Scopes are derived with the same `labby_auth` rule the auth layer applies to
+/// this cookie. The configured admin email is always an authorized identity;
+/// every other identity receives either `lab:read` or scopes with `:admin`
+/// lowered, so passing `authorized = is_configured_admin` gives the same
+/// answer to "does this caller hold `lab:admin`" without a second allowlist
+/// lookup.
+fn oauth_cookie_caller(
+    auth_state: &labby_auth::state::AuthState,
+    session: &labby_auth::types::BrowserSessionRow,
+    identity: labby_auth::VerifiedIdentity,
+) -> SessionCaller {
+    let is_configured_admin = labby_auth::is_configured_admin_email(
+        &auth_state.config.admin_email,
+        session.email.as_deref(),
+    );
+    SessionCaller {
+        identity,
+        via_session: true,
+        subject: session.subject.clone(),
+        email: session.email.clone(),
+        scopes: labby_auth::browser_session_scopes(
+            &auth_state.config.static_token_scopes,
+            is_configured_admin,
+            is_configured_admin,
+        ),
+        transport_admin: false,
+    }
 }
 
 /// Finish a `session.get` dispatch. Success and unprovisioned outcomes log
@@ -770,67 +895,73 @@ pub async fn auth_session(
     // otherwise bearer-only deployments render an authenticated-but-unbound
     // shell even though the browser holds a valid project session.
     match load_project_session(&state, &headers).await {
-        Ok(Some(session)) if session.project_binding.is_some() => {
-            let actor_key = actor_key_for_session(&state, &session);
-            let binding = session.project_binding.as_ref().expect("guarded above");
-            let outcome = match project_session_identity(binding) {
-                Ok(identity) => {
-                    resolve_session_authority(&state, identity, scopes_grant_admin(&binding.scopes))
-                        .await
-                        .map(|authority| {
-                            authenticated_session_body(
-                                &state,
-                                serde_json::json!({
-                                    "sub": binding.principal_id,
-                                    "email": session.email,
-                                }),
-                                Some(binding.project_id.as_str()),
-                                serde_json::json!(session.expires_at),
-                                &session.csrf_token,
-                                &authority,
-                                // Project sessions are local credentials; the
-                                // bootstrap endpoint accepts only OAuth identities.
-                                false,
-                            )
-                        })
+        Ok(Some(session)) => {
+            if let Some(binding) = session.project_binding.as_ref() {
+                let actor_key = actor_key_for_session(&state, &session);
+                let outcome = async {
+                    let caller = SessionCaller {
+                        identity: project_session_identity(binding)?,
+                        via_session: true,
+                        subject: binding.principal_id.clone(),
+                        email: session.email.clone(),
+                        scopes: binding.scopes.clone(),
+                        transport_admin: scopes_grant_admin(&binding.scopes),
+                    };
+                    let view = SessionView {
+                        login_available,
+                        user: SessionUser {
+                            sub: binding.principal_id.clone(),
+                            email: session.email.clone(),
+                        },
+                        project_id: Some(binding.project_id.clone()),
+                        expires_at: session.expires_at,
+                        csrf_token: session.csrf_token.clone(),
+                    };
+                    project_session(&state, caller, view).await
                 }
-                Err(error) => Err(error),
-            };
-            return finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome);
+                .await;
+                return finish_session_get(
+                    request_id.as_deref(),
+                    start,
+                    actor_key.as_deref(),
+                    outcome,
+                );
+            }
         }
-        Ok(_) => {}
+        Ok(None) => {}
         Err(error) => {
             return finish_session_get(request_id.as_deref(), start, None, Err(error));
         }
     }
 
     if let Some(session) = static_browser_session(&state, &headers) {
-        let outcome = match labby_auth::VerifiedIdentity::local_credential(
-            labby_auth::Authenticator::StaticBearer,
-            "static-bearer:primary",
-        ) {
-            Ok(identity) => {
-                resolve_session_authority(&state, identity, true)
-                    .await
-                    .map(|authority| {
-                        authenticated_session_body(
-                            &state,
-                            serde_json::json!({
-                                "sub": "static-bearer",
-                                "email": serde_json::Value::Null,
-                            }),
-                            None,
-                            serde_json::json!(session.expires_at),
-                            &session.csrf_token,
-                            &authority,
-                            false,
-                        )
-                    })
-            }
-            Err(_) => Err(ToolError::internal_message(
-                "authenticated identity is invalid",
-            )),
-        };
+        let outcome = async {
+            let identity = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))?;
+            let caller = SessionCaller {
+                identity,
+                via_session: false,
+                subject: "static-bearer".to_owned(),
+                email: None,
+                scopes: Vec::new(),
+                transport_admin: true,
+            };
+            let view = SessionView {
+                login_available,
+                user: SessionUser {
+                    sub: "static-bearer".to_owned(),
+                    email: None,
+                },
+                project_id: None,
+                expires_at: session.expires_at,
+                csrf_token: session.csrf_token.clone(),
+            };
+            project_session(&state, caller, view).await
+        }
+        .await;
         return finish_session_get(request_id.as_deref(), start, None, outcome);
     }
 
@@ -863,34 +994,34 @@ pub async fn auth_session(
             .and_then(labby_auth::parse_bearer_token)
         && labby_auth::tokens_equal(&token, expected.as_ref())
     {
-        let outcome = match labby_auth::VerifiedIdentity::local_credential(
-            labby_auth::Authenticator::StaticBearer,
-            "static-bearer:primary",
-        ) {
+        let outcome = async {
             // The static bearer is the local operator credential.
-            Ok(identity) => {
-                resolve_session_authority(&state, identity, true)
-                    .await
-                    .map(|authority| {
-                        authenticated_session_body(
-                            &state,
-                            serde_json::json!({
-                                "sub": "static-bearer",
-                                "email": serde_json::Value::Null,
-                            }),
-                            None,
-                            serde_json::json!(DEV_SESSION_EXPIRES_AT),
-                            "",
-                            &authority,
-                            // Browser bootstrap requires an OAuth identity.
-                            false,
-                        )
-                    })
-            }
-            Err(_) => Err(ToolError::internal_message(
-                "authenticated identity is invalid",
-            )),
-        };
+            let identity = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))?;
+            let caller = SessionCaller {
+                identity,
+                via_session: false,
+                subject: "static-bearer".to_owned(),
+                email: None,
+                scopes: Vec::new(),
+                transport_admin: true,
+            };
+            let view = SessionView {
+                login_available,
+                user: SessionUser {
+                    sub: "static-bearer".to_owned(),
+                    email: None,
+                },
+                project_id: None,
+                expires_at: DEV_SESSION_EXPIRES_AT,
+                csrf_token: String::new(),
+            };
+            project_session(&state, caller, view).await
+        }
+        .await;
         return finish_session_get(request_id.as_deref(), start, None, outcome);
     }
 
@@ -904,33 +1035,25 @@ pub async fn auth_session(
     match load_browser_session(auth_state, &headers).await {
         Ok(Some(session)) => {
             let actor_key = actor_key_for_session(&state, &session);
-            let bootstrap_eligible = is_configured_admin_email(&state, session.email.as_deref());
-            let outcome = match oauth_browser_session_identity(auth_state, &session) {
-                Ok(identity) => {
-                    // An OAuth cookie alone never carries transport admin.
-                    resolve_session_authority(&state, identity, false)
-                        .await
-                        .map(|authority| {
-                            let project_id = session
-                                .project_binding
-                                .as_ref()
-                                .map(|binding| binding.project_id.as_str());
-                            authenticated_session_body(
-                                &state,
-                                serde_json::json!({
-                                    "sub": session.subject,
-                                    "email": session.email,
-                                }),
-                                project_id,
-                                serde_json::json!(session.expires_at),
-                                &session.csrf_token,
-                                &authority,
-                                bootstrap_eligible,
-                            )
-                        })
-                }
-                Err(error) => Err(error),
-            };
+            let outcome = async {
+                let identity = oauth_browser_session_identity(auth_state, &session)?;
+                let caller = oauth_cookie_caller(auth_state, &session, identity);
+                let view = SessionView {
+                    login_available,
+                    user: SessionUser {
+                        sub: session.subject.clone(),
+                        email: session.email.clone(),
+                    },
+                    project_id: session
+                        .project_binding
+                        .as_ref()
+                        .map(|binding| binding.project_id.clone()),
+                    expires_at: session.expires_at,
+                    csrf_token: session.csrf_token.clone(),
+                };
+                project_session(&state, caller, view).await
+            }
+            .await;
             finish_session_get(request_id.as_deref(), start, actor_key.as_deref(), outcome)
         }
         Ok(None) => {
@@ -965,18 +1088,22 @@ async fn authenticated_context_session(
     context: AuthContext,
     identity: Option<Extension<labby_auth::VerifiedIdentity>>,
 ) -> Result<serde_json::Value, ToolError> {
-    let project_session = if context.via_session {
+    let bound_session = if context.via_session {
         load_project_session(state, headers).await?
     } else {
         None
     };
-    let (project_id, expires_at) = match project_session {
+    let (project_id, expires_at) = match bound_session {
         Some(session) => (
             session
                 .project_binding
                 .as_ref()
                 .map(|binding| binding.project_id.clone()),
-            u64::try_from(session.expires_at).unwrap_or(DEV_SESSION_EXPIRES_AT),
+            if session.expires_at >= 0 {
+                session.expires_at
+            } else {
+                DEV_SESSION_EXPIRES_AT
+            },
         ),
         None => (None, DEV_SESSION_EXPIRES_AT),
     };
@@ -997,30 +1124,25 @@ async fn authenticated_context_session(
             })?
         }
     };
-    // Mirrors `access_bootstrap::require_browser_admin`: browser session,
-    // OAuth identity for the same subject, `lab:admin`, configured admin email.
-    let bootstrap_eligible = context.via_session
-        && identity.authenticator() == labby_auth::Authenticator::BrowserSession
-        && matches!(
-            identity.principal_link(),
-            labby_auth::PrincipalLink::External { subject, .. } if subject == &context.sub
-        )
-        && scopes_grant_admin(&context.scopes)
-        && is_configured_admin_email(state, context.email.as_deref());
-    let authority =
-        resolve_session_authority(state, identity, scopes_grant_admin(&context.scopes)).await?;
-    Ok(authenticated_session_body(
-        state,
-        serde_json::json!({
-            "sub": context.sub,
-            "email": context.email,
-        }),
-        project_id.as_deref(),
-        serde_json::json!(expires_at),
-        context.csrf_token.as_deref().unwrap_or_default(),
-        &authority,
-        bootstrap_eligible,
-    ))
+    let view = SessionView {
+        login_available: false,
+        user: SessionUser {
+            sub: context.sub.clone(),
+            email: context.email.clone(),
+        },
+        project_id,
+        expires_at,
+        csrf_token: context.csrf_token.unwrap_or_default(),
+    };
+    let caller = SessionCaller {
+        identity,
+        via_session: context.via_session,
+        transport_admin: scopes_grant_admin(&context.scopes),
+        subject: context.sub,
+        email: context.email,
+        scopes: context.scopes,
+    };
+    project_session(state, caller, view).await
 }
 
 pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -1637,25 +1759,6 @@ mod tests {
         assert_eq!(json["bearer_login_available"], true);
     }
 
-    #[test]
-    fn bootstrap_eligibility_requires_the_configured_admin_email() {
-        let config = labby_auth::config::AuthConfig {
-            admin_email: "owner@example.com".into(),
-            ..Default::default()
-        };
-        let state = AppState::new().with_auth_config(config);
-        assert!(is_configured_admin_email(&state, Some("OWNER@example.com")));
-        assert!(!is_configured_admin_email(
-            &state,
-            Some("other@example.com")
-        ));
-        assert!(!is_configured_admin_email(&state, None));
-        assert!(!is_configured_admin_email(
-            &AppState::new(),
-            Some("owner@example.com")
-        ));
-    }
-
     /// B-I7: an authenticated identity with no principal link is a 200
     /// `unprovisioned` projection with a remediation hint, never a 500; a
     /// provisioned owner projects durable authority; a blocked store is 503.
@@ -1685,46 +1788,67 @@ mod tests {
             )
             .await
             .unwrap();
-        let state = AppState::new().with_access_runtime(runtime);
+        let state = AppState::new()
+            .with_access_runtime(runtime)
+            .with_auth_config(labby_auth::config::AuthConfig {
+                admin_email: "owner@example.com".into(),
+                ..Default::default()
+            });
+        let view = |sub: &str| SessionView {
+            login_available: false,
+            user: SessionUser {
+                sub: sub.to_owned(),
+                email: None,
+            },
+            project_id: None,
+            expires_at: 1,
+            csrf_token: String::new(),
+        };
 
         let ready = resolve_session_authority(&state, owner, false)
             .await
             .unwrap();
         assert!(matches!(ready, SessionAuthority::Ready(_)));
-        let body = authenticated_session_body(
-            &state,
-            serde_json::json!({"sub": "owner"}),
-            None,
-            serde_json::json!(1),
-            "",
-            &ready,
-            true,
-        );
+        let body = authenticated_session_body(&view("owner"), &ready, false, false).unwrap();
         assert_eq!(body["authority_state"], "ready");
         assert_eq!(body["is_admin"], true);
         assert_eq!(body["owner_bootstrap_available"], false);
+        assert!(body.get("remediation").is_none());
 
-        let stranger = labby_auth::VerifiedIdentity::external(
-            labby_auth::Authenticator::BrowserSession,
-            "https://accounts.google.com",
-            "stranger",
-        )
-        .unwrap();
-        let unprovisioned = resolve_session_authority(&state, stranger, true)
+        let stranger = || {
+            labby_auth::VerifiedIdentity::external(
+                labby_auth::Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                "stranger",
+            )
+            .unwrap()
+        };
+        let unprovisioned = resolve_session_authority(&state, stranger(), true)
             .await
             .unwrap();
         assert!(matches!(unprovisioned, SessionAuthority::Unprovisioned));
-        let body = authenticated_session_body(
-            &state,
-            serde_json::json!({"sub": "stranger"}),
-            None,
-            serde_json::json!(1),
-            "",
-            &unprovisioned,
-            // Even a caller that would pass the bootstrap gate is never
-            // offered bootstrap once an owner exists.
-            true,
+
+        // A caller that passes the shared admission rule is still never
+        // offered bootstrap once an owner exists: the runtime reports
+        // `AlreadyOwned`.
+        let admitted = SessionCaller {
+            identity: stranger(),
+            via_session: true,
+            subject: "stranger".into(),
+            email: Some("owner@example.com".into()),
+            scopes: vec!["lab:admin".into()],
+            transport_admin: true,
+        };
+        assert!(
+            crate::access::owner_bootstrap_admission(
+                &admitted.bootstrap_caller(),
+                Some("owner@example.com")
+            )
+            .is_ok()
         );
+        let body = project_session(&state, admitted, view("stranger"))
+            .await
+            .unwrap();
         assert_eq!(body["authority_state"], "unprovisioned");
         assert_eq!(
             body["is_admin"], false,
@@ -1732,22 +1856,6 @@ mod tests {
         );
         assert_eq!(body["owner_bootstrap_available"], false);
         assert!(!body["remediation"].as_str().unwrap().contains("bootstrap"));
-
-        // Before any owner exists, only an eligible caller is offered bootstrap.
-        let transport = SessionAuthority::Transport { is_admin: false };
-        for (eligible, expected) in [(true, true), (false, false)] {
-            let body = authenticated_session_body(
-                &state,
-                serde_json::json!({"sub": "admin"}),
-                None,
-                serde_json::json!(1),
-                "",
-                &transport,
-                eligible,
-            );
-            assert_eq!(body["authority_state"], "transport");
-            assert_eq!(body["owner_bootstrap_available"], expected);
-        }
 
         // A blocked store that is not the non-owner sentinel is a typed outage.
         assert_eq!(
