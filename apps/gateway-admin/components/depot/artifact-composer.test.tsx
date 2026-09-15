@@ -4,6 +4,7 @@ import React, { act } from 'react'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 import { installTestDom as installModuleDom } from '@/lib/testing/dom-install'
 import { renderToStaticMarkup } from 'react-dom/server'
+import type { WebMcpTool } from './create-page-webmcp'
 
 // Radix resolves its layout-effect shim when its modules are first evaluated, so a
 // document must exist before the composer (and its portal-based menus) is imported;
@@ -63,8 +64,27 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
   Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: window.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} } })
   const priorFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({ available: false, reason: 'fixture_read_only' }))
+  const registeredTools = new Map<string, { tool: WebMcpTool; signal?: AbortSignal }>()
+  Object.defineProperty(window.document, 'modelContext', {
+    configurable: true,
+    value: {
+      registerTool(tool: WebMcpTool, options?: { signal?: AbortSignal }) {
+        registeredTools.set(tool.name, { tool, signal: options?.signal })
+      },
+    },
+  })
+  let webMcpSignal: AbortSignal | undefined
   const view = await renderClient(<ArtifactComposer />)
   try {
+    assert.deepEqual([...registeredTools.keys()], ['read_create_draft', 'configure_create_draft', 'complete_skill_publish'])
+    webMcpSignal = registeredTools.get('read_create_draft')!.signal
+    assert.ok(webMcpSignal)
+    assert.equal(webMcpSignal.aborted, false)
+    const initialDraft = await registeredTools.get('read_create_draft')!.tool.execute({ includeContent: true }) as Record<string, unknown>
+    assert.equal(initialDraft.kind, 'Skill')
+    assert.equal(initialDraft.path, 'skills/repo-triage/SKILL.md')
+    assert.match(String(initialDraft.content), /When to use/)
+
     // The writing-tips toggle lives in the "More artifact actions" menu. Radix opens
     // the menu on pointerdown, so a plain click on the trigger is not enough.
     const toggleTips = async () => {
@@ -122,5 +142,23 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     await act(async () => workspaceButtons[0].dispatchEvent((new window.MouseEvent('click', { bubbles: true }) as unknown as Event)))
     assert.equal(workspaceButtons[0].getAttribute('aria-pressed'), 'true')
     assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!.value, draft)
-  } finally { await view.unmount(); globalThis.fetch = priorFetch }
+
+    const configureDraft = registeredTools.get('configure_create_draft')!.tool
+    await act(async () => {
+      await configureDraft.execute({
+        name: 'webmcp-updated',
+        description: 'Updated through WebMCP.',
+        tags: ['webmcp', 'test'],
+        content: '## Updated\n\nVisible WebMCP edit.',
+      })
+    })
+    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="Artifact name"]')!.value, 'webmcp-updated')
+    assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact description"]')!.value, 'Updated through WebMCP.')
+    assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!.value, '## Updated\n\nVisible WebMCP edit.')
+    assert.match(view.container.querySelector('[aria-label="Artifact document status"]')!.textContent!, /skills\/webmcp-updated\/SKILL\.md/)
+  } finally {
+    await view.unmount()
+    assert.equal(webMcpSignal?.aborted, true)
+    globalThis.fetch = priorFetch
+  }
 })

@@ -152,7 +152,9 @@ command changes.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Human-readable name. Must be non-empty, unique, and URI-safe (no `/`, `?`, `#`). |
+| `name` | string | yes | Stable identifier, used as the tool-name prefix, skill origin label, OAuth state key, and route reference. Must be non-empty, unique, and URI-safe (ASCII letters, digits, `-`, `_`, `.`). With `proxy_skills` enabled it must also be lowercase letters, digits, and interior hyphens. |
+| `display_name` | string | no | Operator-facing label shown in the web UI instead of `name`. Presentation only: it never affects routing, tool names, auth, or exposure. 1-80 characters, single line. |
+| `lifecycle` | string | no | Handshake override. `auto` (default) tries `server/discover` and falls back to `initialize` when the peer proves it is legacy. `initialize` always opens with `initialize`, for legacy servers that exit on an unknown first request and so leave nothing to classify. |
 | `transport` | string | Unix socket only | Explicit `http`, `websocket`, `stdio`, or `unix_socket`. Legacy URL/command inference remains supported when omitted. |
 | `url` | string | HTTP/WebSocket/Unix | Network URL, or for `unix_socket`, the HTTP(S) request URI and `Host` authority. |
 | `socket_path` | string | Unix socket | Filesystem socket path, or Linux abstract `@name` notation. |

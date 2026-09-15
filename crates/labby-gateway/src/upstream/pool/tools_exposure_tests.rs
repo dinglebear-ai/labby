@@ -31,6 +31,8 @@ async fn matching_subject_catalog_reports_authoritative_inspection_exhaustion() 
     tools.extend((0..10_000).map(|index| test_tool(&format!("ordinary_{index:05}"))));
     move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", tools).await;
     let config = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         expose_tools: None,
         ..oauth_upstream_config("alpha", &["*"])
     };
@@ -75,6 +77,8 @@ async fn matching_many_cached_subject_catalogs_share_one_inspection_budget() {
         )
         .await;
         configs.push(UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             expose_tools: None,
             ..oauth_upstream_config(&name, &["*"])
         });
@@ -108,10 +112,14 @@ async fn exact_cached_budget_marks_unvisited_oauth_cache_miss_incomplete() {
     .await;
     let configs = [
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             expose_tools: None,
             ..oauth_upstream_config("cached", &["*"])
         },
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             expose_tools: None,
             ..oauth_upstream_config("cache_miss", &["*"])
         },
@@ -133,6 +141,8 @@ async fn exact_cached_budget_marks_unvisited_oauth_cache_miss_incomplete() {
 
 fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         expose_tools: Some(expose_tools.iter().map(|s| (*s).to_string()).collect()),
         oauth: Some(UpstreamOauthConfig {
             mode: UpstreamOauthMode::AuthorizationCodePkce,
@@ -361,6 +371,8 @@ async fn invalid_expose_tools_hides_every_subject_scoped_tool() {
 async fn absent_expose_tools_leaves_subject_scoped_tools_untouched() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         expose_tools: None,
         ..oauth_upstream_config("github", &EXPOSE_TOOLS)
     };
@@ -431,6 +443,8 @@ async fn each_upstream_is_filtered_by_its_own_expose_tools() {
     let configs = vec![
         oauth_upstream_config("strict", &EXPOSE_TOOLS),
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             expose_tools: None,
             ..oauth_upstream_config("open", &EXPOSE_TOOLS)
         },
@@ -531,10 +545,14 @@ async fn bounded_subject_scoped_tools_select_stably_across_over_cap_upstreams() 
     move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", alpha_tools).await;
 
     let alpha = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         expose_tools: None,
         ..oauth_upstream_config("alpha", &["*"])
     };
     let zeta = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         expose_tools: None,
         ..oauth_upstream_config("zeta", &["*"])
     };
