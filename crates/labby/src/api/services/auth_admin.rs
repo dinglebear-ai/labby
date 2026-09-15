@@ -399,7 +399,7 @@ async fn add_allowed_email(
         email: email.clone(),
         added_by,
         created_at,
-        role: role.clone(),
+        role,
     };
 
     tracing::info!(

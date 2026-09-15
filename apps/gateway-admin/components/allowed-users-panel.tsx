@@ -14,8 +14,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { cn, getErrorMessage } from '@/lib/utils'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   authAdminApi,
   AuthAdminApiError,
@@ -138,7 +144,7 @@ export function AllowedUsersPanel() {
           </label>
           <Select value={addRole} onValueChange={(value) => setAddRole(value as AllowedEmailRole)} disabled={isAdding}>
             <SelectTrigger id="allowed-email-role" className="w-[130px]">
-              <SelectValue placeholder="Member">
+              <SelectValue>
                 {addRole === 'admin' ? 'Admin' : 'Member'}
               </SelectValue>
             </SelectTrigger>
@@ -210,7 +216,7 @@ export function AllowedUsersPanel() {
                       {entry.email}
                     </td>
                     <td className="py-2.5 pr-4 text-aurora-text-muted">
-                      {entry.role}
+                      {entry.role === 'admin' ? 'Admin' : 'Member'}
                     </td>
                     <td className="py-2.5 pr-4 text-aurora-text-muted">
                       {entry.added_by}
@@ -259,7 +265,7 @@ export function AllowedUsersPanel() {
             <AlertDialogDescription>
               {pendingRemove
                 ? `${pendingRemove.email} will be signed out and can no longer sign in.`
-                : 'This user will no longer be able to sign in via OAuth.'}
+                : 'This user will be signed out and can no longer sign in.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

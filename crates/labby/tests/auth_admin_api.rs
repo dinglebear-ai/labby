@@ -1030,6 +1030,23 @@ async fn post_owner_role_returns_422() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// Role parsing is exact: the UI's display casing is not an accepted value.
+#[tokio::test]
+async fn post_capitalised_role_returns_422() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com","role":"Admin"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 #[tokio::test]
 async fn post_normalizes_email_to_lowercase() {
     let h = Harness::new().await;
