@@ -1766,7 +1766,7 @@ pub struct GatewayPreferences {
     #[serde(default)]
     pub auto_reconnect: bool,
     /// Extra commands allowed as stdio upstream programs beyond the built-in list
-    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx).
+    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx, ssh, claude).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_stdio_commands: Vec<String>,
     /// Disable all stdio spawn-guard command validation.

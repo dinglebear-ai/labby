@@ -158,6 +158,21 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
     [ "$("$home/bin/labby")" = release-v1 ] || fail "piped root installer was not self-contained"
 }
 
+test_release_install_fails_before_network_without_gh() {
+    local case_root="$test_root/missing-gh"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    rm "$fake_bin/gh"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
+        fail "release installer succeeded without GitHub CLI"
+    fi
+    assert_contains "$case_root/err" "GitHub CLI (gh) is required to verify Labby release provenance"
+    [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting the missing trust dependency"
+}
+
 test_latest_api_failure_never_uses_mutable_latest_download() {
     local case_root="$test_root/latest-api"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
@@ -918,6 +933,7 @@ test_artifact_retention_keeps_only_current_and_rollback
 test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
+test_release_install_fails_before_network_without_gh
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary
 test_checksum_ignores_sidecar_subject_and_hashes_requested_archive

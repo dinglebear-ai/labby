@@ -226,9 +226,9 @@ fn collect_server_plan(
         None if interactive => match Select::with_theme(theme)
             .with_prompt("Authentication")
             .items([
-                "Bearer token — generated automatically",
-                "Google OAuth + bearer break-glass",
-                "Authelia OAuth + bearer break-glass",
+                "Bearer token — local/CLI clients; not for ChatGPT web",
+                "Google OAuth — required for Labby + ChatGPT web (+ bearer break-glass)",
+                "Authelia OAuth — self-hosted IdP (+ bearer break-glass)",
             ])
             .default(0)
             .interact()?
@@ -250,6 +250,9 @@ fn collect_server_plan(
                 host.as_str(),
                 port,
             )?;
+            if interactive {
+                print_google_oauth_setup_guidance(&public_url);
+            }
             let client_id = prompt_required(
                 "Google client ID",
                 "LABBY_GOOGLE_CLIENT_ID",
@@ -473,6 +476,17 @@ fn required_public_url(
     };
     validate_public_url(&value)?;
     Ok(value.trim_end_matches('/').to_string())
+}
+
+fn google_callback_url(public_url: &str) -> String {
+    format!("{}/auth/google/callback", public_url.trim_end_matches('/'))
+}
+
+fn print_google_oauth_setup_guidance(public_url: &str) {
+    let callback_url = google_callback_url(public_url);
+    eprintln!(
+        "\nGoogle OAuth setup\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
+    );
 }
 
 fn validate_public_url(raw: &str) -> Result<()> {
@@ -1595,6 +1609,14 @@ esac
             invoking_user: Some("user".into()),
         };
         assert_eq!(advertised_url(&plan), "http://127.0.0.1:9123");
+    }
+
+    #[test]
+    fn google_callback_uses_public_origin_without_duplicate_slash() {
+        assert_eq!(
+            google_callback_url("https://labby.example.com/"),
+            "https://labby.example.com/auth/google/callback"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-11"
+updated: "2026-09-15"
 ---
 
 # Setup Service
@@ -20,6 +20,64 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
+
+## Google OAuth and ChatGPT web
+
+Labby's supported ChatGPT web connection requires the server to run in OAuth mode and to have a publicly reachable HTTPS origin. A bearer-only Labby server is appropriate for local or explicitly token-configured CLI clients, but it is not the supported ChatGPT web connection path.
+
+For Google OAuth, choose the final public Labby origin before creating provider credentials. If the public origin is `https://labby.example.com`, Labby's Google callback is exactly:
+
+```text
+https://labby.example.com/auth/google/callback
+```
+
+Configure Google in this order:
+
+1. Open the project in Google Auth Platform and complete the Branding page with the application name and support/contact information.
+2. Choose the Audience appropriate for the deployment. For an External application that is still in testing, add the Google accounts that must be able to sign in as test users.
+3. Under Clients, create an OAuth 2.0 client of type **Web application**.
+4. Add the exact Labby callback URL above to **Authorized redirect URIs**. Do not add a wildcard, path variant, query string, or trailing slash after `callback`.
+5. Copy the generated Client ID and Client secret. Treat the secret as a credential and do not put it in `config.toml`, shell history, or documentation.
+6. Use the Google scopes Labby expects: `openid`, `email`, and `profile` (the defaults).
+7. Start Labby setup and select Google OAuth. Interactive setup now prints the exact redirect URI before asking for the provider credentials.
+
+Interactive setup:
+
+```bash
+labby setup
+# role: Server
+# authentication: Google OAuth
+# public URL: https://labby.example.com
+```
+
+Unattended setup keeps provider secrets in environment variables rather than command-line arguments:
+
+```bash
+export LABBY_GOOGLE_CLIENT_ID='...apps.googleusercontent.com'
+export LABBY_GOOGLE_CLIENT_SECRET='...'
+export LABBY_AUTH_ADMIN_EMAIL='operator@example.com'
+
+labby setup \
+  --role server \
+  --oauth google \
+  --public-url https://labby.example.com \
+  --no-desktop \
+  --yes
+```
+
+The configured admin email must be the verified Google identity that should receive the initial administrative scope. Labby generates the remaining local OAuth encryption material during setup. Google access and refresh tokens remain server-side.
+
+After the service is reachable through HTTPS, verify discovery before adding ChatGPT:
+
+```bash
+curl -fsS https://labby.example.com/.well-known/oauth-authorization-server
+curl -fsS https://labby.example.com/.well-known/oauth-protected-resource
+curl -i https://labby.example.com/mcp
+```
+
+An unauthenticated `/mcp` request should challenge the caller and point it at Labby's OAuth resource metadata. The reverse proxy must pass the OAuth discovery endpoints and `POST /register`, `/authorize`, `/token`, and `/mcp` to Labby. A WAF or proxy that blocks dynamic client registration can make ChatGPT discovery appear to work while authorization fails; use the DCR diagnostics in [OAuth](../runtime/OAUTH.md) when that happens.
+
+In ChatGPT web, create a custom MCP app in the workspace's developer/app settings, use `https://labby.example.com/mcp` as the MCP endpoint, select OAuth, scan tools, and complete the Google authorization flow. Availability and exact ChatGPT UI labels are workspace/plan dependent and may change; Labby's durable requirement is OAuth plus the public HTTPS `/mcp` endpoint.
 
 ## macOS server and automatic updates
 

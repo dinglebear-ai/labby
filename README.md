@@ -87,6 +87,8 @@ the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ### Install A Release
 
+Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and GitHub CLI (`gh`). The installer now checks these before any release download so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify.
+
 Linux/macOS:
 
 ```bash
@@ -137,6 +139,9 @@ asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus
 container on supported Linux hosts. Client setup saves the explicit gateway URL
 and configures browser sign-in or a bearer token. Desktop installation is optional.
+For Labby's supported ChatGPT web connection, configure the server in OAuth mode
+and expose it through a publicly reachable HTTPS `LABBY_PUBLIC_URL`; bearer-only
+mode is for local/CLI clients and is not the supported ChatGPT web path.
 The PowerShell installer installs the binary; run setup separately as shown above.
 
 For unattended shell installs, set `LABBY_SETUP_ROLE=server` or `client` and the
