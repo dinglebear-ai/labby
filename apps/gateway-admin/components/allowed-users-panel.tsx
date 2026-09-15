@@ -15,10 +15,12 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn, getErrorMessage } from '@/lib/utils'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   authAdminApi,
   AuthAdminApiError,
   type AllowedEmailEntry,
+  type AllowedEmailRole,
 } from '@/lib/api/auth-admin-client'
 
 export function AllowedUsersPanel() {
@@ -27,6 +29,7 @@ export function AllowedUsersPanel() {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [addEmail, setAddEmail] = useState('')
+  const [addRole, setAddRole] = useState<AllowedEmailRole>('member')
   const [isAdding, setIsAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
@@ -58,9 +61,10 @@ export function AllowedUsersPanel() {
     setIsAdding(true)
     setAddError(null)
     try {
-      await authAdminApi.addAllowedEmail(email)
+      await authAdminApi.addAllowedEmail(email, addRole)
       setAddEmail('')
-      toast.success(`${email} added to the allowlist.`)
+      setAddRole('member')
+      toast.success(`${email} can now sign in as ${addRole}.`)
       await loadEntries()
     } catch (err) {
       if (err instanceof AuthAdminApiError && err.status === 422) {
@@ -93,7 +97,7 @@ export function AllowedUsersPanel() {
         <div>
           <p className="text-base font-semibold text-aurora-text-primary">Allowed users</p>
           <p className="mt-0.5 text-sm text-aurora-text-muted">
-            Only these email addresses can sign in via OAuth.
+            Anyone listed here can sign in with Google and gets the chosen access right away.
           </p>
         </div>
       </div>
@@ -127,6 +131,22 @@ export function AllowedUsersPanel() {
               {addError}
             </p>
           ) : null}
+        </div>
+        <div>
+          <label htmlFor="allowed-email-role" className="sr-only">
+            Role for new user
+          </label>
+          <Select value={addRole} onValueChange={(value) => setAddRole(value as AllowedEmailRole)} disabled={isAdding}>
+            <SelectTrigger id="allowed-email-role" className="w-[130px]">
+              <SelectValue placeholder="Member">
+                {addRole === 'admin' ? 'Admin' : 'Member'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="member">Member</SelectItem>
+              <SelectItem value="admin">Admin</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <button
           type="submit"
@@ -172,6 +192,7 @@ export function AllowedUsersPanel() {
               <thead>
                 <tr className="border-b border-aurora-border-strong text-left text-xs text-aurora-text-muted">
                   <th scope="col" className="pb-2 pr-4 font-medium">Email</th>
+                  <th scope="col" className="pb-2 pr-4 font-medium">Role</th>
                   <th scope="col" className="pb-2 pr-4 font-medium">Added by</th>
                   <th scope="col" className="pb-2 pr-4 font-medium">Added</th>
                   <th scope="col" className="pb-2 font-medium">
@@ -187,6 +208,9 @@ export function AllowedUsersPanel() {
                   >
                     <td className="py-2.5 pr-4 font-medium text-aurora-text-primary">
                       {entry.email}
+                    </td>
+                    <td className="py-2.5 pr-4 text-aurora-text-muted">
+                      {entry.role}
                     </td>
                     <td className="py-2.5 pr-4 text-aurora-text-muted">
                       {entry.added_by}
@@ -234,7 +258,7 @@ export function AllowedUsersPanel() {
             <AlertDialogTitle>Remove user?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingRemove
-                ? `${pendingRemove.email} will no longer be able to sign in via OAuth.`
+                ? `${pendingRemove.email} will be signed out and can no longer sign in.`
                 : 'This user will no longer be able to sign in via OAuth.'}
             </AlertDialogDescription>
           </AlertDialogHeader>

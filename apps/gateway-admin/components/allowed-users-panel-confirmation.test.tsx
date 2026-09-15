@@ -15,6 +15,7 @@ function installDom() {
   Object.defineProperty(globalThis, 'HTMLElement', { configurable: true, value: window.HTMLElement })
   Object.defineProperty(globalThis, 'HTMLButtonElement', { configurable: true, value: window.HTMLButtonElement })
   Object.defineProperty(globalThis, 'Node', { configurable: true, value: window.Node })
+  Object.defineProperty(globalThis, 'DocumentFragment', { configurable: true, value: window.DocumentFragment })
   Object.defineProperty(globalThis, 'Event', { configurable: true, value: window.Event })
   Object.defineProperty(globalThis, 'MouseEvent', { configurable: true, value: window.MouseEvent })
   Object.defineProperty(globalThis, 'PointerEvent', { configurable: true, value: window.PointerEvent })
@@ -83,6 +84,7 @@ test('AllowedUsersPanel asks for confirmation before removing a user', async () 
     email: 'operator@example.com',
     added_by: 'admin@example.com',
     created_at: '2026-06-01T12:00:00Z',
+    role: 'member',
   }
   const originalList = authAdminApi.listAllowedEmails
   const originalAdd = authAdminApi.addAllowedEmail
