@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
+import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSession, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -141,6 +141,26 @@ test('normalizes absent optional catalog metadata without accepting invalid iden
   for (const invalid of [{ id: null }, { ...artifact, title: 42 }]) {
     await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [invalid] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /incompatible artifact list response/))
   }
+})
+
+test('accepts the signed Depot control target identity without treating bootstrap policy as browser authority', async () => {
+  const session = {
+    contractVersion: 1,
+    authenticated: true,
+    backend: { deploymentId: 'team-depot', backendId: 'tootie-incus', kind: 'hosted', mode: 'remote', accountId: 'lime-technology', tenantId: 'lime-technology-team', teamId: 'skills-team' },
+    principal: { id: 'service-reader' },
+    authority: { generation: 'a'.repeat(64), audience: 'https://depot.dinglebear.ai', actor: null, delegated: false },
+    mutationPolicy: 'read_only',
+  }
+  await withFetch(json(session), async () => {
+    const result = await depotSession()
+    assert.equal(result.backend.deploymentId, 'team-depot')
+    assert.equal(result.backend.backendId, 'tootie-incus')
+    assert.equal(result.backend.tenantId, 'lime-technology-team')
+    assert.equal(result.backend.teamId, 'skills-team')
+    assert.equal(result.mutationPolicy, 'read_only')
+  })
+  await withFetch(json({ ...session, backend: { ...session.backend, deploymentId: '' } }), async () => assert.rejects(depotSession(), /incompatible control session response/i))
 })
 
 test('accepts the canonical operation catalog and generic operation results', async () => {

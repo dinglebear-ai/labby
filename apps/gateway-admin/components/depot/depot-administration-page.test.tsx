@@ -17,8 +17,10 @@ test('administration uses compact attached workspace navigation and visible head
   assert.match(nav, /aria-current="page"/)
   assert.match(html, /href="\/settings\/depot\/"/)
   assert.match(html, />Discovery providers</)
-  assert.match(html, /Authority unavailable/)
-  assert.doesNotMatch(html, /Authority connected/)
+  assert.match(html, /Control target unavailable/)
+  assert.doesNotMatch(html, /Control target connected/)
+  assert.match(html, /Control target/)
+  assert.match(html, /Tenant \/ team/)
 })
 
 test('operation catalog groups search and dense cards while retaining safety labels', () => {

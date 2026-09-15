@@ -94,6 +94,30 @@ const depotStatusSchema = z.object({
   maxResponseBytes: z.number().int().nonnegative(),
 })
 
+const depotSessionSchema = z.object({
+  contractVersion: z.literal(1),
+  authenticated: z.boolean(),
+  backend: z.object({
+    deploymentId: bounded(128).min(1),
+    backendId: bounded(128).min(1),
+    kind: bounded(64).min(1),
+    mode: bounded(64).min(1),
+    accountId: bounded(128).nullable(),
+    tenantId: bounded(128).nullable(),
+    teamId: bounded(128).nullable(),
+  }).strict(),
+  principal: z.unknown().nullable(),
+  authority: z.object({
+    generation: z.string().regex(/^[0-9a-f]{64}$/),
+    audience: bounded(2048).nullable(),
+    actor: z.unknown().nullable(),
+    delegated: z.boolean(),
+  }).strict(),
+  mutationPolicy: z.enum(['read_only', 'delegated', 'service']),
+}).passthrough()
+
+export type DepotSession = z.infer<typeof depotSessionSchema>
+
 export type DepotArtifact = {
   id?: string
   kind?: string
@@ -167,6 +191,11 @@ function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown
 export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
   const response = await fetch('/v1/depot/status', { credentials: 'same-origin', signal })
   return validate(z.object({ depot: depotStatusSchema }).passthrough(), await parse(response), 'status response').depot
+}
+
+export async function depotSession(signal?: AbortSignal): Promise<DepotSession> {
+  const response = await fetch('/v1/depot/session', { credentials: 'same-origin', cache: 'no-store', signal })
+  return validate(depotSessionSchema, await parse(response), 'control session response')
 }
 
 const publishCapabilitySchema = z.object({

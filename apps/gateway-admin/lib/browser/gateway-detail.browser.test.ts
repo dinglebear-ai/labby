@@ -277,7 +277,18 @@ test('Depot Administration renders live schemas and guards destructive operation
 
   await page.route('**/v1/depot/status', route => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify({ depot: { configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 } }),
+    body: JSON.stringify({ depot: { configured: true, enabled: true, mutationAuthority: true, authority: 'read', maxResponseBytes: 1_048_576 } }),
+  }))
+  await page.route('**/v1/depot/session', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      contractVersion: 1,
+      authenticated: true,
+      backend: { deploymentId: 'team-depot', backendId: 'tootie-incus', kind: 'hosted', mode: 'remote', accountId: 'lime-technology', tenantId: 'lime-technology-team', teamId: 'skills-team' },
+      principal: { id: 'service-reader' },
+      authority: { generation: 'a'.repeat(64), audience: 'https://depot.dinglebear.ai', actor: null, delegated: false },
+      mutationPolicy: 'read_only',
+    }),
   }))
   await page.route('**/v1/depot/operations', async route => {
     if (route.request().method() === 'GET') {
@@ -294,6 +305,9 @@ test('Depot Administration renders live schemas and guards destructive operation
 
   await page.goto(`${baseUrl}/administration/`, { waitUntil: 'networkidle' })
   await assert.doesNotReject(() => page.getByText('Canonical operations').waitFor())
+  await assert.doesNotReject(() => page.getByText('team-depot', { exact: true }).waitFor())
+  await assert.doesNotReject(() => page.getByText('lime-technology-team/skills-team').waitFor())
+  assert.match(await page.locator('body').innerText(), /delegated/i)
   await page.getByRole('button', { name: /^Access/ }).click()
   await page.getByRole('button', { name: /Create access token/ }).click()
   await page.getByLabel('name').fill('labby-admin')

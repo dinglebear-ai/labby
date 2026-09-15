@@ -19,7 +19,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { depotCall, depotOperations, depotStatus, type DepotOperation, type DepotStatus } from '@/lib/api/depot-client'
+import { depotCall, depotOperations, depotSession, depotStatus, type DepotOperation, type DepotSession, type DepotStatus } from '@/lib/api/depot-client'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 type Workspace = 'overview' | 'sources' | 'artifacts' | 'catalog' | 'access' | 'operations'
@@ -160,6 +160,7 @@ export function OperationGrid({ operations, workspace }: { operations: DepotOper
 export function DepotAdministrationPage() {
   const [workspace, setWorkspace] = useState<Workspace>('overview')
   const [status, setStatus] = useState<DepotStatus | null>(null)
+  const [session, setSession] = useState<DepotSession | null>(null)
   const [operations, setOperations] = useState<DepotOperation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -173,12 +174,13 @@ export function DepotAdministrationPage() {
     loadController.current = controller
     setLoading(true); setError(null)
     try {
-      const [nextStatus, nextOperations] = await Promise.all([depotStatus(controller.signal), depotOperations(controller.signal)])
+      const [nextStatus, nextSession, nextOperations] = await Promise.all([depotStatus(controller.signal), depotSession(controller.signal), depotOperations(controller.signal)])
       if (generation !== loadGeneration.current) return
-      setStatus(nextStatus); setOperations(nextOperations)
+      setStatus(nextStatus); setSession(nextSession); setOperations(nextOperations)
     } catch (cause) {
       if (controller.signal.aborted || generation !== loadGeneration.current) return
       setStatus(null)
+      setSession(null)
       setOperations([])
       setError(getErrorMessage(cause, 'Unable to load Depot administration.'))
     }
@@ -194,15 +196,19 @@ export function DepotAdministrationPage() {
     operations: operations.filter(operation => operationWorkspace(operation) === 'operations').length,
   }), [operations])
   const authority = !status?.enabled ? 'offline' : status.mutationAuthority ? 'delegated' : status.authority ?? (operations.length === 0 ? 'unknown' : 'read')
+  const controlTarget = session?.backend.deploymentId ?? '—'
+  const controlScope = session?.backend.teamId ? [session.backend.tenantId ?? 'tenant', session.backend.teamId].join('/') : session?.backend.tenantId ?? '—'
 
   return <><AppHeader breadcrumbs={[{ label: 'Depot', href: '/depot/' }, { label: 'Administration' }]} /><div className={cn(AURORA_PAGE_FRAME, 'gap-3.5')}>
-    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate Depot’s canonical control catalog through Labby, with dedicated source workflows and explicit authority and transport boundaries." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? 'Authority connected' : 'Authority unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" asChild><a href="/settings/depot/"><Database className="size-[13px]" />Discovery providers</a></Button><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[13px] animate-spin" /> : <RefreshCw className="size-[13px]" />}Refresh</Button></div>} stats={[
+    <ConsoleHero eyebrow="Depot · Control room" title="Administration" description="Operate Depot’s canonical control catalog through Labby, with dedicated source workflows and explicit authority and transport boundaries." pulse={{ color: status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: status?.enabled ? (session?.backend.deploymentId ? session.backend.deploymentId + ' connected' : 'Control target connected') : 'Control target unavailable' }} actions={<div className="flex gap-[7px]"><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" asChild><a href="/settings/depot/"><Database className="size-[13px]" />Discovery providers</a></Button><Button variant="outline" size="sm" className="h-9 gap-[7px] rounded-[10px] px-3.5 text-[12.5px] font-[650]" data-visible-label="1" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="size-[13px] animate-spin" /> : <RefreshCw className="size-[13px]" />}Refresh</Button></div>} stats={[
       { label: 'Canonical operations', value: loading || error ? '—' : operations.length },
       { label: 'Sources', value: loading || error ? '—' : counts.sources, tone: 'var(--aurora-accent-strong)' },
       { label: 'Artifacts', value: loading || error ? '—' : counts.artifacts, tone: 'var(--aurora-accent-strong)' },
       { label: 'Catalog', value: loading || error ? '—' : counts.catalog, tone: 'var(--aurora-accent-strong)' },
       { label: 'Access', value: loading || error ? '—' : counts.access, tone: 'var(--aurora-warn)' },
       { label: 'Operations', value: loading || error ? '—' : counts.operations, tone: 'var(--aurora-success)' },
+      { label: 'Control target', value: loading || error ? '—' : controlTarget },
+      { label: 'Tenant / team', value: loading || error ? '—' : controlScope },
       { label: 'Authority', value: authority },
     ]} footer={<nav aria-label="Depot administration workspaces" className="aurora-scrollbar flex gap-0.5 overflow-x-auto rounded-b-aurora-3 border-t border-aurora-border-default bg-aurora-control-surface px-5">{WORKSPACES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={workspace === id ? 'page' : undefined} onClick={() => setWorkspace(id)} className="flex h-[38px] shrink-0 items-center gap-2 border-b-2 border-transparent px-3.5 text-[12.5px] font-[650] text-aurora-text-muted transition-colors hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-aurora-accent-primary aria-[current=page]:border-aurora-accent-primary aria-[current=page]:text-aurora-text-primary"><Icon className="size-[13px]" />{label}{id !== 'overview' ? <span className={cn('inline-flex h-[19px] min-w-5 items-center justify-center rounded-[5px] border px-[5px] text-[10.5px] font-bold tabular-nums', workspace === id ? 'border-aurora-accent-primary bg-aurora-selected-bg text-aurora-accent-strong' : 'border-aurora-border-default bg-aurora-page-bg text-aurora-text-muted')}>{counts[id]}</span> : null}</button>)}</nav>} />
     {error ? <DashboardPanel title="Depot unavailable"><p className="text-sm text-destructive">{error}</p><Button className="mt-3" variant="outline" size="sm" onClick={() => void load()}>Retry</Button></DashboardPanel> : null}
