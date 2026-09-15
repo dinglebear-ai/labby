@@ -439,6 +439,11 @@ test_incus_init_converges_service_resource_limits() {
     local enable_line
 
     write_cfg incus
+    cat >> "$tmp/labby.cfg" <<'CFG'
+LABBY_SERVICE_MEMORY_HIGH="12G"
+LABBY_SERVICE_MEMORY_MAX="16G"
+LABBY_SERVICE_WRITABLE_HOME="true"
+CFG
     : > "$tmp/ip-routes"
     printf 'running\n' > "$tmp/incus-state"
     cat > "$tmp/bin/systemctl" <<'EOF'
@@ -460,16 +465,22 @@ EOF
             "$@"
         }
         ensure_service_resource_limits
+        [ "$LABBY_SERVICE_RESTART_REQUIRED" = true ] \
+            || fail "changed service policy must require a restart"
         first_hash="$(sha256sum "$dropin_path" | awk '{ print $1 }')"
+        LABBY_SERVICE_RESTART_REQUIRED=false
         ensure_service_resource_limits
+        [ "$LABBY_SERVICE_RESTART_REQUIRED" = false ] \
+            || fail "unchanged service policy must not require a restart"
         second_hash="$(sha256sum "$dropin_path" | awk '{ print $1 }')"
         [ "$first_hash" = "$second_hash" ]
     )
 
     assert_file_contains "$dropin_path" "[Service]"
     assert_file_contains "$dropin_path" "TasksMax=4096"
-    assert_file_contains "$dropin_path" "MemoryHigh=7G"
-    assert_file_contains "$dropin_path" "MemoryMax=8G"
+    assert_file_contains "$dropin_path" "MemoryHigh=12G"
+    assert_file_contains "$dropin_path" "MemoryMax=16G"
+    assert_file_contains "$dropin_path" "ReadWritePaths=/home/labby"
     [ ! -e "${dropin_path}.tmp" ] || fail "resource-limit convergence left a temporary file"
     [ "$(grep -Fxc 'daemon-reload' "$tmp/systemctl.log")" -eq 2 ] \
         || fail "resource-limit convergence did not reload systemd on both passes"
@@ -853,6 +864,7 @@ test_incus_status_preserves_stopped_and_unsafe_states
 test_incus_init_instance_query_failures_are_fatal
 test_incus_init_rejects_unsafe_existing_state
 test_incus_init_converges_service_resource_limits
+python3 "$repo_root/scripts/tests/labby-worker-test.py"
 test_bridge_collision_checks_whole_cidr
 test_managed_bridge_validates_full_posture
 test_labby_dir_validator_rejects_non_array_paths
