@@ -125,13 +125,32 @@ GitHub token itself in the environment file:
 DEPOT_GIT_CREDENTIALS_FILE=/var/lib/team-labby/team-depot/secrets/git-credentials.json
 ```
 
-Restart Team Depot and prove the service is healthy before starting any ingest:
+The current systemd unit deliberately shipped with a bearer-mode bootstrap
+default. The Team Depot production contract is OAuth with fresh Labby delegation,
+so install a drop-in rather than editing the packaged unit in place:
+
+```sh
+install -d -m 0755 /etc/systemd/system/team-depot.service.d
+printf '%s\n' '[Service]' 'Environment=DEPOT_AUTH_MODE=oauth' \
+  > /etc/systemd/system/team-depot.service.d/30-auth-mode.conf
+systemctl daemon-reload
+```
+
+Do not replace the unit's live-specific `DEPOT_DEPLOYMENT_ID=team-depot` or
+`DEPOT_BACKEND_ID` value. The OAuth issuer, audience, JWKS URI, delegation
+actor, organization/project binding, and policy epochs stay in
+`/etc/team-labby/team-depot.env`; confirm they are populated before restart.
+
+Restart Team Depot and prove both health and the effective auth mode before
+starting any ingest:
 
 ```sh
 systemctl restart team-depot
 systemctl is-active --quiet team-depot
 /opt/team-labby/team-depot/bin/depotctl --json status
 ```
+
+The status response must report `"authMode": "oauth"`.
 
 The credential file must contain the same `github-private` map shown in
 `team-depot-git-credentials.json.example`. Validate the reference against all

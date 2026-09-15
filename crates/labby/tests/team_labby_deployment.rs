@@ -52,6 +52,9 @@ fn systemd_team_depot_documents_secure_private_git_credential_installation() {
     assert!(DEPLOYMENT_README.contains("/etc/team-labby/team-depot.env"));
     assert!(DEPLOYMENT_README.contains("install -m 0640 -o root -g team-depot"));
     assert!(DEPLOYMENT_README.contains("systemctl restart team-depot"));
+    assert!(DEPLOYMENT_README.contains("team-depot.service.d/30-auth-mode.conf"));
+    assert!(DEPLOYMENT_README.contains("Environment=DEPOT_AUTH_MODE=oauth"));
+    assert!(DEPLOYMENT_README.contains("\"authMode\": \"oauth\""));
     assert!(DEPLOYMENT_README.contains("Depot.Ingest.GitCredential.validate(\"github-private\""));
 }
 
