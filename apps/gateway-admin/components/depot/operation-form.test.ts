@@ -41,6 +41,21 @@ test('optional booleans preserve omission semantics until explicitly changed', (
   assert.throws(() => operationParams({ confirmed: { type: 'boolean' } }, ['confirmed'], {}), /confirmed is required/)
 })
 
+test('operation forms preserve nullable clear intent and unconstrained evidence arrays', () => {
+  const properties = {
+    declared: { type: ['string', 'null'] as ['string', 'null'], minLength: 1 },
+    detected: { type: 'array' as const, items: {} },
+  }
+  const initial = initialOperationForm(properties)
+  assert.equal(initial.declared, '')
+  assert.deepEqual(operationParams(properties, [], { ...initial, declared: null, detected: '[{"kind":"license"},7,true]' }), {
+    declared: null,
+    detected: [{ kind: 'license' }, 7, true],
+  })
+  assert.deepEqual(operationParams(properties, [], { ...initial, declared: '', detected: '' }), {})
+  assert.throws(() => operationParams({ name: { type: 'string' } }, [], { name: null }), /does not accept null/)
+})
+
 test('operation forms reject malformed collection values', () => {
   assert.throws(() => operationParams({ values: { type: 'array' } }, [], { values: '{"not":"array"}' }), /JSON array or comma-separated list/)
   assert.throws(() => operationParams({ values: { type: 'array' } }, [], { values: '[1,' }), /JSON array or comma-separated list/)

@@ -341,6 +341,47 @@ impl AccessRuntime {
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
 
+    /// Record a security event whose loss must be observable but must not
+    /// change the caller's decision. Returns whether the event was durable.
+    ///
+    /// The warning is deliberately redacted: it names only the static event
+    /// vocabulary and the runtime error class, never credential ids, target
+    /// fingerprints, secrets, or digests.
+    pub(crate) async fn record_security_event_or_warn(
+        &self,
+        event_kind: &'static str,
+        decision: &'static str,
+        reason: &'static str,
+        target: [u8; 32],
+        peer: Option<[u8; 32]>,
+        now: i64,
+    ) -> bool {
+        match self
+            .record_security_event(
+                event_kind.into(),
+                decision.into(),
+                reason.into(),
+                target,
+                peer,
+                now,
+            )
+            .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    subsystem = "access.security",
+                    event_kind,
+                    decision,
+                    reason,
+                    error = %error,
+                    "security event not recorded"
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) async fn record_bootstrap_semantic_failure(
         &self,
         proof_id: String,

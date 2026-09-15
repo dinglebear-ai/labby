@@ -108,9 +108,11 @@ Access actions use the canonical agent error envelope
 "No access yet" appears for an identity that signed in but is on neither the
 allowlist nor the admin list, for example one admitted by
 `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` alone; add the email with a role to admit
-it. It also appears whenever admission could not complete — before owner
-bootstrap, or while the access store is unavailable — in which case the next
-session read retries.
+it. For such a domain-only identity the web UI's no-access screen makes one
+read-only `GET /v1/catalog` so the [automatic Viewer policy](#automatic-viewer-membership)
+can run, then reloads the session. It also appears whenever admission could
+not complete — before owner bootstrap, or while the access store is
+unavailable — in which case the next session read retries.
 
 ### Using a second account (for example work and personal)
 
@@ -279,7 +281,7 @@ viewer_project_id = "existing-project-id"
 
 The policy is disabled by default and currently supports Google browser sign-in only. Enabling it with another provider is a configuration error. `LABBY_AUTH_VIEWER_EMAIL_DOMAINS` overrides the domain list; the project remains selected by the host configuration, never by a browser request. This policy is separate from the legacy login/admin allowlist.
 
-After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
+After a qualifying verified sign-in, the first authenticated `/v1` request provisions membership using the provider-bound issuer and subject. An unprovisioned session otherwise calls only `/auth/session`, so the web UI's no-access screen issues one read-only `GET /v1/catalog` and then reloads the session; the server alone decides admission. Email verification must come from the trusted identity provider. Domains match exactly and case-insensitively; subdomains and suffix lookalikes do not qualify. Session email text alone is not evidence of verified domain ownership.
 
 New memberships receive Viewer, not Member or Admin. Existing active roles remain unchanged. Repeat or concurrent admission is idempotent. Disabled or suspended memberships, principals, projects, organizations, and revoked identity links are never reactivated by this policy.
 

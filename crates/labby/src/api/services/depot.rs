@@ -384,6 +384,72 @@ async fn require_admin_mutation(
     })
 }
 
+async fn admin_depot_authorization(
+    state: &AppState,
+    authority: &BrowserAuthority,
+    auth: &AuthContext,
+    identity: Option<&VerifiedIdentity>,
+) -> Result<labby_auth::depot_delegation::BrowserDepotAuthorization, (StatusCode, Json<Value>)> {
+    let identity = identity.ok_or_else(forbidden)?;
+    if !auth.via_session
+        || identity.authenticator() != Authenticator::BrowserSession
+        || !matches!(identity.principal_link(), PrincipalLink::External { subject, .. } if subject == &auth.sub)
+    {
+        return Err(forbidden());
+    }
+    let target = state
+        .config
+        .depot
+        .publish
+        .as_ref()
+        .ok_or_else(|| map_error(DepotError::DelegationUnavailable))?;
+    if target.project_id.trim().is_empty() {
+        return Err(map_error(DepotError::DelegationUnavailable));
+    }
+    let installation = state
+        .installation_id
+        .as_ref()
+        .ok_or_else(|| map_error(DepotError::DelegationUnavailable))?;
+    let store = state
+        .access_runtime
+        .store()
+        .await
+        .map_err(|_| forbidden())?;
+    let access = store
+        .authorize_project(crate::access::AuthorizeProjectInput::new(
+            identity.clone(),
+            target.project_id.clone(),
+            crate::access::Permission::ProjectManage,
+        ))
+        .await
+        .map_err(|_| forbidden())?;
+    let current = store
+        .authorize_project(crate::access::AuthorizeProjectInput::new(
+            identity.clone(),
+            target.project_id.clone(),
+            crate::access::Permission::ProjectManage,
+        ))
+        .await
+        .map_err(|_| forbidden())?;
+    if access != current || !state.depot.publishing_configured() {
+        return Err(map_error(DepotError::DelegationUnavailable));
+    }
+    let live = authority.revalidate().await.map_err(|_| forbidden())?;
+    if !live.has_scope("lab:admin") {
+        return Err(forbidden());
+    }
+    Ok(labby_auth::depot_delegation::BrowserDepotAuthorization {
+        installation_id: installation.to_string(),
+        principal_id: access.principal_id,
+        organization_id: access.organization_id,
+        project_id: access.project_id,
+        membership_epoch: access.membership_epoch,
+        organization_policy_epoch: access.organization_policy_epoch,
+        project_policy_epoch: access.project_policy_epoch,
+        expires_at: u64::try_from(live.expires_at()).map_err(|_| forbidden())?,
+    })
+}
+
 fn unavailable() -> (StatusCode, Json<Value>) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -493,10 +559,13 @@ fn forbidden() -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{AccessRuntime, AccessStore, ActivateProofInput, ConsumeBootstrapInput};
     use axum::{Router, body::Body, http::Request};
     use labby_auth::{
         Authenticator,
         browser_authority::{BrowserPolicy, PermissionState, PolicyFuture},
+        depot_delegation::DepotDelegationTarget,
+        jwt::SigningKeys,
         sqlite::SqliteStore,
         types::BrowserSessionRow,
         util::now_unix,
@@ -576,6 +645,68 @@ mod tests {
         (temp, authority, auth, identity)
     }
 
+    async fn admin_access_runtime(temp: &TempDir, subject: &str) -> Arc<AccessRuntime> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let db = temp.path().join("access.db");
+        let store = AccessStore::open(db.clone()).await.unwrap();
+        let now = now_unix();
+        store
+            .activate_bootstrap_proof(ActivateProofInput {
+                proof_id: "proof-1".into(),
+                prepare_id: "prepare-1".into(),
+                installation_id: "installation-1".into(),
+                installation_generation: 1,
+                proof_digest: [1; 32],
+                manifest_digest: [2; 32],
+                request_digest: [3; 32],
+                idempotency_digest: [4; 32],
+                credential_id: "credential-1".into(),
+                credential_digest: [5; 32],
+                proof_generation: 1,
+                created_at: now,
+                expires_at: now + 60,
+            })
+            .await
+            .unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            subject,
+        )
+        .unwrap();
+        store
+            .consume_bootstrap_proof(ConsumeBootstrapInput {
+                proof_id: "proof-1".into(),
+                proof_digest: [1; 32],
+                request_digest: [3; 32],
+                idempotency_digest: [4; 32],
+                organization_name: "Local".into(),
+                project_name: "Default".into(),
+                canonical_issuer: "https://accounts.google.com".into(),
+                subject: subject.into(),
+                identity_fingerprint: identity.safe_fingerprint(),
+                loadout_id: "production".into(),
+                loadout_generation: 1,
+                catalog_generation: 1,
+                loadout_policy_fingerprint: [6; 32],
+                route_id: "team".into(),
+                route_generation: 1,
+                resource: "https://labby.example/mcp/team".into(),
+                audience: "https://labby.example/mcp/team".into(),
+                scopes_json: r#"["lab","lab:read"]"#.into(),
+                now,
+                credential_expires_at: now + 3600,
+            })
+            .await
+            .unwrap();
+        drop(store);
+        Arc::new(AccessRuntime::initialize(db).await)
+    }
+
     async fn upstream() -> (url::Url, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
@@ -583,11 +714,12 @@ mod tests {
             let observed = Arc::clone(&observed);
             async move {
                 observed.fetch_add(1, Ordering::SeqCst);
-                if request.uri().path() == "/api/operations" {
+                if matches!(request.uri().path(), "/api/operations" | "/api/operations/catalog") {
                     Json(json!({"operations":[
-                        {"name":"depot.system.status","annotations":{"readOnlyHint":true,"destructiveHint":false}},
-                        {"name":"depot.sources.refresh","annotations":{"readOnlyHint":false,"destructiveHint":false}},
-                        {"name":"depot.tokens.revoke","annotations":{"readOnlyHint":false,"destructiveHint":true}}
+                        {"name":"depot.system.status","requiredScope":"read","transportAvailable":true,"authorized":true,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
+                        {"name":"depot.sources.refresh","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":false}},
+                        {"name":"depot.tokens.revoke","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":true}},
+                        {"name":"depot.maintenance.upstream","requiredScope":"operator","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}}
                     ]}))
                 } else {
                     Json(json!({"result":{"ok":true}}))
@@ -863,6 +995,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn administration_executes_write_and_operator_operations_with_browser_delegation() {
+        let (base_url, calls) = upstream().await;
+        let access_dir = tempfile::tempdir().unwrap();
+        let runtime = admin_access_runtime(&access_dir, "operator-1").await;
+        let (_session_dir, authority, auth, identity) =
+            browser_context_for_subject(&["lab:read", "lab:admin"], "operator-1").await;
+        let keys = Arc::new(
+            SigningKeys::load_or_create(&access_dir.path().join("delegation.der")).unwrap(),
+        );
+        let client = crate::dispatch::depot::DepotClient::for_test(base_url, "read-service-token")
+            .with_test_delegation(
+                keys,
+                DepotDelegationTarget {
+                    issuer: "https://labby.example".into(),
+                    audience: "https://depot.example".into(),
+                    deployment_id: "test-depot".into(),
+                    account_id: "test-account".into(),
+                    tenant_id: "test-tenant".into(),
+                    team_id: None,
+                },
+            );
+        let mut state = AppState::new().with_access_runtime(runtime);
+        state.depot = Arc::new(client);
+        state.installation_id = Some(Arc::from("installation-1"));
+        Arc::make_mut(&mut state.config).depot.publish =
+            Some(crate::config::depot::DepotPublishTarget {
+                route_id: "team".into(),
+                project_id: "bootstrap-default".into(),
+            });
+        state
+            .depot
+            .operations(&identity.safe_fingerprint())
+            .await
+            .unwrap();
+        let router = operation_router(state, authority, auth, identity);
+
+        for operation in ["depot.sources.refresh", "depot.maintenance.upstream"] {
+            let response = router
+                .clone()
+                .oneshot(operation_request(operation, Some("depot-route-csrf")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{operation}");
+        }
+        let destructive = router
+            .clone()
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "delegated-revoke-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(destructive.status(), StatusCode::OK);
+        let retry = router
+            .oneshot(destructive_operation_request(
+                "depot.tokens.revoke",
+                "delegated-revoke-1",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
     async fn mutation_with_admin_and_csrf_still_cannot_fall_back_to_static_token() {
         let (base_url, calls) = upstream().await;
         let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
@@ -890,7 +1087,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn destructive_execution_requires_intent_and_replays_the_bound_success() {
+    async fn destructive_execution_requires_intent_and_no_delegation_stays_retryable() {
         let (base_url, calls) = upstream().await;
         let (_temp, authority, auth, identity) = browser_context(&["lab:read", "lab:admin"]).await;
         let mut state = AppState::new();
@@ -934,7 +1131,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
@@ -1022,7 +1219,7 @@ async fn call(
         .operation_policy(&request.operation, &actor)
         .await
         .map_err(map_error)?;
-    if !policy.read_only {
+    if policy.requires_write || policy.requires_operator {
         require_admin_mutation(&authority, &auth, &headers, &request.operation).await?;
     }
     let idempotency_key = if policy.destructive {
@@ -1035,18 +1232,39 @@ async fn call(
     } else {
         None
     };
-    let result = state
-        .depot
-        .call(
-            &request.operation,
-            request.params,
-            &actor,
-            policy,
-            idempotency_key,
+    let result = if policy.requires_write || policy.requires_operator {
+        let authorization = admin_depot_authorization(
+            &state,
+            &authority,
+            &auth,
+            identity.as_ref().map(|value| &value.0),
         )
-        .await
-        .map(Json)
-        .map_err(map_error);
+        .await?;
+        state
+            .depot
+            .call_with_browser_authorization(
+                &request.operation,
+                request.params,
+                &actor,
+                policy,
+                idempotency_key,
+                &authorization,
+            )
+            .await
+    } else {
+        state
+            .depot
+            .call(
+                &request.operation,
+                request.params,
+                &actor,
+                policy,
+                idempotency_key,
+            )
+            .await
+    }
+    .map(Json)
+    .map_err(map_error);
     access
         .finish(
             &state,

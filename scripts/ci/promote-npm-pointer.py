@@ -22,7 +22,9 @@ def run(*args):
 
 def latest(package):
     # A failed registry read is not evidence that the pointer is absent.
-    tags = json.loads(run("dist-tag", "ls", package, "--json", "--prefer-online", "--fetch-retries=0", "--fetch-timeout=20000"))
+    # `npm dist-tag ls` ignores --json and prints `tag: version` lines; only
+    # `npm view <pkg> dist-tags --json` returns the tag map as JSON.
+    tags = json.loads(run("view", package, "dist-tags", "--json", "--prefer-online", "--fetch-retries=0", "--fetch-timeout=20000"))
     return tags.get("latest")
 
 
