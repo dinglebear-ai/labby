@@ -4,7 +4,8 @@ import * as React from 'react'
 import { Menu, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
-import { ConsoleStatusStrip } from '@/components/console/console-status-strip'
+import { ConsoleStatusStrip, useConsoleStatus } from '@/components/console/console-status-strip'
+import { ConsoleNotifications } from '@/components/console/console-notifications'
 import { AccountMenu } from '@/components/console/console-sidebar'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
@@ -25,6 +26,7 @@ function isMacOS() {
  */
 export function ConsoleTopbar() {
   const { setCrumbSlot, setActionSlot, mobileNavOpen, toggleMobileNav } = useConsoleShell()
+  const status = useConsoleStatus()
   const [searchHovered, setSearchHovered] = React.useState(false)
   const [modKey, setModKey] = React.useState('⌘')
 
@@ -50,7 +52,7 @@ export function ConsoleTopbar() {
         borderBottom:
           '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
         boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.035)',
-        background: 'color-mix(in srgb, var(--aurora-control-surface) 48%, transparent)',
+        background: 'var(--console-chrome-bg)',
         position: 'relative',
         zIndex: 40,
       }}
@@ -66,20 +68,28 @@ export function ConsoleTopbar() {
       >
         <Menu size={19} strokeWidth={1.8} />
       </button>
+      {/*
+        The search pill sits in flow between two equal-basis rails. Equal rails
+        keep it centred; because a rail never shrinks below its content, a wide
+        status/action cluster pushes the pill aside instead of sliding under it.
+      */}
       <div
-        ref={setCrumbSlot}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 11,
-          fontSize: 12.5,
-          lineHeight: 'normal',
-          minWidth: 0,
-        }}
-      />
-      <ConsoleStatusStrip />
-
-      <div style={{ flex: 1 }} />
+        data-topbar-rail="left"
+        style={{ flex: '1 1 0', display: 'flex', alignItems: 'center' }}
+      >
+        <div
+          ref={setCrumbSlot}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            fontSize: 12.5,
+            lineHeight: 'normal',
+            minWidth: 0,
+            flexShrink: 0,
+          }}
+        />
+      </div>
 
       <button
         type="button"
@@ -98,7 +108,8 @@ export function ConsoleTopbar() {
           width: searchHovered ? SEARCH_WIDTH_HOVER : SEARCH_WIDTH_IDLE,
           transition:
             'width 200ms ease-out, border-color 200ms, box-shadow 250ms, color 200ms',
-          minWidth: 0,
+          // Keep a usable pill when the rails claim the row; mobile CSS overrides.
+          minWidth: 120,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           padding: '0 11px',
@@ -114,7 +125,6 @@ export function ConsoleTopbar() {
           fontFamily: 'inherit',
           fontSize: 12.5,
           lineHeight: 'normal',
-          marginRight: 34,
           cursor: 'pointer',
           boxShadow: searchHovered
             ? '0 0 0 3px rgba(41,182,246,0.09), 0 0 16px rgba(41,182,246,0.10), inset 0 1px 0 rgba(255,255,255,0.05)'
@@ -152,12 +162,12 @@ export function ConsoleTopbar() {
             flexShrink: 0,
             display: 'inline-flex',
             alignItems: 'center',
-            height: 20,
+            height: 18,
             padding: '0 5px',
             marginRight: -3,
             borderRadius: 5,
-            border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg))',
-            background: 'color-mix(in srgb, var(--aurora-page-bg) 38%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--aurora-border-default) 80%, var(--aurora-page-bg))',
+            background: 'var(--gw0-0_38)',
             color: 'var(--aurora-text-muted)',
             fontSize: 10,
             lineHeight: 'normal',
@@ -169,16 +179,30 @@ export function ConsoleTopbar() {
       </button>
 
       <div
-        ref={setActionSlot}
-        data-actioncluster="1"
+        data-topbar-rail="right"
         style={{
-          flexShrink: 0,
+          flex: '1 1 0',
           display: 'flex',
           alignItems: 'center',
-          gap: 5,
+          justifyContent: 'flex-end',
+          gap: 12,
         }}
-      />
-      <AccountMenu placement="topbar" />
+      >
+        <div
+          ref={setActionSlot}
+          data-actioncluster="1"
+          className="empty:!hidden"
+          style={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+          }}
+        />
+        <ConsoleStatusStrip state={status} />
+        <ConsoleNotifications state={status} />
+        <AccountMenu placement="topbar" />
+      </div>
     </header>
   )
 }

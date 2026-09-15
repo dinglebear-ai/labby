@@ -580,23 +580,12 @@ pub(super) async fn server_view_from_upstream(
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
-    // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
-    // upstream counts as connected when it has no recorded error and is either
-    // actively exposing capabilities or healthy. The health term keeps lazily
-    // discovered upstreams — whose catalog stays empty until their first use —
-    // from rendering as "Disconnected" at rest, while upstreams with stale
-    // exposed counts plus a current error still surface as down.
-    let exposing_capabilities = summary.exposed_tool_count > 0
-        || summary.exposed_resource_count > 0
-        || summary.exposed_prompt_count > 0
-        || summary.exposed_skill_count > 0;
-    let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
-    let connected = last_error.is_none() && (exposing_capabilities || health_ok);
     let enabled = upstream.enabled;
     let runtime = match pool {
         Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
         None => None,
     };
+    let connected = last_error.is_none() && runtime.is_some();
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     // OAuth upstreams list tools per authenticated subject, so the shared
     // catalog stays empty by design; reporting it as warming would pin them in
@@ -632,6 +621,10 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
+        notification_incidents: match pool {
+            Some(pool) => pool.notification_incidents(&upstream.name).await,
+            None => Default::default(),
+        },
         id: upstream.name.clone(),
         name: upstream.name.clone(),
         display_name: upstream.display_name.clone(),
@@ -736,6 +729,7 @@ pub(super) fn server_view_from_virtual_server(
     }
 
     ServerView {
+        notification_incidents: Default::default(),
         id: record.id.clone(),
         name: service.clone(),
         display_name: None,
@@ -844,11 +838,8 @@ pub(super) async fn runtime_view(
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
     let header_recovery = pool.header_recovery_metrics(name);
-    let tool_health = pool.upstream_tool_health(name).await;
-    let connected = last_error.is_none()
-        && tool_health
-            .map(|health| health.is_routable())
-            .unwrap_or(false);
+    let runtime_present = pool.upstream_runtime_metadata(name).await.is_some();
+    let connected = last_error.is_none() && runtime_present;
 
     GatewayRuntimeView {
         name: name.to_string(),

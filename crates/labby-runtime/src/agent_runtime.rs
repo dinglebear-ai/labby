@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use labby_primitives::agent::{
     AgentDefinition, AgentSessionBinding, AgentState, RunningRevocationPolicy,
 };
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::authority::{
@@ -37,12 +38,123 @@ impl AgentResourceBounds {
     }
 }
 
+/// Headroom reserved inside an execution authority lease for final authority
+/// revalidation and durable settlement after the executor stops.
+pub const AGENT_SETTLEMENT_ALLOWANCE_MILLIS: u64 = 5_000;
+
+/// Trim an otherwise valid executor budget so execution plus settlement never
+/// outlives the authority lease. The caller supplies a fresh runtime time after
+/// any scheduler wait and before durable admission or an external effect.
+pub fn bound_resources_to_authority_lease(
+    bounds: AgentResourceBounds,
+    lease: &AuthorityLease,
+    now_millis: u64,
+) -> Result<AgentResourceBounds, AgentRuntimeError> {
+    let mut bounded = bounds.validate()?;
+    let maximum_runtime = lease
+        .expires_at_millis()
+        .saturating_sub(now_millis)
+        .checked_sub(AGENT_SETTLEMENT_ALLOWANCE_MILLIS)
+        .filter(|remaining| *remaining > 0)
+        .ok_or(AgentRuntimeError::Lease(AuthorityLeaseError::Expired))?;
+    bounded.max_runtime_millis = bounded.max_runtime_millis.min(maximum_runtime);
+    Ok(bounded)
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentExecutionRequest {
     pub definition: AgentDefinition,
     pub session: AgentSessionBinding,
+    /// Exact user/task input delivered to the configured harness over stdin.
+    /// The runtime verifies it against `input_digest` before admission so a
+    /// durable Task cannot execute bytes different from its pinned intent.
+    pub input: String,
+    pub input_digest: String,
+    /// Bounded, shared capture of harness stdout. Dispatch retains a clone so
+    /// partial evidence survives cancellation and executor failure.
+    pub transcript: AgentTranscript,
     pub lease: AuthorityLease,
     pub bounds: AgentResourceBounds,
+}
+
+const MAX_AGENT_INPUT_BYTES: usize = 1024 * 1024;
+
+#[must_use]
+pub fn sha256_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(71);
+    encoded.push_str("sha256:");
+    for byte in Sha256::digest(bytes) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+#[derive(Clone)]
+pub struct AgentTranscript {
+    inner: Arc<Mutex<AgentTranscriptInner>>,
+    max_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct AgentTranscriptInner {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl std::fmt::Debug for AgentTranscript {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.snapshot();
+        formatter
+            .debug_struct("AgentTranscript")
+            .field("bytes", &snapshot.text.len())
+            .field("truncated", &snapshot.truncated)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentTranscriptSnapshot {
+    pub text: String,
+    pub truncated: bool,
+}
+
+impl AgentTranscript {
+    pub fn new(max_bytes: usize) -> Result<Self, AgentRuntimeError> {
+        if max_bytes == 0 || max_bytes > MAX_AGENT_INPUT_BYTES {
+            return Err(AgentRuntimeError::InvalidBounds);
+        }
+        Ok(Self {
+            inner: Arc::new(Mutex::new(AgentTranscriptInner::default())),
+            max_bytes,
+        })
+    }
+
+    /// Append one stdout chunk while retaining at most the configured bound.
+    /// Readers continue draining the child after this becomes truncated.
+    pub fn append(&self, chunk: &[u8]) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let remaining = self.max_bytes.saturating_sub(inner.bytes.len());
+        let retained = remaining.min(chunk.len());
+        inner.bytes.extend_from_slice(&chunk[..retained]);
+        inner.truncated |= retained < chunk.len();
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> AgentTranscriptSnapshot {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        AgentTranscriptSnapshot {
+            text: String::from_utf8_lossy(&inner.bytes).into_owned(),
+            truncated: inner.truncated,
+        }
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentExecutionOutput {
@@ -126,7 +238,8 @@ impl Cancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release)
     }
-    pub(crate) fn is_cancelled(&self) -> bool {
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }
@@ -163,6 +276,16 @@ impl<T: AgentAuthority> AuthorityDyn for T {
     }
 }
 impl ExecutionGuard<'_> {
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    #[must_use]
+    pub fn requires_continuous_revocation_checks(&self) -> bool {
+        self.revocation == RunningRevocationPolicy::StopImmediately
+    }
+
     /// Revalidate the lease at a safe boundary. `now` is the executor's own
     /// notion of time; the runtime clock is authoritative and an executor can
     /// only move the effective time later, never earlier.
@@ -250,6 +373,13 @@ pub async fn execute_agent_bound<A: AgentAuthority, E: AgentExecutor>(
         .validate()
         .map_err(|_| AgentRuntimeError::InvalidDefinition)?;
     request.bounds.validate()?;
+    if request.input.is_empty() || request.input.len() > MAX_AGENT_INPUT_BYTES {
+        return Err(AgentRuntimeError::InvalidInput);
+    }
+    let input_digest = sha256_digest(request.input.as_bytes());
+    if input_digest != request.input_digest {
+        return Err(AgentRuntimeError::InputDigestMismatch);
+    }
     if request.definition.state != AgentState::Active
         || request.session.agent_id != request.definition.id
         || request.session.agent_version != request.definition.revision.version
@@ -329,6 +459,10 @@ pub enum AgentRuntimeError {
     NotDispatchable,
     #[error("invalid resource bounds")]
     InvalidBounds,
+    #[error("invalid agent input")]
+    InvalidInput,
+    #[error("agent input does not match its pinned digest")]
+    InputDigestMismatch,
     #[error("resource limit exceeded")]
     ResourceLimit,
     #[error("execution cancelled")]
@@ -337,6 +471,8 @@ pub enum AgentRuntimeError {
     Revoked,
     #[error("authority unavailable")]
     AuthorityUnavailable,
+    #[error("agent execution backend is not configured")]
+    ExecutorUnavailable,
     #[error("executor failed")]
     ExecutorFailed,
     #[error("authority lease: {0}")]
@@ -481,6 +617,9 @@ mod tests {
                 authority_fingerprint: e.fingerprint().as_str().into(),
                 lease_expires_at: 100,
             },
+            input: "test input".into(),
+            input_digest: sha256_digest(b"test input"),
+            transcript: AgentTranscript::new(100).unwrap(),
             lease: AuthorityLease::new(
                 binding,
                 e,
@@ -524,6 +663,19 @@ mod tests {
             .await
             .unwrap_err(),
             AgentRuntimeError::Lease(AuthorityLeaseError::AuthorityChanged)
+        );
+    }
+
+    #[tokio::test]
+    async fn input_bytes_must_match_the_pinned_digest() {
+        let initial = epochs(1);
+        let mut mismatched = request(&initial);
+        mismatched.input = "different input".into();
+        assert_eq!(
+            execute_agent(&Auth(initial), &Exec, mismatched, Cancellation::new(), 1,)
+                .await
+                .unwrap_err(),
+            AgentRuntimeError::InputDigestMismatch
         );
     }
 

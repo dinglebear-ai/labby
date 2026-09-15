@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-08-26"
+updated: "2026-09-13"
 ---
 
 # Runtime Configuration
@@ -96,9 +96,62 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[public_urls]`: canonical external URLs.
 - `[[artifacts.sources]]`: server-owned exact Artifact acquisition
   connections used by durable Skill Library imports.
+- `[agents]`: operator-approved local Agent harness launch descriptors.
+- `[phoenix]`: container-local Codex App Server launch boundary for the Phoenix
+  assistant.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+## Agent Harnesses
+
+`[[agents.harnesses]]` enables bounded Agent execution through an explicitly
+configured local executable. `command` and optional `cwd` must be absolute;
+`args` are literal values, and `inherit_env` lists environment variable names
+whose values may be copied from the Labby service process. Each descriptor also
+declares the exact `content_digest`, `repository_digest`, `image_digest`,
+`loadout_digest`, and `catalog_generation` the operator provisioned at that
+fixed execution location. Agent definitions must match the complete pin bundle
+and pin the digest of the complete non-secret descriptor. Changing a definition
+pin, command, argument, working directory, or inherited name therefore requires
+a matching new harness descriptor and Agent revision. With no exact match,
+Agent and queued Task execution fail before admission.
+
+The Codex CLI reads `OPENAI_API_KEY`; custom provider endpoints use its
+`openai_base_url` configuration key. Labby's `OPENAI_URL` and `OPENAI_ORG_ID`
+names are not Codex CLI aliases, so do not list them as inherited harness
+variables. Prefer an ephemeral, read-only Codex invocation and inherit only the
+credential names the configured executable actually consumes.
+
+Run `agents.harnesses` through an authenticated surface to read configured IDs,
+pinning digests, and current executable/directory availability. Secret values
+remain in the service environment and are never returned by that action.
+
+## Phoenix Assistant
+
+Phoenix is disabled by default. Enabling it requires absolute `command`,
+`codex_home`, and `workspace_root` paths in `[phoenix]`. Those paths resolve in
+the Labby runtime environment and must point to the Codex executable, its
+isolated account/configuration directory, and a container-owned workspace.
+Phoenix starts Codex through `codex app-server --stdio`, performs the versioned
+initialize handshake, and uses `thread/start` or `thread/resume` followed by
+`turn/start`. It forces `approvalPolicy = "never"` and `sandbox = "read-only"`;
+App Server requests that need interactive approval are rejected instead of
+being forwarded to the browser.
+
+The HTTP surface is `POST /v1/phoenix`. It requires a verified Labby identity,
+uses the browser session CSRF token for session and turn mutations, and maps
+opaque Phoenix session IDs to Codex thread IDs on the server. Codex paths,
+credentials, and thread IDs are never returned to the browser. Phoenix sessions
+survive individual App Server subprocesses through Codex's container-local
+thread store, while the opaque browser-to-thread mapping is process scoped and
+is reset when Labby restarts.
+
+Provision the Codex binary and authenticate the isolated `codex_home` inside
+the Incus container before setting `enabled = true`. Do not point this section
+at a mounted developer home or a remote App Server. The annotated example in
+[../../config/config.example.toml](../../config/config.example.toml) uses the
+Codex binary and home already provisioned by the supported Incus image.
 
 ## Depot Discovery Configuration
 

@@ -25,6 +25,8 @@ pub mod lab_admin;
 #[cfg(feature = "gateway")]
 pub mod oauth_subject;
 pub mod path_safety;
+pub(crate) mod phoenix;
+pub(crate) mod phoenix_runtime;
 pub(crate) mod projects;
 pub mod redact;
 #[cfg(feature = "skills")]

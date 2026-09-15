@@ -563,6 +563,7 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
     for (ts_unix, actor, outcome) in [(1_000, "alice", "ok"), (1_100, "bob", "timeout")] {
         usage_store
             .record_call(crate::usage::UpstreamCallRecord {
+                attribution: None,
                 ts_unix,
                 upstream_name: "github".to_string(),
                 tool_name: "search_repos".to_string(),
@@ -606,6 +607,10 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
     assert_eq!(metrics["p50_elapsed_ms"], 50);
     assert_eq!(metrics["p95_elapsed_ms"], 50);
     assert_eq!(metrics["timeseries"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        metrics["timeseries"][1]["outcomes"],
+        json!([{ "kind": "timeout", "calls": 1 }])
+    );
     assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
     assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
     assert_eq!(metrics["facets"]["capabilities"], json!(["tools"]));
@@ -635,6 +640,94 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
     assert_eq!(calls["total_matching"], 1);
     assert_eq!(calls["calls"].as_array().map(Vec::len), Some(1));
     assert_eq!(calls["calls"][0]["outcome"], "timeout");
+}
+
+#[tokio::test]
+async fn gateway_usage_attribution_filters_are_applied_and_echoed() {
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    for (ts_unix, client_name, client_version) in [
+        (1_000, "Codex CLI", "1.0"),
+        (1_001, "Codex CLI", "2.0"),
+        (1_002, "Claude Code", "1.0"),
+    ] {
+        usage_store
+            .record_call(crate::usage::UpstreamCallRecord {
+                attribution: Some(labby_runtime::usage_actor::UsageAttribution::inbound(
+                    Some("sub:shared".into()),
+                    "mcp",
+                    Some((client_name, client_version)),
+                )),
+                ts_unix,
+                upstream_name: "github".into(),
+                tool_name: "search_repos".into(),
+                capability: "tools".into(),
+                operation: "tool.call".into(),
+                subject_scoped: false,
+                actor: "sub:shared".into(),
+                outcome: "ok".into(),
+                elapsed_ms: 10,
+                response_bytes: None,
+            })
+            .await
+            .unwrap();
+    }
+    let manager = test_manager().with_usage_store(usage_store);
+    let filters = json!({
+        "actor": "sub:shared",
+        "client_name": "Codex CLI",
+        "client_version": "2.0"
+    });
+
+    let metrics = dispatch_with_manager(&manager, "gateway.usage.metrics", filters.clone())
+        .await
+        .unwrap();
+    assert_eq!(metrics["window_total_calls"], 3);
+    assert_eq!(metrics["total_calls"], 1);
+    assert_eq!(
+        metrics["attribution_filters"],
+        json!({"client_name":"Codex CLI","client_version":"2.0"})
+    );
+
+    let calls = dispatch_with_manager(
+        &manager,
+        "gateway.usage.calls",
+        json!({
+            "actor": "sub:shared",
+            "client_name": "Codex CLI",
+            "client_version": "2.0",
+            "include_total": true
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls["total_matching"], 1);
+    assert_eq!(calls["calls"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        calls["attribution_filters"],
+        json!({"client_name":"Codex CLI","client_version":"2.0"})
+    );
+}
+
+#[test]
+fn gateway_usage_actions_advertise_exact_attribution_filters() {
+    for action_name in ["gateway.usage.metrics", "gateway.usage.calls"] {
+        let action = ACTIONS
+            .iter()
+            .find(|action| action.name == action_name)
+            .unwrap();
+        let names = action
+            .params
+            .iter()
+            .map(|param| param.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for expected in ["client_name", "client_version", "agent_id"] {
+            assert!(names.contains(expected), "{action_name} omits {expected}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -1179,6 +1272,7 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
     );
     usage_store
         .record_call(crate::usage::UpstreamCallRecord {
+            attribution: None,
             ts_unix: 1_000,
             upstream_name: "github".to_string(),
             tool_name: "search_repos".to_string(),
@@ -1194,6 +1288,7 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
         .unwrap();
     usage_store
         .record_call(crate::usage::UpstreamCallRecord {
+            attribution: None,
             ts_unix: 1_001,
             upstream_name: "gateway-alpha".to_string(),
             tool_name: "status_get".to_string(),
@@ -4476,7 +4571,6 @@ fn include_existing_false_filters_out_configured_servers() {
     );
     assert!(views.is_empty());
 }
-
 #[tokio::test]
 async fn caller_oauth_authorize_requires_transport_identity() {
     let error = dispatch_with_manager(
@@ -4639,5 +4733,78 @@ async fn personal_oauth_cannot_complete_against_central_provider_manager() {
             .unwrap_err()
             .kind(),
         "forbidden"
+    );
+}
+#[tokio::test]
+async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
+    use labby_runtime::client_registry::{ClientRegistryHandle, ConnectedClient};
+    let registry = ClientRegistryHandle::default();
+    registry
+        .push(ConnectedClient {
+            subject_tag: Some("sub:ab12cd34ef56".into()),
+            client_name: Some("operator-client".into()),
+            client_version: Some("1.2.3".into()),
+            transport: "http".into(),
+            connected_at: "2026-09-13T05:00:00Z".into(),
+        })
+        .await;
+    let manager = test_manager().with_client_registry(registry);
+    let result = dispatch_with_manager(&manager, "gateway.clients.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!([{
+            "subject": "sub:ab12cd34ef56",
+            "client_name": "operator-client",
+            "client_version": "1.2.3",
+            "transport": "http",
+            "connected_at": "2026-09-13T05:00:00Z"
+        }])
+    );
+    let action = ACTIONS
+        .iter()
+        .find(|action| action.name == "gateway.clients.list")
+        .unwrap();
+    assert!(action.requires_admin);
+    assert!(!action.destructive);
+}
+
+#[tokio::test]
+async fn clients_list_dispatch_without_observed_sessions_returns_empty_array() {
+    let result = dispatch_with_manager(&test_manager(), "gateway.clients.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result, json!([]));
+}
+
+#[tokio::test]
+async fn host_metrics_dispatch_is_admin_classified_and_has_nullable_measurements() {
+    let result = dispatch_with_manager(&test_manager(), "gateway.host.metrics", json!({}))
+        .await
+        .unwrap();
+    assert!(result["available"].is_boolean());
+    for field in [
+        "cpu_percent",
+        "memory_used_bytes",
+        "memory_total_bytes",
+        "disk_used_bytes",
+        "disk_total_bytes",
+        "network_rx_bytes_per_second",
+        "network_tx_bytes_per_second",
+    ] {
+        assert!(
+            result
+                .get(field)
+                .is_some_and(|value| value.is_number() || value.is_null()),
+            "{field}"
+        );
+    }
+    assert!(
+        ACTIONS
+            .iter()
+            .find(|action| action.name == "gateway.host.metrics")
+            .unwrap()
+            .requires_admin
     );
 }

@@ -13,7 +13,7 @@
  */
 
 /** Rolling activity windows exposed by the web console. Durable retention is 30 days. */
-export const METRICS_WINDOWS = ['1h', '24h', '7d'] as const
+export const METRICS_WINDOWS = ['1h', '24h', '7d', '30d'] as const
 export type MetricsWindow = (typeof METRICS_WINDOWS)[number]
 
 /** An upstream target ranked by call volume within the window. */
@@ -34,24 +34,62 @@ export interface ToolUsageEntry {
 export interface AgentUsageEntry {
   /** Stable identity — subject, session, or source node id. */
   id: string
+  /** Durable redacted actor tag used by usage queries. */
+  filter_id?: string
   /** Human label (falls back to a truncated id). */
   label: string
   /** Origin surface for the activity. */
-  kind: 'agent' | 'device'
+  kind: ActorKind
   /** Total dispatched calls attributed to this identity. */
   calls: number
+  /** Raw server attribution used to construct an exact drill target. */
+  attribution?: UsageAttribution | null
 }
 
 /** Facets the "most active" list can be grouped by. Agents, devices, and source
  * IPs are distinct populations — never mix their counts in one ranking. */
-export type ActorKind = 'agent' | 'device' | 'ip'
+export type ActorKind = 'agent' | 'device' | 'ip' | 'subject' | 'client' | 'unknown'
+
+/** Additive attribution recorded by gateway usage schema v3. */
+export interface UsageAttribution {
+  inbound_actor?: string | null
+  actor_kind?: string | null
+  surface?: string | null
+  client_name?: string | null
+  client_version?: string | null
+  agent_id?: string | null
+  task_id?: string | null
+  harness_id?: string | null
+  upstream_subject_tag?: string | null
+}
+
+/** Exact optional dimensions accepted and echoed by gateway usage queries. */
+export interface UsageAttributionFilters {
+  client_name?: string
+  client_version?: string
+  agent_id?: string
+}
+
+export interface AttributionDrillFilter extends UsageAttributionFilters {
+  actor: string
+}
+
+export interface ActorDrillTarget {
+  type: 'agent'
+  filter: AttributionDrillFilter
+  label: string
+  kind: ActorKind
+}
 
 /** One ranked actor within a single facet. */
 export interface ActorUsageEntry {
   id: string
+  filter_id?: string
+  detail?: string
   label: string
   kind: ActorKind
   calls: number
+  attribution?: UsageAttribution | null
 }
 
 /** A ranked population for one actor facet. */
@@ -70,6 +108,8 @@ export interface MetricsBucket {
   calls: number
   /** Failed calls in the bucket. */
   failed: number
+  /** Server-classified outcome counts. Absent when connected to an older gateway. */
+  outcomes?: ErrorKindCount[]
 }
 
 export interface DashboardMetrics {
@@ -117,6 +157,9 @@ export interface DashboardMetrics {
     agent: ActorFacet
     device: ActorFacet
     ip: ActorFacet
+    subject?: ActorFacet
+    client?: ActorFacet
+    unknown?: ActorFacet
   }
 
   /** Code Mode `execute` fan-out — runs that dispatch >=1 upstream callTool(). */
@@ -226,7 +269,7 @@ export interface ToolCallRecord {
   capability?: string
   agent_id: string
   agent_label: string
-  agent_kind: 'agent' | 'device'
+  agent_kind: ActorKind
   /** Source IP the call originated from. */
   ip: string
   surface: CallSurface
@@ -259,8 +302,9 @@ export interface ToolDetail {
 /** Single-agent/device drill-down (drawer). */
 export interface AgentDetail {
   id: string
+  filter: AttributionDrillFilter
   label: string
-  kind: 'agent' | 'device'
+  kind: ActorKind
   window: MetricsWindow
   calls: number
   failed: number
@@ -283,6 +327,9 @@ export interface ToolCallQuery {
   operation?: string
   subject_scoped?: boolean
   agent?: string
+  client_name?: string
+  client_version?: string
+  agent_id?: string
   ip?: string
   outcome?: CallOutcome
   error_kind?: string

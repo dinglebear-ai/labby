@@ -151,10 +151,10 @@ mod tests {
         let evidence = approve(&paths);
         let checkpoint = std::fs::read(paths.root().join("checkpoint.db")).unwrap();
         let outcome = migrate(&paths, evidence.clone()).await.unwrap();
-        assert_eq!(outcome.schema_version, 7);
+        assert_eq!(outcome.schema_version, 8);
         assert_eq!(outcome.verified_reopens, 2);
         migrate(&paths, evidence).await.unwrap();
-        assert_eq!(version(&paths), 7);
+        assert_eq!(version(&paths), 8);
         assert_eq!(
             checkpoint,
             std::fs::read(paths.root().join("checkpoint.db")).unwrap()

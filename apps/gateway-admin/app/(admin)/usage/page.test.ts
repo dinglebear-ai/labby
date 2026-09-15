@@ -25,7 +25,7 @@ test('Activity dense desktop table retains mobile cards, Surface, and a call ins
   assert.match(source, /showSurfaces \? '70px' : null/)
   assert.match(source, /gridTemplateColumns: activityGridColumns/)
   assert.match(source, /height: 28,/)
-  assert.match(source, /height: 59,/)
+  assert.match(source, /minHeight: 44,/)
   assert.match(source, /<UsageCallCards calls=\{data\?\.calls\}/)
   assert.match(source, /\{showSurfaces \? <TableHead className="w-\[70px\]">Surface<\/TableHead> : null\}/)
   assert.match(source, /\{showSurfaces \? <TableCell><SurfaceTag surface=\{call\.surface\} \/><\/TableCell> : null\}/)
@@ -34,7 +34,10 @@ test('Activity dense desktop table retains mobile cards, Surface, and a call ins
   assert.match(source, /<UsageCallDetail/)
   assert.match(source, /setSelectedCall\(call\)/)
   assert.match(source, /showTokens \? <TableHead/)
-  assert.match(source, /call\.agent_label === 'unattributed' \? 'Not attributed'/)
+  assert.match(source, /<TableHead>Scope<\/TableHead>/)
+  assert.match(source, /call\.subject_scoped \? 'OAuth subject' : 'Shared'/)
+  assert.doesNotMatch(source, /<TableHead>Agent<\/TableHead>/)
+  assert.match(source, /<SelectValue placeholder="Caller"/)
 })
 
 test('Activity presentation keeps URL-scoped filters and bounded cursor pagination', () => {

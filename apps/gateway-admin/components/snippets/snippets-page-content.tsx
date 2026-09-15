@@ -3,22 +3,23 @@
 import * as React from 'react'
 import { toast } from 'sonner'
 import {
+  Activity,
   ArrowDown,
   ArrowUp,
+  Clock3,
   ChevronLeft,
   ChevronRight,
   Copy,
   FileCode2,
   FlaskConical,
   Loader2,
-  Package,
   Pencil,
   Plus,
   Play,
-  RefreshCw,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
+  TriangleAlert,
+  Wrench,
   Trash2,
   WandSparkles,
 } from 'lucide-react'
@@ -334,8 +335,6 @@ export function SnippetsPageContent() {
   )
   const sourceTokens = React.useMemo(() => tokenizeSnippetSource(parsed.source), [parsed.source])
 
-  const builtinCount = snippets.filter((snippet) => snippet.source === 'builtin').length
-  const inputCount = snippets.reduce((sum, snippet) => sum + inputEntries(snippet).length, 0)
 
   const runAction = async (label: string, fn: () => Promise<unknown>) => {
     setActionState({ kind: 'loading', label })
@@ -569,7 +568,7 @@ export function SnippetsPageContent() {
   return (
     <>
       <AppHeader
-        breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Snippets' }]}
+        breadcrumbs={[{ label: 'Labby' }, { label: 'Library' }, { label: 'Snippets' }]}
       />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
@@ -584,25 +583,14 @@ export function SnippetsPageContent() {
                   <Plus className="size-[15px]" />
                   New Snippet
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => void reload()}>
-                  <RefreshCw className="size-4" />
-                  Refresh
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void runAction('Test all', () => snippetsApi.testAll())}
-                  disabled={snippets.length === 0}
-                >
-                  <FlaskConical className="size-4" />
-                  Test all
-                </Button>
               </>
             }
             stats={[
               { label: 'Snippets', value: snippets.length, icon: <FileCode2 size={12} strokeWidth={1.8} /> },
-              { label: 'Built-in', value: builtinCount, icon: <Package size={12} strokeWidth={1.8} /> },
-              { label: 'Inputs', value: inputCount, icon: <SlidersHorizontal size={12} strokeWidth={1.8} /> },
+              { label: 'Runs · 24h', value: '—', icon: <Activity size={12} strokeWidth={1.8} /> },
+              { label: 'Failures · 24h', value: '—', icon: <TriangleAlert size={12} strokeWidth={1.8} />, tone: 'var(--aurora-error)' },
+              { label: 'Avg Runtime', value: '—', icon: <Clock3 size={12} strokeWidth={1.8} /> },
+              { label: 'Tools Touched', value: '—', icon: <Wrench size={12} strokeWidth={1.8} />, tone: 'var(--aurora-accent-strong)' },
             ]}
             footer={<LibraryTabs active="snippets" attached counts={loading || error ? {} : { snippets: snippets.length }} />}
           />

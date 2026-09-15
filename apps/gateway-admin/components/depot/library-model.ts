@@ -77,3 +77,19 @@ export function artifactExportFilename(artifact: DepotArtifact): string {
 export function serializeArtifact(artifact: DepotArtifact): string {
   return `${JSON.stringify(artifact, null, 2)}\n`
 }
+
+export type LibraryView = 'all' | 'forks' | 'published' | 'team' | 'private'
+
+/** These are facets of loaded records, never claims about unseen catalog pages. */
+export function filterLibraryView(artifacts: DepotArtifact[], view: LibraryView): DepotArtifact[] {
+  return artifacts.filter((artifact) => {
+    if (view === 'all') return true
+    if (view === 'forks') return Boolean(artifact.lineage?.forkedFromArtifactId)
+    return artifact.publication?.visibility === (view === 'published' ? 'public' : view)
+  })
+}
+
+export function libraryRevisionDate(artifact: DepotArtifact): string | undefined {
+  const value = artifact.currentRevision?.createdAt
+  return value && Number.isFinite(Date.parse(value)) ? value : undefined
+}

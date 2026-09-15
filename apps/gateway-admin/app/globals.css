@@ -64,6 +64,10 @@
   /* Lightened from #90a9b9 to meet WCAG AA (≥4.5:1) on panel-medium #102330.
      Reference-aligned lift; remains comfortably above WCAG AA on panel-medium. */
   --aurora-text-muted: #a9c6d8;
+  --console-chrome-bg: color-mix(in srgb, #0f2334 48%, transparent);
+  --console-section-label: #93b2c5;
+  --console-workspace-label: #97b6c9;
+  --console-context-text: #9bbacd;
   --aurora-accent-primary: #29b6f6;
   --aurora-accent-strong: #67cbfa;
   --aurora-accent-deep: #1c7fac;
@@ -307,6 +311,10 @@
   --aurora-border-strong: #9fbfcc;
   --aurora-text-primary: #162126;
   --aurora-text-muted: #4a6872;
+  --console-chrome-bg: color-mix(in srgb, var(--aurora-panel-medium) 48%, transparent);
+  --console-section-label: #4a6872;
+  --console-workspace-label: #4a6872;
+  --console-context-text: #4a6872;
   --aurora-accent-primary: #0288d1;
   --aurora-accent-strong: #0277bd;
   --aurora-accent-deep: #01579b;
@@ -496,6 +504,22 @@
 }
 
 @layer utilities {
+  /* Phoenix owns its viewport position in both floating and docked modes. Radix
+     normally translates this wrapper to the launcher, which would make the
+     panel's fixed offsets relative to that transformed wrapper. */
+  [data-radix-popper-content-wrapper]:has([data-phoenix-panel]) {
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    min-width: 0 !important;
+    pointer-events: none !important;
+    transform: none !important;
+  }
+
+  [data-phoenix-panel] {
+    pointer-events: auto;
+  }
+
   /* Gateway table row tones. */
   .gateway-row-tone-a {
     background: color-mix(
@@ -584,6 +608,11 @@
   50% {
     box-shadow: 0 0 0 5px rgba(103, 203, 250, 0.16);
   }
+}
+
+@keyframes phoenixDot {
+  0%, 100% { opacity: 0.28; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
 }
 @keyframes auroraSpin {
   to {
@@ -931,9 +960,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   font-size: 0 !important;
 }
 
-[data-slot='button']:has(svg) > svg,
-[data-slot='dropdown-menu-trigger']:has(svg) > svg,
-[data-icon-text-control]:has(svg) > svg {
+[data-slot='button']:has(svg):not([data-visible-label]) > svg,
+[data-slot='dropdown-menu-trigger']:has(svg):not([data-visible-label]) > svg,
+[data-icon-text-control]:has(svg):not([data-visible-label]) > svg {
   width: 1rem;
   height: 1rem;
 }
@@ -956,9 +985,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-actioncluster] button {
     min-width: 40px;
   }
-  [data-slot='button']:has(svg),
-  [data-slot='dropdown-menu-trigger']:has(svg),
-  [data-icon-text-control]:has(svg) {
+  [data-slot='button']:has(svg):not([data-visible-label]),
+  [data-slot='dropdown-menu-trigger']:has(svg):not([data-visible-label]),
+  [data-icon-text-control]:has(svg):not([data-visible-label]) {
     --aurora-icon-control-size: 2.75rem;
     height: var(--aurora-icon-control-size) !important;
     min-height: var(--aurora-icon-control-size) !important;
@@ -966,7 +995,8 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   }
   [data-main-scroll] {
     padding: 12px !important;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+    /* Leave a clean landing zone above the persistent Phoenix affordance. */
+    padding-bottom: calc(72px + env(safe-area-inset-bottom)) !important;
   }
   header[data-topbar] {
     gap: 8px !important;
@@ -1051,9 +1081,40 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-hovercard]:hover {
     transform: none !important;
   }
+  [data-console-library-tray] a {
+    min-height: 44px;
+  }
 }
 
 @media (max-width: 520px) {
+  header[data-topbar]:has([data-actioncluster] > *) {
+    height: 104px !important;
+    padding-bottom: 48px !important;
+  }
+  header[data-topbar] [data-crumb-parent],
+  header[data-topbar] [data-crumb-separator] {
+    display: none !important;
+  }
+  header[data-topbar] [data-actioncluster] {
+    position: absolute;
+    inset: 56px 0 auto;
+    display: flex;
+    height: 48px;
+    max-width: none;
+    align-items: center;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding: 2px calc(10px + env(safe-area-inset-right)) 2px
+      calc(10px + env(safe-area-inset-left));
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg));
+    border-bottom: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+    background: var(--console-chrome-bg);
+  }
+  header[data-topbar] [data-actioncluster] > * {
+    flex-shrink: 0;
+  }
   [data-search-label],
   [data-search-notification] {
     display: none !important;
@@ -1130,6 +1191,58 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     max-width: none;
     min-width: 0;
   }
+
+  /* Server detail starts as a desktop-dense control surface. On phones, keep
+     every datum visible instead of clipping a fixed five-column strip. */
+  [data-detail-heading] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: var(--space-4) !important;
+  }
+  [data-detail-meta] {
+    width: 100%;
+    padding-top: 0 !important;
+  }
+  [data-detail-meta-content] {
+    justify-content: flex-start !important;
+    gap: var(--space-2) !important;
+    line-height: var(--lh-dense) !important;
+  }
+  [data-detail-meta] button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  [data-detail-stat-strip] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  [data-detail-exposure] {
+    grid-column: 1 / -1;
+    min-height: 44px;
+  }
+  [data-detail-stat-card] {
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg));
+  }
+  [data-detail-stat-card]:nth-of-type(odd) {
+    border-left: 0 !important;
+  }
+  [data-detail-tabbar] {
+    display: block !important;
+    padding-top: 0 !important;
+  }
+  [data-detail-tabs-list] {
+    scroll-padding-inline: var(--space-5);
+  }
+  [data-detail-tabs-list] > button {
+    min-height: 44px;
+  }
+  [data-detail-capabilities] {
+    max-width: 100%;
+    padding-top: 6px;
+    border-top: 1px solid
+      color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg));
+    scroll-padding-inline: var(--space-5);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1140,4 +1253,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   .console-root * {
     transition-duration: 1ms !important;
   }
+}
+
+[data-scopemenu] > button:hover {
+  border-color: var(--aurora-border-strong) !important;
+  background: var(--aurora-hover-bg) !important;
 }

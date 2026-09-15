@@ -37,7 +37,7 @@ test.afterEach(() => {
 const SIDEBAR_KEY = 'labby-sidebar-collapsed-v2'
 
 /** Mounts the sidebar with the given persisted rail choice (`null` clears it, which is the compact default). */
-async function mountSidebar(snapshot: AuthoritySnapshot | undefined, persisted: '0' | '1' | null) {
+async function mountSidebar(snapshot: AuthoritySnapshot | undefined, persisted: '0' | '1' | null, pathname = '/') {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', authority: snapshot })
   globalThis.fetch = (async () => Response.json([])) as typeof globalThis.fetch
   const [{ ConsoleSidebar }, { ConsoleShellProvider }, { renderClient }] = await Promise.all([
@@ -50,7 +50,7 @@ async function mountSidebar(snapshot: AuthoritySnapshot | undefined, persisted: 
   else window.localStorage.setItem(SIDEBAR_KEY, persisted)
   const view = await renderClient(
     <AppRouterContext.Provider value={router as never}>
-      <PathnameContext.Provider value="/">
+      <PathnameContext.Provider value={pathname}>
         <ConsoleShellProvider>
           <ConsoleSidebar />
         </ConsoleShellProvider>
@@ -132,4 +132,66 @@ test('the compact workspace switcher expands the rail and opens the menu', async
   assert.ok(rows.length > 0, 'the workspace rows must be listed after expanding')
   assert.equal(window.localStorage.getItem(SIDEBAR_KEY), '0', 'the explicit expansion is persisted')
   await view.unmount()
+})
+
+
+const fullAuthority: AuthoritySnapshot = { ...authority, capabilities: ['scope.read', 'scope.manage', 'platform.manage', 'audit.read', 'scope.create', 'scope.operate'] }
+
+test('only the first nine navigation accelerators are rendered', async () => {
+  const { view } = await mountSidebar(fullAuthority, '0')
+  assert.deepEqual([...view.container.querySelectorAll('[data-kbd]')].map(node => node.textContent), ['⌘1', '⌘2', '⌘3', '⌘4', '⌘5', '⌘6', '⌘7', '⌘8', '⌘9'])
+  await view.unmount()
+})
+
+test('active navigation uses the page token and inactive links omit aria-current', async () => {
+  const { view } = await mountSidebar(fullAuthority, '0', '/usage')
+  const activity = view.container.querySelector<HTMLAnchorElement>('a[href="/usage"]')
+  const overview = view.container.querySelector<HTMLAnchorElement>('a[href="/"]')
+  assert.equal(activity?.getAttribute('aria-current'), 'page')
+  assert.equal(overview?.hasAttribute('aria-current'), false)
+  await view.unmount()
+})
+
+test('the realm badge keeps Labby branding and reflects workspace context', async () => {
+  const depot = await mountSidebar(fullAuthority, '0', '/library')
+  const depotBadge = depot.view.container.querySelector<HTMLElement>('[data-realm-badge]')
+  assert.equal(depotBadge?.textContent, 'LABBY')
+  assert.equal(depotBadge?.style.color, 'var(--aurora-accent-strong)')
+  await depot.view.unmount()
+  const team = await mountSidebar(fullAuthority, '0', '/agents')
+  assert.equal(team.view.container.querySelector<HTMLElement>('[data-realm-badge]')?.textContent, 'LABBY')
+  assert.equal(team.view.container.querySelector<HTMLElement>('[data-realm-badge]')?.style.color, 'var(--aurora-success)')
+  await team.view.unmount()
+  const personal = await mountSidebar({ ...fullAuthority, activeOwner: { kind: 'personal', id: 'principal-1' }, activeTeamId: undefined }, '0', '/agents')
+  assert.equal(personal.view.container.querySelector<HTMLElement>('[data-realm-badge]')?.textContent, 'LABBY')
+  assert.equal(personal.view.container.querySelector<HTMLElement>('[data-realm-badge]')?.style.color, 'var(--aurora-accent-pink)')
+  await personal.view.unmount()
+})
+
+test('section dragging persists its order and preserves item order, pins, and folds', async () => {
+  window.localStorage.setItem('labby-nav-sections-v4', JSON.stringify(['Control Plane', 'Observability', 'Depot', 'Workspace']))
+  window.localStorage.setItem('labby-nav-order-v2', JSON.stringify({ 'Control Plane': ['Browsers', 'Gateway', 'Overview'] }))
+  window.localStorage.setItem('labby-nav-pinned', JSON.stringify(['Gateway']))
+  window.localStorage.setItem('labby-nav-folded', JSON.stringify({ Observability: true }))
+  const { view } = await mountSidebar(fullAuthority, '0')
+  const workspace = view.container.querySelector('[data-nav-section="Workspace"]')!
+  const control = view.container.querySelector('[data-nav-section="Control Plane"]')!
+  await act(async () => {
+    workspace.dispatchEvent(new window.Event('dragstart', { bubbles: true }))
+    control.dispatchEvent(new window.Event('drop', { bubbles: true, cancelable: true }))
+  })
+  const expected = ['Workspace', 'Control Plane', 'Observability', 'Depot']
+  assert.deepEqual([...view.container.querySelectorAll('[data-nav-section]')].map(node => node.getAttribute('data-nav-section')), expected)
+  assert.deepEqual(JSON.parse(window.localStorage.getItem('labby-nav-sections-v4')!), expected)
+  assert.equal(view.container.querySelector('[data-nav-section="Observability"]')?.getAttribute('aria-expanded'), 'false')
+  const controlItems = view.container.querySelector('[data-nav-section="Control Plane"]')?.nextElementSibling
+  assert.deepEqual([...controlItems!.querySelectorAll('a')].map(node => node.getAttribute('href')), ['/gateways', '/browsers', '/'])
+  assert.equal(window.localStorage.getItem('labby-nav-order-v2'), '{"Control Plane":["Browsers","Gateway","Overview"]}')
+  assert.equal(window.localStorage.getItem('labby-nav-pinned'), '["Gateway"]')
+  assert.equal(window.localStorage.getItem('labby-nav-folded'), '{"Observability":true}')
+  await view.unmount()
+  const restored = await mountSidebar(fullAuthority, '0')
+  assert.deepEqual([...restored.view.container.querySelectorAll('[data-nav-section]')].map(node => node.getAttribute('data-nav-section')), expected)
+  await restored.view.unmount()
+  for (const key of ['labby-nav-sections-v4', 'labby-nav-order-v2', 'labby-nav-pinned', 'labby-nav-folded']) window.localStorage.removeItem(key)
 })

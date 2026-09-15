@@ -86,10 +86,10 @@ export function LoadoutFormDialog({ open, loadout, gatewayOptions, gatewayOption
 
   return <Dialog open={open} onOpenChange={next => !saving && onOpenChange(next)}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[760px]">
-      <DialogHeader><DialogTitle>{loadout ? 'Edit Loadout' : 'New Loadout'}</DialogTitle><DialogDescription>Curate a portable bundle for agents and harnesses. You can export it through APM, publish it in Depot, or optionally host it behind a Labby route.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{loadout ? 'Edit Loadout' : 'New Loadout'}</DialogTitle><DialogDescription>Curate a portable bundle for agents and harnesses. You can export it through APM, publish it in Labby, or optionally host it behind a Labby route.</DialogDescription></DialogHeader>
       <div className="space-y-5 py-2">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field><FieldLabel htmlFor="loadout-name">Name</FieldLabel><Input id="loadout-name" value={draft.name} onChange={e => setDraft(c => ({ ...c, name: e.target.value }))} placeholder="operations" /><FieldDescription>Portable identity used by APM, Depot, and optional route targets.</FieldDescription></Field>
+          <Field><FieldLabel htmlFor="loadout-name">Name</FieldLabel><Input id="loadout-name" value={draft.name} onChange={e => setDraft(c => ({ ...c, name: e.target.value }))} placeholder="operations" /><FieldDescription>Portable identity used by APM, Labby, and optional route targets.</FieldDescription></Field>
           <Field><FieldLabel htmlFor="loadout-description">Description</FieldLabel><Textarea id="loadout-description" rows={3} value={draft.description ?? ''} onChange={e => setDraft(c => ({ ...c, description: e.target.value || null }))} placeholder="Operations-focused projection" /></Field>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">

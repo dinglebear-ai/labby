@@ -820,7 +820,11 @@ impl ServerHandler for LabMcpServer {
         Box::pin(async move {
             restore_request_meta(&mut request.meta, &context.meta);
             Ok(provenance::stamp_get_prompt_response(
-                self.get_prompt_impl(request, context).await?,
+                labby_runtime::usage_actor::scope_attributed(
+                    self.request_usage_attribution(&context),
+                    self.get_prompt_impl(request, context),
+                )
+                .await?,
             ))
         })
     }
@@ -852,7 +856,12 @@ impl ServerHandler for LabMcpServer {
     ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send {
         Box::pin(async move {
             restore_request_meta(&mut request.meta, &context.meta);
-            let response = match self.read_resource_impl(request, context).await? {
+            let response = match labby_runtime::usage_actor::scope_attributed(
+                self.request_usage_attribution(&context),
+                self.read_resource_impl(request, context),
+            )
+            .await?
+            {
                 ReadResourceResponse::Complete(result) => result
                     .with_ttl_ms(0)
                     .with_cache_scope(CacheScope::Private)
@@ -903,7 +912,11 @@ impl ServerHandler for LabMcpServer {
         // all-features dispatch state on Tokio's bounded worker stack and can
         // overflow it as new in-process services enlarge that state machine.
         Ok(provenance::stamp_call_tool_response(
-            self.boxed_call_tool_response_impl(request, context).await?,
+            labby_runtime::usage_actor::scope_attributed(
+                self.request_usage_attribution(&context),
+                self.boxed_call_tool_response_impl(request, context),
+            )
+            .await?,
         ))
     }
 

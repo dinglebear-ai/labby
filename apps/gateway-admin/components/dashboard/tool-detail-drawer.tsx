@@ -9,7 +9,7 @@ import { ToolVolumeChart } from './tool-volume-chart'
 import { RecentCallsList } from './recent-calls'
 import { DetailDrawer, DrawerSection, DrawerStatGrid, RankRow } from './detail-drawer'
 import { ErrorNotice } from './error-notice'
-import type { DrillTarget } from './drill'
+import { actorDrillTarget, type DrillTarget } from './drill'
 import {
   WINDOW_LABELS,
   formatCompactNumber,
@@ -88,7 +88,7 @@ export function ToolDetailDrawer({
                     key={caller.id}
                     label={caller.label}
                     value={formatCompactNumber(caller.calls)}
-                    onClick={() => onDrill({ type: 'agent', id: caller.id })}
+                    onClick={() => onDrill(actorDrillTarget(caller))}
                   />
                 ))}
               </div>

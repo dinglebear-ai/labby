@@ -11,10 +11,9 @@ pub struct UpstreamCallRecord {
     pub capability: String,
     pub operation: String,
     pub subject_scoped: bool,
-    /// OAuth subject for subject-scoped calls; `"unattributed"` for the
-    /// non-OAuth pool path (bearer-auth callers are not yet individually
-    /// attributed).
+    /// Inbound redacted actor tag for new records; legacy rows retain their original meaning.
     pub actor: String,
+    pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
     /// `"ok"` | `"upstream_error"` | `"timeout"` | `"response_too_large"` | `"upstream_connect_error"`.
     pub outcome: String,
     pub elapsed_ms: i64,

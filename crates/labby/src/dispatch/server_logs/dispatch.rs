@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -58,6 +59,8 @@ struct QueryResult {
     filters: AppliedFilters,
     files: Vec<FileSummary>,
     entries: Vec<LogEntry>,
+    available_sources: Vec<String>,
+    available_sources_complete: bool,
     matched: usize,
     scanned_lines: usize,
     malformed_lines: usize,
@@ -70,6 +73,7 @@ struct QueryResult {
 struct AppliedFilters {
     limit: usize,
     level: Option<String>,
+    levels: Vec<String>,
     target: Option<String>,
     service: Option<String>,
     action: Option<String>,
@@ -113,6 +117,8 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
     let mut remaining_bytes = params.max_scan_bytes;
     let mut summaries = Vec::new();
     let mut entries = Vec::new();
+    let mut available_sources = BTreeSet::new();
+    let mut available_sources_complete = true;
     let mut scanned_lines = 0usize;
     let mut malformed_lines = 0usize;
     let mut matched_total = 0usize;
@@ -120,16 +126,18 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
     let mut truncated = false;
 
     'files: for file in files.iter().rev() {
-        if remaining_bytes == 0 {
-            truncated = true;
-            break;
-        }
         if !matches_file_filter(file, &filters) {
             continue;
+        }
+        if remaining_bytes == 0 {
+            truncated = true;
+            available_sources_complete = false;
+            break;
         }
         let bytes_to_read = remaining_bytes.min(file.bytes);
         if bytes_to_read < file.bytes {
             truncated = true;
+            available_sources_complete = false;
         }
         remaining_bytes -= bytes_to_read;
         scanned_bytes += bytes_to_read;
@@ -156,6 +164,9 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
                 malformed_lines += 1;
                 continue;
             };
+            if let Some(service) = &entry.service {
+                available_sources.insert(service.clone());
+            }
             if filters.correlated_only && !entry_has_correlation(&entry) {
                 continue;
             }
@@ -167,6 +178,7 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
                 entries.push(entry);
                 if params.stop_after_limit && entries.len() >= params.limit {
                     truncated = true;
+                    available_sources_complete = false;
                     break 'files;
                 }
             } else {
@@ -181,6 +193,7 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
         filters: AppliedFilters {
             limit: params.limit,
             level: params.level,
+            levels: params.levels,
             target: params.target,
             service: params.service,
             action: params.action,
@@ -192,6 +205,8 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
         },
         files: summaries,
         entries,
+        available_sources: available_sources.into_iter().collect(),
+        available_sources_complete,
         matched: matched_total,
         scanned_lines,
         malformed_lines,
@@ -339,6 +354,7 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 #[derive(Debug)]
 struct NormalizedFilters {
     level: Option<String>,
+    levels: Vec<String>,
     target: Option<String>,
     service: Option<String>,
     action: Option<String>,
@@ -352,6 +368,7 @@ impl From<&QueryParams> for NormalizedFilters {
     fn from(params: &QueryParams) -> Self {
         Self {
             level: params.level.clone(),
+            levels: params.levels.clone(),
             target: params.target.as_deref().map(str::to_ascii_lowercase),
             service: params.service.as_deref().map(str::to_ascii_lowercase),
             action: params.action.as_deref().map(str::to_ascii_lowercase),
@@ -373,6 +390,14 @@ fn matches_file_filter(file: &LogFile, filters: &NormalizedFilters) -> bool {
 fn entry_matches(entry: &LogEntry, filters: &NormalizedFilters) -> bool {
     if let Some(level) = &filters.level
         && entry.level.as_deref() != Some(level.as_str())
+    {
+        return false;
+    }
+    if !filters.levels.is_empty()
+        && !entry
+            .level
+            .as_ref()
+            .is_some_and(|level| filters.levels.contains(level))
     {
         return false;
     }
@@ -482,6 +507,7 @@ mod tests {
         let params = QueryParams {
             limit: 10,
             level: Some("INFO".to_string()),
+            levels: Vec::new(),
             target: None,
             service: Some("gateway".to_string()),
             action: None,
@@ -530,6 +556,7 @@ mod tests {
         let params = QueryParams {
             limit: 1,
             level: None,
+            levels: Vec::new(),
             target: None,
             service: Some("gateway".to_string()),
             action: None,
@@ -550,6 +577,41 @@ mod tests {
     }
 
     #[test]
+    fn query_filters_multiple_levels_and_reports_sources_from_the_bounded_scan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("lab.active.log");
+        std::fs::write(
+            &log_path,
+            [
+                r#"{"timestamp":"2026-07-12T00:00:01Z","level":"DEBUG","fields":{"message":"debug","service":"worker"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:02Z","level":"INFO","fields":{"message":"info","service":"gateway"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:03Z","level":"ERROR","fields":{"message":"error","service":"upstream.pool"}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write log");
+
+        let params = parse(&json!({
+            "levels": ["error", "INFO", "error"],
+            "service": "gateway",
+            "limit": 10,
+            "max_scan_bytes": 1024 * 1024
+        }))
+        .expect("parse filters");
+        let result = query_from_dir(dir.path(), params).expect("query");
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].level.as_deref(), Some("INFO"));
+        assert_eq!(result.filters.level, None);
+        assert_eq!(result.filters.levels, ["ERROR", "INFO"]);
+        assert_eq!(
+            result.available_sources,
+            ["gateway", "upstream.pool", "worker"]
+        );
+        assert!(result.available_sources_complete);
+    }
+
+    #[test]
     fn query_promotes_span_correlation_and_can_stop_after_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("lab.active.log");
@@ -567,6 +629,7 @@ mod tests {
         let params = QueryParams {
             limit: 2,
             level: None,
+            levels: Vec::new(),
             target: None,
             service: None,
             action: None,
@@ -587,6 +650,7 @@ mod tests {
             json!("req-span-123")
         );
         assert!(result.truncated);
+        assert!(!result.available_sources_complete);
     }
 
     #[test]
@@ -600,6 +664,7 @@ mod tests {
         let params = QueryParams {
             limit: 10,
             level: None,
+            levels: Vec::new(),
             target: None,
             service: Some("gateway".to_string()),
             action: None,
@@ -615,6 +680,7 @@ mod tests {
 
         assert_eq!(result.entries.len(), 1);
         assert!(result.truncated);
+        assert!(!result.available_sources_complete);
         assert_eq!(
             result.scanned_bytes,
             u64::try_from(new_line.len() + 2).unwrap()

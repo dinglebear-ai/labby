@@ -6,7 +6,11 @@ mod credential_schema;
 mod credential_store;
 mod credential_verifier;
 mod dev_container;
+mod dev_container_engine;
+mod dev_container_image;
 mod domain;
+mod durable_delegation;
+pub(crate) use durable_delegation::DurableIdentityReference;
 mod error;
 #[cfg(feature = "gateway")]
 mod gateway_authority;
@@ -19,6 +23,9 @@ mod integrity;
 mod loadout;
 mod migrations;
 pub(crate) mod offline_migration;
+pub(crate) use agent::{AgentSessionAdmission, AgentSessionRecord};
+#[cfg(test)]
+pub(crate) use dev_container_image::DevContainerLaunchManifest;
 pub(crate) use migrations::MigrationEvidenceSource;
 mod outbox;
 #[allow(unused_imports)]
@@ -73,7 +80,9 @@ mod resolver;
 mod runtime;
 mod store;
 mod task;
+pub(crate) mod task_schedule;
 pub(crate) use task::TaskRecord;
+pub(crate) use task_schedule::ScheduleAdmission;
 mod team;
 pub(crate) use team::{ManageTeamProjectInput, ManagedProjectSnapshot};
 mod team_provision;
@@ -145,6 +154,16 @@ pub(crate) use dev_container::{
     authorize_and_create_approved_for_store, authorize_and_set_dev_container_desired_state,
     create_approved_for_store, lookup_dev_container_for_store, recovery_inventory_for_store,
     set_desired_for_store, set_observed_for_store,
+};
+pub(crate) use dev_container_engine::{
+    DevContainerEngineError, DynDevContainerImageRuntime, configured_dev_container_image_runtime,
+    configured_dev_container_runtime, unavailable_dev_container_image_runtime,
+    unavailable_dev_container_runtime,
+};
+pub(crate) use dev_container_image::{
+    CreateTemplateDraft, DevContainerBuildCatalogSnapshot, DevContainerBuildSource,
+    DevContainerImageBuild, DevContainerLaunchEnvironmentEntry, DevContainerTemplateDraft,
+    EnqueueImageBuild, TemplateEnvironmentEntry, owner_kind_wire,
 };
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole, TeamRole};

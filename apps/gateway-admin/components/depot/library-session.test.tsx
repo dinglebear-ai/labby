@@ -27,20 +27,20 @@ test('detail responses and retained details cannot cross selection or session bo
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
-    if (body.action === 'artifacts.get_remote') { const read = deferred(); reads.push(read); return read.promise }
-    return envelope({ artifacts: [] })
+    if (body.action === 'artifacts.get') { const read = deferred(); reads.push(read); return read.promise }
+    return envelope({ items: [], can_create: false })
   }
   const view = await renderClient(page('alpha'))
   try {
     await flush()
     await view.rerender(page('bravo'))
-    await act(async () => reads[1].resolve(envelope({ artifact: { id: 'bravo', title: 'Bravo private details' } })))
+    await act(async () => reads[1].resolve(envelope({ item: { artifact_id: 'bravo', name: 'Bravo private details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     assert.match(document.body.textContent ?? '', /Bravo private details/)
     await view.rerender(page('charlie'))
     assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details/)
     assert.equal(document.body.querySelector('a[href="/depot?artifact=bravo"]'), null)
-    await act(async () => reads[2].resolve(envelope({ artifact: { id: 'charlie', title: 'Charlie private details' } })))
-    await act(async () => reads[0].resolve(envelope({ artifact: { id: 'alpha', title: 'Alpha stale details' } })))
+    await act(async () => reads[2].resolve(envelope({ item: { artifact_id: 'charlie', name: 'Charlie private details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
+    await act(async () => reads[0].resolve(envelope({ item: { artifact_id: 'alpha', name: 'Alpha stale details', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' } })))
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
     await view.rerender(page('charlie'))
@@ -61,7 +61,7 @@ test('late page failures and successes cannot overwrite a new query', async () =
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
     if (body.params.cursor) { const read = deferred(); pending.push(read); return read.promise }
-    return envelope({ artifacts: [{ id: body.params.query || 'initial', title: body.params.query || 'Initial item' }], nextCursor: 'next' })
+    return envelope({ items: [{ artifact_id: body.params.query || 'initial', name: body.params.query || 'Initial item', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' }], next_cursor: 'next', can_create: false })
   }
   const view = await renderClient(page(''))
   try {
@@ -74,7 +74,7 @@ test('late page failures and successes cannot overwrite a new query', async () =
     const props = (input as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key]
     await act(async () => props.onChange({ target: { value: 'New query' } }))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
-    await act(async () => pending[0].resolve(envelope({ artifacts: [{ id: 'stale', title: 'Stale page' }] })))
+    await act(async () => pending[0].resolve(envelope({ items: [{ artifact_id: 'stale', name: 'Stale page', latest_revision_id: 'revision-one', latest_revision_files: [], access_label: 'private', visibility: 'private' }], can_create: false })))
     assert.doesNotMatch(view.container.textContent ?? '', /Stale page/)
     assert.match(view.container.textContent ?? '', /New query/)
     act(() => more().click())

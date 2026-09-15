@@ -77,6 +77,66 @@ impl TaskStore {
         Ok(intent.id.clone())
     }
 
+    pub(super) fn put_input_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        task_id: &str,
+        input_digest: &str,
+        input_text: &str,
+    ) -> AccessStoreResult<()> {
+        use sha2::{Digest as _, Sha256};
+        if input_text.is_empty()
+            || input_text.len() > 1024 * 1024
+            || format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(input_text.as_bytes()))
+            ) != input_digest
+        {
+            return Err(AccessStoreError::MalformedVocabulary);
+        }
+        tx.execute(
+            "INSERT INTO agent_task_inputs(task_id,input_digest,input_text) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO NOTHING",
+            params![task_id, input_digest, input_text],
+        )
+        .map_err(super::store::map_sqlite_error)?;
+        let stored: (String, String) = tx
+            .query_row(
+                "SELECT input_digest,input_text FROM agent_task_inputs WHERE task_id=?1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        if stored.0 != input_digest || stored.1 != input_text {
+            return Err(AccessStoreError::IntegrityViolation {
+                check: "task_input_idempotency",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn input(&self, task_id: &str) -> AccessStoreResult<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT i.input_text,i.input_digest,t.input_digest FROM agent_task_inputs i JOIN agent_tasks t ON t.task_id=i.task_id WHERE i.task_id=?1",
+                [task_id],
+                |row| {
+                    use sha2::{Digest as _, Sha256};
+                    let input: String = row.get(0)?;
+                    let evidence_digest: String = row.get(1)?;
+                    let intent_digest: String = row.get(2)?;
+                    let actual = format!(
+                        "sha256:{}",
+                        hex::encode(Sha256::digest(input.as_bytes()))
+                    );
+                    if actual != evidence_digest || actual != intent_digest {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                    Ok(input)
+                },
+            )
+            .optional()
+            .map_err(super::store::map_sqlite_error)
+    }
+
     pub(crate) fn get(&self, id: &str) -> AccessStoreResult<Option<TaskRecord>> {
         self.connection
             .query_row(
@@ -277,6 +337,10 @@ mod tests {
     fn d() -> String {
         format!("sha256:{}", "b".repeat(64))
     }
+    fn input_digest(input: &str) -> String {
+        use sha2::{Digest as _, Sha256};
+        format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes())))
+    }
     fn intent() -> TaskIntent {
         TaskIntent {
             id: "task-1".into(),
@@ -287,7 +351,7 @@ mod tests {
             agent_id: "agent-1".into(),
             agent_version: 1,
             agent_revision_digest: d(),
-            input_digest: d(),
+            input_digest: input_digest("test input"),
             catalog_generation: "catalog-1".into(),
             authority_fingerprint: "authority-1".into(),
         }
@@ -362,5 +426,85 @@ mod tests {
             .query_row("SELECT count(*) FROM agent_task_audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn recovery_preserves_a_running_attempt_until_its_full_lease_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task-recovery.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        let mut store = TaskStore::open(&path).unwrap();
+        store.create(&intent(), 1).unwrap();
+        store
+            .transition(
+                "task-1",
+                TaskState::Created,
+                TaskState::Queued,
+                "p-1",
+                0,
+                None,
+                None,
+                2,
+            )
+            .unwrap();
+        let fence = "f".repeat(32);
+        store
+            .acquire_lease("task-1", 1, &fence, 305_002, 2)
+            .unwrap();
+        store
+            .transition(
+                "task-1",
+                TaskState::Queued,
+                TaskState::Running,
+                "p-1",
+                1,
+                Some(&fence),
+                None,
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(store.recover_expired(300_002).unwrap(), 0);
+        assert_eq!(
+            store.get("task-1").unwrap().unwrap().state,
+            TaskState::Running
+        );
+        assert_eq!(store.recover_expired(305_002).unwrap(), 1);
+        assert_eq!(
+            store.get("task-1").unwrap().unwrap().state,
+            TaskState::Expired
+        );
+    }
+
+    #[test]
+    fn durable_task_input_is_content_addressed_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task-input.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::AGENT_TASK_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::EXECUTION_EVIDENCE_SCHEMA)
+            .unwrap();
+        let mut store = TaskStore::open(&path).unwrap();
+        store.create(&intent(), 1).unwrap();
+        let digest = input_digest("test input");
+        let tx = store.connection.unchecked_transaction().unwrap();
+        TaskStore::put_input_in_transaction(&tx, "task-1", &digest, "test input").unwrap();
+        TaskStore::put_input_in_transaction(&tx, "task-1", &digest, "test input").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            store.input("task-1").unwrap().as_deref(),
+            Some("test input")
+        );
+        let tx = store.connection.unchecked_transaction().unwrap();
+        assert!(
+            TaskStore::put_input_in_transaction(&tx, "task-1", &input_digest("other"), "other",)
+                .is_err()
+        );
     }
 }

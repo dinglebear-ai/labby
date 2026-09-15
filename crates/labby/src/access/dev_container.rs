@@ -6,6 +6,7 @@ use labby_primitives::dev_container::{
     SecretReference,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::error::AccessStoreError;
@@ -88,6 +89,7 @@ pub(super) struct CreateInstance<'a> {
     pub authority_fingerprint: &'a str,
     pub event_id: &'a str,
     pub occurred_at: i64,
+    pub launch_manifest_digest: Option<&'a str>,
 }
 
 /// Typed cause of a ledger storage failure. Carries the access store's
@@ -337,8 +339,9 @@ fn create_instance_in_transaction(
             "INSERT INTO dev_container_instances(
                 instance_id,owner_kind,owner_id,template_id,image_digest,lifecycle_nonce,
                 desired_state,observed_state,cpu_millis,memory_bytes,disk_bytes,lifetime_seconds,
-                secret_references_json,authority_fingerprint,revision,created_at,updated_at,deleted_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'running','pending',?7,?8,?9,?10,?11,?12,1,?13,?13,NULL)",
+                secret_references_json,authority_fingerprint,revision,created_at,updated_at,deleted_at,
+                launch_manifest_digest)
+             VALUES(?1,?2,?3,?4,?5,?6,'running','pending',?7,?8,?9,?10,?11,?12,1,?13,?13,NULL,?14)",
             params![
                 input.instance.id().as_str(),
                 owner_kind,
@@ -353,6 +356,7 @@ fn create_instance_in_transaction(
                 secret_references,
                 input.authority_fingerprint,
                 input.occurred_at,
+                input.launch_manifest_digest,
             ],
         )
         .map_err(storage)?;
@@ -438,6 +442,8 @@ pub(crate) struct CreatedRuntimeSpec {
     pub template: ApprovedTemplate,
     pub instance: OwnedDevContainer,
     pub resources: ReservedResources,
+    pub launch_manifest: super::dev_container_image::DevContainerLaunchManifest,
+    pub environment: labby_runtime::dev_container_runtime::ResolvedLaunchEnvironment,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,6 +453,9 @@ pub(crate) async fn create_approved_for_store(
     instance_id: String,
     template_id: String,
     secret_references: Vec<String>,
+    current_catalog_generation: String,
+    current_catalog_digest: String,
+    secret_values: BTreeMap<String, String>,
     authority_fingerprint: String,
     event_id: String,
     now: i64,
@@ -459,6 +468,9 @@ pub(crate) async fn create_approved_for_store(
                 &instance_id,
                 &template_id,
                 secret_references,
+                &current_catalog_generation,
+                &current_catalog_digest,
+                &secret_values,
                 &authority_fingerprint,
                 &event_id,
                 now,
@@ -476,6 +488,9 @@ pub(crate) async fn authorize_and_create_approved_for_store(
     instance_id: String,
     template_id: String,
     secret_references: Vec<String>,
+    current_catalog_generation: String,
+    current_catalog_digest: String,
+    secret_values: BTreeMap<String, String>,
     authority_fingerprint: String,
     event_id: String,
     now: i64,
@@ -493,6 +508,9 @@ pub(crate) async fn authorize_and_create_approved_for_store(
                 &instance_id,
                 &template_id,
                 secret_references,
+                &current_catalog_generation,
+                &current_catalog_digest,
+                &secret_values,
                 &authority_fingerprint,
                 &event_id,
                 now,
@@ -516,6 +534,9 @@ fn create_approved(
     instance_id: &str,
     template_id: &str,
     secret_references: Vec<String>,
+    current_catalog_generation: &str,
+    current_catalog_digest: &str,
+    secret_values: &BTreeMap<String, String>,
     authority_fingerprint: &str,
     event_id: &str,
     now: i64,
@@ -529,6 +550,9 @@ fn create_approved(
         instance_id,
         template_id,
         secret_references,
+        current_catalog_generation,
+        current_catalog_digest,
+        secret_values,
         authority_fingerprint,
         event_id,
         now,
@@ -544,6 +568,9 @@ fn create_approved_in_transaction(
     instance_id: &str,
     template_id: &str,
     secret_references: Vec<String>,
+    current_catalog_generation: &str,
+    current_catalog_digest: &str,
+    secret_values: &BTreeMap<String, String>,
     authority_fingerprint: &str,
     event_id: &str,
     now: i64,
@@ -554,7 +581,7 @@ fn create_approved_in_transaction(
     };
     let row = transaction
         .query_row(
-            "SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status FROM dev_container_templates WHERE template_id=?1",
+            "SELECT image_digest,max_active_instances,cpu_millis,memory_bytes,disk_bytes,max_lifetime_seconds,host_capabilities_json,status,launch_manifest_digest FROM dev_container_templates WHERE template_id=?1",
             [template_id],
             |r| {
                 Ok((
@@ -566,6 +593,7 @@ fn create_approved_in_transaction(
                     r.get::<_, i64>(5)?,
                     r.get::<_, String>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -585,6 +613,60 @@ fn create_approved_in_transaction(
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let manifest_digest = row.8.ok_or(DevContainerLedgerError::TemplateUnavailable)?;
+    let manifest = load_launch_manifest(transaction, &manifest_digest, template_id, &row.0)?;
+    require_current_manifest_catalog(
+        &manifest,
+        current_catalog_generation,
+        current_catalog_digest,
+    )?;
+    let requested_reference_count = secret_references.len();
+    let mut requested_references = secret_references.clone();
+    requested_references.sort();
+    requested_references.dedup();
+    let mut manifest_references = manifest
+        .environment
+        .iter()
+        .filter_map(|entry| match entry {
+            super::dev_container_image::DevContainerLaunchEnvironmentEntry::SecretReference {
+                reference,
+                ..
+            } => Some(reference.clone()),
+            super::dev_container_image::DevContainerLaunchEnvironmentEntry::Literal { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    manifest_references.sort();
+    manifest_references.dedup();
+    if requested_references.len() != requested_reference_count
+        || requested_references != manifest_references
+    {
+        return Err(DevContainerLedgerError::TemplateUnavailable);
+    }
+    let mut environment_values = BTreeMap::new();
+    for entry in &manifest.environment {
+        let (name, value) = match entry {
+            super::dev_container_image::DevContainerLaunchEnvironmentEntry::Literal {
+                name,
+                value,
+            } => (name, value.clone()),
+            super::dev_container_image::DevContainerLaunchEnvironmentEntry::SecretReference {
+                name,
+                source_env,
+                ..
+            } => (
+                name,
+                secret_values
+                    .get(source_env)
+                    .cloned()
+                    .ok_or(DevContainerLedgerError::TemplateUnavailable)?,
+            ),
+        };
+        if environment_values.insert(name.clone(), value).is_some() {
+            return Err(DevContainerLedgerError::Storage(
+                DevContainerStorageFailure::IntegrityViolation,
+            ));
+        }
+    }
     let template = ApprovedTemplate::new(
         DevContainerTemplateId::new(template_id)
             .map_err(|_| DevContainerLedgerError::InvalidInput)?,
@@ -628,13 +710,77 @@ fn create_approved_in_transaction(
             authority_fingerprint,
             event_id,
             occurred_at: now,
+            launch_manifest_digest: Some(&manifest.manifest_digest),
         },
     )?;
     Ok(CreatedRuntimeSpec {
         template,
         instance,
         resources,
+        launch_manifest: manifest,
+        environment: labby_runtime::dev_container_runtime::ResolvedLaunchEnvironment::new(
+            environment_values,
+        ),
     })
+}
+
+fn require_current_manifest_catalog(
+    manifest: &super::dev_container_image::DevContainerLaunchManifest,
+    current_generation: &str,
+    current_digest: &str,
+) -> Result<(), DevContainerLedgerError> {
+    if manifest.catalog_generation == current_generation
+        && manifest.catalog_digest == current_digest
+    {
+        Ok(())
+    } else {
+        Err(DevContainerLedgerError::TemplateUnavailable)
+    }
+}
+
+fn load_launch_manifest(
+    transaction: &Transaction<'_>,
+    manifest_digest: &str,
+    template_id: &str,
+    image_digest: &str,
+) -> Result<super::dev_container_image::DevContainerLaunchManifest, DevContainerLedgerError> {
+    let row = transaction
+        .query_row(
+            "SELECT source_build_id,source_revision,source_digest,catalog_generation,catalog_digest,network_mask,profiles_json,environment_json FROM dev_container_launch_manifests WHERE manifest_digest=?1 AND template_id=?2 AND image_digest=?3",
+            params![manifest_digest, template_id, image_digest],
+            |row| Ok((row.get::<_, String>(0)?,row.get::<_, i64>(1)?,row.get::<_, String>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, u8>(5)?,row.get::<_, String>(6)?,row.get::<_, String>(7)?)),
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or(DevContainerLedgerError::TemplateUnavailable)?;
+    let profiles = serde_json::from_str(&row.6).map_err(|_| {
+        DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+    })?;
+    let environment = serde_json::from_str(&row.7).map_err(|_| {
+        DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+    })?;
+    let manifest = super::dev_container_image::DevContainerLaunchManifest {
+        manifest_digest: manifest_digest.to_owned(),
+        template_id: template_id.to_owned(),
+        source_build_id: row.0,
+        source_revision: row.1,
+        source_digest: row.2,
+        image_digest: image_digest.to_owned(),
+        catalog_generation: row.3,
+        catalog_digest: row.4,
+        network_mask: row.5,
+        profiles,
+        environment,
+    };
+    let actual = manifest.computed_digest().map_err(|_| {
+        DevContainerLedgerError::Storage(DevContainerStorageFailure::IntegrityViolation)
+    })?;
+    if actual != manifest.manifest_digest {
+        return Err(DevContainerLedgerError::Storage(
+            DevContainerStorageFailure::IntegrityViolation,
+        ));
+    }
+    Ok(manifest)
 }
 
 fn decode_recovery_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecoveryRecord> {
@@ -720,7 +866,11 @@ pub(crate) async fn authorize_and_set_dev_container_desired_state(
             {
                 return Err(AccessStoreError::NotAuthorized);
             }
-            let event_id = format!("desired-{instance_id}-{}", actor_token(&actor));
+            let event_id = format!(
+                "desired-{instance_id}-{}-{}",
+                desired_state_name(desired),
+                actor_token(&actor)
+            );
             set_desired_state_in(&tx, &instance_id, &lifecycle_nonce, desired, &event_id, now)
                 .map_err(ledger_to_store)?;
             tx.commit().map_err(super::store::map_sqlite_error)?;
@@ -1109,6 +1259,9 @@ mod tests {
         DevContainerId, DevContainerQuota, DevContainerTemplateId, HostCapabilityPolicy,
         ImageDigest, LifecycleNonce,
     };
+    use labby_runtime::dev_container_image_runtime::{
+        ApprovedEnvironmentSecret, ApprovedProvisionCatalog,
+    };
 
     fn fixture() -> (ApprovedTemplate, OwnedDevContainer) {
         let template = ApprovedTemplate::new(
@@ -1136,10 +1289,60 @@ mod tests {
     }
 
     #[test]
+    fn revoked_secret_reference_cannot_reuse_a_prior_manifest_via_the_same_source_env() {
+        let catalog = |reference: &str| {
+            ApprovedProvisionCatalog::new(
+                "catalog-1".to_owned(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![ApprovedEnvironmentSecret {
+                    reference: reference.to_owned(),
+                    source_env: "LABBY_SHARED_TOKEN".to_owned(),
+                    allowed_target_names: vec!["TOKEN".to_owned()],
+                }],
+            )
+            .expect("valid catalog")
+        };
+        let revoked = catalog("secret/old");
+        let current = catalog("secret/new");
+        let manifest = super::super::dev_container_image::DevContainerLaunchManifest {
+            manifest_digest: format!("sha256:{}", "a".repeat(64)),
+            template_id: "template-1".to_owned(),
+            source_build_id: "build-1".to_owned(),
+            source_revision: 1,
+            source_digest: format!("sha256:{}", "b".repeat(64)),
+            image_digest: format!("sha256:{}", "c".repeat(64)),
+            catalog_generation: revoked.generation().to_owned(),
+            catalog_digest: revoked.digest().to_owned(),
+            network_mask: 0,
+            profiles: Vec::new(),
+            environment: vec![
+                super::super::dev_container_image::DevContainerLaunchEnvironmentEntry::SecretReference {
+                    name: "TOKEN".to_owned(),
+                    reference: "secret/old".to_owned(),
+                    source_env: "LABBY_SHARED_TOKEN".to_owned(),
+                },
+            ],
+        };
+
+        assert_ne!(revoked.digest(), current.digest());
+        assert_eq!(
+            require_current_manifest_catalog(&manifest, current.generation(), current.digest(),),
+            Err(DevContainerLedgerError::TemplateUnavailable)
+        );
+    }
+
+    #[test]
     fn create_is_atomic_and_owner_quota_is_durable() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         install_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE dev_container_instances ADD COLUMN launch_manifest_digest TEXT;",
+            )
+            .unwrap();
         let (template, first) = fixture();
         approve_template(&connection, &template, 1).unwrap();
         set_owner_quota(&connection, first.owner(), 1, 1).unwrap();
@@ -1157,6 +1360,7 @@ mod tests {
                 authority_fingerprint: "sha256:authority",
                 event_id: "event-1",
                 occurred_at: 2,
+                launch_manifest_digest: None,
             },
         )
         .unwrap();
@@ -1218,6 +1422,7 @@ mod tests {
                     authority_fingerprint: "sha256:authority",
                     event_id: "event-2",
                     occurred_at: 3,
+                    launch_manifest_digest: None,
                 }
             ),
             Err(DevContainerLedgerError::QuotaExhausted)

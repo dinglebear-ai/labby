@@ -10,28 +10,31 @@ test('view options expose sort, density and layout controls', async () => {
   }
   const { DiscoverViewOptions } = await import('./discover-view-options')
   let layout = 'cards'
-  let sort = 'catalog'
-  let density = 'default'
+  let sort = 'relevance'
+  let density = 'comfortable'
   const props = {
-    sort: 'catalog' as const, setSort: (value: string) => { sort = value },
+    sort: 'relevance' as const, setSort: (value: string) => { sort = value },
     layout: 'cards' as const, setLayout: (value: string) => { layout = value },
-    density: 'default' as const, setDensity: (value: string) => { density = value },
+    density: 'comfortable' as const, setDensity: (value: string) => { density = value },
   }
   const view = await renderClient(<DiscoverViewOptions {...props} />)
   try {
     const trigger = view.container.querySelector('button')
     assert.ok(trigger)
     await act(async () => { trigger.click() })
-    assert.match(document.body.textContent ?? '', /Sorting applies to loaded results/)
+    assert.match(document.body.textContent ?? '', /Relevance/)
+    assert.match(document.body.textContent ?? '', /Most Installed/)
+    assert.match(document.body.textContent ?? '', /Most Starred/)
     assert.equal(document.querySelector('select'), null)
-    const list = document.querySelector<HTMLButtonElement>('button[aria-label="List"]')
+    const list = document.querySelector<HTMLButtonElement>('button[aria-label="List view"]')
     assert.ok(list)
     await act(async () => { list.click() })
     assert.equal(layout, 'list')
+    assert.equal(document.querySelector('button[aria-label="Table"]'), null)
     assert.match(document.body.textContent ?? '', /Density/)
     const sortGroup = document.querySelector('[aria-label="Sort retained results"]')
     assert.ok(sortGroup)
-    const recent = Array.from(sortGroup.querySelectorAll('button')).find(button => button.textContent === 'Recently updated')
+    const recent = Array.from(sortGroup.querySelectorAll('button')).find(button => button.textContent === 'Recently Updated')
     assert.ok(recent)
     await act(async () => { recent.click() })
     assert.equal(sort, 'newest')

@@ -65,8 +65,9 @@ test('Depot and Workspace navigation match the unified product information archi
     'Agents',
     'Tasks',
     'Dev Containers',
+    'Stash',
   ])
-  assert.equal(consoleNavItems.some((item) => item.href === '/stash'), false)
+  assert.equal(consoleNavItems.some((item) => item.href === '/stash'), true)
   assert.equal(consoleNavItems.some((item) => item.label === 'Loadouts'), false)
   assert.equal(consoleNavItems.some((item) => item.label === 'Snippets'), false)
 })
@@ -133,4 +134,10 @@ test('control-plane navigation excludes the redundant Labby settings shortcut', 
   assert.deepEqual(controlPlane?.items.map((item) => item.id), ['Overview', 'Gateway', 'Browsers'])
   assert.equal(consoleNavItems.some((item) => item.id === 'Labby'), false)
   assert.equal(consoleNavItems.some((item) => item.href === '/settings/surfaces'), false)
+})
+
+test('an explicitly unsupported Stash service is omitted without hiding other routes', () => {
+  const items = capabilityAwareNavSections(['scope.read'], false).flatMap(section => section.items)
+  assert.equal(items.some(item => item.id === 'Stash'), false)
+  assert.equal(items.some(item => item.id === 'Overview'), true)
 })

@@ -74,6 +74,15 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
+        "gateway.host.metrics" => to_json(
+            super::host_metrics::sample(
+                manager
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new(".")),
+            )
+            .await,
+        ),
         "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
@@ -195,7 +204,7 @@ pub async fn dispatch_with_manager_scoped(
         action if action.starts_with("gateway.oauth.") => {
             handle_oauth_actions(manager, action, params_value, enrichment_scope).await
         }
-        action if action.starts_with("gateway.mcp.") => {
+        action if action == "gateway.clients.list" || action.starts_with("gateway.mcp.") => {
             handle_mcp_actions(manager, action, params_value, enrichment_scope).await
         }
         unknown => unknown_action(unknown),

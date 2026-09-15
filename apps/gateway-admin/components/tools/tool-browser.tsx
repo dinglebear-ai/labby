@@ -168,7 +168,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     <main className={`${AURORA_PAGE_SHELL} flex-1`}>
       <div className={AURORA_PAGE_FRAME}>
         <ConsoleHero
-          eyebrow="Depot · Library · Live catalog"
+          eyebrow="Labby · Library · Live catalog"
           title="Tools"
           description="Search the live Code Mode catalog across every connected upstream. Select a tool to inspect its generated TypeScript signature."
           pulse={codeModeConfig?.enabled ? { color: 'var(--aurora-success)', label: 'Code Mode enabled' } : undefined}

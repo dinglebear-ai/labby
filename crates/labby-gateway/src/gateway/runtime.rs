@@ -13,6 +13,7 @@ use arc_swap::ArcSwap;
 use futures::StreamExt;
 #[cfg(unix)]
 use nix::errno::Errno;
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::gateway::manager::GatewayManager;
@@ -382,20 +383,37 @@ impl GatewayManager {
                 .iter()
                 .filter(|entry| Some(entry.pid) != live_pid)
                 .count();
-            // I-M2: likely_stale_process_group_count does a synchronous /proc
+            // I-M2: likely_stale_process_groups does a synchronous /proc
             // scan; offload to a blocking thread so we don't stall the executor.
-            let live_stale_count = if upstream.command.is_some() {
+            let live_stale_groups = if upstream.command.is_some() {
                 let upstream_clone = upstream.clone();
                 let live_runtime = live_pid.zip(runtime.as_ref().and_then(|meta| meta.pgid));
                 tokio::task::spawn_blocking(move || {
-                    likely_stale_process_group_count(&upstream_clone, live_runtime)
+                    likely_stale_process_groups(&upstream_clone, live_runtime)
                 })
                 .await
-                .unwrap_or(0)
+                .unwrap_or_default()
             } else {
-                0
+                BTreeSet::new()
             };
-            let stale_count = persisted_stale_count.max(live_stale_count);
+            let stale_count = persisted_stale_count.max(live_stale_groups.len());
+            let mut notification_incidents = match pool.as_deref() {
+                Some(pool) => pool.notification_incidents(&upstream.name).await,
+                None => Default::default(),
+            };
+            let mut stale_identities = live_stale_groups;
+            for entry in &persisted_rows {
+                if Some(entry.pid) != live_pid {
+                    stale_identities.insert(format!(
+                        "journal:{}:{}",
+                        entry.pid,
+                        entry.started_at_epoch_secs.unwrap_or(0)
+                    ));
+                }
+            }
+            if let Some(identity) = stale_incident_identity(&stale_identities) {
+                notification_incidents.insert("stale".to_owned(), identity);
+            }
             let fallback = if let Some(pid) = live_pid {
                 persisted_rows.into_iter().find(|entry| entry.pid == pid)
             } else {
@@ -417,6 +435,7 @@ impl GatewayManager {
             let connected =
                 upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok);
             rows.push(super::types::GatewayMcpRuntimeView {
+                notification_incidents,
                 name: upstream.name.clone(),
                 enabled: upstream.enabled,
                 connected,
@@ -661,10 +680,10 @@ fn local_cleanup_patterns() -> Vec<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn likely_stale_process_group_count(
+fn likely_stale_process_groups(
     upstream: &UpstreamConfig,
     live_runtime: Option<(u32, u32)>,
-) -> usize {
+) -> BTreeSet<String> {
     let patterns = upstream_cleanup_patterns(upstream, false);
     let mut groups = BTreeSet::new();
     for matched in matching_processes(&patterns) {
@@ -678,15 +697,48 @@ fn likely_stale_process_group_count(
             groups.insert(group);
         }
     }
-    groups.len()
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default();
+    groups
+        .into_iter()
+        .map(|group| {
+            let start = std::fs::read_to_string(format!("/proc/{group}/stat"))
+                .ok()
+                .and_then(|stat| process_start_ticks(&stat))
+                .unwrap_or(0);
+            format!("process:{}:{group}:{start}", boot.trim())
+        })
+        .collect()
+}
+
+// Linux comm may contain spaces and parentheses; fields after the final ')' begin at field 3.
+#[cfg(any(target_os = "linux", test))]
+fn process_start_ticks(stat: &str) -> Option<u64> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+fn stale_incident_identity(identities: &BTreeSet<String>) -> Option<String> {
+    if identities.is_empty() {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    for identity in identities {
+        digest.update(identity.as_bytes());
+        digest.update([0]);
+    }
+    Some(hex::encode(digest.finalize()))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn likely_stale_process_group_count(
+fn likely_stale_process_groups(
     _upstream: &UpstreamConfig,
     _live_runtime: Option<(u32, u32)>,
-) -> usize {
-    0
+) -> BTreeSet<String> {
+    BTreeSet::new()
 }
 
 pub(super) fn upstream_cleanup_patterns(
@@ -965,6 +1017,37 @@ fn terminate_process_group(_pid: u32) -> Result<(), ()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stale_incident_identity_tracks_processes_not_count_or_order() {
+        let first = stale_incident_identity(
+            &["process:boot:12:100".to_owned(), "journal:12:50".to_owned()].into(),
+        );
+        let reordered = stale_incident_identity(
+            &["journal:12:50".to_owned(), "process:boot:12:100".to_owned()].into(),
+        );
+        let reused_pid = stale_incident_identity(
+            &["process:boot:12:200".to_owned(), "journal:12:50".to_owned()].into(),
+        );
+        assert_eq!(
+            first.as_deref(),
+            Some("199dff389ef9cae6a70161eb04dd36a903d12d03a981628940de5ce3a805f69c")
+        );
+        assert_eq!(first, reordered);
+        assert_ne!(first, reused_pid);
+        assert_eq!(stale_incident_identity(&Default::default()), None);
+    }
+
+    #[test]
+    fn process_start_ticks_handles_parentheses_in_command() {
+        assert_eq!(
+            process_start_ticks(
+                "12 (worker (old)) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 12345 20"
+            ),
+            Some(12345)
+        );
+        assert_eq!(process_start_ticks("incomplete"), None);
+    }
+
     use super::*;
 
     #[tokio::test]

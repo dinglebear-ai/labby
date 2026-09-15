@@ -215,8 +215,15 @@ async fn call_tool_relayed_on_fresh_stack(
     task_authorization: TaskRouteAuthorization,
 ) -> Option<Result<CallToolResponse, CapabilityCallError>> {
     let current_span = tracing::Span::current();
+    let usage_actor = labby_runtime::usage_actor::attribution().unwrap_or_else(|| {
+        labby_runtime::usage_actor::UsageAttribution::inbound(
+            labby_runtime::usage_actor::current(),
+            "mcp",
+            None,
+        )
+    });
     let task = tokio::spawn(
-        async move {
+        labby_runtime::usage_actor::scope_attributed(usage_actor, async move {
             pool.call_tool_relayed(
                 &config,
                 oauth_subject.as_deref(),
@@ -230,7 +237,7 @@ async fn call_tool_relayed_on_fresh_stack(
                 task_authorization,
             )
             .await
-        }
+        })
         .instrument(current_span),
     );
     let _abort_on_drop = AbortTaskOnDrop(task.abort_handle());

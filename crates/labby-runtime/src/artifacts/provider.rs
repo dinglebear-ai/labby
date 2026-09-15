@@ -180,12 +180,7 @@ impl ExactArtifactRequest {
         validation::validate_reference_id(&self.revision_id, "revision_id")?;
         validate_immutable_selector(&self.revision_id)?;
         validate_remote_origin(&self.endpoint)?;
-        if self.pinned_addresses.is_empty()
-            || self
-                .pinned_addresses
-                .iter()
-                .any(|address| !public_address(*address))
-        {
+        if self.pinned_addresses.is_empty() {
             return Err(ArtifactError::UnsafePath("provider_dns_address"));
         }
         if let Some(origin) = &self.credential_origin {
@@ -220,6 +215,8 @@ pub struct ArtifactFetchPolicy {
     pub total_deadline: Duration,
     pub queue_deadline: Duration,
     pub max_concurrency: usize,
+    /// Private peers explicitly admitted by the server composition root for this connection.
+    pub allowed_private_addresses: BTreeSet<IpAddr>,
 }
 
 impl Default for ArtifactFetchPolicy {
@@ -230,6 +227,7 @@ impl Default for ArtifactFetchPolicy {
             total_deadline: Duration::from_mins(1),
             queue_deadline: Duration::from_secs(2),
             max_concurrency: 4,
+            allowed_private_addresses: BTreeSet::new(),
         }
     }
 }
@@ -243,6 +241,10 @@ impl ArtifactFetchPolicy {
             || self.max_concurrency == 0
             || self.connect_deadline > self.total_deadline
             || self.read_deadline > self.total_deadline
+            || self
+                .allowed_private_addresses
+                .iter()
+                .any(|address| !grantable_private_address(*address))
         {
             return Err(invalid(
                 "provider_policy",
@@ -353,9 +355,10 @@ pub fn acquisition_operation_for_path(path: &str) -> Option<&'static str> {
 
 /// Concrete guarded HTTP transport shared by Depot and repository acquisition.
 ///
-/// DNS is resolved by configuration, filtered to public addresses, and pinned into the HTTP
-/// client before any request. Redirect following is disabled. The exact endpoint returns bounded
-/// metadata only; component bodies are streamed incrementally through [`ArtifactTransferGate`].
+/// DNS is resolved by configuration, filtered to public or explicitly host-granted private
+/// addresses, and pinned into the HTTP client before any request. Redirect following is disabled.
+/// The exact endpoint returns bounded metadata only; component bodies are streamed incrementally
+/// through [`ArtifactTransferGate`].
 #[derive(Clone)]
 pub struct GuardedHttpTransport {
     client: reqwest::Client,
@@ -363,10 +366,11 @@ pub struct GuardedHttpTransport {
     origin: url::Origin,
     pinned_addresses: BTreeSet<IpAddr>,
     credential: Option<ArtifactSourceCredential>,
+    allowed_private_addresses: BTreeSet<IpAddr>,
 }
 
 impl GuardedHttpTransport {
-    /// Build a transport for one server-selected connection and its pre-resolved public peers.
+    /// Build a transport for one server-selected connection and its pre-resolved admitted peers.
     pub fn new(
         endpoint: Url,
         pinned_addresses: BTreeSet<IpAddr>,
@@ -375,7 +379,11 @@ impl GuardedHttpTransport {
     ) -> Result<Self, ArtifactError> {
         policy.validate()?;
         validate_remote_origin(&endpoint)?;
-        if pinned_addresses.is_empty() || pinned_addresses.iter().any(|ip| !public_address(*ip)) {
+        if pinned_addresses.is_empty()
+            || pinned_addresses
+                .iter()
+                .any(|ip| !address_allowed(*ip, &policy.allowed_private_addresses))
+        {
             return Err(ArtifactError::UnsafePath("provider_dns_address"));
         }
         let host = endpoint
@@ -400,6 +408,7 @@ impl GuardedHttpTransport {
             origin,
             pinned_addresses,
             credential,
+            allowed_private_addresses: policy.allowed_private_addresses.clone(),
         })
     }
 
@@ -465,7 +474,9 @@ impl GuardedHttpTransport {
             .remote_addr()
             .ok_or(ArtifactError::Conflict("provider_peer_unavailable"))?
             .ip();
-        if !self.pinned_addresses.contains(&peer) || !public_address(peer) {
+        if !self.pinned_addresses.contains(&peer)
+            || !address_allowed(peer, &self.allowed_private_addresses)
+        {
             return Err(ArtifactError::Conflict("provider_dns_rebinding"));
         }
         Ok(())
@@ -642,7 +653,12 @@ where
         .await
         .map_err(|_| ArtifactError::Busy)?
         .map_err(|_| ArtifactError::Busy)?;
-        let mut gate = ArtifactTransferGate::new(&self.staging_root, request).await?;
+        let mut gate = ArtifactTransferGate::new(
+            &self.staging_root,
+            request,
+            self.policy.allowed_private_addresses.clone(),
+        )
+        .await?;
         let deadlines = ArtifactTransportDeadlines {
             connect: self.policy.connect_deadline,
             read: self.policy.read_deadline,
@@ -694,6 +710,7 @@ pub struct ArtifactTransferGate {
     endpoint: Url,
     credential_origin: Option<Url>,
     pinned_addresses: BTreeSet<IpAddr>,
+    allowed_private_addresses: BTreeSet<IpAddr>,
     connected: bool,
     staging: tokio::sync::mpsc::Sender<StagingCommand>,
 }
@@ -728,7 +745,11 @@ struct StagingWorker {
 }
 
 impl ArtifactTransferGate {
-    async fn new(root: &Path, request: &ExactArtifactRequest) -> Result<Self, ArtifactError> {
+    async fn new(
+        root: &Path,
+        request: &ExactArtifactRequest,
+        allowed_private_addresses: BTreeSet<IpAddr>,
+    ) -> Result<Self, ArtifactError> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let directory = root.join(format!(
             ".acquire-{}-{}",
@@ -758,6 +779,7 @@ impl ArtifactTransferGate {
             endpoint: request.endpoint.clone(),
             credential_origin: request.credential_origin.clone(),
             pinned_addresses: request.pinned_addresses.clone(),
+            allowed_private_addresses,
             connected: false,
             staging,
         })
@@ -765,7 +787,9 @@ impl ArtifactTransferGate {
 
     /// Pin the actual peer address. A later DNS answer cannot change this connection authority.
     pub fn observe_peer(&mut self, address: IpAddr) -> Result<(), ArtifactError> {
-        if !public_address(address) || !self.pinned_addresses.contains(&address) {
+        if !address_allowed(address, &self.allowed_private_addresses)
+            || !self.pinned_addresses.contains(&address)
+        {
             return Err(ArtifactError::Conflict("provider_dns_rebinding"));
         }
         self.connected = true;
@@ -1054,6 +1078,24 @@ fn validate_remote_origin(url: &Url) -> Result<(), ArtifactError> {
 
 fn public_address(address: IpAddr) -> bool {
     check_ip_not_private(address, "artifact provider endpoint").is_ok()
+}
+
+fn address_allowed(address: IpAddr, allowed_private_addresses: &BTreeSet<IpAddr>) -> bool {
+    public_address(address) || allowed_private_addresses.contains(&address)
+}
+
+fn grantable_private_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_private(),
+        IpAddr::V6(address) => {
+            address.is_unique_local()
+                && address.to_ipv4_mapped().is_none()
+                && !matches!(
+                    address.segments(),
+                    [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254] | [0xfd20, 0xce, 0, 0, 0, 0, 0, 0x254]
+                )
+        }
+    }
 }
 
 /// Local-store implementation of the provider seam.
@@ -1426,6 +1468,7 @@ mod tests {
             read_deadline: Duration::from_millis(10),
             queue_deadline: Duration::from_millis(5),
             max_concurrency: 1,
+            allowed_private_addresses: BTreeSet::new(),
         };
         let provider = Arc::new(
             ExactArtifactProvider::new(

@@ -1,9 +1,12 @@
 //! Authenticated, owner-scoped Agent surface shared by HTTP and MCP.
 
+pub(crate) mod executor;
+
 use crate::{
     access::{
-        AccessStoreError, ActionAuthoritySpec, AuthorityCeiling, AuthorityRequest,
-        authorize_action, refresh_agent_authority_epochs, refresh_authority_epochs,
+        AccessStoreError, ActionAuthoritySpec, AgentSessionAdmission, AuthorityCeiling,
+        AuthorityRequest, authorize_action, refresh_agent_authority_epochs,
+        refresh_authority_epochs,
     },
     dispatch::{access_errors::map_store_error, error::ToolError},
 };
@@ -20,13 +23,27 @@ use labby_primitives::{
 };
 use labby_runtime::{
     agent_runtime::{
-        AgentAuthority, AgentExecutionOutput, AgentExecutionRequest, AgentExecutor,
-        AgentResourceBounds, AgentRuntimeError, Cancellation, ExecutionGuard, execute_agent,
+        AgentAuthority, AgentExecutionRequest, AgentResourceBounds, AgentRuntimeError,
+        AgentTranscript, Cancellation, bound_resources_to_authority_lease, execute_agent,
+        system_now_millis,
     },
-    authority::{AuthorityEpochVector, AuthoritySafeBoundary},
+    authority::{AuthorityEpochVector, AuthoritySafeBoundary, MAX_AUTHORITY_LEASE_MILLIS},
 };
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+#[derive(Clone)]
+struct ActiveAgentSession {
+    cancellation: Cancellation,
+    transcript: AgentTranscript,
+}
+
+static ACTIVE_AGENT_SESSIONS: LazyLock<Mutex<HashMap<String, ActiveAgentSession>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const fn param(name: &'static str) -> ParamSpec {
     ParamSpec {
@@ -94,12 +111,50 @@ pub const ACTIONS: &[ActionSpec] = &[
     action(
         "agents.run",
         "Start a pinned Agent session",
-        &[param("agent_id")],
+        &[param("agent_id"), param("input"), param("idempotency_key")],
+    ),
+    action(
+        "agents.harnesses",
+        "List explicitly configured Agent harnesses and their pinning digests",
+        &[],
+    ),
+    action(
+        "agents.sessions.list",
+        "List retained sessions for a caller-visible Agent",
+        &[
+            param("agent_id"),
+            optional_param("cursor"),
+            optional_param("limit"),
+        ],
     ),
     action(
         "agents.session.status",
         "Read Agent session status",
         &[param("agent_id"), param("session_id")],
+    ),
+    action(
+        "agents.session.get",
+        "Read retained Agent session metadata",
+        &[param("agent_id"), param("session_id")],
+    ),
+    action(
+        "agents.session.transcript",
+        "Read the bounded retained transcript for an Agent session",
+        &[param("agent_id"), param("session_id")],
+    ),
+    action(
+        "agents.session.stop",
+        "Cancel a running Agent session and retain partial evidence",
+        &[param("agent_id"), param("session_id")],
+    ),
+    action(
+        "agents.session.resume",
+        "Start a reauthorized session from retained input",
+        &[
+            param("agent_id"),
+            param("session_id"),
+            param("idempotency_key"),
+        ],
     ),
 ];
 
@@ -109,8 +164,14 @@ pub const ACTIONS: &[ActionSpec] = &[
 pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
         "agents.create" => Capability::ScopeCreate,
-        "agents.list" | "agents.get" | "agents.session.status" => Capability::ScopeRead,
-        "agents.run" => Capability::ScopeOperate,
+        "agents.list"
+        | "agents.get"
+        | "agents.harnesses"
+        | "agents.sessions.list"
+        | "agents.session.status"
+        | "agents.session.get"
+        | "agents.session.transcript" => Capability::ScopeRead,
+        "agents.run" | "agents.session.stop" | "agents.session.resume" => Capability::ScopeOperate,
         "agents.update" | "agents.suspend" => Capability::ScopeManage,
         "agents.delete" => Capability::ScopeDelete,
         _ => return None,
@@ -272,152 +333,151 @@ pub(crate) async fn dispatch(
             Ok(json!({"agent_id":definition.id,"state":state_name(state)}))
         }
         "agents.run" => {
-            context
-                .store
-                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
-                .await
-                .map_err(map)?;
             let definition = load(&context, &params).await?;
-            if definition.state != AgentState::Active {
-                return Err(denied());
-            }
-            let lease = authorize(
-                &context,
+            start_session(
+                context,
+                definition,
+                required(&params, "input")?,
+                None,
+                idempotency_key(&params)?,
                 name,
-                &definition.owner,
-                &definition.id,
-                Capability::ScopeOperate,
                 now,
             )
-            .await?;
-            let epochs = refresh_authority_epochs(
-                &context.store,
-                context.identity.clone(),
-                definition.owner.clone(),
-                Capability::ScopeOperate,
-            )
             .await
-            .map_err(map)?;
-            lease
-                .validate_at(AuthoritySafeBoundary::BeforeCommit, now, &epochs)
-                .map_err(|_| denied())?;
-            let session_id = format!("{}-{now}", definition.id);
-            let lease_expires_at = lease.expires_at_millis();
-            let authority_fingerprint = epochs.fingerprint().as_str().to_owned();
-            let run_context = context.clone();
-            let run_definition = definition.clone();
-            let run_session_id = session_id.clone();
-            let owned = tokio::spawn(async move {
-                run_context
+        }
+        "agents.harnesses" => Ok(json!({"harnesses":executor::configured_harnesses()})),
+        "agents.sessions.list" => {
+            recover_sessions(&context, now).await?;
+            let definition =
+                authorized_definition(&context, &params, name, Capability::ScopeRead, now).await?;
+            let cursor = params
+                .get("cursor")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let sessions = context
+                .store
+                .list_agent_sessions(definition.id, cursor.to_owned(), page_limit(&params)?)
+                .await
+                .map_err(map)?;
+            let next_cursor = sessions.last().map(|session| session.session_id.clone());
+            Ok(json!({
+                "sessions": sessions.iter().map(render_session).collect::<Vec<_>>(),
+                "next_cursor": next_cursor,
+            }))
+        }
+        "agents.session.status" | "agents.session.get" | "agents.session.transcript" => {
+            recover_sessions(&context, now).await?;
+            let definition =
+                authorized_definition(&context, &params, name, Capability::ScopeRead, now).await?;
+            let session_id = required(&params, "session_id")?;
+            let session = context
+                .store
+                .get_agent_session(definition.id, session_id.clone())
+                .await
+                .map_err(map)?
+                .ok_or_else(denied)?;
+            if name == "agents.session.transcript" {
+                let live = active_session(&session_id).map(|active| active.transcript.snapshot());
+                let transcript = live
+                    .as_ref()
+                    .map(|snapshot| snapshot.text.clone())
+                    .or(session.transcript.clone());
+                let truncated = live.as_ref().map_or_else(
+                    || {
+                        transcript
+                            .as_ref()
+                            .is_some_and(|value| value.len() >= 1024 * 1024)
+                    },
+                    |snapshot| snapshot.truncated,
+                );
+                Ok(json!({
+                    "agent_id": session.agent_id,
+                    "session_id": session.session_id,
+                    "status": session.status,
+                    "input": session.input_text,
+                    "transcript": transcript,
+                    "truncated": truncated,
+                }))
+            } else {
+                Ok(render_session(&session))
+            }
+        }
+        "agents.session.stop" => {
+            let definition =
+                authorized_definition(&context, &params, name, Capability::ScopeOperate, now)
+                    .await?;
+            let session_id = required(&params, "session_id")?;
+            let session = context
+                .store
+                .get_agent_session(definition.id, session_id.clone())
+                .await
+                .map_err(map)?
+                .ok_or_else(denied)?;
+            if !matches!(session.status.as_str(), "admitted" | "running") {
+                return Ok(render_session(&session));
+            }
+            if let Some(active) = active_session(&session_id) {
+                active.cancellation.cancel();
+                Ok(json!({
+                    "agent_id": session.agent_id,
+                    "session_id": session.session_id,
+                    "status": "cancelling",
+                }))
+            } else {
+                context
                     .store
-                    .create_agent_session(
-                        run_session_id.clone(),
-                        run_definition.clone(),
-                        run_context.identity.safe_fingerprint(),
-                        authority_fingerprint,
-                        i64::try_from(lease_expires_at).map_err(|_| internal())?,
+                    .settle_agent_session(
+                        session.agent_id.clone(),
+                        session.session_id.clone(),
+                        session.status,
+                        "interrupted".into(),
+                        None,
+                        session.transcript,
+                        Some("runtime_restarted".into()),
                         i64::try_from(now).map_err(|_| internal())?,
                     )
                     .await
                     .map_err(map)?;
-                run_context
-                    .store
-                    .set_agent_session_status(
-                        run_definition.id.clone(),
-                        run_session_id.clone(),
-                        "admitted".into(),
-                        "running".into(),
-                    )
-                    .await
-                    .map_err(map)?;
-                let request = AgentExecutionRequest {
-                    definition: run_definition.clone(),
-                    session: AgentSessionBinding {
-                        session_id: run_session_id.clone(),
-                        agent_id: run_definition.id.clone(),
-                        agent_version: run_definition.revision.version,
-                        principal: PrincipalId::new(lease.binding().principal_id())
-                            .map_err(|_| invalid("principal"))?,
-                        owner: run_definition.owner.clone(),
-                        catalog_generation: run_definition.revision.catalog_generation.clone(),
-                        authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
-                        lease_expires_at: i64::try_from(lease_expires_at)
-                            .map_err(|_| internal())?,
-                    },
-                    lease,
-                    bounds: AgentResourceBounds {
-                        max_runtime_millis: 300_000,
-                        max_output_bytes: 16 * 1024 * 1024,
-                        max_external_effects: 1_000,
-                    },
-                };
-                let result = execute_agent(
-                    &LiveExecutionAuthority {
-                        store: run_context.store.clone(),
-                        identity: run_context.identity.clone(),
-                        owner: run_definition.owner.clone(),
-                        definition: run_definition.clone(),
-                    },
-                    &DisabledExecutor,
-                    request,
-                    Cancellation::new(),
-                    now,
-                )
-                .await;
-                let next = match result {
-                    Ok(_) => "completed",
-                    Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => "revoked",
-                    Err(AgentRuntimeError::Cancelled) => "cancelled",
-                    Err(_) => "failed",
-                };
-                run_context
-                    .store
-                    .set_agent_session_status(
-                        run_definition.id.clone(),
-                        run_session_id.clone(),
-                        "running".into(),
-                        next.into(),
-                    )
-                    .await
-                    .map_err(map)?;
-                match result {
-                    Ok(output) => Ok(json!({
-                        "agent_id":run_definition.id,
-                        "agent_version":run_definition.revision.version,
-                        "session_id":run_session_id,
-                        "status":next,
-                        "output_digest":output.digest,
-                        "authority_expires_at":lease_expires_at
-                    })),
-                    Err(error) => Err(map_agent_runtime_error(&error)),
-                }
-            });
-            owned.await.map_err(|_| internal())?
+                Ok(json!({
+                    "agent_id": session.agent_id,
+                    "session_id": session.session_id,
+                    "status": "interrupted",
+                }))
+            }
         }
-        "agents.session.status" => {
-            context
-                .store
-                .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
-                .await
-                .map_err(map)?;
-            let definition = load(&context, &params).await?;
-            authorize(
-                &context,
-                name,
-                &definition.owner,
-                &definition.id,
-                Capability::ScopeRead,
-                now,
-            )
-            .await?;
+        "agents.session.resume" => {
+            recover_sessions(&context, now).await?;
+            let definition =
+                authorized_definition(&context, &params, name, Capability::ScopeOperate, now)
+                    .await?;
             let session_id = required(&params, "session_id")?;
-            let status = context
+            let prior = context
                 .store
-                .get_agent_session_status(definition.id.clone(), session_id.clone())
+                .get_agent_session(definition.id.clone(), session_id.clone())
                 .await
                 .map_err(map)?
                 .ok_or_else(denied)?;
-            Ok(json!({"agent_id":definition.id,"session_id":session_id,"status":status}))
+            if !matches!(
+                prior.status.as_str(),
+                "completed" | "failed" | "cancelled" | "revoked" | "interrupted"
+            ) || prior.agent_version != definition.revision.version
+            {
+                return Err(ToolError::Conflict {
+                    message: "Agent session is not resumable with the current pinned revision"
+                        .into(),
+                    existing_id: session_id,
+                });
+            }
+            start_session(
+                context,
+                definition,
+                prior.input_text,
+                Some(prior.session_id),
+                idempotency_key(&params)?,
+                name,
+                now,
+            )
+            .await
         }
         _ => Err(unknown(name)),
     }
@@ -460,34 +520,339 @@ impl AgentAuthority for LiveExecutionAuthority {
         })
     }
 }
-/// Placeholder executor shared by `agents.run` and `tasks.queue` until a real
-/// execution backend is wired. Product builds always fail with
-/// [`AgentRuntimeError::ExecutorFailed`].
-///
-/// The deterministic branch is a **test-only hook**: it is compiled in only
-/// under the `proxy-testkit` cargo feature (test support, never a product
-/// slice) and additionally requires `LABBY_E2E_DETERMINISTIC_EXECUTORS` at run
-/// time so live end-to-end matrices can drive the lifecycle. Product builds
-/// compile the branch out entirely; setting the variable there has no effect.
-pub(crate) struct DisabledExecutor;
-impl AgentExecutor for DisabledExecutor {
-    async fn execute(
-        &self,
-        _: AgentExecutionRequest,
-        _: ExecutionGuard<'_>,
-    ) -> Result<AgentExecutionOutput, AgentRuntimeError> {
-        if cfg!(feature = "proxy-testkit")
-            && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        {
-            Ok(AgentExecutionOutput {
-                digest: format!("sha256:{}", "0".repeat(64)),
-                bytes: 0,
-                external_effects: 0,
-            })
-        } else {
-            Err(AgentRuntimeError::ExecutorFailed)
-        }
+async fn start_session(
+    context: AgentDispatchContext,
+    definition: AgentDefinition,
+    input: String,
+    resumed_from_session_id: Option<String>,
+    request_key: String,
+    action: &str,
+    now: u64,
+) -> Result<Value, ToolError> {
+    use sha2::{Digest as _, Sha256};
+
+    if definition.state != AgentState::Active {
+        return Err(denied());
     }
+    if input.is_empty() || input.len() > 1024 * 1024 {
+        return Err(invalid("input"));
+    }
+    let operation = if resumed_from_session_id.is_some() {
+        "resume"
+    } else {
+        "run"
+    };
+    let input_digest = format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes())));
+    let lease = authorize(
+        &context,
+        action,
+        &definition.owner,
+        &definition.id,
+        Capability::ScopeOperate,
+        now,
+    )
+    .await?;
+    let epochs = refresh_authority_epochs(
+        &context.store,
+        context.identity.clone(),
+        definition.owner.clone(),
+        Capability::ScopeOperate,
+    )
+    .await
+    .map_err(map)?;
+    let admission_boundary = if resumed_from_session_id.is_some() {
+        AuthoritySafeBoundary::BeforeRetainedResume
+    } else {
+        AuthoritySafeBoundary::BeforeCommit
+    };
+    lease
+        .validate_at(admission_boundary, now, &epochs)
+        .map_err(|_| denied())?;
+
+    let principal = lease.binding().principal_id().to_owned();
+    match context
+        .store
+        .find_agent_session_request(
+            definition.clone(),
+            principal.clone(),
+            request_key.clone(),
+            operation.to_owned(),
+            input_digest.clone(),
+            resumed_from_session_id.clone(),
+        )
+        .await
+        .map_err(map)?
+    {
+        Some(AgentSessionAdmission::Replay(session)) => return Ok(render_session(&session)),
+        Some(AgentSessionAdmission::Conflict {
+            existing_session_id,
+        }) => return Err(idempotency_conflict(existing_session_id)),
+        Some(AgentSessionAdmission::Created) => return Err(internal()),
+        None => {}
+    }
+
+    let executor =
+        executor::resolve_executor(&definition).map_err(|error| map_agent_runtime_error(&error))?;
+    let execution_started_at = system_now_millis();
+    let bounds = bound_resources_to_authority_lease(
+        AgentResourceBounds {
+            max_runtime_millis: 300_000,
+            max_output_bytes: 16 * 1024 * 1024,
+            max_external_effects: 1_000,
+        },
+        &lease,
+        execution_started_at,
+    )
+    .map_err(|error| map_agent_runtime_error(&error))?;
+
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let transcript = AgentTranscript::new(1024 * 1024).map_err(|_| internal())?;
+    let cancellation = Cancellation::new();
+    let lease_expires_at = lease.expires_at_millis();
+    match context
+        .store
+        .create_agent_session(
+            session_id.clone(),
+            definition.clone(),
+            principal,
+            request_key,
+            operation.to_owned(),
+            epochs.fingerprint().as_str().to_owned(),
+            i64::try_from(lease_expires_at).map_err(|_| internal())?,
+            input_digest.clone(),
+            input.clone(),
+            resumed_from_session_id.clone(),
+            i64::try_from(now).map_err(|_| internal())?,
+        )
+        .await
+    {
+        Ok(AgentSessionAdmission::Created) => {}
+        Ok(AgentSessionAdmission::Replay(session)) => return Ok(render_session(&session)),
+        Ok(AgentSessionAdmission::Conflict {
+            existing_session_id,
+        }) => return Err(idempotency_conflict(existing_session_id)),
+        Err(error) => return Err(map(error)),
+    }
+    register_session(
+        &session_id,
+        ActiveAgentSession {
+            cancellation: cancellation.clone(),
+            transcript: transcript.clone(),
+        },
+    )?;
+
+    let run_context = context.clone();
+    let run_definition = definition.clone();
+    let run_session_id = session_id.clone();
+    let run_input_digest = input_digest.clone();
+    tokio::spawn(async move {
+        let result = run_session(
+            run_context,
+            run_definition.clone(),
+            run_session_id.clone(),
+            input,
+            run_input_digest,
+            transcript,
+            cancellation,
+            lease,
+            executor,
+            bounds,
+            execution_started_at,
+        )
+        .await;
+        unregister_session(&run_session_id);
+        if let Err(error) = result {
+            tracing::error!(
+                agent_id = %run_definition.id,
+                session_id = %run_session_id,
+                error_kind = error.kind(),
+                "failed to retain Agent session settlement"
+            );
+        }
+    });
+
+    Ok(json!({
+        "agent_id": definition.id,
+        "agent_version": definition.revision.version,
+        "session_id": session_id,
+        "status": "admitted",
+        "input_digest": input_digest,
+        "authority_expires_at": lease_expires_at,
+        "resumed_from_session_id": resumed_from_session_id,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session(
+    context: AgentDispatchContext,
+    definition: AgentDefinition,
+    session_id: String,
+    input: String,
+    input_digest: String,
+    transcript: AgentTranscript,
+    cancellation: Cancellation,
+    lease: labby_runtime::authority::AuthorityLease,
+    executor: executor::AgentExecutorBackend,
+    bounds: AgentResourceBounds,
+    now: u64,
+) -> Result<(), ToolError> {
+    context
+        .store
+        .set_agent_session_status(
+            definition.id.clone(),
+            session_id.clone(),
+            "admitted".into(),
+            "running".into(),
+        )
+        .await
+        .map_err(map)?;
+    let execution = execute_agent(
+        &LiveExecutionAuthority {
+            store: context.store.clone(),
+            identity: context.identity.clone(),
+            owner: definition.owner.clone(),
+            definition: definition.clone(),
+        },
+        &executor,
+        AgentExecutionRequest {
+            definition: definition.clone(),
+            session: AgentSessionBinding {
+                session_id: session_id.clone(),
+                agent_id: definition.id.clone(),
+                agent_version: definition.revision.version,
+                principal: PrincipalId::new(lease.binding().principal_id())
+                    .map_err(|_| internal())?,
+                owner: definition.owner.clone(),
+                catalog_generation: definition.revision.catalog_generation.clone(),
+                authority_fingerprint: lease.epoch_fingerprint().as_str().into(),
+                lease_expires_at: i64::try_from(lease.expires_at_millis())
+                    .map_err(|_| internal())?,
+            },
+            input,
+            input_digest,
+            transcript: transcript.clone(),
+            lease,
+            bounds,
+        },
+        cancellation,
+        now,
+    )
+    .await;
+    let (status, output_digest, error_code) = match execution {
+        Ok(output) => ("completed", Some(output.digest), None),
+        Err(AgentRuntimeError::Revoked | AgentRuntimeError::Lease(_)) => {
+            ("revoked", None, Some("authority_changed".to_owned()))
+        }
+        Err(AgentRuntimeError::Cancelled) => ("cancelled", None, Some("cancelled".to_owned())),
+        Err(AgentRuntimeError::ResourceLimit) => {
+            ("failed", None, Some("resource_limit".to_owned()))
+        }
+        Err(AgentRuntimeError::ExecutorUnavailable) => {
+            ("failed", None, Some("executor_unavailable".to_owned()))
+        }
+        Err(_) => ("failed", None, Some("execution_failed".to_owned())),
+    };
+    let retained_transcript = bounded_transcript(transcript.snapshot().text);
+    context
+        .store
+        .settle_agent_session(
+            definition.id,
+            session_id,
+            "running".into(),
+            status.into(),
+            output_digest,
+            Some(retained_transcript),
+            error_code,
+            i64::try_from(system_now_millis()).map_err(|_| internal())?,
+        )
+        .await
+        .map_err(map)
+}
+
+fn bounded_transcript(mut transcript: String) -> String {
+    while transcript.len() > 1024 * 1024 {
+        transcript.pop();
+    }
+    transcript
+}
+
+fn register_session(id: &str, session: ActiveAgentSession) -> Result<(), ToolError> {
+    let mut sessions = ACTIVE_AGENT_SESSIONS.lock().map_err(|_| internal())?;
+    if sessions.insert(id.to_owned(), session).is_some() {
+        return Err(internal());
+    }
+    Ok(())
+}
+
+fn unregister_session(id: &str) {
+    ACTIVE_AGENT_SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id);
+}
+
+fn active_session(id: &str) -> Option<ActiveAgentSession> {
+    ACTIVE_AGENT_SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+        .cloned()
+}
+
+async fn recover_sessions(context: &AgentDispatchContext, now: u64) -> Result<(), ToolError> {
+    // Same-process sessions own their own authority-expiry settlement. Recovery
+    // targets orphaned rows after a runtime restart and must not race a live
+    // executor into `interrupted` before it can retain its transcript.
+    if !ACTIVE_AGENT_SESSIONS
+        .lock()
+        .map_err(|_| internal())?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    context
+        .store
+        .recover_expired_agent_sessions(i64::try_from(now).map_err(|_| internal())?)
+        .await
+        .map_err(map)?;
+    Ok(())
+}
+
+async fn authorized_definition(
+    context: &AgentDispatchContext,
+    params: &Value,
+    action: &str,
+    capability: Capability,
+    now: u64,
+) -> Result<AgentDefinition, ToolError> {
+    let definition = load(context, params).await?;
+    authorize(
+        context,
+        action,
+        &definition.owner,
+        &definition.id,
+        capability,
+        now,
+    )
+    .await?;
+    Ok(definition)
+}
+
+fn render_session(session: &crate::access::AgentSessionRecord) -> Value {
+    json!({
+        "agent_id": session.agent_id,
+        "agent_version": session.agent_version,
+        "session_id": session.session_id,
+        "status": session.status,
+        "input_digest": session.input_digest,
+        "output_digest": session.output_digest,
+        "error_code": session.error_code,
+        "resumed_from_session_id": session.resumed_from_session_id,
+        "authority_expires_at": session.lease_expires_at,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+        "completed_at": session.completed_at,
+    })
 }
 
 async fn load(
@@ -525,7 +890,7 @@ fn authority_request(
     now: u64,
 ) -> Result<AuthorityRequest, ToolError> {
     let action = ActionRef::new("agents", name).map_err(|_| invalid("action"))?;
-    Ok(AuthorityRequest::new(
+    let request = AuthorityRequest::new(
         context.identity.clone(),
         ActionAuthoritySpec::SCHEMA_VERSION,
         action.clone(),
@@ -539,14 +904,22 @@ fn authority_request(
         now,
         vec![
             AuthoritySafeBoundary::BeforeDispatch,
+            AuthoritySafeBoundary::BeforeExternalEffect,
+            AuthoritySafeBoundary::BeforeChunk,
             AuthoritySafeBoundary::BeforeCommit,
+            AuthoritySafeBoundary::BeforeRetainedResume,
         ],
         vec![ActionAuthoritySpec::new(
             action,
             ResourceFamily::Agent,
             capability,
         )],
-    ))
+    );
+    Ok(if matches!(name, "agents.run" | "agents.session.resume") {
+        request.with_execution_lease_lifetime(MAX_AUTHORITY_LEASE_MILLIS)
+    } else {
+        request
+    })
 }
 fn definition(
     params: &Value,
@@ -632,7 +1005,22 @@ fn render(v: &AgentDefinition) -> Value {
         OwnerScope::Project(x) => ("project", x.as_str()),
         OwnerScope::Personal(x) => ("personal", x.as_str()),
     };
-    json!({"agent_id":v.id,"owner_kind":kind,"owner_id":id,"version":v.revision.version,"state":state_name(v.state),"catalog_generation":v.revision.catalog_generation,"authority_epoch":v.authority_epoch,"publication_epoch":v.publication_epoch})
+    json!({
+        "agent_id": v.id,
+        "owner_kind": kind,
+        "owner_id": id,
+        "version": v.revision.version,
+        "state": state_name(v.state),
+        "content_digest": v.revision.content_digest,
+        "repository_digest": v.revision.repository_digest,
+        "image_digest": v.revision.image_digest,
+        "harness_digest": v.revision.harness_digest,
+        "harness_id": executor::configured_harness_id(v),
+        "loadout_digest": v.revision.loadout_digest,
+        "catalog_generation": v.revision.catalog_generation,
+        "authority_epoch": v.authority_epoch,
+        "publication_epoch": v.publication_epoch,
+    })
 }
 fn state_name(v: AgentState) -> &'static str {
     match v {
@@ -647,6 +1035,19 @@ fn required(v: &Value, k: &str) -> Result<String, ToolError> {
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
         .ok_or_else(|| invalid(k))
+}
+fn idempotency_key(params: &Value) -> Result<String, ToolError> {
+    let key = required(params, "idempotency_key")?;
+    if key.len() > 256 || key.trim() != key || key.chars().any(char::is_control) {
+        return Err(invalid("idempotency_key"));
+    }
+    Ok(key)
+}
+fn idempotency_conflict(existing_session_id: String) -> ToolError {
+    ToolError::Conflict {
+        message: "idempotency key was already used for a different Agent session intent".into(),
+        existing_id: existing_session_id,
+    }
 }
 fn now() -> Result<u64, ToolError> {
     u64::try_from(
@@ -717,9 +1118,13 @@ pub(crate) fn map_agent_runtime_error(error: &AgentRuntimeError) -> ToolError {
             sdk_kind: "cancelled".into(),
             message: "Agent execution was cancelled".into(),
         },
+        AgentRuntimeError::ExecutorUnavailable => ToolError::Sdk {
+            sdk_kind: "service_unavailable".into(),
+            message: "No matching Agent harness is configured; configure `agents.harnesses` and pin its digest in the Agent definition".into(),
+        },
         AgentRuntimeError::ExecutorFailed => ToolError::Sdk {
             sdk_kind: "service_unavailable".into(),
-            message: "Agent execution backend is not configured".into(),
+            message: "Agent harness execution failed".into(),
         },
         // The session no longer matches the pinned definition, the lease is
         // not bound to this execution, or the granted capability cannot
@@ -727,7 +1132,10 @@ pub(crate) fn map_agent_runtime_error(error: &AgentRuntimeError) -> ToolError {
         AgentRuntimeError::PinnedDefinitionMismatch
         | AgentRuntimeError::BindingMismatch
         | AgentRuntimeError::NotDispatchable => denied(),
-        AgentRuntimeError::InvalidDefinition | AgentRuntimeError::InvalidBounds => {
+        AgentRuntimeError::InvalidDefinition
+        | AgentRuntimeError::InvalidBounds
+        | AgentRuntimeError::InvalidInput
+        | AgentRuntimeError::InputDigestMismatch => {
             ToolError::internal_message("Agent execution request is invalid")
         }
     }
@@ -866,7 +1274,7 @@ mod tests {
 
     #[test]
     fn catalog_is_complete_and_unbound_denies() {
-        assert_eq!(ACTIONS.len(), 8);
+        assert_eq!(ACTIONS.len(), 14);
         let create = ACTIONS
             .iter()
             .find(|action| action.name == "agents.create")
@@ -884,6 +1292,15 @@ mod tests {
                     .params
                     .iter()
                     .any(|param| param.name == required && param.required)
+            );
+        }
+        for name in ["agents.run", "agents.session.resume"] {
+            let action = ACTIONS.iter().find(|action| action.name == name).unwrap();
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .any(|param| param.name == "idempotency_key" && param.required)
             );
         }
         assert!(ACTIONS.iter().all(|a| a.name.starts_with("agents.")));
@@ -917,12 +1334,18 @@ mod tests {
             ),
             (AgentRuntimeError::ResourceLimit, "quota_exceeded"),
             (AgentRuntimeError::Cancelled, "cancelled"),
+            (
+                AgentRuntimeError::ExecutorUnavailable,
+                "service_unavailable",
+            ),
             (AgentRuntimeError::ExecutorFailed, "service_unavailable"),
             (AgentRuntimeError::PinnedDefinitionMismatch, "forbidden"),
             (AgentRuntimeError::BindingMismatch, "forbidden"),
             (AgentRuntimeError::NotDispatchable, "forbidden"),
             (AgentRuntimeError::InvalidDefinition, "internal_error"),
             (AgentRuntimeError::InvalidBounds, "internal_error"),
+            (AgentRuntimeError::InvalidInput, "internal_error"),
+            (AgentRuntimeError::InputDigestMismatch, "internal_error"),
         ];
         for (error, kind) in table {
             let mapped = map_agent_runtime_error(&error);
@@ -933,8 +1356,10 @@ mod tests {
             "authority changed during execution"
         );
         assert_eq!(
-            envelope(&map_agent_runtime_error(&AgentRuntimeError::ExecutorFailed))["message"],
-            "Agent execution backend is not configured"
+            envelope(&map_agent_runtime_error(
+                &AgentRuntimeError::ExecutorUnavailable
+            ))["message"],
+            "No matching Agent harness is configured; configure `agents.harnesses` and pin its digest in the Agent definition"
         );
     }
 
@@ -1116,10 +1541,178 @@ mod tests {
         assert_eq!(stored.state, AgentState::Suspended);
         assert_eq!(stored.revision.content_digest, digest('f'));
         // A suspended Agent still cannot run after the revision bump.
-        let error = dispatch(context, "agents.run", json!({"agent_id":"suspended-agent"}))
-            .await
-            .unwrap_err();
+        let error = dispatch(
+            context,
+            "agents.run",
+            json!({"agent_id":"suspended-agent","input":"test input","idempotency_key":"suspended-run"}),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.kind(), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn retained_session_reads_are_scoped_through_the_agent_owner() {
+        use sha2::{Digest as _, Sha256};
+
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("session-agent"),
+        )
+        .await
+        .unwrap();
+        let definition = store
+            .get_agent_definition("session-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let input = "inspect this repository";
+        store
+            .create_agent_session(
+                "session-retained".into(),
+                definition,
+                BOOTSTRAP_PRINCIPAL.into(),
+                "retained-request".into(),
+                "run".into(),
+                "authority-fingerprint".into(),
+                i64::MAX,
+                format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes()))),
+                input.into(),
+                None,
+                1,
+            )
+            .await
+            .unwrap();
+
+        let listed = dispatch(
+            context.clone(),
+            "agents.sessions.list",
+            json!({"agent_id":"session-agent"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["sessions"][0]["session_id"], "session-retained");
+        assert!(!listed.to_string().contains(input));
+        let stranger = agent_context(&store, &browser("stranger-subject"));
+        let error = dispatch(
+            stranger,
+            "agents.session.get",
+            json!({"agent_id":"session-agent","session_id":"session-retained"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn run_replays_durable_request_before_executor_resolution_and_conflicts_on_drift() {
+        use sha2::{Digest as _, Sha256};
+
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("replay-agent"),
+        )
+        .await
+        .unwrap();
+        let definition = store
+            .get_agent_definition("replay-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let input = "inspect this repository";
+        assert_eq!(
+            store
+                .create_agent_session(
+                    "session-original".into(),
+                    definition,
+                    BOOTSTRAP_PRINCIPAL.into(),
+                    "logical-request".into(),
+                    "run".into(),
+                    "authority-fingerprint".into(),
+                    i64::MAX,
+                    format!("sha256:{}", hex::encode(Sha256::digest(input.as_bytes()))),
+                    input.into(),
+                    None,
+                    1,
+                )
+                .await
+                .unwrap(),
+            AgentSessionAdmission::Created
+        );
+
+        let replay = dispatch(
+            context.clone(),
+            "agents.run",
+            json!({
+                "agent_id": "replay-agent",
+                "input": input,
+                "idempotency_key": "logical-request",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay["session_id"], "session-original");
+        assert_eq!(replay["status"], "admitted");
+
+        let conflict = dispatch(
+            context.clone(),
+            "agents.run",
+            json!({
+                "agent_id": "replay-agent",
+                "input": "different input",
+                "idempotency_key": "logical-request",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(conflict.kind(), "conflict");
+        assert_eq!(envelope(&conflict)["existing_id"], "session-original");
+
+        let listed = dispatch(
+            context,
+            "agents.sessions.list",
+            json!({"agent_id":"replay-agent"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(not(feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn missing_harness_config_fails_without_creating_a_session() {
+        let (_dir, store, owner) = fixture().await;
+        let context = agent_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("unconfigured-agent"),
+        )
+        .await
+        .unwrap();
+        let error = dispatch(
+            context.clone(),
+            "agents.run",
+            json!({"agent_id":"unconfigured-agent","input":"test input","idempotency_key":"unconfigured-run"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "service_unavailable");
+        let listed = dispatch(
+            context,
+            "agents.sessions.list",
+            json!({"agent_id":"unconfigured-agent"}),
+        )
+        .await
+        .unwrap();
+        assert!(listed["sessions"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

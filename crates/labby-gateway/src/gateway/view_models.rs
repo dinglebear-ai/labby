@@ -42,6 +42,8 @@ pub struct ServerConfigSummaryView {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerView {
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub notification_incidents: std::collections::HashMap<String, String>,
     pub id: String,
     pub name: String,
     /// Operator-facing label; absent when the server has none. Presentation

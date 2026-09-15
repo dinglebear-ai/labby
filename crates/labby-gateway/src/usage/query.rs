@@ -27,6 +27,9 @@ pub struct UsageMetricsQuery {
     pub operation: Option<String>,
     pub subject_scoped: Option<bool>,
     pub actor: Option<String>,
+    pub client_name: Option<String>,
+    pub client_version: Option<String>,
+    pub agent_id: Option<String>,
     pub outcome: Option<String>,
     pub search: Option<String>,
     pub bucket_count: usize,
@@ -51,6 +54,9 @@ pub struct UsageCallsQuery {
     pub operation: Option<String>,
     pub subject_scoped: Option<bool>,
     pub actor: Option<String>,
+    pub client_name: Option<String>,
+    pub client_version: Option<String>,
+    pub agent_id: Option<String>,
     pub outcome: Option<String>,
     pub search: Option<String>,
     /// See `UsageMetricsQuery::allowed_upstreams`.
@@ -82,10 +88,17 @@ pub struct UsageActorCount {
     /// `"unattributed"` for calls with no OAuth subject.
     pub actor: String,
     pub calls: i64,
+    pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageErrorCount {
+    pub kind: String,
+    pub calls: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageOutcomeCount {
     pub kind: String,
     pub calls: i64,
 }
@@ -112,6 +125,7 @@ pub struct UsageTimeBucket {
     pub ts_unix: i64,
     pub calls: i64,
     pub failed: i64,
+    pub outcomes: Vec<UsageOutcomeCount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +162,7 @@ pub struct UsageMetrics {
     pub p99_elapsed_ms: i64,
     pub distinct_tools: i64,
     pub distinct_actors: i64,
+    pub actor_populations: std::collections::BTreeMap<String, i64>,
     pub peak_per_min: i64,
     pub top_tools: Vec<UsageToolCount>,
     pub least_tools: Vec<UsageToolCount>,
@@ -173,6 +188,7 @@ pub struct UpstreamCallRecordView {
     pub outcome: String,
     pub elapsed_ms: i64,
     pub response_bytes: Option<i64>,
+    pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
 }
 
 pub(super) const TOP_N: usize = 10;
