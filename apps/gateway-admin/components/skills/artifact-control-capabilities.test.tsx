@@ -39,6 +39,29 @@ test('pending and partial capability inventories fail closed; retry enables regi
   }
 })
 
+test('administration mode keeps byte uploads and lifecycle but delegates sources and jobs to Administration', async () => {
+  installTestDom()
+  const original = gatewayApi.supportedServices
+  const originalFetch = globalThis.fetch
+  gatewayApi.supportedServices = async () => services(['artifacts', 'sources', 'jobs', 'bundles', 'uploads'])
+  globalThis.fetch = async () => new Response(JSON.stringify({ connections: [], sources: [], jobs: [], bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  const view = await renderClient(<ArtifactControlPlane mode="administration" />)
+  try {
+    await act(async () => {})
+    const tabs = view.container.querySelector('[role="tablist"]')?.textContent ?? ''
+    assert.match(tabs, /Discover & ingest/)
+    assert.match(tabs, /Lifecycle/)
+    assert.match(tabs, /Uploads/)
+    assert.match(tabs, /Bundles/)
+    assert.doesNotMatch(tabs, /Jobs/)
+    assert.doesNotMatch(tabs, /Sources/)
+  } finally {
+    await view.unmount()
+    gatewayApi.supportedServices = original
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('disabled control-plane services never mount controls or send authority requests', async () => {
   installTestDom()
   const original = gatewayApi.supportedServices

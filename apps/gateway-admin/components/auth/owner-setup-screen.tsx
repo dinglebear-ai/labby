@@ -12,6 +12,7 @@ import {
 } from '../aurora/tokens.ts'
 import { bootstrapOwner, describeOwnerBootstrapError } from '../../lib/auth/owner-bootstrap.ts'
 import { LogoutRevocationError, logoutBrowserSession } from '../../lib/auth/session.ts'
+import { requestTeamAdmission } from '../../lib/auth/team-admission.ts'
 import { cn } from '../../lib/utils.ts'
 
 type OwnerSetupScreenProps = {
@@ -56,6 +57,15 @@ export function OwnerSetupScreen({ authorityState, bootstrapAvailable, remediati
   const message = bootstrapAvailable
     ? remediation || BOOTSTRAP_REMEDIATION
     : (authorityState === 'unprovisioned' && remediation) || NO_ACCESS_REMEDIATION[authorityState]
+
+  // Give the server's team admission policy one `/v1` request to act on; a
+  // qualifying identity reloads as `ready` and this screen unmounts.
+  const admissionRequested = React.useRef(false)
+  React.useEffect(() => {
+    if (authorityState !== 'unprovisioned' || bootstrapAvailable || admissionRequested.current) return
+    admissionRequested.current = true
+    void requestTeamAdmission()
+  }, [authorityState, bootstrapAvailable])
 
   return (
     <div className={cn(AURORA_PAGE_SHELL, 'flex min-h-screen items-center justify-center px-6')}>
