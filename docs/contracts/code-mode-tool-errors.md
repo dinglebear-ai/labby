@@ -44,7 +44,7 @@ This contract does not change MCP semantics. A completed `isError: true` result 
 
 Caller code recovers the object with:
 
-`const error = JSON.parse(String(e.message));`
+`JSON.parse(String(e.message))` for a canonical `callTool` rejection. General catch handlers must also handle local JavaScript exceptions and non-JSON thrown values: catch decoding failures, preserve the original message, and treat side effects as unknown before considering a retry.
 
 ### Outer MCP response
 
