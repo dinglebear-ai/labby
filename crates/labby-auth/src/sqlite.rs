@@ -1358,7 +1358,8 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         CREATE TABLE IF NOT EXISTS allowed_users (
             email       TEXT PRIMARY KEY NOT NULL,
             added_by    TEXT NOT NULL,
-            created_at  INTEGER NOT NULL
+            created_at  INTEGER NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'member'
         );",
     )
     .map_err(sqlite_error)?;

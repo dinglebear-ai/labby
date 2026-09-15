@@ -3008,6 +3008,29 @@ async fn allowed_users_list_ordered_by_created_at_asc() {
     );
 }
 
+/// A store upgraded from before the `role` column has rows written without
+/// one. They must read back as `member`, never as a missing or null role.
+#[tokio::test]
+async fn legacy_allowlist_rows_without_role_read_back_as_member() {
+    let store = temp_store().await;
+    store
+        .execute_test_statement(
+            "INSERT INTO allowed_users (email, added_by, created_at)
+             VALUES ('legacy@example.com', 'owner-sub', 7)",
+        )
+        .await
+        .unwrap();
+    let row = store
+        .find_allowed_user("legacy@example.com")
+        .await
+        .unwrap()
+        .expect("legacy row is readable");
+    assert_eq!(row.role, "member");
+    let rows = store.list_allowed_users().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].role, "member");
+}
+
 #[tokio::test]
 async fn allowed_users_schema_bootstrap_is_idempotent() {
     // Open the same file twice; second open must not error.
