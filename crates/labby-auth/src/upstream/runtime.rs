@@ -187,6 +187,8 @@ mod tests {
 
     fn test_oauth_upstream(credential: UpstreamOauthCredentialSource) -> UpstreamConfig {
         UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "calendar".to_string(),
             url: Some("https://calendar.example.com/mcp".to_string()),

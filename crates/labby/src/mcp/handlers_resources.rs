@@ -3572,6 +3572,8 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                         ..crate::config::CodeModeConfig::default()
                     },
                     upstream: vec![crate::config::UpstreamConfig {
+                        display_name: None,
+                        lifecycle: None,
                         enabled: true,
                         name: "quick_shell".to_string(),
                         url: None,
