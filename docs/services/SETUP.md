@@ -217,7 +217,7 @@ labby setup wizard
 ```
 
 The Linux/macOS release installer invokes this same setup flow after verifying
-and installing the binary. Unattended callers must select `LABBY_SETUP_ROLE`;
+and installing the binary. This contract requires an installer-bearing release that includes the first-run role interface; public `v1.13.3` predates it and rejects `labby setup --role ...`. The verified installer also requires an attestation-capable, authenticated GitHub CLI; Ubuntu 26.04's packaged `gh 2.46.0` is too old. Verify `gh attestation verify --help` and `gh auth status --hostname github.com` before bootstrap. Unattended callers must select `LABBY_SETUP_ROLE`;
 other shell options include `LABBY_SETUP_DEPLOYMENT`, `LABBY_SETUP_HOST`,
 `LABBY_SETUP_PORT`, `LABBY_SETUP_SERVER_URL`, `LABBY_SETUP_PUBLIC_URL`,
 `LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and `LABBY_SETUP_NO_BROWSER`.

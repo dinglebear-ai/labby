@@ -85,6 +85,10 @@ require_release_prerequisites() {
     require_command curl "curl is required for release installation"
     require_command tar "tar is required to unpack the Labby release archive"
     require_command gh "GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer"
+    gh attestation verify --help >/dev/null 2>&1 ||
+        fail "GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer"
+    gh auth status --hostname github.com >/dev/null 2>&1 ||
+        fail "GitHub CLI must be authenticated to fetch Labby release attestations; run 'gh auth login' or set GH_TOKEN before running the installer"
     if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
         fail "sha256sum or shasum is required to verify the Labby release checksum"
     fi
