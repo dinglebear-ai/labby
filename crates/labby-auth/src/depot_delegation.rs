@@ -373,6 +373,7 @@ mod product {
     pub enum DepotDelegationScope {
         Read,
         Write,
+        Operator,
     }
 
     impl DepotDelegationScope {
@@ -380,6 +381,7 @@ mod product {
             match self {
                 Self::Read => "skills:read",
                 Self::Write => "skills:read skills:write",
+                Self::Operator => "skills:read depot:operator",
             }
         }
     }
@@ -823,6 +825,34 @@ mod product {
             );
             assert!(claims.exp - claims.iat <= 30);
             assert_eq!(claims.jti.len(), 32);
+        }
+
+        #[test]
+        fn operator_assertions_use_a_distinct_non_write_scope() {
+            let keys = keys();
+            let token = keys
+                .issue_depot_delegation(
+                    &target(),
+                    &grant(now_unix() + 600),
+                    DepotDelegationScope::Operator,
+                    "depot.maintenance.gc",
+                    &serde_json::json!({}),
+                    30,
+                )
+                .unwrap();
+            let claims: ProductDepotDelegationClaims = keys.decode_custom_token(
+                &token,
+                "https://depot.example",
+                "https://team-labby.example",
+            );
+            assert_eq!(claims.scope, "skills:read depot:operator");
+            assert!(
+                !claims
+                    .scope
+                    .split_whitespace()
+                    .any(|scope| scope == "skills:write")
+            );
+            assert_eq!(claims.depot_operation, "depot.maintenance.gc");
         }
 
         #[test]

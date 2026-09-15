@@ -5,6 +5,7 @@
 
 use labby_runtime::gateway_authority::{TeamCredentialBinding, TeamCredentialStatus};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sha2::Digest as _;
 
 use super::{AccessStoreError, error::AccessStoreResult, store::map_sqlite_error};
 
@@ -66,10 +67,81 @@ pub(crate) fn put_authorized(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
-    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+    let prior = get_in(&tx, &input.team_id, &input.upstream_name)?;
     let binding = put_in_transaction(&tx, input, rotated_at_sql)?;
+    audit_binding_change(
+        &tx,
+        &lease,
+        BIND_ACTION,
+        if prior.is_some() {
+            "team_credential_rebound"
+        } else {
+            "team_credential_bound"
+        },
+        prior.as_ref(),
+        &binding,
+        rotated_at_sql,
+    )?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(binding)
+}
+
+const BIND_ACTION: &str = "access.gateway_credential.bind";
+const REVOKE_ACTION: &str = "access.gateway_credential.revoke";
+
+/// Append the durable audit row for an authorized binding change inside the
+/// mutation's own transaction, so a binding can never advance without its
+/// evidence. Binding ids are recorded only as fingerprints.
+fn audit_binding_change(
+    tx: &Transaction<'_>,
+    lease: &labby_runtime::authority::AuthorityLease,
+    action: &str,
+    reason: &str,
+    prior: Option<&TeamCredentialBinding>,
+    current: &TeamCredentialBinding,
+    now_millis: i64,
+) -> AccessStoreResult<()> {
+    let actor = lease.binding().principal_id();
+    let organization: String = tx
+        .query_row(
+            "SELECT organization_id FROM principals WHERE principal_id=?1 AND status='active'",
+            [actor],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(AccessStoreError::NotAuthorized)?;
+    let fingerprint = |value: &str| hex::encode(sha2::Sha256::digest(value.as_bytes()));
+    let metadata = serde_json::json!({
+        "team_id": current.team_id,
+        "upstream_name": current.upstream_name,
+        "generation": current.generation,
+        "prior_binding_fingerprint": prior.map(|binding| fingerprint(&binding.binding_id)),
+        "binding_fingerprint": fingerprint(&current.binding_id),
+        "prior_custodian_principal_id": prior.map(|binding| binding.custodian_principal_id.as_str()),
+        "custodian_principal_id": current.custodian_principal_id,
+    })
+    .to_string();
+    tx.execute(
+        "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,
+             organization_id,project_id,action,target_kind,target_fingerprint,decision,
+             reason_code,policy_epoch,metadata_json)
+         VALUES(?1,?2,NULL,?3,?4,NULL,?5,'team_gateway_credential',?6,'allow',?7,?8,?9)",
+        params![
+            format!("gateway-credential-{}", ulid::Ulid::new()),
+            now_millis / 1000,
+            actor,
+            organization,
+            action,
+            fingerprint(&format!("{}\0{}", current.team_id, current.upstream_name)),
+            reason,
+            checked_i64(current.generation)?,
+            metadata
+        ],
+    )
+    .map_err(map_sqlite_error)?;
+    Ok(())
 }
 
 fn put_in_transaction(
@@ -173,8 +245,18 @@ pub(crate) fn revoke_authorized(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)?;
-    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let lease = super::authority::authorize_action_in_transaction(&tx, request)?;
+    let prior = get_in(&tx, team_id, upstream_name)?;
     let binding = revoke_in_transaction(&tx, team_id, upstream_name, now_sql)?;
+    audit_binding_change(
+        &tx,
+        &lease,
+        REVOKE_ACTION,
+        "team_credential_revoked",
+        prior.as_ref(),
+        &binding,
+        now_sql,
+    )?;
     tx.commit().map_err(map_sqlite_error)?;
     Ok(binding)
 }
@@ -293,5 +375,178 @@ mod tests {
         let alpha = list(&mut connection, "alpha").unwrap();
         assert_eq!(alpha.len(), 1);
         assert_eq!(alpha[0].binding_id, "binding-alpha");
+    }
+
+    fn owner() -> labby_auth::VerifiedIdentity {
+        labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap()
+    }
+
+    fn team_request(action: &str) -> super::super::AuthorityRequest {
+        use labby_primitives::access::{
+            ActionRef, Capability, OwnerScope, ResourceFamily, ResourceId, ResourceRef, TeamId,
+        };
+        let action = ActionRef::new("access", action).unwrap();
+        super::super::AuthorityRequest::new(
+            owner(),
+            super::super::ActionAuthoritySpec::SCHEMA_VERSION,
+            action.clone(),
+            ResourceRef::new(
+                OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap()),
+                ResourceFamily::Platform,
+                ResourceId::new("bootstrap-initial-team").unwrap(),
+            ),
+            super::super::AuthorityCeiling::trusted_local(),
+            None,
+            1_000,
+            vec![labby_runtime::authority::AuthoritySafeBoundary::BeforeDispatch],
+            vec![super::super::ActionAuthoritySpec::new(
+                action,
+                ResourceFamily::Platform,
+                Capability::ScopeManage,
+            )],
+        )
+    }
+
+    fn binding(binding_id: &str, rotated_at_millis: u64) -> PutTeamCredentialBinding {
+        PutTeamCredentialBinding {
+            binding_id: binding_id.into(),
+            team_id: "bootstrap-initial-team".into(),
+            upstream_name: "github".into(),
+            custodian_principal_id: super::super::bootstrap::PRINCIPAL_ID.into(),
+            rotated_at_millis,
+        }
+    }
+
+    async fn audit_rows(store: &super::super::AccessStore) -> Vec<(String, String, String)> {
+        store
+            .with_connection(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT action,reason_code,metadata_json FROM access_audit
+                         WHERE target_kind='team_gateway_credential' ORDER BY rowid",
+                    )
+                    .map_err(map_sqlite_error)?;
+                statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .map_err(map_sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap()
+    }
+
+    /// SEC-M3 / TST-M2: every authorized bind, rebind, and revoke writes an
+    /// `access_audit` row in the same transaction; a failed audit write
+    /// rolls the binding change back.
+    #[tokio::test]
+    async fn rebind_is_audited_atomically_and_audit_failure_rolls_back() {
+        let directory = super::super::test_support::secure_tempdir();
+        let store = super::super::AccessStore::open(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        store
+            .bootstrap_owner(
+                super::super::BootstrapOwnerInput::new(owner(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        for (binding_id, at) in [("binding-1", 1_000), ("binding-2", 2_000)] {
+            store
+                .put_team_gateway_credential_binding_authorized(
+                    team_request(BIND_ACTION),
+                    binding(binding_id, at),
+                )
+                .await
+                .unwrap();
+        }
+        let rows = audit_rows(&store).await;
+        assert_eq!(
+            rows.iter()
+                .map(|(action, reason, _)| (action.as_str(), reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (BIND_ACTION, "team_credential_bound"),
+                (BIND_ACTION, "team_credential_rebound"),
+            ]
+        );
+        assert!(
+            rows.iter()
+                .all(|(_, _, metadata)| !metadata.contains("binding-1")
+                    && !metadata.contains("binding-2")),
+            "binding ids are recorded only as fingerprints"
+        );
+        assert!(rows[1].2.contains("\"prior_binding_fingerprint\":\""));
+
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TEMP TRIGGER fail_gateway_credential_audit BEFORE INSERT ON access_audit WHEN NEW.target_kind='team_gateway_credential' BEGIN SELECT RAISE(ABORT,'forced'); END;",
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .put_team_gateway_credential_binding_authorized(
+                    team_request(BIND_ACTION),
+                    binding("binding-3", 3_000),
+                )
+                .await
+                .is_err()
+        );
+        let current = store
+            .get_team_gateway_credential_binding("bootstrap-initial-team".into(), "github".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (current.binding_id.as_str(), current.generation),
+            ("binding-2", 2),
+            "a binding must not advance without its audit row"
+        );
+        assert!(
+            store
+                .revoke_team_gateway_credential_binding_authorized(
+                    team_request(REVOKE_ACTION),
+                    "bootstrap-initial-team".into(),
+                    "github".into(),
+                    4_000,
+                )
+                .await
+                .is_err(),
+            "revocation is audited under the same rule"
+        );
+
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute_batch("DROP TRIGGER fail_gateway_credential_audit")
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        store
+            .revoke_team_gateway_credential_binding_authorized(
+                team_request(REVOKE_ACTION),
+                "bootstrap-initial-team".into(),
+                "github".into(),
+                4_000,
+            )
+            .await
+            .unwrap();
+        let rows = audit_rows(&store).await;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            (rows[2].0.as_str(), rows[2].1.as_str()),
+            (REVOKE_ACTION, "team_credential_revoked")
+        );
     }
 }
