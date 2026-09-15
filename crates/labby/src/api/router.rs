@@ -3292,7 +3292,7 @@ mod tests {
                 let auth_state = test_lab_auth_state().await;
                 auth_state
                     .store
-                    .add_allowed_user(COLLEAGUE, ADMIN, 1)
+                    .add_allowed_user(COLLEAGUE, ADMIN, "member", 1)
                     .await
                     .unwrap();
                 let session = labby_auth::types::BrowserSessionRow {
@@ -5718,7 +5718,7 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         auth_state
             .store
-            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, 1)
+            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, "member", 1)
             .await
             .unwrap();
         let admin =
@@ -5945,7 +5945,7 @@ mod tests {
         let auth_state = test_lab_auth_state_with_admins(&admins).await;
         auth_state
             .store
-            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, 1)
+            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, "member", 1)
             .await
             .unwrap();
         let second = seed_session_for(

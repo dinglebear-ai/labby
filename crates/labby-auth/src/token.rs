@@ -2329,7 +2329,12 @@ mod tests {
         );
         state
             .store
-            .add_allowed_user("user@example.com", "admin", crate::util::now_unix())
+            .add_allowed_user(
+                "user@example.com",
+                "admin",
+                "member",
+                crate::util::now_unix(),
+            )
             .await
             .unwrap();
         let provider_verified_at = crate::util::now_unix()
@@ -2392,7 +2397,12 @@ mod tests {
 
         state
             .store
-            .add_allowed_user("expired@example.com", "admin", crate::util::now_unix())
+            .add_allowed_user(
+                "expired@example.com",
+                "admin",
+                "member",
+                crate::util::now_unix(),
+            )
             .await
             .unwrap();
         state

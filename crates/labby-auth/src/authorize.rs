@@ -2089,7 +2089,7 @@ pub mod tests {
         // resolve_allowed_emails() now returns 2 entries.
         state
             .store
-            .add_allowed_user("second-admin@example.com", "admin", now_unix())
+            .add_allowed_user("second-admin@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         // One allowed account already has a provider credential, but the
@@ -4004,7 +4004,7 @@ pub mod tests {
             // Insert id_token email into allowed_users.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "admin", now_unix())
+                .add_allowed_user("user@example.com", "admin", "member", now_unix())
                 .await
                 .unwrap();
 
@@ -4109,7 +4109,7 @@ pub mod tests {
             // Add id_token email to allowed_users.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "admin", now_unix())
+                .add_allowed_user("user@example.com", "admin", "member", now_unix())
                 .await
                 .unwrap();
 
@@ -4264,7 +4264,7 @@ pub mod tests {
             // Also add the admin email to allowed_users — this is the duplicate.
             base_state
                 .store
-                .add_allowed_user("user@example.com", "self", now_unix())
+                .add_allowed_user("user@example.com", "self", "member", now_unix())
                 .await
                 .unwrap();
 

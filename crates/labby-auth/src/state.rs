@@ -1068,12 +1068,12 @@ mod tests {
         let state = resolve_state("admin@example.com").await;
         state
             .store
-            .add_allowed_user("alice@example.com", "admin", now_unix())
+            .add_allowed_user("alice@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         state
             .store
-            .add_allowed_user("bob@example.com", "admin", now_unix() + 1)
+            .add_allowed_user("bob@example.com", "admin", "member", now_unix() + 1)
             .await
             .unwrap();
         let emails = state.resolve_allowed_emails().await.unwrap();
@@ -1090,12 +1090,12 @@ mod tests {
         // add_allowed_user lowercases; admin_email may differ in case → still deduped.
         state
             .store
-            .add_allowed_user("Admin@Example.COM", "self", now_unix())
+            .add_allowed_user("Admin@Example.COM", "self", "member", now_unix())
             .await
             .unwrap();
         state
             .store
-            .add_allowed_user("other@example.com", "admin", now_unix() + 1)
+            .add_allowed_user("other@example.com", "admin", "member", now_unix() + 1)
             .await
             .unwrap();
         let emails = state.resolve_allowed_emails().await.unwrap();

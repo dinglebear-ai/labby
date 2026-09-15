@@ -289,7 +289,7 @@ async fn publish_fixture_with_revocation(
         if member_role.is_some() {
             google
                 .store
-                .add_allowed_user("member@example.com", "fixture", now)
+                .add_allowed_user("member@example.com", "fixture", "member", now)
                 .await
                 .unwrap();
         }

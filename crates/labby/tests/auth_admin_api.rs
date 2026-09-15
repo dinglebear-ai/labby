@@ -481,7 +481,7 @@ async fn delete_admin_session_removes_email_returns_204() {
     // First add an entry.
     h.auth_state
         .store
-        .add_allowed_user("bob@example.com", "admin", 1)
+        .add_allowed_user("bob@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let app = h.router();
@@ -524,7 +524,7 @@ async fn delete_allowed_email_revokes_subject_session_and_refresh_grants() {
     };
     h.auth_state
         .store
-        .add_allowed_user(removed_email, "admin", 1)
+        .add_allowed_user(removed_email, "admin", "member", 1)
         .await
         .unwrap();
     h.auth_state
@@ -684,7 +684,7 @@ async fn delete_allowed_email_without_gateway_manager_does_not_commit_removal() 
     let removed_email = "runtime-required@example.com";
     h.auth_state
         .store
-        .add_allowed_user(removed_email, "admin", 1)
+        .add_allowed_user(removed_email, "admin", "member", 1)
         .await
         .unwrap();
 
@@ -825,7 +825,7 @@ async fn post_duplicate_email_returns_422() {
     // Pre-seed the email so the second add is a duplicate.
     h.auth_state
         .store
-        .add_allowed_user("dup@example.com", "admin", 1)
+        .add_allowed_user("dup@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let session = h.seed_admin_session().await;
@@ -940,7 +940,7 @@ async fn list_shows_added_emails() {
     let h = Harness::new().await;
     h.auth_state
         .store
-        .add_allowed_user("carol@example.com", "admin", 1)
+        .add_allowed_user("carol@example.com", "admin", "member", 1)
         .await
         .unwrap();
     let session = h.seed_admin_session().await;

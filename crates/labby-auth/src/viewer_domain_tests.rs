@@ -99,6 +99,7 @@ async fn handler_observes_admin_scope_only_for_the_configured_admin_session() {
         .add_allowed_user(
             "colleague@example.com",
             "user@example.com",
+            "member",
             crate::util::now_unix(),
         )
         .await
@@ -270,6 +271,7 @@ async fn explicitly_allowlisted_member_is_admitted_without_admin_scope() {
         .add_allowed_user(
             "existing-admin@lime-technology.com",
             "operator",
+            "member",
             crate::util::now_unix(),
         )
         .await

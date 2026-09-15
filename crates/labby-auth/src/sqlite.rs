@@ -1380,6 +1380,12 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         "resource",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    add_column_if_missing(
+        &conn,
+        "allowed_users",
+        "role",
+        "TEXT NOT NULL DEFAULT 'member'",
+    )?;
 
     if !existed {
         set_restrictive_permissions(path)?;
@@ -3446,7 +3452,7 @@ mod tests {
     async fn allowed_users_add_and_list() {
         let store = temp_store().await;
         store
-            .add_allowed_user("alice@example.com", "admin", now_unix())
+            .add_allowed_user("alice@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3460,11 +3466,11 @@ mod tests {
         let store = temp_store().await;
         let now = now_unix();
         store
-            .add_allowed_user("bob@example.com", "admin", now)
+            .add_allowed_user("bob@example.com", "admin", "member", now)
             .await
             .unwrap();
         let err = store
-            .add_allowed_user("bob@example.com", "admin2", now)
+            .add_allowed_user("bob@example.com", "admin2", "member", now)
             .await
             .unwrap_err();
         assert!(
@@ -3477,7 +3483,7 @@ mod tests {
     async fn allowed_users_input_is_lowercased() {
         let store = temp_store().await;
         store
-            .add_allowed_user("Alice@Example.COM", "admin", now_unix())
+            .add_allowed_user("Alice@Example.COM", "admin", "member", now_unix())
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3500,15 +3506,15 @@ mod tests {
         let store = temp_store().await;
         let base = now_unix();
         store
-            .add_allowed_user("third@example.com", "admin", base + 2)
+            .add_allowed_user("third@example.com", "admin", "member", base + 2)
             .await
             .unwrap();
         store
-            .add_allowed_user("first@example.com", "admin", base)
+            .add_allowed_user("first@example.com", "admin", "member", base)
             .await
             .unwrap();
         store
-            .add_allowed_user("second@example.com", "admin", base + 1)
+            .add_allowed_user("second@example.com", "admin", "member", base + 1)
             .await
             .unwrap();
         let rows = store.list_allowed_users().await.unwrap();
@@ -3579,6 +3585,7 @@ mod tests {
             email: String::new(),
             added_by: String::new(),
             created_at: 0,
+            role: String::new(),
         }
     }
 }

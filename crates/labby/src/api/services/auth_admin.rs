@@ -342,7 +342,8 @@ async fn add_allowed_email(
 
     match auth_state
         .store
-        .add_allowed_user(&email, &added_by, created_at)
+        // TODO(Task 4): pass the caller-selected role instead of the literal "member".
+        .add_allowed_user(&email, &added_by, "member", created_at)
         .await
     {
         Ok(()) => {}
@@ -366,6 +367,7 @@ async fn add_allowed_email(
         email: email.clone(),
         added_by,
         created_at,
+        role: "member".into(),
     };
 
     tracing::info!(
