@@ -600,11 +600,78 @@ async fn project_session(
             .map(|config| config.admin_emails.as_slice()),
     )
     .is_ok();
-    let authority =
-        resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
+    let mut authority =
+        resolve_session_authority(state, caller.identity.clone(), caller.transport_admin).await?;
+    if matches!(authority, SessionAuthority::Unprovisioned)
+        && admit_allowlisted_identity(state, &caller).await?
+    {
+        authority =
+            resolve_session_authority(state, caller.identity, caller.transport_admin).await?;
+    }
     let owner_bootstrap_available = admitted
         && state.access_runtime.owner_bootstrap_offer().await == OwnerBootstrapOffer::Available;
     authenticated_session_body(&view, &authority, owner_bootstrap_available)
+}
+
+/// Durable admission for a browser session whose provider-verified email is
+/// on the allowlist or in `LABBY_AUTH_ADMIN_EMAIL`. Returns `true` when a
+/// Principal was created or already existed, so the caller re-resolves
+/// authority. The session's display email is never consulted: evidence comes
+/// from the provider-verified identity row bound to this issuer and subject.
+async fn admit_allowlisted_identity(
+    state: &AppState,
+    caller: &SessionCaller,
+) -> Result<bool, ToolError> {
+    let (Some(auth_state), Some(config)) = (oauth_state(state), state.auth_config.as_ref()) else {
+        return Ok(false);
+    };
+    if !caller.via_session {
+        return Ok(false);
+    }
+    let labby_auth::PrincipalLink::External { issuer, subject } = caller.identity.principal_link()
+    else {
+        return Ok(false);
+    };
+    let Some(email) = auth_state
+        .store
+        .current_verified_inbound_email(issuer, subject)
+        .await
+        .map_err(|_| ToolError::internal_message("verified identity lookup failed"))?
+    else {
+        return Ok(false);
+    };
+    let role = if config.is_admin_email(&email) {
+        Some(crate::access::AllowlistRole::Admin)
+    } else {
+        auth_state
+            .store
+            .find_allowed_user(&email)
+            .await
+            .map_err(|_| ToolError::internal_message("allowlist lookup failed"))?
+            .and_then(|row| crate::access::AllowlistRole::parse(&row.role))
+    };
+    let Some(role) = role else {
+        return Ok(false);
+    };
+    match state
+        .access_runtime
+        .provision_allowlisted(caller.identity.clone(), role)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            // Fail closed to `unprovisioned`, but leave a trace; identity and
+            // email are never logged.
+            tracing::warn!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                error = %error,
+                "allowlist admission failed; session stays unprovisioned"
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Transport facts for the anonymous OAuth cookie branch.
@@ -1348,5 +1415,126 @@ mod tests {
             .kind(),
             "service_unavailable"
         );
+    }
+
+    /// An allowlisted identity is admitted on its first `/auth/session`:
+    /// the durable authority is created and the same call projects `ready`.
+    #[tokio::test]
+    async fn allowlisted_session_is_provisioned_on_first_session_read() {
+        let directory = tempfile::Builder::new()
+            .prefix("labby-allowlist-admission-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let owner = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap();
+        let runtime = std::sync::Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(owner, "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        let auth_config = labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth-jwt.pem"),
+            admin_emails: vec!["owner@example.com".into()],
+            google: labby_auth::config::GoogleConfig {
+                client_id: "id".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let auth_state = labby_auth::state::AuthState::new(auth_config.clone())
+            .await
+            .unwrap();
+        let binding = auth_state.inbound_provider_binding();
+        auth_state
+            .store
+            .add_allowed_user("eli@example.com", "owner-sub", "admin", 1)
+            .await
+            .unwrap();
+        for (subject, email) in [
+            ("eli-sub", "eli@example.com"),
+            ("stranger-sub", "stranger@example.com"),
+        ] {
+            auth_state
+                .store
+                .upsert_bound_verified_inbound_identity(subject, email, 2, binding.clone())
+                .await
+                .unwrap();
+        }
+        let state = AppState::new()
+            .with_access_runtime(runtime)
+            .with_auth_config(auth_config)
+            .with_oauth_state(auth_state);
+        let caller = |subject: &str, email: &str| SessionCaller {
+            identity: labby_auth::VerifiedIdentity::external(
+                labby_auth::Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                subject,
+            )
+            .unwrap(),
+            via_session: true,
+            subject: subject.into(),
+            email: Some(email.into()),
+            scopes: vec!["lab:read".into(), "lab".into()],
+            transport_admin: false,
+        };
+        let view = |sub: &str| SessionView {
+            login_available: true,
+            user: SessionUser {
+                sub: sub.to_owned(),
+                email: None,
+            },
+            project_id: None,
+            expires_at: 1,
+            csrf_token: String::new(),
+        };
+
+        let body = project_session(
+            &state,
+            caller("eli-sub", "eli@example.com"),
+            view("eli-sub"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["authority_state"], "ready");
+        assert_eq!(
+            body["is_admin"], true,
+            "allowlist role admin grants platform.manage"
+        );
+
+        // Display email is not evidence: a session claiming an allowlisted
+        // email whose verified identity is someone else stays unprovisioned.
+        let body = project_session(
+            &state,
+            caller("stranger-sub", "eli@example.com"),
+            view("stranger-sub"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["authority_state"], "unprovisioned");
     }
 }
