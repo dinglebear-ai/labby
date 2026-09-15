@@ -244,6 +244,7 @@ export function GatewayFormDialog({
   const [mode, setMode] = useState<FormMode>('custom')
   const [transport, setTransport] = useState<TransportType>('http')
   const [name, setName] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [url, setUrl] = useState('')
   const [protectedPublicPath, setProtectedPublicPath] = useState('')
   const [command, setCommand] = useState('')
@@ -400,8 +401,9 @@ export function GatewayFormDialog({
   }, [authMode, protectedPublicPath, setAuthMode, setIsProbing, setOauthProbed, transport, url])
 
   // Auto-fill the name from the URL hostname when the user hasn't typed a name yet.
+  // A display name takes precedence: its slug already filled the ID.
   useEffect(() => {
-    if (isEditing || transport !== 'http' || !url.trim()) return
+    if (isEditing || transport !== 'http' || !url.trim() || displayName.trim()) return
     try {
       const hostname = new URL(url).hostname.replace(/^www\./, '')
       const slug = hostname.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '')
@@ -416,7 +418,7 @@ export function GatewayFormDialog({
     } catch {
       // invalid URL, skip
     }
-  }, [isEditing, transport, url])
+  }, [displayName, isEditing, transport, url])
 
   const runOauthConnect = useCallback(async ({
     authTab,
@@ -520,6 +522,7 @@ export function GatewayFormDialog({
         setMode('custom')
         setTransport(gateway.transport === 'in_process' ? 'http' : gateway.transport)
         setName(gateway.name)
+        setDisplayName(gateway.display_name ?? '')
         const protectedRoute = protectedRouteForGateway(gateway, protectedRoutes, PROTECTED_MCP_PUBLIC_HOST)
         const protectedPath = protectedRoutePathInputValue(protectedRoute)
         const initialAuthMode = initialGatewayAuthMode(gateway, protectedRoute)
@@ -574,6 +577,7 @@ export function GatewayFormDialog({
         setSelectedService('')
         setServiceValues({})
         setEnableServer(true)
+        setDisplayName('')
         nameAutoRef.current = false
       }
     setErrors({})
@@ -741,6 +745,7 @@ export function GatewayFormDialog({
         : undefined
     return {
       name,
+      display_name: displayName.trim() || null,
       transport,
       config: {
         ...(transport === 'http'
@@ -1198,6 +1203,16 @@ export function GatewayFormDialog({
               onTransportChange={setTransport}
               name={name}
               onNameChange={(next) => { nameAutoRef.current = false; setName(next) }}
+              displayName={displayName}
+              onDisplayNameChange={(next) => {
+                setDisplayName(next)
+                // While creating, derive the ID from the label until the operator edits the ID.
+                const slug = next.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+                if (!isEditing && slug && (!name || nameAutoRef.current)) {
+                  nameAutoRef.current = true
+                  setName(slug)
+                }
+              }}
               url={url}
               onUrlChange={setUrl}
               command={command}
