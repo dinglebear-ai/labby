@@ -632,23 +632,56 @@ async fn admit_allowlisted_identity(
     else {
         return Ok(false);
     };
-    let Some(email) = auth_state
+    let email = match auth_state
         .store
         .current_verified_inbound_email(issuer, subject)
         .await
-        .map_err(|_| ToolError::internal_message("verified identity lookup failed"))?
-    else {
-        return Ok(false);
+    {
+        Ok(Some(email)) => email,
+        Ok(None) => return Ok(false),
+        Err(error) => {
+            // Fail closed to `unprovisioned`, but leave a trace; no email,
+            // subject, or issuer is logged.
+            tracing::warn!(
+                surface = "api",
+                service = "auth",
+                action = "session.get",
+                error = %error,
+                "verified identity lookup failed; session stays unprovisioned"
+            );
+            return Ok(false);
+        }
     };
     let role = if config.is_admin_email(&email) {
         Some(crate::access::AllowlistRole::Admin)
     } else {
-        auth_state
-            .store
-            .find_allowed_user(&email)
-            .await
-            .map_err(|_| ToolError::internal_message("allowlist lookup failed"))?
-            .and_then(|row| crate::access::AllowlistRole::parse(&row.role))
+        let allowed = match auth_state.store.find_allowed_user(&email).await {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                // Fail closed to `unprovisioned`, but leave a trace; no email
+                // is logged.
+                tracing::warn!(
+                    surface = "api",
+                    service = "auth",
+                    action = "session.get",
+                    error = %error,
+                    "allowlist lookup failed; session stays unprovisioned"
+                );
+                return Ok(false);
+            }
+        };
+        allowed.and_then(|row| match crate::access::AllowlistRole::parse(&row.role) {
+            Some(role) => Some(role),
+            None => {
+                tracing::debug!(
+                    surface = "api",
+                    service = "auth",
+                    action = "session.get",
+                    "allowlist entry has an unknown role; identity not admitted"
+                );
+                None
+            }
+        })
     };
     let Some(role) = role else {
         return Ok(false);
@@ -1532,6 +1565,18 @@ mod tests {
             &state,
             caller("stranger-sub", "eli@example.com"),
             view("stranger-sub"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["authority_state"], "unprovisioned");
+
+        // A caller whose display email is on the allowlist but who has no
+        // verified-identity row at all (never completed the provider flow)
+        // stays unprovisioned: there is no evidence to admit against.
+        let body = project_session(
+            &state,
+            caller("unverified-sub", "eli@example.com"),
+            view("unverified-sub"),
         )
         .await
         .unwrap();
