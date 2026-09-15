@@ -239,6 +239,11 @@ pub(crate) fn update_upstream(
         }
         cfg.upstream[index].name = new_name;
     }
+    if let Some(display_name) = patch.display_name {
+        cfg.upstream[index].display_name = display_name
+            .map(|label| label.trim().to_string())
+            .filter(|label| !label.is_empty());
+    }
     if let Some(enabled) = patch.enabled {
         cfg.upstream[index].enabled = enabled;
     }
