@@ -86,8 +86,9 @@ use super::entries::{
 };
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
-    estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
-    normalize_resource_result_uri, redact_resource_uri_for_logging, upstream_transport,
+    estimate_call_tool_response_size, estimate_prompt_response_size,
+    estimate_resource_response_size, max_response_bytes, normalize_resource_result_uri,
+    redact_resource_uri_for_logging, upstream_transport,
 };
 use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
@@ -1488,13 +1489,39 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
-        mut params: GetPromptRequestParams,
+        params: GetPromptRequestParams,
         downstream: Peer<RoleServer>,
         downstream_request_id: RequestId,
         downstream_cancel: CancellationToken,
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<GetPromptResponse, String>> {
+        self.get_prompt_relayed_typed(
+            config,
+            subject,
+            params,
+            downstream,
+            downstream_request_id,
+            downstream_cancel,
+            session_id,
+            capabilities,
+        )
+        .await
+        .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn get_prompt_relayed_typed(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        mut params: GetPromptRequestParams,
+        downstream: Peer<RoleServer>,
+        downstream_request_id: RequestId,
+        downstream_cancel: CancellationToken,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<Result<GetPromptResponse, super::CapabilityCallError>> {
         let started = Instant::now();
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
@@ -1517,15 +1544,17 @@ impl UpstreamPool {
                 kind = "prompt_not_exposed",
                 "relayed upstream prompt get blocked by exposure policy"
             );
-            return Some(Err(format!(
-                "prompt `{prompt_name}` is not exposed by upstream `{}`",
-                config.name
-            )));
+            return Some(Err(super::CapabilityCallError::Other {
+                message: format!(
+                    "prompt `{prompt_name}` is not exposed by upstream `{}`",
+                    config.name
+                ),
+            }));
         }
         if downstream_cancel.is_cancelled() {
-            return Some(Err(downstream_cancelled(
-                "downstream request was already cancelled",
-            )));
+            return Some(Err(super::CapabilityCallError::Cancelled {
+                message: downstream_cancelled("downstream request was already cancelled"),
+            }));
         }
         let request_meta = params.meta.clone();
         let timeout = self.relay_timeout;
@@ -1545,16 +1574,16 @@ impl UpstreamPool {
             () = downstream_cancel.cancelled() => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
-                return Some(Err(downstream_cancelled(
+                return Some(Err(super::CapabilityCallError::Cancelled { message: downstream_cancelled(
                     "downstream request cancelled while connecting",
-                )));
+                ) }));
             }
             () = tokio::time::sleep_until(deadline) => {
                 let message = format!("upstream `{}` relay connection timed out", config.name);
                 log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
                 super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
                 self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone()).await;
-                return Some(Err(message));
+                return Some(Err(super::CapabilityCallError::Timeout { message }));
             }
             connection = self.acquire_or_connect_relay(
                 config, subject, downstream, session_id, capabilities
@@ -1598,13 +1627,13 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Some(Err(error));
+                return Some(Err(super::CapabilityCallError::Other { message: error }));
             }
             RelayPermitOutcome::Cancelled => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
-                return Some(Err(downstream_cancelled(
-                    "downstream request cancelled while queued",
-                )));
+                return Some(Err(super::CapabilityCallError::Cancelled {
+                    message: downstream_cancelled("downstream request cancelled while queued"),
+                }));
             }
             RelayPermitOutcome::TimedOut => {
                 log_upstream_request_error(
@@ -1615,10 +1644,12 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Some(Err(format!(
-                    "upstream `{}` relay concurrency queue timed out",
-                    config.name
-                )));
+                return Some(Err(super::CapabilityCallError::QueueSaturated {
+                    message: format!(
+                        "upstream `{}` relay concurrency queue timed out",
+                        config.name
+                    ),
+                }));
             }
         };
         let response = send_relay_request(
@@ -1661,17 +1692,43 @@ impl UpstreamPool {
                             None,
                             None,
                         );
-                        return Some(Err(message));
+                        return Some(Err(super::CapabilityCallError::Protocol { message }));
                     }
                 };
+                let response_size = estimate_prompt_response_size(&result);
+                let max_bytes = max_response_bytes();
+                if response_size > max_bytes {
+                    let message = format!(
+                        "upstream response too large ({response_size} bytes, max {max_bytes})"
+                    );
+                    self.record_success_for(&config.name, UpstreamCapability::Prompts)
+                        .await;
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "response_too_large",
+                        None,
+                        Some(response_size),
+                        Some(max_bytes),
+                    );
+                    return Some(Err(super::CapabilityCallError::ResponseTooLarge {
+                        message,
+                    }));
+                }
                 self.record_success_for(&config.name, UpstreamCapability::Prompts)
                     .await;
-                log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
+                log_upstream_request_finish(
+                    event,
+                    started.elapsed().as_millis(),
+                    Some(response_size),
+                );
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
-                Some(Err(error.to_string()))
+                Some(Err(super::CapabilityCallError::Cancelled {
+                    message: error.to_string(),
+                }))
             }
             Err(error) => {
                 let kind = if matches!(error, ServiceError::Timeout { .. }) {
@@ -1703,7 +1760,10 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                Some(Err(message))
+                Some(Err(super::CapabilityCallError::from_service_error(
+                    super::capability_call::bound_upstream_service_error(error),
+                    message,
+                )))
             }
         }
     }
@@ -1715,13 +1775,39 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
-        mut params: ReadResourceRequestParams,
+        params: ReadResourceRequestParams,
         downstream: Peer<RoleServer>,
         downstream_request_id: RequestId,
         downstream_cancel: CancellationToken,
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<ReadResourceResponse, String>> {
+        self.read_resource_relayed_typed(
+            config,
+            subject,
+            params,
+            downstream,
+            downstream_request_id,
+            downstream_cancel,
+            session_id,
+            capabilities,
+        )
+        .await
+        .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn read_resource_relayed_typed(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        mut params: ReadResourceRequestParams,
+        downstream: Peer<RoleServer>,
+        downstream_request_id: RequestId,
+        downstream_cancel: CancellationToken,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<Result<ReadResourceResponse, super::CapabilityCallError>> {
         let started = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
@@ -1730,10 +1816,9 @@ impl UpstreamPool {
         } else if gateway_uri.starts_with("ui://") {
             gateway_uri.clone()
         } else {
-            return Some(Err(format!(
-                "resource URI does not match upstream `{}`",
-                config.name
-            )));
+            return Some(Err(super::CapabilityCallError::Other {
+                message: format!("resource URI does not match upstream `{}`", config.name),
+            }));
         };
         params.uri = original_uri;
         // Same gate as `read_upstream_resource` / `subject_scoped_read_resource`
@@ -1756,15 +1841,14 @@ impl UpstreamPool {
                 kind = "resource_not_exposed",
                 "relayed upstream resource read blocked by exposure policy"
             );
-            return Some(Err(format!(
-                "resource is not exposed by upstream `{}`",
-                config.name
-            )));
+            return Some(Err(super::CapabilityCallError::Other {
+                message: format!("resource is not exposed by upstream `{}`", config.name),
+            }));
         }
         if downstream_cancel.is_cancelled() {
-            return Some(Err(downstream_cancelled(
-                "downstream request was already cancelled",
-            )));
+            return Some(Err(super::CapabilityCallError::Cancelled {
+                message: downstream_cancelled("downstream request was already cancelled"),
+            }));
         }
         let request_meta = params.meta.clone();
         let timeout = self.relay_timeout;
@@ -1785,16 +1869,16 @@ impl UpstreamPool {
             () = downstream_cancel.cancelled() => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
-                return Some(Err(downstream_cancelled(
+                return Some(Err(super::CapabilityCallError::Cancelled { message: downstream_cancelled(
                     "downstream request cancelled while connecting",
-                )));
+                ) }));
             }
             () = tokio::time::sleep_until(deadline) => {
                 let message = format!("upstream `{}` relay connection timed out", config.name);
                 log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
                 super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
                 self.record_failure_for(&config.name, UpstreamCapability::Resources, message.clone()).await;
-                return Some(Err(message));
+                return Some(Err(super::CapabilityCallError::Timeout { message }));
             }
             connection = self.acquire_or_connect_relay(
                 config, subject, downstream, session_id, capabilities
@@ -1838,13 +1922,13 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Some(Err(error));
+                return Some(Err(super::CapabilityCallError::Other { message: error }));
             }
             RelayPermitOutcome::Cancelled => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
-                return Some(Err(downstream_cancelled(
-                    "downstream request cancelled while queued",
-                )));
+                return Some(Err(super::CapabilityCallError::Cancelled {
+                    message: downstream_cancelled("downstream request cancelled while queued"),
+                }));
             }
             RelayPermitOutcome::TimedOut => {
                 log_upstream_request_error(
@@ -1855,10 +1939,12 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Some(Err(format!(
-                    "upstream `{}` relay concurrency queue timed out",
-                    config.name
-                )));
+                return Some(Err(super::CapabilityCallError::QueueSaturated {
+                    message: format!(
+                        "upstream `{}` relay concurrency queue timed out",
+                        config.name
+                    ),
+                }));
             }
         };
         let response = send_relay_request(
@@ -1903,7 +1989,7 @@ impl UpstreamPool {
                             None,
                             None,
                         );
-                        return Some(Err(message));
+                        return Some(Err(super::CapabilityCallError::Protocol { message }));
                     }
                 };
                 let response_size = match &result {
@@ -1930,7 +2016,9 @@ impl UpstreamPool {
                         Some(response_size),
                         Some(max_bytes),
                     );
-                    return Some(Err(message));
+                    return Some(Err(super::CapabilityCallError::ResponseTooLarge {
+                        message,
+                    }));
                 }
                 let result = match result {
                     ReadResourceResponse::Complete(complete) => ReadResourceResponse::Complete(
@@ -1950,7 +2038,9 @@ impl UpstreamPool {
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
                 log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
-                Some(Err(error.to_string()))
+                Some(Err(super::CapabilityCallError::Cancelled {
+                    message: error.to_string(),
+                }))
             }
             Err(error) => {
                 let kind = if matches!(error, ServiceError::Timeout { .. }) {
@@ -1982,7 +2072,10 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                Some(Err(message))
+                Some(Err(super::CapabilityCallError::from_service_error(
+                    super::capability_call::bound_upstream_service_error(error),
+                    message,
+                )))
             }
         }
     }
@@ -2742,6 +2835,99 @@ mod tests {
         );
 
         (pool, config, downstream_server)
+    }
+
+    #[derive(Clone)]
+    struct MisleadingRelayError;
+
+    impl ServerHandler for MisleadingRelayError {
+        async fn get_prompt(
+            &self,
+            _: GetPromptRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            Err(ErrorData::invalid_params(
+                "cancelled timed out response too large",
+                None,
+            ))
+        }
+        async fn read_resource(
+            &self,
+            _: ReadResourceRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ReadResourceResponse, ErrorData> {
+            Err(ErrorData::invalid_params(
+                "cancelled timed out response too large",
+                None,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_relays_preserve_application_errors_and_real_cancellation() {
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream) =
+            cached_relay_pool(MisleadingRelayError, (), capabilities.clone()).await;
+        let prompt_error = pool
+            .get_prompt_relayed_typed(
+                &config,
+                None,
+                GetPromptRequestParams::new("test"),
+                downstream.peer().clone(),
+                RequestId::Number(1),
+                CancellationToken::new(),
+                1,
+                capabilities.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(prompt_error, super::super::CapabilityCallError::Mcp { .. }),
+            "{prompt_error:?}"
+        );
+        let resource_error = pool
+            .read_resource_relayed_typed(
+                &config,
+                None,
+                ReadResourceRequestParams::new(format!("lab://upstream/{}/item", config.name)),
+                downstream.peer().clone(),
+                RequestId::Number(2),
+                CancellationToken::new(),
+                1,
+                capabilities.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(
+                resource_error,
+                super::super::CapabilityCallError::Mcp { .. }
+            ),
+            "{resource_error:?}"
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let error = pool
+            .get_prompt_relayed_typed(
+                &config,
+                None,
+                GetPromptRequestParams::new("test"),
+                downstream.peer().clone(),
+                RequestId::Number(3),
+                cancelled,
+                1,
+                capabilities,
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(error, super::super::CapabilityCallError::Cancelled { .. }),
+            "{error:?}"
+        );
+        pool.relay_connections.write().await.clear();
     }
 
     #[test]

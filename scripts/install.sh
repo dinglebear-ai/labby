@@ -17,6 +17,7 @@
 #   LABBY_INSTALL_REPO    owner/repo to fetch     (default: dinglebear-ai/labby)
 #   LABBY_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
 #   LABBY_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
+#   LABBY_INSTALL_RECOVER_ONLY settle a pending activation offline without installing (default: 0)
 #   LABBY_INSTALL_ROLLBACK restore the previous verified binary offline (default: 0)
 #   LABBY_INSTALL_LOCAL_BINARY install an exact local candidate (requires SHA-256)
 #   LABBY_INSTALL_LOCAL_SHA256 expected digest for LABBY_INSTALL_LOCAL_BINARY
@@ -28,10 +29,12 @@ INSTALL_DIR="${LABBY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LABBY_INSTALL_VERSION:-latest}"
 ALLOW_SOURCE_FALLBACK="${LABBY_ALLOW_SOURCE_FALLBACK:-0}"
 ROLLBACK="${LABBY_INSTALL_ROLLBACK:-0}"
+RECOVER_ONLY="${LABBY_INSTALL_RECOVER_ONLY:-0}"
 LOCAL_BINARY="${LABBY_INSTALL_LOCAL_BINARY:-}"
 LOCAL_SHA256="${LABBY_INSTALL_LOCAL_SHA256:-}"
 INSTALL_METADATA_DIR="$INSTALL_DIR/.labby-install"
 ARTIFACTS_DIR="$INSTALL_METADATA_DIR/artifacts"
+TRANSACTION_LOCK="$INSTALL_METADATA_DIR/transaction-lock"
 RECEIPT_PATH="$INSTALL_METADATA_DIR/receipt"
 PREVIOUS_RECEIPT_PATH="$INSTALL_METADATA_DIR/previous-receipt"
 ACTIVATION_JOURNAL="$INSTALL_METADATA_DIR/activation-journal"
@@ -42,6 +45,7 @@ cleanup() {
     for dir in $TMP_DIRS; do
         rm -rf "$dir"
     done
+    release_transaction_lock
 }
 trap cleanup EXIT
 
@@ -52,6 +56,32 @@ make_tmp_dir() {
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { say "install.sh: $*"; exit 1; }
+
+durability_barrier() { sync || fail "cannot durably flush installer transaction"; }
+
+release_transaction_lock() {
+    [ -d "$TRANSACTION_LOCK" ] || return 0
+    [ "$(cat "$TRANSACTION_LOCK/pid" 2>/dev/null || true)" = "$$" ] || return 0
+    rm -rf "$TRANSACTION_LOCK"
+}
+
+acquire_transaction_lock() {
+    mkdir -p "$INSTALL_METADATA_DIR"
+    if ! mkdir "$TRANSACTION_LOCK" 2>/dev/null; then
+        owner=$(cat "$TRANSACTION_LOCK/pid" 2>/dev/null || true)
+        case "$owner" in *[!0-9]*|'') owner= ;; esac
+        [ -n "$owner" ] || fail "another Labby installation is starting"
+        if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+            fail "another Labby installation is running (pid $owner)"
+        fi
+        stale="$TRANSACTION_LOCK.stale.$$"
+        mv "$TRANSACTION_LOCK" "$stale" 2>/dev/null || fail "another Labby installation is starting"
+        rm -rf "$stale"
+        mkdir "$TRANSACTION_LOCK" 2>/dev/null || fail "another Labby installation is starting"
+    fi
+    printf '%s\n' "$$" >"$TRANSACTION_LOCK/pid"
+    durability_barrier
+}
 
 target_triple() {
     os="$(uname -s)"
@@ -214,10 +244,18 @@ recover_activation() {
         fi
     done
     [ "$recovery_failed" -eq 0 ] || return 1
+    # Retire the restore marker before deleting backups. Cancellation during
+    # cleanup must not make a later recovery interpret missing backups as files
+    # that were absent from the committed installation.
+    rm -f "$ACTIVATION_JOURNAL/state" || {
+        say "activation recovery FAILED retiring completed journal"
+        return 1
+    }
     rm -rf "$ACTIVATION_JOURNAL" || {
         say "activation recovery FAILED removing completed journal"
         return 1
     }
+    durability_barrier
     say "interrupted installation transaction restored"
 }
 
@@ -226,6 +264,24 @@ write_activation_state() {
     printf '%s\n' "$1" >"$state_tmp"
     chmod 600 "$state_tmp"
     mv -f "$state_tmp" "$ACTIVATION_JOURNAL/state"
+    durability_barrier
+}
+
+receipt_digest() {
+    [ -f "$1" ] || return 0
+    sed -n 's/^sha256=//p' "$1" | head -n 1
+}
+
+prune_unreferenced_artifacts() {
+    current=$(receipt_digest "$RECEIPT_PATH")
+    previous=$(receipt_digest "$PREVIOUS_RECEIPT_PATH")
+    [ -d "$ARTIFACTS_DIR" ] || return 0
+    for directory in "$ARTIFACTS_DIR"/*; do
+        [ -d "$directory" ] || continue
+        digest=${directory##*/}
+        [ "$digest" = "$current" ] || [ "$digest" = "$previous" ] || rm -rf "$directory"
+    done
+    durability_barrier
 }
 
 install_binary_atomic() {
@@ -245,6 +301,7 @@ install_binary_atomic() {
         artifact_tmp=$(mktemp "$artifact_dir/.labby.XXXXXX")
         install -m 755 "$source_binary" "$artifact_tmp"
         mv -f "$artifact_tmp" "$artifact"
+        durability_barrier
     elif [ "$(binary_sha256 "$artifact")" != "$digest" ]; then
         fail "cached artifact digest does not match its content: $digest"
     fi
@@ -274,7 +331,11 @@ install_binary_atomic() {
         return 1
     fi
     write_activation_state receipt-activated
+    rm -f "$ACTIVATION_JOURNAL/state" || fail "cannot retire activation journal; backups retained at $ACTIVATION_JOURNAL"
+    durability_barrier
     rm -rf "$ACTIVATION_JOURNAL"
+    durability_barrier
+    prune_unreferenced_artifacts
 }
 
 install_local_binary() {
@@ -369,8 +430,12 @@ install_from_source() {
 }
 
 main() {
+    acquire_transaction_lock
     if [ -d "$ACTIVATION_JOURNAL" ]; then
         recover_activation || fail "activation recovery FAILED; journal retained at $ACTIVATION_JOURNAL"
+    fi
+    if [ "$RECOVER_ONLY" = "1" ]; then
+        return 0
     fi
     if [ "$ROLLBACK" = "1" ]; then
         rollback_offline

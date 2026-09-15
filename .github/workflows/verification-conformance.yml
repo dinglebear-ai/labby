@@ -1,0 +1,67 @@
+name: Lifecycle implementation conformance
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Required lifecycle implementation conformance
+    runs-on: ubuntu-24.04
+    # Setup/build, five-minute execution, evidence validation, and upload margin.
+    timeout-minutes: 25
+    env:
+      LABBY_CONFORMANCE_EVIDENCE_DIR: ${{ github.workspace }}/verification-conformance-evidence
+      # Required conformance cannot turn an unavailable or incomplete case into a pass.
+      LABBY_CONFORMANCE_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-kache
+      - name: Capture source identity before build
+        run: |
+          set -euo pipefail
+          source_status="$(git status --porcelain)"
+          # Evidence is generated after the source snapshot; keep it from
+          # changing the harness's independently captured dirty-state bit.
+          printf '%s\n' '/verification-conformance-evidence/' >> .git/info/exclude
+          mkdir -p "$LABBY_CONFORMANCE_EVIDENCE_DIR"
+          git rev-parse HEAD > "$LABBY_CONFORMANCE_EVIDENCE_DIR/source-revision.txt"
+          printf '%s' "$source_status" > "$LABBY_CONFORMANCE_EVIDENCE_DIR/source-dirty.txt"
+      - name: Build product and conformance target (separate build budget)
+        timeout-minutes: 15
+        run: |
+          cargo build -p labby --all-features --bin labby --locked
+          cargo test -p labby --all-features --test lifecycle_conformance --no-run --locked
+          cargo build --manifest-path verification/Cargo.toml -p labby-verify --locked
+      - name: Capture real product binary identity
+        run: sha256sum target/debug/labby > "$LABBY_CONFORMANCE_EVIDENCE_DIR/binary-sha256.txt"
+      - name: Run required real-process conformance (five minutes excluding build)
+        timeout-minutes: 6
+        run: >-
+          timeout --signal=TERM --kill-after=5s 300s
+          cargo test -p labby --all-features --test lifecycle_conformance --locked --
+          --test-threads=1 conformance
+      - name: Require trace-pinned case evidence
+        if: success()
+        run: >-
+          python3 scripts/ci/validate_conformance_evidence.py
+          --evidence-dir "$LABBY_CONFORMANCE_EVIDENCE_DIR"
+      - name: Replay and explore captured daemon lifecycle incidents
+        timeout-minutes: 4
+        run: >-
+          timeout --signal=TERM --kill-after=5s 200s
+          python3 scripts/ci/validate_incident_evidence.py
+          --evidence-dir "$LABBY_CONFORMANCE_EVIDENCE_DIR"
+          --verifier verification/target/debug/labby-verify
+      - name: Preserve lifecycle conformance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-conformance
+          path: verification-conformance-evidence/
+          if-no-files-found: error
+          retention-days: 14

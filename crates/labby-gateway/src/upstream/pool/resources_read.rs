@@ -20,7 +20,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::ResourceCatalogGeneration;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call_str;
+use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::capability_call::{
     RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
 };
@@ -221,8 +221,18 @@ impl UpstreamPool {
     /// Read a resource while preserving the complete 2026 request envelope.
     pub async fn read_upstream_resource_request(
         &self,
-        mut params: ReadResourceRequestParams,
+        params: ReadResourceRequestParams,
     ) -> Option<Result<ReadResourceResult, String>> {
+        self.read_upstream_resource_request_typed(params)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn read_upstream_resource_request_typed(
+        &self,
+        mut params: ReadResourceRequestParams,
+    ) -> Option<Result<ReadResourceResult, CapabilityCallError>> {
         let start = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = "lab://upstream/";
@@ -282,6 +292,17 @@ impl UpstreamPool {
         uri: &str,
         allowed: Option<&std::collections::BTreeSet<String>>,
     ) -> Option<Result<ReadResourceResult, String>> {
+        self.read_upstream_ui_resource_allowed_typed(uri, allowed)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn read_upstream_ui_resource_allowed_typed(
+        &self,
+        uri: &str,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Result<ReadResourceResult, CapabilityCallError>> {
         let start = Instant::now();
         let redacted_uri = redact_resource_uri_for_logging(uri);
 
@@ -357,7 +378,7 @@ impl UpstreamPool {
         request_uri: &str,
         normalize_uri: &str,
         start: Instant,
-    ) -> Option<Result<ReadResourceResult, String>> {
+    ) -> Option<Result<ReadResourceResult, CapabilityCallError>> {
         self.read_resource_request_from_peer(
             upstream_name,
             ReadResourceRequestParams::new(request_uri),
@@ -373,7 +394,7 @@ impl UpstreamPool {
         params: ReadResourceRequestParams,
         normalize_uri: &str,
         start: Instant,
-    ) -> Option<Result<ReadResourceResult, String>> {
+    ) -> Option<Result<ReadResourceResult, CapabilityCallError>> {
         // Single choke point for `expose_resources` on the catalog-backed read
         // path: both callers have already reduced `params.uri` to the bare,
         // upstream-native URI (the gateway prefix stripped, or a native `ui://`
@@ -411,7 +432,7 @@ impl UpstreamPool {
         let timeout_ms = self.request_timeout.as_millis();
 
         Some(
-            timed_capability_call_str(
+            timed_capability_call(
                 self,
                 upstream_name,
                 UpstreamCapability::Resources,
@@ -442,6 +463,17 @@ impl UpstreamPool {
         params: ReadResourceRequestParams,
         allowed: Option<&std::collections::BTreeSet<String>>,
     ) -> Option<Result<ReadResourceResult, String>> {
+        self.read_upstream_resource_request_allowed_typed(params, allowed)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn read_upstream_resource_request_allowed_typed(
+        &self,
+        params: ReadResourceRequestParams,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Result<ReadResourceResult, CapabilityCallError>> {
         if let Some(allowed) = allowed {
             let upstream = params
                 .uri
@@ -451,7 +483,7 @@ impl UpstreamPool {
                 return None;
             }
         }
-        self.read_upstream_resource_request(params).await
+        self.read_upstream_resource_request_typed(params).await
     }
 
     pub async fn subject_scoped_read_resource(
@@ -484,8 +516,20 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: &str,
-        mut params: ReadResourceRequestParams,
+        params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, String> {
+        self.subject_scoped_read_resource_request_typed(config, subject, params)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Preserve the structured failure category for recovery-aware callers.
+    pub async fn subject_scoped_read_resource_request_typed(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        mut params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, CapabilityCallError> {
         let start = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
@@ -494,7 +538,9 @@ impl UpstreamPool {
         } else if gateway_uri.starts_with("ui://") {
             gateway_uri.clone()
         } else {
-            return Err("resource uri does not match upstream".to_string());
+            return Err(CapabilityCallError::Other {
+                message: "resource uri does not match upstream".to_string(),
+            });
         };
         // OAuth reads never touch the catalog, so resolve the same fail-closed
         // policy from the live config. Without this the list filter above would
@@ -517,10 +563,9 @@ impl UpstreamPool {
                 kind = "resource_not_exposed",
                 "upstream resource read blocked by exposure policy"
             );
-            return Err(format!(
-                "resource is not exposed by upstream `{}`",
-                config.name
-            ));
+            return Err(CapabilityCallError::Other {
+                message: format!("resource is not exposed by upstream `{}`", config.name),
+            });
         }
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, true)
@@ -544,12 +589,14 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                return Err(error.to_string());
+                return Err(CapabilityCallError::Other {
+                    message: error.to_string(),
+                });
             }
         };
         let timeout_ms = self.request_timeout.as_millis();
 
-        timed_capability_call_str(
+        timed_capability_call(
             self,
             &config.name,
             UpstreamCapability::Resources,
@@ -590,6 +637,62 @@ mod tests {
     use super::super::testsupport::*;
     use super::ExactResourceReadError;
     use crate::upstream::types::{CIRCUIT_BREAKER_THRESHOLD, ToolExposurePolicy, UpstreamHealth};
+
+    #[derive(Clone)]
+    struct MisleadingResourceError;
+
+    impl ServerHandler for MisleadingResourceError {
+        async fn read_resource(
+            &self,
+            request: ExactReadParams,
+            _: ExactRequestContext<RoleServer>,
+        ) -> Result<ExactReadResponse, ErrorData> {
+            Err(ErrorData::invalid_params(request.uri, None))
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_resource_read_preserves_application_error_despite_gateway_phrases() {
+        let pool = catalog_pool_with_server("alpha", MisleadingResourceError).await;
+        for detail in ["cancelled", "timed out", "response too large"] {
+            let uri = format!("lab://upstream/alpha/{detail}");
+            let error = pool
+                .read_upstream_resource_request_allowed_typed(ExactReadParams::new(uri), None)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                matches!(error, super::CapabilityCallError::Mcp { .. }),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_resource_read_preserves_gateway_timeout() {
+        let mut pool = catalog_pool_with_server(
+            "alpha",
+            SlowResourceReadServer {
+                calls: Arc::new(AtomicUsize::new(0)),
+                delay: std::time::Duration::from_secs(1),
+                started: None,
+            },
+        )
+        .await;
+        Arc::get_mut(&mut pool).unwrap().request_timeout = std::time::Duration::from_millis(20);
+        let error = pool
+            .read_upstream_resource_request_allowed_typed(
+                ExactReadParams::new("lab://upstream/alpha/file:///one"),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(error, super::CapabilityCallError::Timeout { .. }),
+            "{error:?}"
+        );
+    }
 
     #[derive(Clone)]
     struct InspectingResourceServer {

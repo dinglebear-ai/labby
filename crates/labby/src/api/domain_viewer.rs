@@ -62,13 +62,26 @@ pub(super) async fn provision(
     {
         return denied();
     }
-    if state
+    if let Err(error) = state
         .access_runtime
         .provision_team_viewer(identity.clone(), project.to_owned())
         .await
-        .is_err()
-        || proof.revalidate().await.is_err()
     {
+        // Fail closed, but leave a trace. Identity and project are not logged.
+        tracing::warn!(
+            subsystem = "access",
+            phase = "domain_viewer.provision",
+            error = %error,
+            "domain viewer provisioning failed; request denied"
+        );
+        return denied();
+    }
+    if proof.revalidate().await.is_err() {
+        tracing::debug!(
+            subsystem = "access",
+            phase = "domain_viewer.revalidate",
+            "domain viewer proof failed revalidation after provisioning; request denied"
+        );
         return denied();
     }
     next.run(request).await

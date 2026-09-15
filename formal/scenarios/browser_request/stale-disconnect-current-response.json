@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "project": "labby",
+  "model": "browser_request",
+  "invariant": "LABBY-REQ-004",
+  "origin": { "kind": "manual", "reference": "stale socket disconnect" },
+  "initial": {},
+  "steps": [
+    { "action": "connect", "generation": "browser-old" },
+    { "action": "replace_connection", "generation": "browser-current" },
+    { "action": "admit", "request": "call-a" },
+    { "action": "dispatch", "request": "call-a" },
+    { "action": "disconnect", "generation": "browser-old" },
+    { "action": "complete_success", "request": "call-a", "generation": "browser-current" }
+  ],
+  "expect": "invariant_holds",
+  "status": "active"
+}

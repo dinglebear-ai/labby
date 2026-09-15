@@ -17,6 +17,7 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GatewayAuthorityClass {
     Public,
+    PersonalManage,
     ScopedRead,
     ScopedManage,
     PlatformManage,
@@ -54,6 +55,7 @@ impl GatewayActionAuthorization {
 pub(crate) fn gateway_authority_class(action: &str) -> Option<GatewayAuthorityClass> {
     Some(match action {
         "help" | "schema" => GatewayAuthorityClass::Public,
+        "gateway.oauth.authorize" => GatewayAuthorityClass::PersonalManage,
         "gateway.loadout.list"
         | "gateway.loadout.list_state"
         | "gateway.loadout.get"
@@ -207,6 +209,13 @@ pub(crate) async fn authorize_gateway_action(
         unavailable()
     })?;
     let (owner, capability, resource_id) = match class {
+        GatewayAuthorityClass::PersonalManage => {
+            let owner = super::resolve_personal_owner(&store, identity.clone())
+                .await
+                .map_err(|error| map_authority_error(action, error))?;
+            let resource_id = owner.id().to_owned();
+            (owner, Capability::ScopeManage, resource_id)
+        }
         GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage => {
             let team_id = team_id.ok_or_else(denied)?;
             let owner = OwnerScope::Team(TeamId::new(team_id).map_err(|_| denied())?);
@@ -312,6 +321,26 @@ fn unavailable() -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_oauth_does_not_inherit_team_or_platform_authority() {
+        assert!(!gateway_transport_requires_admin("gateway.oauth.authorize"));
+        assert_eq!(
+            gateway_runtime_subject("gateway.oauth.authorize", Some("team-a"), Some("caller")),
+            Some("caller".into())
+        );
+        assert_eq!(
+            qualify_team_gateway_params(
+                "gateway.oauth.authorize",
+                None,
+                serde_json::json!({"upstream":"linear"})
+            )
+            .unwrap(),
+            serde_json::json!({"upstream":"linear"})
+        );
+        assert!(gateway_transport_requires_admin("gateway.oauth.start"));
+        assert!(gateway_transport_requires_admin("gateway.oauth.clear"));
+    }
 
     #[test]
     fn team_policy_is_distinct_from_host_authority() {

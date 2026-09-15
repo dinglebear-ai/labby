@@ -6,7 +6,7 @@
 //! `crate::mcp` (A-M6 fix).
 
 use anyhow::Context as _;
-use labby_runtime::gateway_config::UpstreamConfig;
+use labby_runtime::gateway_config::{UpstreamConfig, UpstreamLifecycle};
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
 use rmcp::transport::TransportAdapterIdentity;
@@ -145,6 +145,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
         name: config.name.clone(),
         runtime_origin: runtime_origin_label(runtime_origin, runtime_owner),
         runtime_owner: runtime_owner.cloned(),
+        lifecycle: config.lifecycle.unwrap_or_default(),
     };
     connect_stdio_command(command_spec, handler, true, notification_interceptor).await
 }
@@ -183,6 +184,7 @@ pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
         display: command.display,
         runtime_origin: Some("proxy:local-cli".to_string()),
         runtime_owner: None,
+        lifecycle: UpstreamLifecycle::Auto,
     };
     connect_stdio_command(spec, handler, false, None).await
 }
@@ -198,6 +200,7 @@ struct StdioCommandSpec {
     name: String,
     runtime_origin: Option<String>,
     runtime_owner: Option<UpstreamRuntimeOwner>,
+    lifecycle: UpstreamLifecycle,
 }
 
 async fn connect_stdio_command<H: ClientHandler + Clone>(
@@ -228,7 +231,9 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     let _spawn_guard = super::spawn_lock::acquire(spawn_lock.as_mut()).await;
 
     let lifecycle_key = stdio_lifecycle_key(&command.name, lock_command.as_ref(), &lock_args);
-    let initial_attempt = if prefers_legacy_stdio_lifecycle(&lifecycle_key) {
+    let initial_attempt = if command.lifecycle == UpstreamLifecycle::Initialize
+        || prefers_legacy_stdio_lifecycle(&lifecycle_key)
+    {
         LifecycleAttempt::LegacyInitialize
     } else {
         LifecycleAttempt::Modern
@@ -458,6 +463,7 @@ where
         name: command.name,
         runtime_origin: command.runtime_origin,
         runtime_owner: command.runtime_owner,
+        lifecycle: command.lifecycle,
     })
 }
 
@@ -814,6 +820,7 @@ mod conformance_tests {
             name: "hostile".to_string(),
             runtime_origin: None,
             runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
         };
 
         // The fixture tests explicit path projection independently of the real
@@ -886,6 +893,7 @@ mod conformance_tests {
             name: "protected-argument".to_string(),
             runtime_origin: None,
             runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
         };
 
         let result = sandboxed_stdio_command(command, "/opt/labby/bin/labby".into());
@@ -912,6 +920,7 @@ mod conformance_tests {
             name: "missing-path".to_string(),
             runtime_origin: None,
             runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
         };
         for (command, expected) in [
             (
@@ -983,6 +992,7 @@ mod conformance_tests {
             name: "state-symlink".into(),
             runtime_origin: None,
             runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
         };
         assert!(
             sandboxed_stdio_command_against(command, "/opt/labby/bin/labby".into(), [&home])
@@ -1007,6 +1017,7 @@ mod conformance_tests {
             name: "protected-executable".into(),
             runtime_origin: None,
             runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
         };
         assert!(
             sandboxed_stdio_command_against(command, "/opt/labby/bin/labby".into(), [&home])

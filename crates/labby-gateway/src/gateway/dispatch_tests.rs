@@ -448,6 +448,7 @@ async fn shared_gateway_oauth_actions_reject_subject_overrides_without_echoing_t
 
     for action in [
         "gateway.oauth.start",
+        "gateway.oauth.authorize",
         "gateway.oauth.status",
         "gateway.oauth.clear",
         "gateway.oauth.wait",
@@ -843,6 +844,7 @@ async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
         ("gateway.mcp.restart", json!({"name": "github"})),
         ("gateway.mcp.cleanup", json!({"name": "github"})),
         ("gateway.oauth.start", json!({"upstream": "github"})),
+        ("gateway.oauth.authorize", json!({"upstream": "github"})),
         ("gateway.oauth.status", json!({"upstream": "github"})),
         ("gateway.oauth.clear", json!({"upstream": "github"})),
         (
@@ -1343,6 +1345,8 @@ fn test_manager() -> GatewayManager {
 
 fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled,
         name: name.to_string(),
         url: Some("http://127.0.0.1:1/mcp".to_string()),
@@ -1659,6 +1663,8 @@ async fn gateway_list_returns_array() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -1704,6 +1710,8 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "fixture-http".to_string(),
                 url: Some("http://127.0.0.1:9001/mcp".to_string()),
@@ -1727,6 +1735,8 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "fixture-stdio".to_string(),
                 url: None,
@@ -2456,6 +2466,8 @@ async fn gateway_server_get_returns_custom_gateway_row() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -2503,6 +2515,8 @@ async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "dashboard-http".to_string(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2605,6 +2619,8 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "dashboard-http".to_string(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2829,6 +2845,8 @@ async fn fleet_catalog_refresh_continues_after_response_timeout() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "slow-http".into(),
             url: Some(format!("{}/mcp", server.uri())),
@@ -2890,6 +2908,8 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "noxa".to_string(),
             url: None,
@@ -3436,6 +3456,8 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "fixture-http".to_string(),
                 url: Some("http://127.0.0.1:9001".to_string()),
@@ -3459,6 +3481,8 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "configured-stdio".to_string(),
                 url: None,
@@ -3734,6 +3758,8 @@ async fn only_reload_promises_to_pick_up_changed_bearer_token_env_vars() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -3797,6 +3823,8 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let runtime_arg = "cleanup-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -3880,6 +3908,8 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let runtime_arg = "disable-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -3986,6 +4016,8 @@ async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
     let runtime_arg = "restart-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: upstream_name.to_string(),
             url: None,
@@ -4089,6 +4121,8 @@ fn make_discovered_http(name: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             name: name.to_string(),
             enabled: false,
             url: Some("http://127.0.0.1:9000".to_string()),
@@ -4121,6 +4155,8 @@ fn make_discovered_stdio(name: &str, command: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             name: name.to_string(),
             enabled: false,
             url: None,
@@ -4339,6 +4375,8 @@ async fn gateway_dispatch_schema_missing_param_without_manager() {
 }
 fn upstream_fixture(name: &str, url: Option<String>, command: Option<String>) -> UpstreamConfig {
     UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         name: name.to_string(),
         enabled: false,
         url,
@@ -4437,4 +4475,169 @@ fn include_existing_false_filters_out_configured_servers() {
         &GatewayDiscoverParams::default(), // include_existing defaults to false
     );
     assert!(views.is_empty());
+}
+
+#[tokio::test]
+async fn caller_oauth_authorize_requires_transport_identity() {
+    let error = dispatch_with_manager(
+        &test_manager(),
+        "gateway.oauth.authorize",
+        json!({"upstream":"example"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), "forbidden");
+}
+
+#[tokio::test]
+async fn caller_oauth_authorize_stores_only_callers_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+        .await
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", server.uri()), "authorization_endpoint": format!("{}/authorize", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()), "code_challenge_methods_supported": ["S256"]
+        }))).mount(&server).await;
+    Mock::given(wiremock::matchers::method("POST")).and(wiremock::matchers::path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"fixture-access", "token_type":"Bearer", "refresh_token":"fixture-refresh", "expires_in":3600})))
+        .expect(1).mount(&server).await;
+    let mut config = oauth_upstream_fixture("personal", true);
+    config.url = Some(format!("{}/mcp", server.uri()));
+    let key =
+        labby_auth::upstream::encryption::load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .unwrap();
+    let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+        store.clone(),
+        key.clone(),
+        config.clone(),
+        "https://lab.example/auth/upstream/callback".into(),
+    );
+    let managers = std::sync::Arc::new(dashmap::DashMap::new());
+    managers.insert("personal".into(), oauth.clone());
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_oauth_resources(
+        store.clone(),
+        key,
+        "https://lab.example/auth/upstream/callback".into(),
+    )
+    .with_upstream_oauth_managers(managers);
+    manager.replace_config_for_tests(vec![config]).await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::iter::once("personal".into()).collect()),
+        oauth_subject: Some("alice".into()),
+    };
+    let started = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.oauth.authorize",
+        json!({"upstream":"personal"}),
+        scope,
+    )
+    .await
+    .unwrap();
+    let url = url::Url::parse(started["authorization_url"].as_str().unwrap()).unwrap();
+    let csrf = url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    crate::gateway::oauth::complete_authorization_callback_with_issuer(
+        &manager,
+        "personal",
+        "alice",
+        "fixture-code",
+        &csrf,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(oauth.has_credentials("alice").await.unwrap());
+    assert!(!oauth.has_credentials("bob").await.unwrap());
+    assert!(!oauth.has_credentials("gateway").await.unwrap());
+    assert!(
+        crate::gateway::oauth::complete_authorization_callback_with_issuer(
+            &manager,
+            "personal",
+            "alice",
+            "fixture-code",
+            &csrf,
+            None
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn caller_oauth_cannot_replace_shared_credentials() {
+    let manager = test_manager();
+    let mut config = oauth_upstream_fixture("central", true);
+    config.oauth.as_mut().unwrap().credential =
+        labby_runtime::gateway_config::UpstreamOauthCredentialSource::GoogleProvider {
+            account: None,
+        };
+    manager.replace_config_for_tests(vec![config]).await;
+    for (subject, expected) in [("alice", "unknown_upstream"), ("gateway", "forbidden")] {
+        let error = dispatch_with_manager_scoped(
+            &manager,
+            "gateway.oauth.authorize",
+            json!({"upstream":"central"}),
+            GatewayEnrichmentScope {
+                oauth_subject: Some(subject.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), expected);
+    }
+}
+
+#[tokio::test]
+async fn personal_oauth_cannot_complete_against_central_provider_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+        .await
+        .unwrap();
+    let key =
+        labby_auth::upstream::encryption::load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .unwrap();
+    let mut config = oauth_upstream_fixture("central", true);
+    config.oauth.as_mut().unwrap().credential =
+        labby_runtime::gateway_config::UpstreamOauthCredentialSource::GoogleProvider {
+            account: None,
+        };
+    let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+        store,
+        key,
+        config,
+        "https://lab.example/callback".into(),
+    );
+    let managers = std::sync::Arc::new(dashmap::DashMap::new());
+    managers.insert("central".into(), oauth);
+    let manager = test_manager().with_upstream_oauth_managers(managers);
+    assert_eq!(
+        manager
+            .begin_upstream_authorization("central", "alice")
+            .await
+            .unwrap_err()
+            .kind(),
+        "forbidden"
+    );
+    assert_eq!(
+        manager
+            .complete_upstream_authorization_callback_with_issuer(
+                "central", "alice", "code", "state", None
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        "forbidden"
+    );
 }

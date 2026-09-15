@@ -127,12 +127,12 @@ impl CodeModeHost for GatewayManager {
         include_snippets: bool,
         use_cache: bool,
     ) -> Result<ToolsRender, ToolError> {
-        // MCP `codemode` execution must not spend the caller's wall-clock budget
-        // cold-connecting every upstream just to render helper metadata; trivial
-        // code that never calls a tool should reach the runner immediately.
-        // Tool execution remains live because `call_tool` resolves the requested
-        // upstream at the actual call boundary.
-        let allow_cold_connect = surface == CodeModeSurface::Cli && caller.can_execute();
+        // Catalog readers must receive a discoverable catalog even when the
+        // long-lived gateway has not contacted an upstream yet. The refresh is
+        // bounded by the catalog cold-connect budget; without it, MCP's
+        // documented search -> describe -> call workflow starts with an empty
+        // catalog and can only succeed by guessing a raw tool id.
+        let allow_cold_connect = true;
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
         let allowed = scope.allowed_namespaces();

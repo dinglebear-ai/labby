@@ -1,14 +1,12 @@
 //! `labby update` — install the latest release, then refresh Incus when present.
 
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
 
 use crate::output::{OutputFormat, print};
-
-const INSTALL_SCRIPT: &str = include_str!("../../../../scripts/install.sh");
 
 #[derive(Debug, Args, Clone)]
 pub struct UpdateArgs {
@@ -96,7 +94,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    run_install_script(&args.version, &install_dir)?;
+    crate::self_update::install_requested_release(&args.version, &install_dir).await?;
     let (incus_sync, incus_sync_skipped) = if args.no_incus_sync {
         (None, Some("--no-incus-sync requested".to_string()))
     } else {
@@ -131,27 +129,6 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     };
     render_outcome(outcome, format)?;
     Ok(ExitCode::SUCCESS)
-}
-
-fn run_install_script(version: &str, install_dir: &PathBuf) -> Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let script = tempdir.path().join("install.sh");
-    std::fs::write(&script, INSTALL_SCRIPT)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
-    }
-    let status = Command::new("sh")
-        .arg(&script)
-        .env("LABBY_INSTALL_VERSION", version)
-        .env("LABBY_INSTALL_DIR", install_dir)
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("install.sh failed with status {status}")
-    }
 }
 
 fn resolve_install_dir(explicit: Option<&PathBuf>) -> Result<PathBuf> {

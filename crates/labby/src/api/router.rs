@@ -4,6 +4,9 @@
 #[path = "domain_viewer.rs"]
 mod domain_viewer;
 
+#[path = "platform_admin_elevation.rs"]
+mod platform_admin_elevation;
+
 #[cfg(feature = "gateway")]
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
@@ -447,6 +450,7 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 /// three services under paths that differ from `/v1/{service}`; every
 /// consumer that needs the mounted path (OpenAPI, tests) reads it here.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn service_dispatch_path(service: &str) -> String {
     match service {
         "access" => "/v1/access/admin".to_owned(),
@@ -925,10 +929,16 @@ pub(crate) fn build_router_with_external_auth(
     };
     let v1_protected = if credential_auth_configured {
         v1_group.map_router(|router| {
+            // route_layer order is inside-out: AuthLayer runs first, then
+            // durable platform-admin elevation, then domain Viewer admission.
             router
                 .route_layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     domain_viewer::provision,
+                ))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    platform_admin_elevation::elevate,
                 ))
                 .route_layer(make_auth_layer(true))
         })
@@ -4080,6 +4090,8 @@ mod tests {
         );
         let config = crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "axon".to_string(),
                 enabled: true,
                 url: Some(format!("{}/mcp", backend.uri())),
@@ -5355,6 +5367,8 @@ mod tests {
     fn protected_named_upstream_config(backend_url: &str) -> crate::config::LabConfig {
         crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 name: "restricted".to_string(),
                 enabled: true,
                 url: Some(format!("{}/mcp", backend_url.trim_end_matches('/'))),

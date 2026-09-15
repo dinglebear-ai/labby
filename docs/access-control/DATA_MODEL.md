@@ -1,11 +1,14 @@
 ---
 title: "Access Control Data Model"
 created: "2026-08-22"
-updated: "2026-08-22"
+updated: "2026-09-13"
 status: "design"
 ---
 
 # Access Control Data Model
+
+> The [Schema v7 (current)](#schema-v7-current) section describes the
+> implemented store. Most other entity sections are the broader design.
 
 ## Storage direction
 
@@ -47,7 +50,7 @@ Artifact IDs/revision IDs remain owned by the Artifact subsystem and are stored 
 
 ### access_metadata
 
-Schema v2's STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
+The current (schema v7) STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
 
 Unknown/newer schema versions fail closed.
 
@@ -90,13 +93,39 @@ Constraints:
 
 Verified email, last-seen time, and explicit revocation time are optional future metadata. They are not authorization keys and are not columns in the Milestone 1 v1 schema.
 
-### Milestone 1 schema subset
+### Schema v7 (current)
 
-Milestone 1 schema v2 contains exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and stores one symbolic named Loadout admitted against desired gateway configuration. Because Gateway and AccessStore are separate stores, existence is revalidated at every use and is not a SQLite referential-integrity guarantee. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
+`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 7`. A fresh
+store is created directly at v7 in one transaction. Existing v1 through v6
+stores are migrated only by `labby state migrate-access` with approval
+evidence (see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
+The v7 `access.db` contains these tables (source file in parentheses when not
+`migrations.rs`):
 
-Fresh stores create the canonical v2 schema directly in one transaction. A store with the exact canonical v1 manifest migrates transactionally to v2, preserving `global_revision` and starting at bootstrap generation zero. Malformed v1 and unknown/newer schemas fail closed; migration does not silently repair them.
+| Area | Tables |
+| --- | --- |
+| Metadata and admission | `access_metadata`, `access_admission_buckets`, `access_security_events` |
+| Identity and Organization | `organizations`, `principals`, `principal_links`, `principal_epochs` |
+| Projects | `projects`, `project_memberships`, `project_membership_epochs`, `project_loadouts`, `project_policy_publications` |
+| Teams and platform | `groups` (Teams are `kind = 'team'`), `team_memberships`, `team_invitations`, `team_project_assignments`, `platform_administrators`, `gateway_team_credential_bindings` |
+| Authority projection | `authority_outbox_sequences`, `authority_projection_outbox` |
+| Agents and tasks | `agent_definitions`, `agent_definition_audit`, `agent_sessions`, `agent_tasks`, `agent_task_audit` |
+| Bootstrap and product credentials (`credential_schema.rs`) | `access_installations`, `access_tombstones`, `bootstrap_proofs`, `project_credentials`, `credential_idempotency` |
+| Dev containers (`dev_container.rs`) | `dev_container_templates`, `dev_container_instances`, `dev_container_ledger`, `dev_container_owner_quotas` |
+| Audit | `access_audit` |
 
-Groups, custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables are broader future design and require later versioned migrations.
+Team roles are `owner`, `admin`, and `member`. Project roles are `owner`,
+`admin`, `member`, and `viewer`. Column definitions are authoritative in the
+source files above; the entity sections later in this document are the broader
+design and do not all match v7 columns.
+
+#### Historical: Milestone 1 schema subset
+
+Milestone 1 schema v2 contained exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and stores one symbolic named Loadout admitted against desired gateway configuration. Because Gateway and AccessStore are separate stores, existence is revalidated at every use and is not a SQLite referential-integrity guarantee. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
+
+At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for v7.
+
+Custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables remain broader future design and require later versioned migrations.
 
 ### organizations
 
@@ -532,7 +561,7 @@ The implemented store-only bootstrap transaction:
 
 The transaction does not create Loadout mappings, Artifact assignments, organization-visible/public grants, or a compatibility projection. Those remain later integration work, and existing private Artifacts must remain private.
 
-Bootstrap is an explicit crate-internal AccessStore operation reached only through the authenticated browser owner-bootstrap adapter; it is not invoked by startup, AppState, setup, or doctor. It is one-time, compare-and-set, idempotent across restarts, and stores bootstrap generation one plus a safe identity fingerprint. It accepts only a pristine generation-zero business state. Ambiguous or absent canonical identity requires the explicit browser workflow; changed identity or bootstrap naming is never auto-promoted. Concurrent attempts produce exactly one owner or fail closed.
+Owner bootstrap has two entry points that commit the same reserved rows: the OAuth browser adapter (`POST /v1/access/bootstrap-owner`, `crates/labby/src/access/bootstrap.rs`) and the offline-proof flow (`labby setup access-bootstrap`, `POST /auth/bootstrap/consume`, `crates/labby/src/access/credential_store.rs` `consume_bootstrap_proof`). Neither is invoked by startup, AppState, setup checks, or doctor. It is one-time, compare-and-set, idempotent across restarts, and stores bootstrap generation one plus a safe identity fingerprint. It accepts only a pristine generation-zero business state. Ambiguous or absent canonical identity requires the explicit browser workflow; changed identity or bootstrap naming is never auto-promoted. Concurrent attempts produce exactly one owner or fail closed.
 
 Integrity validation protects the reserved bootstrap Organization, Principal, canonical identity link, default Project, owner membership, and audit record. It intentionally does not require global table counts to remain one: later legitimate principals, projects, memberships, Loadout mappings, and audit events may coexist without invalidating bootstrap state. At generation zero, unrelated valid migrated data may be opened, but partial use of reserved bootstrap identifiers fails integrity validation and explicit bootstrap refuses any non-pristine business state.
 
@@ -571,4 +600,4 @@ Identity resolution and explicit selection fail closed for missing, inactive, re
 
 ### Process runtime lifecycle
 
-Normal process initialization does not create or migrate `access.db`. A process-scoped `AccessRuntime` classifies missing and uninitialized stores as setup-required, classifies insecure or unusable stores as blocked, and opens only an exact-current bootstrapped WAL store as Ready. Explicit owner bootstrap is the sole lifecycle path that may create or migrate the store, and successful completion atomically promotes the runtime to Ready. One runtime allocation is shared across hosted HTTP/Unix, their MCP handlers, protected routes, and standalone stdio; the live-daemon stdio bridge opens no local access state. Delegated in-process peers are explicitly non-authoritative. Ready handles remain valid for the process lifetime; persistent health is re-observed at process restart, while individual store operations continue to fail closed on storage errors.
+Normal process initialization does not create or migrate `access.db`. A process-scoped `AccessRuntime` classifies missing and uninitialized stores as setup-required, classifies insecure or unusable stores as blocked, and opens only an exact-current bootstrapped WAL store as Ready. Explicit owner bootstrap (either entry point) may create a fresh store, and successful completion atomically promotes the runtime to Ready. An existing older-schema store is migrated only offline by `labby state migrate-access` with approval evidence ([MIGRATION.md](./MIGRATION.md)). One runtime allocation is shared across hosted HTTP/Unix, their MCP handlers, protected routes, and standalone stdio; the live-daemon stdio bridge opens no local access state. Delegated in-process peers are explicitly non-authoritative. Ready handles remain valid for the process lifetime; persistent health is re-observed at process restart, while individual store operations continue to fail closed on storage errors.

@@ -1,0 +1,31 @@
+# External tools are not installed or executed by M0 recipes.
+schema = 1
+
+[kani]
+version = "0.67.0"
+enabled = true
+driver_env = "LABBY_KANI_DRIVER"
+asset_sha256 = "7fd0b71130aa37bd1e346eba675aad09e9b66e4b383f707fc657330ceb29eeec"
+qualification = "Exact official arm64 bundle: positive bounded proof, under-unwind incomplete, negative overwrite falsified."
+
+[alloy]
+version = "6.2.0"
+enabled = true
+jar_env = "LABBY_ALLOY_JAR"
+jar_sha256 = "6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d"
+source = "https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar"
+qualification = "Official jar: two bounded assertions had no solution; BrokenOverwrite produced a solution."
+
+[tlc]
+version = "1.7.4"
+enabled = true
+jar_env = "LABBY_TLA_TOOLS_JAR"
+jar_sha256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+source = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+qualification = "Official jar: bounded lifecycle model passed; BrokenBrowserRequest violated SingleTerminal."
+
+[apalache]
+version = "0.62.2"
+enabled = false
+image = "ghcr.io/apalache-mc/apalache@sha256:2003be7b0546c54be85adfc2969e43b28e4903f960e27c00dfdf1ed4f106113c"
+reason = "Immutable image is pinned, but the local container daemon was unavailable for qualification."

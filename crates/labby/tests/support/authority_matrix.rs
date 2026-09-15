@@ -126,6 +126,9 @@ pub(crate) fn classify_labby(action: &CatalogAction) -> Option<AuthorityClassifi
         "artifacts" | "bundles" | "sources" | "uploads" => {
             (ResourceFamily::Library, USER_OWNED, true)
         }
+        "gateway" if action_ref.action == "gateway.oauth.authorize" => {
+            (ResourceFamily::Gateway, &[OwnerKind::Personal][..], false)
+        }
         "gateway" if action.required_capability.as_deref() == Some("platform.manage") => {
             (ResourceFamily::Gateway, INSTALLATION_GATEWAY, false)
         }

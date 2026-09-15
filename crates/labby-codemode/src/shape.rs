@@ -3,6 +3,8 @@ use serde_json::Value;
 
 use labby_runtime::CodeModeResultShapePolicy;
 
+use crate::truncate::{RESOURCE_READ_EXAMPLE, TRUNCATION_RECOVERY};
+
 const MIN_SHAPED_RESULT_BYTES: usize = 256;
 const SOFT_WARNING_DIVISOR: usize = 3;
 const MIN_SOFT_WARNING_BYTES: usize = 1024;
@@ -119,7 +121,7 @@ fn shape_truncate(
         _ => serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
     };
     let marker_prefix = format!(
-        "[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\n"
+        "[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\nOutput only; execution already ran. Do not replay mutations. See result_shaping.warning for recovery.\n"
     );
     let room = budget.saturating_sub(marker_prefix.len());
     let preview = utf8_prefix_by_bytes(&serialized, room);
@@ -136,7 +138,9 @@ fn shape_truncate(
             truncated: true,
             original_size_bytes,
             shaped_size_bytes,
-            warning: None,
+            warning: Some(format!(
+                "{TRUNCATION_RECOVERY}\nresource_read_example:\n{RESOURCE_READ_EXAMPLE}"
+            )),
         },
     }
 }
@@ -207,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn over_budget_result_uses_hard_marker_without_soft_warning() {
+    fn over_budget_result_uses_hard_marker_with_recovery() {
         let shaped = shape_final_result(
             Some(Value::String("x".repeat(MAX_BYTES + 1000))),
             CodeModeResultShapePolicy::Truncate,
@@ -218,7 +222,9 @@ mod tests {
 
         assert!(shaped.metadata.changed);
         assert!(shaped.metadata.truncated);
-        assert!(shaped.metadata.warning.is_none());
+        let guidance = shaped.metadata.warning.as_deref().unwrap();
+        assert!(guidance.contains("Do not replay mutations"));
+        assert!(guidance.contains("codemode.readResource(uri)"));
         assert!(
             shaped
                 .result

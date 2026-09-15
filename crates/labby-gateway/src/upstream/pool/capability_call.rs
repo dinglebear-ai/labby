@@ -15,7 +15,7 @@
 //! declares its own peer-acquisition and response-normalization logic.
 
 use std::future::Future;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -27,6 +27,85 @@ use super::logging::{
     log_upstream_request_finish,
 };
 use super::usage_record::{record_usage_call, record_usage_call_with_response};
+
+fn queued_permit_expired_before_dispatch(queued: bool, rpc_remaining: Duration) -> bool {
+    queued && rpc_remaining.is_zero()
+}
+
+async fn queued_permit_deadline_error(
+    pool: &UpstreamPool,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    upstream_name: &str,
+    subject: Option<&str>,
+) -> CapabilityCallError {
+    log_upstream_request_error(
+        event,
+        start.elapsed().as_millis(),
+        "queue_saturated",
+        None,
+        None,
+        None,
+    );
+    record_usage_call(
+        pool,
+        event,
+        subject,
+        "queue_saturated",
+        start.elapsed().as_millis(),
+    );
+    CapabilityCallError::QueueSaturated {
+        message: format!("upstream `{upstream_name}` concurrency queue timed out"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn poll_rpc_after_admission<R, Fut>(
+    pool: &UpstreamPool,
+    acquired: super::AcquiredUpstreamCallPermit,
+    request_timeout: Duration,
+    upstream_name: &str,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    subject: Option<&str>,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<RawCallOutcome<R>, CapabilityCallError>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+{
+    let queued = acquired.queued;
+    let _permit = acquired.permit;
+    if queued_permit_expired_before_dispatch(
+        queued,
+        request_timeout.saturating_sub(start.elapsed()),
+    ) {
+        return Err(queued_permit_deadline_error(pool, event, start, upstream_name, subject).await);
+    }
+    let generation = pool.connection_generation(upstream_name, subject).await;
+    let rpc_remaining = request_timeout.saturating_sub(start.elapsed());
+    if queued_permit_expired_before_dispatch(queued, rpc_remaining) {
+        return Err(queued_permit_deadline_error(pool, event, start, upstream_name, subject).await);
+    }
+    let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
+    if rpc_remaining.is_zero() {
+        return Ok(RawCallOutcome::Timeout);
+    }
+
+    // Dropping `rpc` on cancellation stops the local work. Capability futures
+    // that carry side effects upstream arm their own cancel-on-drop guard.
+    // `biased` is load-bearing: `rpc` is lazy, so an already-cancelled caller
+    // must win without the request ever reaching the wire.
+    let rpc = tokio::time::timeout(rpc_remaining, rpc_future);
+    Ok(match cancel {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => RawCallOutcome::Cancelled,
+            result = rpc => classify_timeout_result(result),
+        },
+        None => classify_timeout_result(rpc.await),
+    })
+}
 
 /// Structured failure from an upstream capability call.
 ///
@@ -308,7 +387,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
     pool: &UpstreamPool,
-    request_timeout: std::time::Duration,
+    request_timeout: Duration,
     upstream_name: &str,
     capability: UpstreamCapability,
     event: UpstreamRequestLog<'_>,
@@ -389,7 +468,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn>(
     pool: &UpstreamPool,
-    request_timeout: std::time::Duration,
+    request_timeout: Duration,
     upstream_name: &str,
     capability: UpstreamCapability,
     event: UpstreamRequestLog<'_>,
@@ -438,7 +517,7 @@ where
     // needs telling upstream: no request has been sent.
     let permit_wait = tokio::time::timeout(
         gate_remaining,
-        pool.acquire_upstream_call_permit(upstream_name),
+        pool.acquire_upstream_call_permit_observed(upstream_name),
     );
     let permit_outcome = match cancel {
         Some(token) => tokio::select! {
@@ -456,8 +535,8 @@ where
         },
         None => permit_wait.await,
     };
-    let _permit = match permit_outcome {
-        Ok(Ok(permit)) => permit,
+    let acquired = match permit_outcome {
+        Ok(Ok(acquired)) => acquired,
         Ok(Err(error)) => {
             // The per-upstream concurrency gate itself failed (semaphore
             // closed). Emit the same telemetry as the sibling saturation
@@ -507,36 +586,18 @@ where
         }
     };
 
-    let generation = pool.connection_generation(upstream_name, subject).await;
-    let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
-    let rpc_remaining = request_timeout.saturating_sub(start.elapsed());
-    let outcome = if rpc_remaining.is_zero() {
-        RawCallOutcome::Timeout
-    } else {
-        let rpc = tokio::time::timeout(rpc_remaining, rpc_future);
-        match cancel {
-            // Dropping `rpc` here is what stops the local work. Capability
-            // futures that carry side effects upstream arm their own
-            // cancel-on-drop guard so the upstream is told to stop too.
-            //
-            // `biased` is load-bearing, not style. `rpc` is lazy: nothing
-            // reaches the wire until it is polled. Polling the token first
-            // means an already-cancelled caller never dispatches the request
-            // at all. Without `biased` tokio picks at random and roughly half
-            // the time writes the request out before noticing — executing a
-            // side effect for a caller that is already gone. Pinned by
-            // `a_call_cancelled_before_dispatch_never_reaches_the_upstream`.
-            // Losing a tie to an already-arrived response is harmless: that
-            // result had no reader, and MCP receivers ignore unknown ids.
-            Some(token) => tokio::select! {
-                biased;
-                () = token.cancelled() => RawCallOutcome::Cancelled,
-                result = rpc => classify_timeout_result(result),
-            },
-            None => classify_timeout_result(rpc.await),
-        }
-    };
-
+    let outcome = poll_rpc_after_admission(
+        pool,
+        acquired,
+        request_timeout,
+        upstream_name,
+        event,
+        start,
+        rpc_future,
+        subject,
+        cancel,
+    )
+    .await?;
     match outcome {
         RawCallOutcome::Ok(result) => {
             let response_size = size_fn(&result);
@@ -707,10 +768,96 @@ where
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use labby_runtime::agent_error::SANITIZE_TRUNCATION_MARKER;
     use rmcp::model::{ErrorCode, ErrorData};
 
     use super::*;
+    use crate::upstream::pool::entries::healthy_in_process_entry;
+
+    #[tokio::test]
+    async fn permit_observation_remembers_that_admission_queued() {
+        let pool = Arc::new(UpstreamPool::new());
+        let mut held = Vec::new();
+        for _ in 0..pool.call_concurrency {
+            held.push(pool.acquire_upstream_call_permit("fixture").await.unwrap());
+        }
+        let waiting = pool.acquire_upstream_call_permit_observed("fixture");
+        tokio::pin!(waiting);
+        assert!(matches!(
+            futures::poll!(waiting.as_mut()),
+            std::task::Poll::Pending
+        ));
+        drop(held.pop());
+        let acquired = waiting.await.unwrap();
+        assert!(acquired.queued);
+    }
+
+    #[test]
+    fn queued_deadline_exhaustion_is_pre_dispatch_saturation() {
+        assert!(queued_permit_expired_before_dispatch(true, Duration::ZERO));
+        assert!(!queued_permit_expired_before_dispatch(
+            false,
+            Duration::ZERO
+        ));
+        assert!(!queued_permit_expired_before_dispatch(
+            true,
+            Duration::from_nanos(1)
+        ));
+    }
+
+    #[tokio::test]
+    async fn queued_deadline_tie_never_polls_rpc_or_poisons_health() {
+        let pool = UpstreamPool::new().with_upstream_call_concurrency(1);
+        let upstream_name: Arc<str> = Arc::from("fixture");
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name), HashMap::new()),
+        );
+        let permit = pool
+            .acquire_upstream_call_permit("fixture")
+            .await
+            .expect("fixture permit");
+        let rpc_polled = Arc::new(AtomicBool::new(false));
+        let rpc_polled_for_future = Arc::clone(&rpc_polled);
+        let rpc = std::future::poll_fn(move |_| {
+            rpc_polled_for_future.store(true, Ordering::SeqCst);
+            std::task::Poll::<Result<(), rmcp::ServiceError>>::Pending
+        });
+
+        let result = poll_rpc_after_admission(
+            &pool,
+            super::super::AcquiredUpstreamCallPermit {
+                permit,
+                queued: true,
+            },
+            Duration::ZERO,
+            "fixture",
+            UpstreamRequestLog::tool("fixture", "forge", false),
+            Instant::now(),
+            rpc,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(CapabilityCallError::QueueSaturated { .. })
+        ));
+        assert!(!rpc_polled.load(Ordering::SeqCst));
+        let status = pool.upstream_status().await;
+        assert_eq!(status.len(), 1);
+        assert!(matches!(
+            status[0].1,
+            crate::upstream::types::UpstreamHealth::Healthy
+        ));
+    }
 
     #[test]
     fn bound_upstream_error_data_caps_multi_mb_message_and_data() {

@@ -27,6 +27,7 @@ OUTPUT_KEYS = [
     "javascript_advisories",
     "release",
     "unraid",
+    "verification",
 ]
 
 
@@ -62,6 +63,15 @@ def is_auth_conformance_input(path: str) -> bool:
         "scripts/ci/refresh_openai_auth_",
         "scripts/ci/publish_mcp_auth_",
         "scripts/ci/auth_backup_restore_",
+        "conformance/mcp-spec-",
+        "scripts/ci/mcp_spec_",
+        "scripts/ci/mcp_oracle_",
+        "scripts/ci/extract_mcp_spec_",
+        "scripts/ci/extract_mcp_schema_",
+        "scripts/ci/test_mcp_spec_",
+        "scripts/ci/test_mcp_oracle_",
+        "scripts/ci/test_extract_mcp_spec_",
+        "scripts/ci/test_extract_mcp_schema_",
     )
 
 
@@ -121,6 +131,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/js-advisory-policy.json",
             "scripts/ci/js_advisory_gate.py",
             "scripts/ci/test_ci_supply_policy.py",
+            "scripts/ci/test_verification_workflow.py",
             "crates/labby/tests/ci_changed_paths.rs",
             "install.sh",
             "scripts/install.sh",
@@ -174,6 +185,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     desktop = any_match(paths, lambda p: starts(p, "apps/labby-desktop/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
+    # The M3 model consumes only core/scenario from the isolated toolkit.
+    # Their sources and inherited manifest/lints affect product compilation;
+    # runner/backend/host code remains on the separate verification lane.
     rust_sources = any_match(
         paths,
         lambda p: starts(
@@ -181,6 +195,8 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "crates/",
             "tests/",
             ".cargo/",
+            "verification/crates/verify-core/",
+            "verification/crates/verify-scenario/",
         )
     )
     rust_manifests = any_match(
@@ -194,7 +210,19 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "build.rs",
             "clippy.toml",
             "deny.toml",
+            "verification/Cargo.toml",
         },
+    )
+    # `verification/` is a separate Cargo workspace and deliberately matches
+    # none of the `rust_sources` prefixes above: a product change should not
+    # build the toolkit, and a toolkit change should not run the full product
+    # Rust matrix. It therefore needs its own routing key — without one, a
+    # change confined to verification/ would route to nothing at all and CI
+    # would report green having compiled and tested none of it.
+    verification = any_match(
+        paths,
+        lambda p: starts(p, "verification/", ".cargo/")
+        or p in {"rust-toolchain.toml", "clippy.toml", "Justfile"},
     )
     rust_compile = rust_sources or rust_manifests
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
@@ -251,6 +279,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "javascript_advisories": javascript_advisories,
         "release": release,
         "unraid": unraid,
+        "verification": verification,
     }
 
     if workflow:

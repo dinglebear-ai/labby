@@ -58,6 +58,7 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     return (
       <OwnerSetupScreen
         authorityState={session.authorityState}
+        bootstrapAvailable={session.authorityState === 'transport' && session.ownerBootstrapAvailable === true}
         email={session.user.email}
         remediation={session.remediation}
       />

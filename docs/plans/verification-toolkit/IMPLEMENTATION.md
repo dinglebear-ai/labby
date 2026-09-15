@@ -10,6 +10,11 @@ Each milestone is independently useful and independently abandonable.
 2. Add `just verify-check` / `just verify-test` recipes delegating into it.
 3. Pin the versions in SPEC §3.1; add `deny.toml` coverage for the new tree.
 
+The scaffold's exact Cargo pins live in `verification/Cargo.toml`. External
+verifier candidates are disabled in `verification/toolchain.toml`; M6 must
+supply the Alloy checksum and TLC/Apalache immutable image digests absent from
+the original design before enabling those tools. M0 installs no verifier.
+
 ## M1 — Core vocabulary and catalog
 
 4. `verify-core`: `InvariantId`, `Kind`, `Severity`, `Verdict`, `Capabilities`,
@@ -36,6 +41,13 @@ Each milestone is independently useful and independently abandonable.
 At this point a project gets scenario replay with zero external toolchain, which
 is the adoption floor.
 
+The M2 incubation uses JSON steps, project-owned canonical identifier renaming,
+and a registry-populated `run_cli` adapter. The generic shell has no built-in
+project target; `replay-fixture` is explicitly a harness self-test. Replay reports
+live in the runner until M5 introduces cross-backend reporting. Synchronous
+target deadlines are cooperative; unsupported temporal/refinement monitoring
+returns incomplete. See `verification/README.md` for exact implemented bounds.
+
 ## M3 — First real model
 
 11. Add `crates/labby-model` to the product workspace as a dev-facing member;
@@ -60,6 +72,32 @@ fix L1 before adding backends.
 18. `verify-report`: JSON contract first, then text/Markdown/HTML renderers.
 19. PR-comment summary via the reusable workflow; snapshot the report with
     `insta` so format drift is visible in review.
+
+## C1 — Required lifecycle implementation conformance
+
+After M3/M4, implement SPEC §11 against the real compiled Labby process using
+controlled fixture events and an explicit model/observation relation. Replay
+initial and intermediate state checks, cancellation and late-response traces,
+and bounded cleanup. Prove a deliberately divergent adapter fails. Retain
+counterexample reproduction separately from fixed-product passing regressions.
+C1 is required v1 work, not deferred by adding more backends.
+
+## Q0–Q6 — Full product E2E qualification
+
+Use [QUALIFICATION.md](QUALIFICATION.md) as the acceptance matrix:
+
+- Q0: current suite inventory, support decisions, fixtures and evidence contract.
+- Q1: MCP tools/resources/prompts/skills/elicitation and protocol lifecycle.
+- Q2: bearer and Google/Authelia OAuth, explicit GitHub support decision.
+- Q3: Code Mode fanout, dependent calls, stress and primitive qualification.
+- Q4: real-browser WebMCP bridge and separate OpenAI/Anthropic host qualification.
+- Q5: proxy parity across every requested primitive, including apps/elicitation.
+- Q6: Send to Labby and cross-repository Depot ingestion qualification.
+
+Q0 starts independently of M0. Existing live E2E infrastructure and linked
+native-client/Code Mode Beads are reused. No Q milestone waits for all formal
+backends; model results cannot substitute for Q acceptance. Execution and
+dependencies are owned by Beads epic `lab-jfu6q`.
 
 ## M6 — Remaining backends, by cost order
 

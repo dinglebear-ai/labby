@@ -522,6 +522,8 @@ async fn code_mode_manager_with_pool_and_upstreams(
 
 fn fixture_upstream_config(name: &str) -> crate::config::UpstreamConfig {
     crate::config::UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: name.to_string(),
         url: Some("http://127.0.0.1:9/mcp".to_string()),
@@ -6656,5 +6658,148 @@ async fn browser_callbacks_remain_destructive_despite_page_annotations() {
             destructive,
             "policy for {action}"
         );
+    }
+}
+
+#[tokio::test]
+async fn personal_oauth_authorize_enforces_mcp_execute_scope() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": format!("{}/mcp", provider.uri()),
+            "authorization_endpoint": format!("{}/authorize", provider.uri()),
+            "token_endpoint": format!("{}/token", provider.uri()),
+            "code_challenge_methods_supported": ["S256"]
+        })))
+        .mount(&provider)
+        .await;
+    let dir = tempfile::Builder::new()
+        .prefix("labby-personal-oauth-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+        .await
+        .unwrap();
+    let config: labby_runtime::gateway_config::UpstreamConfig = serde_json::from_value(serde_json::json!({
+        "name": "personal", "enabled": true, "url": format!("{}/mcp", provider.uri()),
+        "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "preregistered", "client_id": "fixture"}}
+    })).unwrap();
+    let key = crate::oauth::upstream::encryption::load_key(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
+    .unwrap();
+    let callback = "https://lab.example.com/auth/upstream/callback";
+    let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+        store.clone(),
+        key.clone(),
+        config.clone(),
+        callback.into(),
+    );
+    let managers = Arc::new(dashmap::DashMap::new());
+    managers.insert("personal".into(), oauth);
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            dir.path().join("lab.toml"),
+            Default::default(),
+        )
+        .with_oauth_resources(store.clone(), key, callback.into())
+        .with_upstream_oauth_managers(managers),
+    );
+    manager.replace_config_for_tests(vec![config]).await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "http";
+    let identity = labby_auth::VerifiedIdentity::local_credential(
+        labby_auth::Authenticator::StaticBearer,
+        "reader",
+    )
+    .unwrap();
+    let access =
+        Arc::new(crate::access::AccessRuntime::initialize(dir.path().join("access.db")).await);
+    access
+        .bootstrap_owner(
+            crate::access::BootstrapOwnerInput::new(identity.clone(), "Personal", "Default")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    access
+        .store()
+        .await
+        .unwrap()
+        .execute_test_statement(
+            "UPDATE platform_administrators SET status='revoked', revoked_at=11",
+        )
+        .await
+        .unwrap();
+    server.access_runtime = access;
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    for scope in ["lab:read", "lab"] {
+        let mut context = scoped_context(running.peer().clone(), &[scope]);
+        let parts = context
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .unwrap();
+        parts.extensions.insert(identity.clone());
+        let result = running
+            .service()
+            .call_tool(
+                CallToolRequestParams::new("gateway").with_arguments(
+                    serde_json::json!({
+                        "action": "gateway.oauth.authorize", "params": {"upstream": "personal"}
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                context,
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(result) = result else {
+            panic!("authorization must complete without elicitation")
+        };
+        let text = &result.content[0].as_text().unwrap().text;
+        if scope == "lab:read" {
+            assert_eq!(result.is_error, Some(true), "{text}");
+            assert!(text.contains("forbidden"), "{text}");
+            assert!(provider.received_requests().await.unwrap().is_empty());
+        } else {
+            assert!(!result.is_error.unwrap_or(false), "{text}");
+            let envelope: Value = serde_json::from_str(text).unwrap();
+            let authorization =
+                url::Url::parse(envelope["data"]["authorization_url"].as_str().unwrap()).unwrap();
+            assert_eq!(authorization.path(), "/authorize");
+            let state = authorization
+                .query_pairs()
+                .find(|(key, _)| key == "state")
+                .unwrap()
+                .1
+                .into_owned();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            assert_eq!(
+                store
+                    .find_upstream_oauth_state_owner(&state, now)
+                    .await
+                    .unwrap(),
+                Some(("personal".into(), "reader".into()))
+            );
+        }
     }
 }

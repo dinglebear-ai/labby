@@ -637,18 +637,7 @@ impl GatewayManager {
             aggressive_matches: aggressive_matches.iter().map(cleanup_match_view).collect(),
         };
 
-        let cfg = self.config.read().await.clone();
-        let current_pool = self.runtime.current_pool().await;
-        if !dry_run && let Some(pool) = current_pool.as_deref() {
-            pool.reconcile_lazy_upstreams(
-                &cfg.upstream,
-                &std::collections::HashSet::from([name.to_string()]),
-                "gateway.mcp.cleanup",
-            )
-            .await;
-        }
-        self.reconcile_runtime_state(&cfg, current_pool.as_deref())
-            .await?;
+        self.reconcile_after_upstream_cleanup(name, dry_run).await?;
 
         Ok(view)
     }

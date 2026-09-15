@@ -603,6 +603,7 @@ test('saving a custom HTTP server with no auth sends no bearer credential', asyn
       assert.equal(onSaveInputs.length, 1)
       assert.deepEqual(onSaveInputs[0], {
         name: 'deepwiki',
+        display_name: null,
         transport: 'http',
         config: {
           url: 'https://mcp.deepwiki.com/mcp',
@@ -831,6 +832,7 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
       assert.equal(onSaveInputs.length, 1)
       assert.deepEqual(onSaveInputs[0], {
         name: 'searxng',
+        display_name: null,
         transport: 'stdio',
         config: {
           command: 'npx',
@@ -1247,3 +1249,53 @@ function protectedRouteFixture(name: string, publicPath: string, upstream: strin
     health_path: null,
   }
 }
+
+test('a display name fills the ID and both are saved', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {})
+    }
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'deepwiki-docs',
+        url: 'https://mcp.deepwiki.com/mcp',
+        oauth_discovered: false,
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const onSaveInputs: unknown[] = []
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      onSaveInputs.push(input)
+    })
+
+    const displayNameInput = document.querySelector('#display_name') as HTMLInputElement | null
+    const nameInput = document.querySelector('#name') as HTMLInputElement | null
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    assert.ok(displayNameInput)
+    assert.ok(nameInput)
+    assert.ok(urlInput)
+
+    await setInputValue(window, displayNameInput, 'DeepWiki (Docs)')
+    await waitFor(() => assert.equal(nameInput.value, 'deepwiki-docs'))
+    // The URL's host must not overwrite an ID derived from the display name.
+    await setInputValue(window, urlInput, 'https://mcp.deepwiki.com/mcp')
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(onSaveInputs.length, 1)
+      const saved = onSaveInputs[0] as { name: string; display_name: string | null }
+      assert.equal(saved.name, 'deepwiki-docs')
+      assert.equal(saved.display_name, 'DeepWiki (Docs)')
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

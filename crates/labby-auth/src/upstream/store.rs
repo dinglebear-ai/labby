@@ -22,7 +22,8 @@ use std::pin::Pin;
 
 use oauth2::{CsrfToken, PkceCodeVerifier, TokenResponse as _};
 use rmcp::transport::auth::{
-    AuthError, CredentialStore, StateStore, StoredAuthorizationState, StoredCredentials,
+    AuthError, CredentialRefreshGuard, CredentialStore, StateStore, StoredAuthorizationState,
+    StoredCredentials,
 };
 use rmcp_client as rmcp;
 
@@ -173,6 +174,28 @@ impl CredentialStore for SqliteCredentialStore {
                 .map_err(|e| AuthError::InternalError(e.to_string()))
         })
     }
+
+    fn acquire_refresh_guard<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<CredentialRefreshGuard>, AuthError>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let identity = format!("dedicated:{}:{}", self.upstream_name, self.subject);
+            let guard = super::google_store::refresh_operation_lock(&identity)
+                .lock_owned()
+                .await;
+            Ok(Some(CredentialRefreshGuard::new(guard)))
+        })
+    }
 }
 
 /// Per-`(upstream_name, subject)` state store backed by SQLite.
@@ -315,9 +338,9 @@ impl StateStore for SqliteStateStore {
 #[cfg(test)]
 mod tests {
     use oauth2::{CsrfToken, PkceCodeVerifier};
-    use rmcp_client::transport::auth::{StateStore, StoredAuthorizationState};
+    use rmcp_client::transport::auth::{CredentialStore, StateStore, StoredAuthorizationState};
 
-    use super::SqliteStateStore;
+    use super::{SqliteCredentialStore, SqliteStateStore};
 
     /// Open a disposable in-memory SQLite store for testing.
     async fn temp_store() -> crate::sqlite::SqliteStore {
@@ -336,6 +359,48 @@ mod tests {
         subject: &str,
     ) -> SqliteStateStore {
         SqliteStateStore::new(store, upstream, subject)
+    }
+
+    fn make_credential_store(
+        store: crate::sqlite::SqliteStore,
+        upstream: &str,
+        subject: &str,
+    ) -> SqliteCredentialStore {
+        let key =
+            crate::upstream::encryption::load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("test key");
+        SqliteCredentialStore::new(store, key, upstream, subject)
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_guards_share_exact_upstream_subject_identity() {
+        let sqlite = temp_store().await;
+        let first = make_credential_store(sqlite.clone(), "calendar", "alice");
+        let same = make_credential_store(sqlite.clone(), "calendar", "alice");
+        let different = make_credential_store(sqlite, "drive", "alice");
+
+        let first_guard = CredentialStore::acquire_refresh_guard(&first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                CredentialStore::acquire_refresh_guard(&same),
+            )
+            .await
+            .is_err()
+        );
+        let different_guard = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            CredentialStore::acquire_refresh_guard(&different),
+        )
+        .await
+        .expect("different dedicated credential must not wait")
+        .unwrap()
+        .unwrap();
+        drop(different_guard);
+        drop(first_guard);
     }
 
     fn sample_stored_state(csrf: &str) -> StoredAuthorizationState {

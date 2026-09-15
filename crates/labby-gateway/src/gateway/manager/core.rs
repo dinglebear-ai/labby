@@ -532,10 +532,16 @@ impl GatewayManager {
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
         self.advance_runtime_config_generation();
-        // Cold-connect for the codemode surface is handled lazily by the
-        // code_mode path (`ensure_search_runtime_ready`) on first call, so
-        // seed_config does not eagerly connect upstreams here. This keeps startup
-        // cheap and non-blocking.
+        // Startup may already have published a lazy pool before committing its
+        // configuration. Apply recovery only to that published pool after the
+        // config commit; no private candidate or suppressed runtime is armed.
+        if let Some(pool) = self.runtime.current_pool().await {
+            let config = self.config.read().await;
+            pool.set_auto_reconnect(config.gateway.auto_reconnect);
+            pool.ensure_recovery_tasks(&config.upstream).await;
+        }
+        // No synchronous cold-connect happens here. Explicit first use can
+        // connect immediately; opt-in background recovery waits for its interval.
     }
 
     pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
