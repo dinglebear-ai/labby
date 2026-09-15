@@ -57,7 +57,7 @@ function itemId(item: JsonObject, ...keys: string[]) {
   return 'unknown'
 }
 
-export function ArtifactControlPlane() {
+export function ArtifactControlPlane({ mode = 'full' }: { mode?: 'full' | 'administration' } = {}) {
   const [availability, setAvailability] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
   const [attempt, setAttempt] = useState(0)
 
@@ -73,7 +73,7 @@ export function ArtifactControlPlane() {
     return () => controller.abort()
   }, [attempt])
 
-  if (availability === 'ready') return <AvailableArtifactControlPlane />
+  if (availability === 'ready') return <AvailableArtifactControlPlane mode={mode} />
 
   return <DashboardPanel title="Artifact Control Plane">
     <p role="status" className="text-sm text-aurora-text-muted">
@@ -88,7 +88,7 @@ export function ArtifactControlPlane() {
   </DashboardPanel>
 }
 
-function AvailableArtifactControlPlane() {
+function AvailableArtifactControlPlane({ mode }: { mode: 'full' | 'administration' }) {
   const [sources, setSources] = useState<Source[]>([])
   const [jobs, setJobs] = useState<JsonObject[]>([])
   const [bundles, setBundles] = useState<JsonObject[]>([])
@@ -341,7 +341,7 @@ function AvailableArtifactControlPlane() {
     </div>
     {error ? <DashboardPanel title="Authority status"><p className="text-sm text-destructive">{error}</p></DashboardPanel> : authorityStatus ? <DashboardPanel title="Authority status"><pre className="overflow-auto whitespace-pre-wrap text-xs text-aurora-text-secondary">{JSON.stringify(authorityStatus, null, 2)}</pre></DashboardPanel> : null}
     <Tabs defaultValue="discover">
-      <TabsList aria-label="Artifact control-plane views"><TabsTrigger value="discover">Discover & ingest</TabsTrigger><TabsTrigger value="governance">Lifecycle</TabsTrigger><TabsTrigger value="jobs">Jobs</TabsTrigger><TabsTrigger value="sources">Sources</TabsTrigger><TabsTrigger value="uploads">Uploads</TabsTrigger><TabsTrigger value="bundles">Bundles</TabsTrigger></TabsList>
+      <TabsList aria-label="Artifact control-plane views"><TabsTrigger value="discover">Discover & ingest</TabsTrigger><TabsTrigger value="governance">Lifecycle</TabsTrigger>{mode === 'full' ? <><TabsTrigger value="jobs">Jobs</TabsTrigger><TabsTrigger value="sources">Sources</TabsTrigger></> : null}<TabsTrigger value="uploads">Uploads</TabsTrigger><TabsTrigger value="bundles">Bundles</TabsTrigger></TabsList>
 
       <TabsContent value="discover" className="mt-3 grid gap-3 lg:grid-cols-2">
         <DashboardPanel title="Remote search" icon={<Search className="size-4" />}>
@@ -375,15 +375,15 @@ function AvailableArtifactControlPlane() {
         <DashboardPanel title="Inspector"><pre className="max-h-[420px] overflow-auto whitespace-pre-wrap text-xs text-aurora-text-secondary">{selectedDetail ? JSON.stringify(selectedDetail, null, 2) : 'Lifecycle responses and candidate evidence appear here.'}</pre></DashboardPanel>
       </TabsContent>
 
-      <TabsContent value="jobs" className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
+      {mode === 'full' ? <TabsContent value="jobs" className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
         <DashboardPanel title="Durable ingestion jobs" icon={<DatabaseZap className="size-4" />} meta={`${jobs.length}`}><div className="grid gap-2">{jobs.length ? jobs.map(job => { const id = itemId(job, 'id', 'jobId'); const status = itemId(job, 'status'); return <div key={id} className="flex flex-wrap items-center gap-2 rounded-aurora-1 border border-aurora-border-subtle p-3"><button className="min-w-0 flex-1 text-left" onClick={() => void inspect('jobs', 'jobs.get', { id })}><p className="truncate text-sm font-medium">{itemId(job, 'kind', 'operation')} · {id}</p><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{typeof job.progress === 'string' ? job.progress : status}</p></button><Badge variant="outline">{status}</Badge>{['queued', 'running'].includes(status) ? <Button size="sm" variant="outline" onClick={() => void run('cancel job', () => controlPlaneAction('jobs', 'jobs.cancel', { id }), 'Cancellation requested')}>Cancel</Button> : <Button size="sm" variant="outline" onClick={() => void run('retry job', () => controlPlaneAction('jobs', 'jobs.retry', { id }), 'Retry queued')}>Retry</Button>}</div> }) : <p className="text-sm text-aurora-text-muted">No ingestion jobs yet.</p>}</div></DashboardPanel>
         <DashboardPanel title="Inspector"><pre className="max-h-[420px] overflow-auto whitespace-pre-wrap text-xs text-aurora-text-secondary">{selectedDetail ? JSON.stringify(selectedDetail, null, 2) : 'Select a job or Artifact to inspect its projected metadata.'}</pre></DashboardPanel>
-      </TabsContent>
+      </TabsContent> : null}
 
-      <TabsContent value="sources" className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {mode === 'full' ? <TabsContent value="sources" className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
         <DashboardPanel title="Refreshable sources" icon={<Archive className="size-4" />} meta={`${sources.length}`}><div className="grid gap-2">{sources.length ? sources.map(source => { const id = itemId(source, 'id', 'sourceId'); const enabled = source.enabled !== false; return <div key={id} className="flex flex-wrap items-center gap-2 rounded-aurora-1 border border-aurora-border-subtle p-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{id}</p><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{enabled ? itemId(source, 'status', 'kind') : 'Paused'} · {source.intervalSeconds ?? 'default'}s</p></div><Button size="sm" variant="outline" onClick={() => void configureSource(id, !enabled, source.intervalSeconds)}>{enabled ? 'Pause' : 'Enable'}</Button><Button size="sm" variant="outline" onClick={() => void run('refresh source', () => controlPlaneAction('sources', 'sources.refresh', { id }), 'Source refresh queued')}>Refresh</Button><Button aria-label={`Delete source ${id}`} size="icon-sm" variant="ghost" onClick={() => setDeleteTarget({ kind: 'source', id })}><Trash2 className="size-4" /></Button></div> }) : <p className="text-sm text-aurora-text-muted">No persisted sources yet.</p>}</div></DashboardPanel>
         <DashboardPanel title="Configure source"><label className="grid gap-1"><span className={AURORA_MUTED_LABEL}>Source ID</span><Input value={sourceId} onChange={event => setSourceId(event.target.value)} /></label><label className="grid gap-1"><span className={AURORA_MUTED_LABEL}>Refresh interval (seconds)</span><Input type="number" min={60} value={sourceInterval} onChange={event => setSourceInterval(event.target.value)} /></label><Button disabled={!sourceId.trim() || !Number(sourceInterval) || busy !== null} onClick={() => void configureSource(sourceId.trim(), true, Number(sourceInterval))}>Save schedule</Button></DashboardPanel>
-      </TabsContent>
+      </TabsContent> : null}
 
       <TabsContent value="uploads" className="mt-3"><DashboardPanel title="Current-session uploads" icon={<Upload className="size-4" />} meta={`${uploads.length}`}><div className="grid gap-2">{uploads.length ? uploads.map(uploadRecord => { const id = itemId(uploadRecord, 'id', 'uploadId'); return <div key={id} className="flex items-center gap-2 rounded-aurora-1 border border-aurora-border-subtle p-3"><button className="min-w-0 flex-1 text-left" onClick={() => void inspect('uploads', 'uploads.get', { id })}><p className="truncate text-sm font-medium">{itemId(uploadRecord, 'filename')} · {id}</p><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{itemId(uploadRecord, 'status')}</p></button><Button aria-label={`Delete upload ${id}`} size="icon-sm" variant="ghost" onClick={() => setDeleteTarget({ kind: 'upload', id })}><Trash2 className="size-4" /></Button></div> }) : <p className="text-sm text-aurora-text-muted">Uploads created in this browser session appear here until ingested or deleted.</p>}</div></DashboardPanel></TabsContent>
 

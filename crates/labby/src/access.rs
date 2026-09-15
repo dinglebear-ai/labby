@@ -134,8 +134,10 @@ pub(crate) use credential_store::{
 };
 #[allow(unused_imports)]
 pub(crate) use credential_verifier::{
-    AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
-    LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
+    AccessCredentialAdapter, CredentialGenerationOutOfRange, LiveAuthority, LiveAuthorityError,
+    LiveAuthorityFuture, LiveAuthoritySnapshot, ProtectedCredentialRequirements, SecurityAdmission,
+    StoredBinding, VerifiedProductBinding, admit_credential_issue_attempt,
+    credential_generation_sql, scopes_within,
 };
 #[allow(unused_imports)]
 pub(crate) use dev_container::{

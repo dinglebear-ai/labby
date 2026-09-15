@@ -15,6 +15,10 @@ const MAX_ID: usize = 160;
 const MAX_NAME: usize = 128;
 const MAX_URI: usize = 2048;
 const MAX_SCOPES_JSON: usize = 4096;
+/// Newest `allow` security events retained by [`AccessStore::record_security_event`].
+pub(super) const SECURITY_EVENT_ALLOW_RETENTION: i64 = 4096;
+/// Newest `deny` security events retained; independent of the allow budget.
+pub(super) const SECURITY_EVENT_DENY_RETENTION: i64 = 4096;
 
 #[derive(Clone)]
 pub(crate) struct ActivateProofInput {
@@ -181,7 +185,15 @@ impl AccessStore {
     ) -> AccessStoreResult<()> {
         self.with_connection(move |connection| {
             let transaction=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(map_sqlite_error)?;
-            transaction.execute("DELETE FROM access_security_events WHERE event_id IN (SELECT event_id FROM access_security_events ORDER BY occurred_at DESC,event_id DESC LIMIT -1 OFFSET 4095)",[]).map_err(map_sqlite_error)?;
+            // Retention is bounded per decision so a flood of one decision
+            // (for example, successful verifications) can never evict the
+            // other decision's evidence (denials and rate limiting).
+            let retained = match decision.as_str() {
+                "allow" => SECURITY_EVENT_ALLOW_RETENTION,
+                "deny" => SECURITY_EVENT_DENY_RETENTION,
+                _ => return Err(AccessStoreError::InvalidBootstrapInput),
+            };
+            transaction.execute("DELETE FROM access_security_events WHERE event_id IN (SELECT event_id FROM access_security_events WHERE decision=?1 ORDER BY occurred_at DESC,event_id DESC LIMIT -1 OFFSET ?2)",params![decision,retained-1]).map_err(map_sqlite_error)?;
             transaction.execute("INSERT INTO access_security_events(event_id,occurred_at,event_kind,decision,reason_code,target_fingerprint,peer_fingerprint,metadata_json) VALUES(?1,?2,?3,?4,?5,?6,?7,'{}')",params![ulid::Ulid::new().to_string(),now,event_kind,decision,reason_code,target_fingerprint.as_slice(),peer_fingerprint.as_ref().map(<[u8;32]>::as_slice)]).map_err(map_sqlite_error)?;
             transaction.commit().map_err(map_sqlite_error)?;
             Ok(())
@@ -1016,6 +1028,85 @@ mod tests {
         );
         let event:(String,String,i64)=reopened.with_connection(|connection| connection.query_row("SELECT decision,reason_code,length(target_fingerprint) FROM access_security_events",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(map_sqlite_error)).await.unwrap();
         assert_eq!(event, ("deny".into(), "rate_limited".into(), 32));
+    }
+
+    #[tokio::test]
+    async fn allow_floods_cannot_evict_denial_evidence_and_both_stay_bounded() {
+        let (_directory, store) = store().await;
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute_batch(
+                        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<4096)
+                         INSERT INTO access_security_events(event_id,occurred_at,event_kind,decision,reason_code,target_fingerprint,peer_fingerprint,metadata_json)
+                         SELECT printf('deny-%05d',x),x,'credential_verify','deny','credential_denied',zeroblob(32),NULL,'{}' FROM n;
+                         WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<4096)
+                         INSERT INTO access_security_events(event_id,occurred_at,event_kind,decision,reason_code,target_fingerprint,peer_fingerprint,metadata_json)
+                         SELECT printf('allow-%05d',x),10000+x,'credential_verify','allow','verified',zeroblob(32),NULL,'{}' FROM n;",
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        let counts = |store: AccessStore| async move {
+            store
+                .with_connection(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT (SELECT count(*) FROM access_security_events WHERE decision='allow'),
+                                    (SELECT count(*) FROM access_security_events WHERE decision='deny'),
+                                    (SELECT count(*) FROM access_security_events WHERE event_id='deny-00001')",
+                            [],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+                        )
+                        .map_err(map_sqlite_error)
+                })
+                .await
+                .unwrap()
+        };
+        // A flood of newer allow events rotates only the allow budget.
+        for offset in 0..8 {
+            store
+                .record_security_event(
+                    "credential_verify".into(),
+                    "allow".into(),
+                    "verified".into(),
+                    [1; 32],
+                    None,
+                    20_000 + offset,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            counts(store.clone()).await,
+            (
+                SECURITY_EVENT_ALLOW_RETENTION,
+                SECURITY_EVENT_DENY_RETENTION,
+                1
+            ),
+            "allow events must not evict the oldest denial"
+        );
+        // Denials remain bounded by their own budget.
+        store
+            .record_security_event(
+                "credential_verify".into(),
+                "deny".into(),
+                "rate_limited".into(),
+                [2; 32],
+                None,
+                30_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            counts(store).await,
+            (
+                SECURITY_EVENT_ALLOW_RETENTION,
+                SECURITY_EVENT_DENY_RETENTION,
+                0
+            )
+        );
     }
 
     #[tokio::test]

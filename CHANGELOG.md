@@ -93,6 +93,45 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.20.1](https://github.com/dinglebear-ai/labby/compare/v1.20.0...v1.20.1) (2026-09-15)
+
+
+### Fixed
+
+* **release:** read npm dist-tags with npm view so publish can succeed ([#662](https://github.com/dinglebear-ai/labby/issues/662)) ([611cd50](https://github.com/dinglebear-ai/labby/commit/611cd5056a88c5634a5e17a69532fb8feed42f5b))
+* **web:** let the no-access screen trigger team admission ([#661](https://github.com/dinglebear-ai/labby/issues/661)) ([69d1912](https://github.com/dinglebear-ai/labby/commit/69d1912930dc433104e47cc4667642abe8808d1a))
+
+## [1.20.0](https://github.com/dinglebear-ai/labby/compare/v1.19.0...v1.20.0) (2026-09-15)
+
+
+### Added
+
+* **create:** expose WebMCP tools ([#648](https://github.com/dinglebear-ai/labby/issues/648)) ([caf3fdb](https://github.com/dinglebear-ai/labby/commit/caf3fdb8371fc0a6b33bdab6e39f7d651aeae78b))
+* **depot:** complete team administration and source ingestion ([287b03e](https://github.com/dinglebear-ai/labby/commit/287b03e8a024bd460773063e29158d24930414f3))
+* **depot:** surface signed control target identity ([16ba1fc](https://github.com/dinglebear-ai/labby/commit/16ba1fc962d800e29845825471b2e6bb3e45a107))
+* **gateway:** per-upstream lifecycle overrides and legacy server compatibility ([#640](https://github.com/dinglebear-ai/labby/issues/640)) ([37a448e](https://github.com/dinglebear-ai/labby/commit/37a448ef0243975e09007398c9bfba1dae0b0865))
+* **ops:** surface degraded subsystems and validate config in setup check ([#644](https://github.com/dinglebear-ai/labby/issues/644)) ([be429d9](https://github.com/dinglebear-ai/labby/commit/be429d9923aa31e17fdb267c24028f2b9874680d))
+* **verification:** integrate formal checks and gateway conformance ([#635](https://github.com/dinglebear-ai/labby/issues/635)) ([fc22189](https://github.com/dinglebear-ai/labby/commit/fc2218993a5f91e69b88c90f0bbe5726370da840))
+
+
+### Fixed
+
+* **access:** harden credential verification, audit, and evidence retention ([#643](https://github.com/dinglebear-ai/labby/issues/643)) ([8a466a1](https://github.com/dinglebear-ai/labby/commit/8a466a124223fbc8ff53c0c582bf1e982e0e1456))
+* **access:** reserve auth env keys for the operator and prove admin surfaces ([#642](https://github.com/dinglebear-ai/labby/issues/642)) ([768529b](https://github.com/dinglebear-ai/labby/commit/768529b1d365f74a2194ca10fd08745eddc2e0fd))
+* **deploy:** bind discover to loopback depots ([23922ef](https://github.com/dinglebear-ai/labby/commit/23922efcb583665a96a7fd3a47a67073a0475489))
+* **deploy:** bind team depot publish authority ([99fab89](https://github.com/dinglebear-ai/labby/commit/99fab89fd99e6a6c1ba0bdecfd8dcd878ef21cbb))
+* **depot:** distinguish control authority from discovery providers ([881486e](https://github.com/dinglebear-ai/labby/commit/881486ef3c0b7ed116ee87e584ec3caff4b5503e))
+* **depot:** render complete canonical schema subset ([b6be1d8](https://github.com/dinglebear-ai/labby/commit/b6be1d84f8070a1f7e0971da89f4368b6e9f8bc1))
+* **gateway:** prevent idle SSE streams exhausting response budget ([#651](https://github.com/dinglebear-ai/labby/issues/651)) ([24519a9](https://github.com/dinglebear-ai/labby/commit/24519a93c733783979f5a550725e5767c68c5bad))
+* **incus:** reject unsafe worker profile and isolate user runtime ([#656](https://github.com/dinglebear-ai/labby/issues/656)) ([6b70a77](https://github.com/dinglebear-ai/labby/commit/6b70a774605990d716f32bf84b4df8fdb952daca))
+* **release:** sync verification labby-model pin in release PRs ([#660](https://github.com/dinglebear-ai/labby/issues/660)) ([f8da8ea](https://github.com/dinglebear-ai/labby/commit/f8da8ea42bcabd6055e453e540161b9f2624974e))
+* **security:** require patched rustls 0.23.45 ([#654](https://github.com/dinglebear-ai/labby/issues/654)) ([deb13a6](https://github.com/dinglebear-ai/labby/commit/deb13a64d270997259a3a33ac2e77209858f6b05))
+
+
+### Changed
+
+* **access:** consolidate owner-bootstrap admission, offer, and seeding ([#641](https://github.com/dinglebear-ai/labby/issues/641)) ([546e8b5](https://github.com/dinglebear-ai/labby/commit/546e8b591d6d6b26e1ca7c3dda55451b6d43fdc0))
+
 ## [1.19.0](https://github.com/dinglebear-ai/labby/compare/v1.18.2...v1.19.0) (2026-09-14)
 
 

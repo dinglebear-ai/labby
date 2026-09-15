@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { consumeOwnerLinkApproval, depotCall, depotOperations, depotStatus, depotPublishCapability, publishDepotSkill, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
+import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSession, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -143,9 +143,67 @@ test('normalizes absent optional catalog metadata without accepting invalid iden
   }
 })
 
+test('accepts the signed Depot control target identity without treating bootstrap policy as browser authority', async () => {
+  const session = {
+    contractVersion: 1,
+    authenticated: true,
+    backend: { deploymentId: 'team-depot', backendId: 'tootie-incus', kind: 'hosted', mode: 'remote', accountId: 'lime-technology', tenantId: 'lime-technology-team', teamId: 'skills-team' },
+    principal: { id: 'service-reader' },
+    authority: { generation: 'a'.repeat(64), audience: 'https://depot.dinglebear.ai', actor: null, delegated: false },
+    mutationPolicy: 'read_only',
+  }
+  await withFetch(json(session), async () => {
+    const result = await depotSession()
+    assert.equal(result.backend.deploymentId, 'team-depot')
+    assert.equal(result.backend.backendId, 'tootie-incus')
+    assert.equal(result.backend.tenantId, 'lime-technology-team')
+    assert.equal(result.backend.teamId, 'skills-team')
+    assert.equal(result.mutationPolicy, 'read_only')
+  })
+  await withFetch(json({ ...session, backend: { ...session.backend, deploymentId: '' } }), async () => assert.rejects(depotSession(), /incompatible control session response/i))
+})
+
 test('accepts the canonical operation catalog and generic operation results', async () => {
   await withFetch(json({ operations: [{ name: 'depot.system.status', title: 'Depot status', description: 'Status', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } }] }), async () => assert.equal((await depotOperations())[0]?.name, 'depot.system.status'))
   await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } }), async () => assert.equal((await depotCall<{ result: { ok: boolean } }>('depot.system.status', {})).result.ok, true))
+})
+
+test('accepts Depot control-catalog authority and transport metadata', async () => {
+  await withFetch(json({ operations: [{ name: 'depot.maintenance.gc', title: 'Collect CAS', description: 'GC', requiredScope: 'local', transports: ['cli'], transportAvailable: false, authorized: false, inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: true } }] }), async () => {
+    const [operation] = await depotOperations()
+    assert.equal(operation?.requiredScope, 'local')
+    assert.deepEqual(operation?.transports, ['cli'])
+    assert.equal(operation?.transportAvailable, false)
+    assert.equal(operation?.authorized, false)
+  })
+})
+
+test('repository source helpers use canonical Depot operations and preserve credential references only', async () => {
+  const original = globalThis.fetch
+  const bodies: Array<Record<string, unknown>> = []
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body))
+    bodies.push(body)
+    const operation = body.operation as string
+    if (operation === 'depot.sources.list') return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { sources: [{ id: 'src-1', kind: 'repo', args: { url: 'https://github.com/unraid/unmarket', namespace: 'unmarket', credential: 'github-private' }, enabled: true, intervalSeconds: 3600 }] } })
+    if (operation === 'depot.ingest.list') return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { jobs: [{ id: 'job-1', status: 'running', kind: 'repo' }] } })
+    return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+  }) as typeof fetch
+  try {
+    assert.equal((await depotSources())[0]?.args.credential, 'github-private')
+    assert.equal((await depotIngestJobs())[0]?.id, 'job-1')
+    await startDepotRepoIngest({ url: 'https://github.com/unraid/unmarket', namespace: 'unmarket', credential: 'github-private' })
+    await configureDepotSource('src-1', { enabled: false, intervalSeconds: 7200 })
+    await refreshDepotSource('src-1')
+    await retryDepotIngestJob('job-1')
+    await cancelDepotIngestJob('job-1')
+    await deleteDepotSource('src-1')
+  } finally { globalThis.fetch = original }
+  const byOperation = new Map(bodies.map(body => [body.operation, body]))
+  assert.deepEqual((byOperation.get('depot.ingest.start')?.params as Record<string, unknown>).arguments, { url: 'https://github.com/unraid/unmarket', namespace: 'unmarket', credential: 'github-private' })
+  for (const operation of ['depot.sources.configure', 'depot.sources.refresh', 'depot.ingest.retry', 'depot.ingest.cancel', 'depot.sources.delete']) {
+    assert.deepEqual((byOperation.get(operation)?.destructiveIntent as { confirmed?: boolean })?.confirmed, true)
+  }
 })
 
 test('accepts bounded output schema metadata without weakening operation input validation', async () => {
@@ -223,9 +281,13 @@ test('does not surface privileged Depot rejection details', async () => {
 test('rejects operation schemas outside the bounded renderer subset', async () => {
   const operation = (inputSchema: unknown) => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema }] })
   await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'Operation names to include' } } } }), async () => assert.equal((await depotOperations()).length, 1))
+  await withFetch(operation({ type: 'object', properties: { declared: { type: ['string', 'null'], minLength: 1 }, detected: { type: 'array', items: {} } } }), async () => assert.equal((await depotOperations()).length, 1))
   await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'x'.repeat(4097) } } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: null } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'null' } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  for (const type of [['string', 'boolean'], ['null'], ['string', 'null', 'number']]) {
+    await withFetch(operation({ type: 'object', properties: { bad: { type } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  }
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'string', pattern: '[' } } }), async () => assert.rejects(depotOperations(), /valid regular expression/i))
   await withFetch(operation({ type: 'object', properties: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`p${index}`, { type: 'string' }])) }), async () => assert.rejects(depotOperations(), /128 properties/i))
   await withFetch(operation({ type: 'object', properties: {}, required: ['missing'] }), async () => assert.rejects(depotOperations(), /not declared/i))
