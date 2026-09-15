@@ -5667,4 +5667,428 @@ mod tests {
             "/dev mockup routes must use auth middleware when auth is configured"
         );
     }
+
+    // ── Admin-surface authority proofs (SEC-H1 / TST-H1 / TST-H2 / TST-M6) ──
+
+    /// The configured admin email of [`test_lab_auth_state`].
+    const CONFIGURED_ADMIN_EMAIL: &str = "browser@example.com";
+    const COLLEAGUE_EMAIL: &str = "colleague@example.com";
+    const COLLEAGUE_SUBJECT: &str = "sub-colleague";
+    /// Links `colleague-principal` to the colleague's browser identity inside the
+    /// bootstrap organization, with no platform authority of its own.
+    const SEED_COLLEAGUE_PRINCIPAL: &str = "
+        INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at)
+          VALUES('colleague-principal','bootstrap-local','user','active',NULL,2,2);
+        INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at)
+          VALUES('link-colleague-principal','colleague-principal','external','https://accounts.google.com','sub-colleague',NULL,'active',1,1,2,2);";
+
+    async fn seed_session_for(
+        auth_state: &labby_auth::state::AuthState,
+        id: &str,
+        subject: &str,
+        email: &str,
+    ) -> labby_auth::types::BrowserSessionRow {
+        let session = labby_auth::types::BrowserSessionRow {
+            session_id: format!("sess-{id}"),
+            subject: subject.to_owned(),
+            email: Some(email.to_owned()),
+            csrf_token: format!("csrf-{id}"),
+            created_at: 1,
+            expires_at: i64::MAX,
+            project_binding: None,
+        };
+        auth_state
+            .store
+            .upsert_browser_session(session.clone())
+            .await
+            .unwrap();
+        session
+    }
+
+    /// An allowlisted colleague plus the configured admin, both with sessions.
+    async fn colleague_and_admin_auth_state() -> (
+        labby_auth::state::AuthState,
+        labby_auth::types::BrowserSessionRow,
+        labby_auth::types::BrowserSessionRow,
+    ) {
+        let auth_state = test_lab_auth_state().await;
+        auth_state
+            .store
+            .add_allowed_user(COLLEAGUE_EMAIL, CONFIGURED_ADMIN_EMAIL, 1)
+            .await
+            .unwrap();
+        let admin =
+            seed_session_for(&auth_state, "admin", "browser-user", CONFIGURED_ADMIN_EMAIL).await;
+        let colleague =
+            seed_session_for(&auth_state, "colleague", COLLEAGUE_SUBJECT, COLLEAGUE_EMAIL).await;
+        (auth_state, admin, colleague)
+    }
+
+    fn session_action_request(
+        session: &labby_auth::types::BrowserSessionRow,
+        path: &str,
+        action: &str,
+        params: serde_json::Value,
+    ) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            // Passes host validation without granting the loopback capability
+            // (oneshot requests carry no loopback socket peer).
+            .header(header::HOST, "localhost")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(
+                header::COOKIE,
+                format!(
+                    "{}={}",
+                    labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                    session.session_id
+                ),
+            )
+            .header(
+                labby_auth::session::BROWSER_CSRF_HEADER_NAME,
+                &session.csrf_token,
+            )
+            .body(Body::from(
+                serde_json::json!({ "action": action, "params": params }).to_string(),
+            ))
+            .unwrap()
+    }
+
+    async fn status_and_body(app: &Router, request: Request<Body>) -> (StatusCode, String) {
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn is_admin_scope_refusal(status: StatusCode, body: &str) -> bool {
+        status == StatusCode::FORBIDDEN && body.contains("lab:admin")
+    }
+
+    /// Pins Lab home and config.toml to a short-TMPDIR fixture so no admin
+    /// request can read or write the developer's real `~/.labby`.
+    fn isolated_lab_home() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::dispatch::helpers::TestLabHomeGuard,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let lab_dir = temp.path().join("lab-home");
+        fs::create_dir_all(&lab_dir).unwrap();
+        crate::config::set_test_config_toml_path(Some(temp.path().join("config.toml")));
+        let guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        (temp, lab_dir, guard)
+    }
+
+    fn owner_identity() -> labby_auth::VerifiedIdentity {
+        labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner-subject",
+        )
+        .unwrap()
+    }
+
+    fn colleague_platform_admin() -> crate::access::PlatformAdministratorInput {
+        crate::access::PlatformAdministratorInput::new(owner_identity(), "colleague-principal")
+            .unwrap()
+    }
+
+    /// A Ready access store whose owner is neither session in these tests and
+    /// which knows the colleague as an ordinary principal.
+    async fn ready_access_runtime_with_colleague_principal()
+    -> (tempfile::TempDir, Arc<crate::access::AccessRuntime>) {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = Arc::new(crate::access::AccessRuntime::initialize(path).await);
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(owner_identity(), "Local", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(SEED_COLLEAGUE_PRINCIPAL)
+            .await
+            .unwrap();
+        (directory, runtime)
+    }
+
+    /// TST-H1 + TST-M6: every `requires_admin` action of the admin surfaces is
+    /// driven from shared action metadata (not a hand list) through the real
+    /// router. The allowlisted colleague is refused by the admin gate; the
+    /// configured admin is never refused on scope grounds. A surface that skips
+    /// its admin check fails the colleague assertion.
+    #[tokio::test]
+    async fn allowlisted_non_admin_session_cannot_reach_any_requires_admin_action() {
+        const ADMIN_SURFACES: [&str; 6] = [
+            "setup",
+            "snippets",
+            "server_logs",
+            "doctor",
+            "browser",
+            "fs",
+        ];
+        let (_home, _lab_dir, _guard) = isolated_lab_home();
+        let (auth_state, admin, colleague) = colleague_and_admin_auth_state().await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    ..Default::default()
+                })
+                // Plugin-lifecycle actions answer not_found on a non-loopback
+                // bind, so the admin positive control never touches ~/.claude.
+                .with_http_bind_host("0.0.0.0"),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+
+        let registry = crate::registry::build_default_registry();
+        let mut covered = std::collections::BTreeSet::new();
+        for service in registry
+            .services()
+            .iter()
+            .filter(|service| ADMIN_SURFACES.contains(&service.name))
+        {
+            let path = service_dispatch_path(service.name);
+            for spec in service.actions.iter().filter(|spec| spec.requires_admin) {
+                let label = format!("{}.{}", service.name, spec.name);
+                let (status, body) = status_and_body(
+                    &app,
+                    session_action_request(&colleague, &path, spec.name, serde_json::json!({})),
+                )
+                .await;
+                assert!(
+                    is_admin_scope_refusal(status, &body),
+                    "{label}: allowlisted colleague must be refused by the admin gate, got {status} {body}"
+                );
+                // HTTP does not require confirmation for destructive actions,
+                // so the admin control runs only non-destructive ones.
+                if !spec.destructive {
+                    let (status, body) = status_and_body(
+                        &app,
+                        session_action_request(&admin, &path, spec.name, serde_json::json!({})),
+                    )
+                    .await;
+                    assert!(
+                        !is_admin_scope_refusal(status, &body),
+                        "{label}: configured admin must pass the admin gate, got {status} {body}"
+                    );
+                }
+                covered.insert(label);
+            }
+        }
+
+        // The generated catalog is the published matrix: every admin action it
+        // lists for these surfaces must have been exercised above.
+        let catalog: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../docs/generated/action-catalog.json"
+        ))
+        .unwrap();
+        let expected: std::collections::BTreeSet<String> = catalog
+            .iter()
+            .filter(|entry| {
+                ADMIN_SURFACES.contains(&entry["service"].as_str().unwrap())
+                    && entry["requires_admin"] == true
+                    && entry["surface_availability"]["api"] == true
+            })
+            .map(|entry| {
+                format!(
+                    "{}.{}",
+                    entry["service"].as_str().unwrap(),
+                    entry["action"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let missing: Vec<_> = expected.difference(&covered).collect();
+        assert!(
+            missing.is_empty(),
+            "catalog admin actions not exercised: {missing:?}"
+        );
+        for service in ["setup", "snippets", "server_logs", "doctor", "browser"] {
+            assert!(
+                covered
+                    .iter()
+                    .any(|label| label.starts_with(&format!("{service}."))),
+                "{service} contributed no admin actions; the table would pass vacuously"
+            );
+        }
+    }
+
+    /// TST-H1b / SEC-H1 residual: neither an allowlisted colleague nor the same
+    /// colleague elevated by durable `platform.manage` can rewrite the
+    /// gateway's authentication keys; only the configured admin can.
+    #[tokio::test]
+    async fn non_operator_setup_draft_never_changes_auth_env() {
+        let (_home, lab_dir, _guard) = isolated_lab_home();
+        let env = lab_dir.join(".env");
+        let draft = lab_dir.join(".env.draft");
+        fs::write(&env, "LABBY_MCP_HTTP_TOKEN=sentinel-operator-token\n").unwrap();
+        // An operator-staged auth key that a delegated caller must not commit.
+        crate::dispatch::setup::dispatch_for_caller(
+            crate::dispatch::setup::SetupCaller::Operator,
+            "draft.set",
+            serde_json::json!({"entries": [{"key": "LABBY_AUTH_ADMIN_EMAIL", "value": "owner@example.com"}]}),
+        )
+        .await
+        .unwrap();
+        let env_before = fs::read(&env).unwrap();
+        let draft_before = fs::read(&draft).unwrap();
+
+        let (_access_dir, runtime) = ready_access_runtime_with_colleague_principal().await;
+        let (auth_state, admin, colleague) = colleague_and_admin_auth_state().await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    ..Default::default()
+                })
+                .with_access_runtime(Arc::clone(&runtime)),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let set_token =
+            serde_json::json!({"entries": [{"key": "LABBY_MCP_HTTP_TOKEN", "value": "attacker"}]});
+        let assert_env_untouched = |stage: &str| {
+            assert_eq!(fs::read(&env).unwrap(), env_before, "{stage}: .env changed");
+            assert_eq!(
+                fs::read(&draft).unwrap(),
+                draft_before,
+                "{stage}: draft changed"
+            );
+        };
+
+        // Allowlisted, not elevated: the admin gate refuses both actions.
+        for (action, params) in [
+            ("draft.set", set_token.clone()),
+            ("draft.commit", serde_json::json!({})),
+        ] {
+            let (status, body) = status_and_body(
+                &app,
+                session_action_request(&colleague, "/v1/setup", action, params),
+            )
+            .await;
+            assert!(
+                is_admin_scope_refusal(status, &body),
+                "{action}: {status} {body}"
+            );
+            assert_env_untouched(action);
+        }
+
+        // Elevated by durable platform.manage: past the admin gate, but shared
+        // setup dispatch still refuses authentication keys.
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .grant_platform_administrator(colleague_platform_admin())
+            .await
+            .unwrap();
+        for (action, params) in [
+            ("draft.set", set_token.clone()),
+            ("draft.commit", serde_json::json!({})),
+            ("finalize", serde_json::json!({})),
+        ] {
+            let (status, body) = status_and_body(
+                &app,
+                session_action_request(&colleague, "/v1/setup", action, params),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{action}: {body}");
+            assert!(
+                body.contains("\"forbidden\"") && body.contains("configures Labby authentication"),
+                "{action}: expected the typed auth-key refusal, got {body}"
+            );
+            assert_env_untouched(action);
+        }
+
+        // The configured admin is the operator and may stage the same key.
+        let (status, body) = status_and_body(
+            &app,
+            session_action_request(&admin, "/v1/setup", "draft.set", set_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            fs::read(&env).unwrap(),
+            env_before,
+            "draft.set never writes .env"
+        );
+    }
+
+    /// TST-H2: a non-owner principal granted `platform.manage` is elevated on
+    /// the real `/v1` router and loses it on the very next request after
+    /// revocation. Because the probe goes through `build_router`, this also
+    /// fails if the elevation layer is ever ordered before AuthLayer (it would
+    /// find no identity and never elevate).
+    #[tokio::test]
+    async fn durable_platform_admin_who_is_not_configured_admin_is_elevated_until_revoked() {
+        let (_home, _lab_dir, _guard) = isolated_lab_home();
+        let (_access_dir, runtime) = ready_access_runtime_with_colleague_principal().await;
+        let (auth_state, _admin, colleague) = colleague_and_admin_auth_state().await;
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(labby_auth::config::AuthConfig {
+                    admin_email: CONFIGURED_ADMIN_EMAIL.into(),
+                    ..Default::default()
+                })
+                .with_access_runtime(Arc::clone(&runtime)),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let probe = || {
+            session_action_request(
+                &colleague,
+                "/v1/server_logs",
+                "server_logs.query",
+                serde_json::json!({}),
+            )
+        };
+        let store = runtime.store().await.unwrap();
+
+        let (status, body) = status_and_body(&app, probe()).await;
+        assert!(
+            is_admin_scope_refusal(status, &body),
+            "before grant: {status} {body}"
+        );
+
+        store
+            .grant_platform_administrator(colleague_platform_admin())
+            .await
+            .unwrap();
+        let (status, body) = status_and_body(&app, probe()).await;
+        assert!(
+            !is_admin_scope_refusal(status, &body),
+            "granted platform.manage must elevate on /v1: {status} {body}"
+        );
+
+        store
+            .revoke_platform_administrator(colleague_platform_admin())
+            .await
+            .unwrap();
+        let (status, body) = status_and_body(&app, probe()).await;
+        assert!(
+            is_admin_scope_refusal(status, &body),
+            "revocation must apply to the next request: {status} {body}"
+        );
+    }
 }
