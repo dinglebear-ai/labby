@@ -334,7 +334,7 @@ test('Depot Administration renders live schemas and guards destructive operation
   assert.equal(hasHorizontalOverflow, false)
   await page.getByRole('button', { name: /^Overview/ }).focus()
   await page.keyboard.press('Tab')
-  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Catalog/)
+  assert.match(await page.evaluate(() => document.activeElement?.textContent ?? ''), /Sources/)
 })
 
 test('Depot Discovery recovers from exact-import prerequisites and imports only the selected revision', { concurrency: false }, async (t) => {
