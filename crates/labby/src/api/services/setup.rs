@@ -38,11 +38,18 @@ async fn handle(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<labby_auth::VerifiedIdentity>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     let peer_addr = peer.as_ref().map(|Extension(ConnectInfo(addr))| *addr);
     let has_local_capability = request_has_local_capability(peer_addr, &headers);
+    let caller = setup_caller(
+        &state,
+        auth.as_ref().map(|Extension(context)| context),
+        identity.as_ref().map(|Extension(identity)| identity),
+        has_local_capability,
+    );
     require_setup_admin(&req.action, request_id, auth.as_ref(), has_local_capability)?;
     if local_only_action(&req.action) && !has_local_capability {
         return Err(ApiError::new(ToolError::Sdk {
@@ -72,9 +79,45 @@ async fn handle(
         dispatch_meta,
         req,
         ACTIONS,
-        |action, params| async move { crate::dispatch::setup::dispatch(&action, params).await },
+        |action, params| async move {
+            crate::dispatch::setup::dispatch_for_caller(caller, &action, params).await
+        },
     )
     .await
+}
+
+/// Report transport evidence to shared setup dispatch, which owns the decision
+/// of who may stage or commit authentication environment keys.
+fn setup_caller(
+    state: &AppState,
+    auth: Option<&AuthContext>,
+    identity: Option<&labby_auth::VerifiedIdentity>,
+    has_local_capability: bool,
+) -> crate::dispatch::setup::SetupCaller {
+    use crate::dispatch::setup::{SetupCaller, SetupCallerEvidence};
+    let configured_admin_email = state
+        .oauth_state
+        .as_ref()
+        .map(|auth_state| auth_state.config.admin_email.as_str())
+        .or_else(|| {
+            state
+                .auth_config
+                .as_ref()
+                .map(|config| config.admin_email.as_str())
+        });
+    SetupCaller::classify(SetupCallerEvidence {
+        local_capability: has_local_capability,
+        operator_credential: identity.is_some_and(|identity| {
+            matches!(
+                identity.authenticator(),
+                labby_auth::Authenticator::StaticBearer | labby_auth::Authenticator::UnixPeer
+            )
+        }),
+        session_email: auth
+            .filter(|context| context.via_session)
+            .and_then(|context| context.email.as_deref()),
+        configured_admin_email,
+    })
 }
 
 fn setup_action_requires_admin(action: &str) -> bool {

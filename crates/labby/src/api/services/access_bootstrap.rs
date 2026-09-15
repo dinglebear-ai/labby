@@ -9,7 +9,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, routing};
-use labby_auth::{Authenticator, PrincipalLink, VerifiedIdentity};
+use labby_auth::VerifiedIdentity;
 use serde::{Deserialize, Serialize};
 
 use crate::api::auth_helpers::{log_auth_dispatch, log_auth_dispatch_start, request_id};
@@ -61,20 +61,18 @@ async fn bootstrap_owner(
     log_auth_dispatch_start(action, req_id.as_deref());
     let (Some(Extension(auth)), Some(Extension(identity))) = (auth, identity) else {
         log_auth_dispatch(action, req_id.as_deref(), start, Some("forbidden"), None);
-        return no_store(stable_error(
-            "forbidden",
-            "access owner bootstrap requires an authenticated browser admin",
-        ));
+        return no_store(stable_error("forbidden", NOT_ELIGIBLE_MESSAGE));
     };
-    if let Err(response) = require_browser_admin(&state, &auth, &identity) {
+    if let Err(error) = require_browser_admin(&state, &auth, &identity) {
+        let kind = error.kind().to_owned();
         log_auth_dispatch(
             action,
             req_id.as_deref(),
             start,
-            Some("forbidden"),
+            Some(&kind),
             auth.actor_key.as_deref(),
         );
-        return no_store(ApiError::new(response).into_response());
+        return no_store(ApiError::new(error).into_response());
     }
     let Json(request) = match request {
         Ok(request) => request,
@@ -93,9 +91,11 @@ async fn bootstrap_owner(
         }
     };
     // Resolve mutable state only after every authorization gate has passed.
+    // The workflow re-applies the same admission rule before touching the store.
     let (response, operational_failure) = match crate::access::bootstrap_owner(
         &state.access_runtime,
-        identity,
+        bootstrap_caller(&auth, &identity),
+        configured_admin_email(&state),
         request.organization_name,
         request.project_name,
     )
@@ -133,13 +133,10 @@ async fn bootstrap_owner(
             ),
             None,
         ),
-        Err(crate::access::OwnerBootstrapError::IdentityNotEligible) => (
-            stable_error(
-                "forbidden",
-                "access owner bootstrap requires an authenticated browser admin",
-            ),
-            None,
-        ),
+        Err(
+            error @ (crate::access::OwnerBootstrapError::IdentityNotEligible
+            | crate::access::OwnerBootstrapError::NotConfigured),
+        ) => (ApiError::new(admission_error(error)).into_response(), None),
         Err(crate::access::OwnerBootstrapError::Busy) => (
             stable_error(
                 "service_unavailable",
@@ -187,49 +184,53 @@ async fn bootstrap_owner(
     no_store(response)
 }
 
+/// The one message for every refused caller, so a response never reveals
+/// which admission rule failed or whether the caller is the configured admin.
+const NOT_ELIGIBLE_MESSAGE: &str = "access owner bootstrap requires an authenticated browser admin";
+
+/// Adapt the authenticated request to the shared admission caller.
+fn bootstrap_caller<'a>(
+    auth: &'a AuthContext,
+    identity: &'a VerifiedIdentity,
+) -> crate::access::OwnerBootstrapCaller<'a> {
+    crate::access::OwnerBootstrapCaller {
+        via_session: auth.via_session,
+        subject: &auth.sub,
+        scopes: &auth.scopes,
+        email: auth.email.as_deref(),
+        identity,
+    }
+}
+
+fn configured_admin_email(state: &AppState) -> Option<&str> {
+    state
+        .auth_config
+        .as_ref()
+        .map(|config| config.admin_email.as_str())
+}
+
+/// Early HTTP gate: the shared admission rule mapped to a stable `ToolError`
+/// before the request body is parsed.
 pub(super) fn require_browser_admin(
     state: &AppState,
     auth: &AuthContext,
     identity: &VerifiedIdentity,
 ) -> Result<(), ToolError> {
-    if !auth.via_session || identity.authenticator() != Authenticator::BrowserSession {
-        return Err(stable_tool_error(
-            "forbidden",
-            "access owner bootstrap requires an authenticated browser admin",
-        ));
-    }
-    if !matches!(
-        identity.principal_link(),
-        PrincipalLink::External { subject, .. } if subject == &auth.sub
-    ) {
-        return Err(stable_tool_error(
-            "forbidden",
-            "access owner bootstrap identity is inconsistent",
-        ));
-    }
-    if !auth.scopes.iter().any(|scope| scope == "lab:admin") {
-        return Err(stable_tool_error(
-            "forbidden",
-            "access owner bootstrap requires admin scope",
-        ));
-    }
-    let Some(config) = state.auth_config.as_ref() else {
-        return Err(stable_tool_error(
+    crate::access::owner_bootstrap_admission(
+        &bootstrap_caller(auth, identity),
+        configured_admin_email(state),
+    )
+    .map_err(admission_error)
+}
+
+fn admission_error(error: crate::access::OwnerBootstrapError) -> ToolError {
+    match error {
+        crate::access::OwnerBootstrapError::NotConfigured => stable_tool_error(
             "not_found",
             "access owner bootstrap is only available in OAuth mode",
-        ));
-    };
-    if auth
-        .email
-        .as_deref()
-        .is_none_or(|email| !email.eq_ignore_ascii_case(&config.admin_email))
-    {
-        return Err(stable_tool_error(
-            "forbidden",
-            "caller is not the configured admin",
-        ));
+        ),
+        _ => stable_tool_error("forbidden", NOT_ELIGIBLE_MESSAGE),
     }
-    Ok(())
 }
 
 fn stable_error(kind: &'static str, message: &'static str) -> Response {
@@ -254,7 +255,48 @@ fn no_store(mut response: Response) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use labby_auth::PrincipalLink;
+    use labby_auth::{Authenticator, PrincipalLink};
+
+    /// Every refused caller gets the same kind and message (SEC-L5): the
+    /// response never distinguishes the configured admin from a colleague.
+    #[test]
+    fn refusals_are_indistinguishable() {
+        let state = state();
+        let identity = browser_identity();
+        let other_subject = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "different-subject",
+        )
+        .unwrap();
+        let refusals = [
+            require_browser_admin(
+                &state,
+                &auth(true, &["lab:admin"], Some("colleague@example.com")),
+                &identity,
+            ),
+            require_browser_admin(
+                &state,
+                &auth(true, &["lab:read"], Some("owner@example.com")),
+                &identity,
+            ),
+            require_browser_admin(
+                &state,
+                &auth(false, &["lab:admin"], Some("owner@example.com")),
+                &identity,
+            ),
+            require_browser_admin(
+                &state,
+                &auth(true, &["lab:admin"], Some("owner@example.com")),
+                &other_subject,
+            ),
+        ];
+        for refusal in refusals {
+            let error = refusal.unwrap_err();
+            assert_eq!(error.kind(), "forbidden");
+            assert_eq!(error.user_message(), NOT_ELIGIBLE_MESSAGE);
+        }
+    }
 
     fn auth(via_session: bool, scopes: &[&str], email: Option<&str>) -> AuthContext {
         AuthContext {

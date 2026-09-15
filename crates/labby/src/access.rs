@@ -143,8 +143,10 @@ pub(crate) use credential_store::{
 };
 #[allow(unused_imports)]
 pub(crate) use credential_verifier::{
-    AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
-    LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
+    AccessCredentialAdapter, CredentialGenerationOutOfRange, LiveAuthority, LiveAuthorityError,
+    LiveAuthorityFuture, LiveAuthoritySnapshot, ProtectedCredentialRequirements, SecurityAdmission,
+    StoredBinding, VerifiedProductBinding, admit_credential_issue_attempt,
+    credential_generation_sql, scopes_within,
 };
 #[allow(unused_imports)]
 pub(crate) use dev_container::{
@@ -192,6 +194,7 @@ pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot, SessionA
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
+    OwnerBootstrapOffer,
 };
 pub(crate) use runtime::{CredentialLifecycleError, TeamMemberProvisionError};
 #[allow(unused_imports)]
@@ -207,7 +210,9 @@ pub(crate) use team::{
 };
 pub(crate) use team_provision::TeamMemberProvisionOutcome;
 #[allow(unused_imports)]
-pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
+pub(crate) use workflow::{
+    OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,
+};
 
 #[cfg(test)]
 mod facade_tests {

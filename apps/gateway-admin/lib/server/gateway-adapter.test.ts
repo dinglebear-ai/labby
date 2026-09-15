@@ -1132,3 +1132,23 @@ test('resource and prompt exposure use wildcard matching against the backend-mat
     ]
   )
 })
+
+test('buildGatewayPatch sends display_name only when it was edited', () => {
+  assert.equal(buildGatewayPatch({ display_name: '  Asana (Work)  ' }).display_name, 'Asana (Work)')
+  assert.equal(buildGatewayPatch({ display_name: '   ' }).display_name, null, 'blank clears the label')
+  assert.equal(buildGatewayPatch({ display_name: null }).display_name, null, 'null clears the label')
+  assert.equal('display_name' in buildGatewayPatch({ name: 'asana' }), false, 'absent leaves the label alone')
+})
+
+test('gatewayInputToSpec carries a display name without changing the ID', () => {
+  const spec = gatewayInputToSpec({
+    name: 'asana',
+    display_name: ' Asana (Work) ',
+    transport: 'http',
+    config: { url: 'https://mcp.asana.com/v2/mcp' },
+  })
+  assert.equal(spec.name, 'asana')
+  assert.equal(spec.display_name, 'Asana (Work)')
+  const unlabelled = gatewayInputToSpec({ name: 'asana', transport: 'http', config: { url: 'https://mcp.asana.com/v2/mcp' } })
+  assert.equal('display_name' in unlabelled, false)
+})

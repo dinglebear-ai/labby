@@ -61,6 +61,7 @@ import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations, useProtectedMcpRoutes } from '@/lib/hooks/use-gateways'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput } from '@/lib/types/gateway'
+import { gatewayLabel } from '@/lib/gateway-label'
 import {
   applyBulkExposureToDraft,
   buildExposurePolicyFromDraft,
@@ -766,7 +767,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const isEnabled = gateway.enabled ?? true
   const detailStatus = gatewayDetailStatus({ enabled: isEnabled, connected: gateway.status.connected, healthy: gateway.status.healthy })
   const statusLabel = detailStatus.label
-  const displayName = gatewayDisplayName(gateway.name)
+  const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
   const statusDotColor = detailStatus.tone === 'connected'
     ? 'var(--aurora-accent-strong)'
     : detailStatus.tone === 'disabled'

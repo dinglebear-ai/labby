@@ -123,6 +123,8 @@ export interface GatewayWarning {
 export interface Gateway {
   id: string
   name: string
+  /** Operator-facing label. Presentation only — address the server by `name`. */
+  display_name?: string
   transport: TransportType
   source?: string
   configured?: boolean
@@ -194,12 +196,16 @@ export interface GatewayImportResult {
 
 export interface CreateGatewayInput {
   name: string
+  /** Optional free-form label; `name` stays the stable identifier. */
+  display_name?: string | null
   transport: TransportType
   config: GatewayWriteConfig
 }
 
 export interface UpdateGatewayInput {
   name?: string
+  /** `null` or blank clears the label; absent leaves it unchanged. */
+  display_name?: string | null
   transport?: TransportType
   config?: Partial<GatewayWriteConfig>
 }

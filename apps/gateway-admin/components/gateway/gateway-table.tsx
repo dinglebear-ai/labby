@@ -43,6 +43,7 @@ import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
 import { GatewaySelectionToolbar } from './gateway-selection-toolbar'
 import type { GatewayBatchCallbacks } from './gateway-selection-model'
 import type { Gateway } from '@/lib/types/gateway'
+import { gatewayLabel } from '@/lib/gateway-label'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
@@ -441,7 +442,7 @@ export function GatewayTable({
     const isSelected = selectedGatewayIds.includes(gateway.id)
     const status = gateway.status
     const isExpanded = expandedDesktopGatewayId === gateway.id
-    const displayName = gatewayDisplayName(gateway.name)
+    const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
 
     const columnCells = {
       endpoint: (<div className="min-w-0 max-w-full justify-self-center px-2.5 text-center">
@@ -548,7 +549,7 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={`${gateway.name} · ${statusTone.label}`}
+              title={gateway.display_name?.trim() ? `${displayName} · ${statusTone.label} · ID: ${gateway.name}` : `${displayName} · ${statusTone.label}`}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
               {displayName}
@@ -757,7 +758,7 @@ export function GatewayTable({
           const endpointPreview = buildGatewayEndpointPreview(gateway)
           const showsCommandLine = gateway.transport === 'stdio'
           const isExpanded = expandedMobileGatewayId === gateway.id
-          const displayName = gatewayDisplayName(gateway.name)
+          const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
           const envCount = Object.keys(gateway.config.env ?? {}).length
           const runtimeLabel = runtimeAgeLabel(gateway) ?? 'live'
           const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
