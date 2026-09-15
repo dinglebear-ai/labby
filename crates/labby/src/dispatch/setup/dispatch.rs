@@ -130,8 +130,10 @@ async fn dispatch_inner(
             .await
         }
         "settings.env_schema" => settings_env_schema_action(),
-        "plugin_hook" => plugin_hook_action(params).await,
-        "plugin_sync" => run_blocking_setup("plugin_sync", plugin_sync_action).await,
+        "plugin_hook" => plugin_hook_action(caller, params).await,
+        "plugin_sync" => {
+            run_blocking_setup("plugin_sync", move || plugin_sync_action(caller)).await
+        }
         "plugin_export" => run_blocking_setup("plugin_export", plugin_export_action).await,
         "plugin_connectivity" => plugin_connectivity_action(params).await,
         "check" => run_blocking_setup("check", setup_check_action).await,
@@ -191,7 +193,7 @@ async fn blocking_params(
     run_blocking_setup(operation, move || task(&params)).await
 }
 
-async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
+async fn plugin_hook_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
     let repair = params
         .get("repair")
         .map(|value| parse_required_bool(value, "repair"))
@@ -206,7 +208,7 @@ async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
     // sync_plugin_env mutates ~/.labby/.env — only run in Repair mode so
     // check-mode invocations are guaranteed non-mutating.
     let sync = if repair {
-        Some(super::plugin_hook::sync_plugin_env()?)
+        Some(super::plugin_hook::sync_plugin_env(caller)?)
     } else {
         None
     };
@@ -219,8 +221,8 @@ async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
     })
 }
 
-fn plugin_sync_action() -> Result<Value, ToolError> {
-    to_json(super::plugin_hook::sync_plugin_env()?)
+fn plugin_sync_action(caller: SetupCaller) -> Result<Value, ToolError> {
+    to_json(super::plugin_hook::sync_plugin_env(caller)?)
 }
 
 fn plugin_export_action() -> Result<Value, ToolError> {
