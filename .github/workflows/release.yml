@@ -60,7 +60,10 @@ jobs:
           npm_version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           registry_version="$(python3 -c "import json; print(json.load(open('server.json'))['version'])")"
           manifest_version="$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")"
-          for pair in "Cargo.toml:$cargo_version" "package.json:$npm_version" "server.json:$registry_version" "release manifest:$manifest_version"; do
+          desktop_package_version="$(node -p "require('./apps/labby-desktop/package.json').version")"
+          desktop_tauri_version="$(node -p "require('./apps/labby-desktop/src-tauri/tauri.conf.json').version")"
+          desktop_cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/labby-desktop/src-tauri/Cargo.toml | head -1)"
+          for pair in "Cargo.toml:$cargo_version" "package.json:$npm_version" "server.json:$registry_version" "release manifest:$manifest_version" "desktop package:$desktop_package_version" "desktop tauri:$desktop_tauri_version" "desktop cargo:$desktop_cargo_version"; do
             [[ "${pair#*:}" == "$expected" ]] || { echo "::error::${pair%%:*} version ${pair#*:} != $expected"; exit 1; }
           done
           npm test --prefix packages/labby-mcp
@@ -380,13 +383,22 @@ jobs:
       release_tag: ${{ github.ref_name }}
     secrets: inherit
 
+  desktop-candidate:
+    needs: upgrade-qualification
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-desktop.yml
+    secrets: inherit
+
   npm-candidate:
     # The MCP Registry only accepts a manifest whose npm version is already
     # published with a matching mcpName, so the candidate-tagged npm version
     # must exist before mcp-candidate runs. Waiting for incus-candidate keeps
     # this irreversible publication behind every non-publishing gate.
     name: Publish npm candidate
-    needs: [build, upgrade-qualification, incus-candidate]
+    needs: [build, upgrade-qualification, incus-candidate, desktop-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -438,7 +450,7 @@ jobs:
     concurrency:
       group: labby-stable-release-promotion
       cancel-in-progress: false
-    needs: [build, upgrade-qualification, incus-candidate, npm-candidate, mcp-candidate]
+    needs: [build, upgrade-qualification, incus-candidate, desktop-candidate, npm-candidate, mcp-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -491,15 +503,16 @@ jobs:
           --repository "$GITHUB_REPOSITORY"
           --incus-sha256 "$INCUS_SHA256"
           --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256"
-          lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-install.*.spdx.json
-          labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
+          lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json
+          labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json
+          labby-install.*.spdx.json labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
       - name: Upload qualified assets to draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
+          files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
           gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true
           touch /tmp/labby-release-was-draft
           scripts/ci/upload-immutable-release-assets.sh -- "${files[@]}"
@@ -511,6 +524,10 @@ jobs:
             lab-*.zip
             lab-*.spdx.json
             lab-*.sha256
+            labby-desktop-*.tar.gz
+            labby-desktop-*.AppImage
+            labby-desktop-*.sha256
+            labby-desktop-*.spdx.json
             labby-install.*.spdx.json
             labby-install.sh
             labby-install.ps1
@@ -522,7 +539,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
+          for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
             scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
       - name: Prepare npm stable pointer transaction

@@ -362,6 +362,13 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         ),
         RouteDescriptor::new(
             "POST",
+            "/auth/bearer-session",
+            "auth_bearer_session",
+            "oauth",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
+            "POST",
             "/auth/logout",
             "auth_logout",
             "oauth",
@@ -770,6 +777,7 @@ mod tests {
 
         for path in [
             "/auth/session",
+            "/auth/bearer-session",
             "/auth/login",
             "/auth/local-session",
             "/auth/upstream/callback",

@@ -1333,6 +1333,46 @@ if authenticated_action; then exit 93; fi
         self.assertIn("gh pr list", sync)
         self.assertIn("Patch release metadata and regenerate Cargo.lock", sync)
 
+    def test_release_metadata_sync_updates_desktop_on_every_version_bump(self) -> None:
+        workflow = yaml.safe_load(self.text(".github/workflows/release-please.yml"))
+        steps = workflow["jobs"]["sync-release-version"]["steps"]
+        patch = next(step["run"] for step in steps if step.get("name", "").startswith("Patch release metadata"))
+        code = patch.split("<< 'PY'\n", 1)[1].split("\nPY", 1)[0]
+        paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
+                 "apps/labby-desktop/package.json", "apps/labby-desktop/src-tauri/Cargo.toml",
+                 "apps/labby-desktop/src-tauri/tauri.conf.json"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in paths:
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(self.text(path))
+            for version in ["1.19.0", "1.20.0"]:
+                subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
+                for path in paths:
+                    text = (root / path).read_text()
+                    if path.endswith(".json"):
+                        self.assertEqual(json.loads(text)["version"], version, path)
+                    else:
+                        self.assertIn(f'version = "{version}"', text, path)
+                first = {path: (root / path).read_bytes() for path in paths}
+                subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
+                self.assertEqual(first, {path: (root / path).read_bytes() for path in paths})
+        self.assertIn("cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace", patch)
+        commit = next(step["run"] for step in steps if step.get("name") == "Commit and push if changed")
+        staged = commit.split("paths=(", 1)[1].split(")", 1)[0].split()
+        self.assertIn("apps/labby-desktop/src-tauri/Cargo.lock", staged)
+        for path in paths:
+            self.assertIn(path, staged)
+
+    def test_desktop_release_builds_enforce_the_reviewed_lockfile(self) -> None:
+        workflow = yaml.safe_load(self.text(".github/workflows/build-desktop.yml"))
+        commands = [step["run"] for step in workflow["jobs"]["build"]["steps"]
+                    if "tauri build" in step.get("run", "")]
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertRegex(command, r"tauri build[^\n]* -- --locked")
+
     def test_release_auto_merge_is_restored_only_for_verified_remote_head(self) -> None:
         workflow = self.text(".github/workflows/release-please.yml")
         sync = workflow[workflow.index("  sync-release-version:") :]

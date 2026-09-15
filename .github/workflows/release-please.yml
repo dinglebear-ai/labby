@@ -189,6 +189,29 @@ jobs:
               raise SystemExit(f"expected exactly 1 substitution in {path}, got {count}")
           open(path, "w").write(patched)
 
+          desktop_cargo_path = "apps/labby-desktop/src-tauri/Cargo.toml"
+          desktop_cargo = open(desktop_cargo_path).read()
+          patched, count = re.subn(
+              r'(\[package\][^\[]*?\nversion = ")[^"]+(")',
+              lambda m: m.group(1) + new_version + m.group(2),
+              desktop_cargo,
+              count=1,
+              flags=re.DOTALL,
+          )
+          if count != 1:
+              raise SystemExit(f"expected exactly 1 substitution in {desktop_cargo_path}, got {count}")
+          open(desktop_cargo_path, "w").write(patched)
+          for desktop_path in [
+              "apps/labby-desktop/package.json",
+              "apps/labby-desktop/src-tauri/tauri.conf.json",
+          ]:
+              with open(desktop_path) as fh:
+                  desktop_manifest = json.load(fh)
+              desktop_manifest["version"] = new_version
+              with open(desktop_path, "w") as fh:
+                  json.dump(desktop_manifest, fh, indent=2)
+                  fh.write("\n")
+
           package_path = "packages/labby-mcp/package.json"
           with open(package_path) as fh:
               npm_manifest = json.load(fh)
@@ -218,13 +241,16 @@ jobs:
           # after the version bump — no compilation required. Offline first;
           # fall back to a networked update if the lockfile needs anything new.
           cargo update --workspace --offline || cargo update --workspace
-          git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
+          # Desktop is a separate Cargo workspace; the root update cannot repair
+          # its package version in the independent lockfile.
+          cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace --offline || cargo update --manifest-path apps/labby-desktop/src-tauri/Cargo.toml --workspace
+          git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json
 
       - name: Commit and push if changed
         if: ${{ steps.pr.outputs.found == 'true' }}
         run: |
           set -euo pipefail
-          paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json)
+          paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json apps/labby-desktop/package.json apps/labby-desktop/src-tauri/Cargo.toml apps/labby-desktop/src-tauri/Cargo.lock apps/labby-desktop/src-tauri/tauri.conf.json)
           if git diff --quiet -- "${paths[@]}"; then
             echo "Release metadata already in sync, nothing to commit."
             exit 0

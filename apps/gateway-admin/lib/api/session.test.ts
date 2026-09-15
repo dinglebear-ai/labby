@@ -498,3 +498,21 @@ test('an unknown authority_state fails closed as an incompatible authority error
   assert.equal(state.status === 'auth_error' ? state.kind : undefined, 'incompatible_authority')
   assert.equal(getSessionAuthority(), undefined)
 })
+
+
+test('logout retains the server-advertised sign-in methods', async () => {
+  for (const methods of [
+    { login_available: false, bearer_login_available: true },
+    { login_available: true, bearer_login_available: false },
+  ]) {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      authenticated: true, user: { sub: 'operator' }, csrf_token: 'csrf', expires_at: 123, ...methods,
+    }), { status: 200 })) as FetchMock
+    await loadBrowserSession()
+    globalThis.fetch = (async () => new Response(null, { status: 204 })) as FetchMock
+    await logoutBrowserSession()
+    assert.deepEqual(getBrowserSessionState(), {
+      status: 'unauthenticated', loginAvailable: methods.login_available, bearerLoginAvailable: methods.bearer_login_available,
+    })
+  }
+})

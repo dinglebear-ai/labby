@@ -107,6 +107,7 @@ esac
                 hex::encode(Sha256::digest(&original)),
             )
             .env("LABBY_INSTALL_VERSION", "v1.16.0")
+            .env("LABBY_INSTALL_NO_SETUP", "1")
             .output()
             .unwrap();
         assert!(

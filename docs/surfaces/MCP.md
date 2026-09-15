@@ -109,10 +109,10 @@ inspect the current route-scoped tool catalog.
 ### Labby MCP App manager
 
 The root gateway always advertises the `mcp_app` control tool, but its own MCP
-App UI is opt-in. The tool manages `manager`, `codemode`, `gateway_status`,
+App UI is enabled by default. The tool manages `manager`, `codemode`, `gateway_status`,
 `server_logs`, `add_server`, `settings`, or `all`. Every Labby-owned app surface
-is opt-in and defaults off; the text-only control tool remains available so an
-administrator can enable exactly the surfaces they want, including the manager UI
+defaults on; the text-only control tool remains available so an
+administrator can disable or restore individual surfaces, including the manager UI
 itself. The default target remains `codemode` for backward compatibility with the
 original inspector-only control contract.
 
