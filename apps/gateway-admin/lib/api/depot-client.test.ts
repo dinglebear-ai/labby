@@ -281,9 +281,13 @@ test('does not surface privileged Depot rejection details', async () => {
 test('rejects operation schemas outside the bounded renderer subset', async () => {
   const operation = (inputSchema: unknown) => json({ operations: [{ name: 'depot.test', title: 'Test', description: 'Test', inputSchema }] })
   await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'Operation names to include' } } } }), async () => assert.equal((await depotOperations()).length, 1))
+  await withFetch(operation({ type: 'object', properties: { declared: { type: ['string', 'null'], minLength: 1 }, detected: { type: 'array', items: {} } } }), async () => assert.equal((await depotOperations()).length, 1))
   await withFetch(operation({ type: 'object', properties: { only: { type: 'array', items: { type: 'string', description: 'x'.repeat(4097) } } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: null } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'null' } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  for (const type of [['string', 'boolean'], ['null'], ['string', 'null', 'number']]) {
+    await withFetch(operation({ type: 'object', properties: { bad: { type } } }), async () => assert.rejects(depotOperations(), /operation catalog response/i))
+  }
   await withFetch(operation({ type: 'object', properties: { bad: { type: 'string', pattern: '[' } } }), async () => assert.rejects(depotOperations(), /valid regular expression/i))
   await withFetch(operation({ type: 'object', properties: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`p${index}`, { type: 'string' }])) }), async () => assert.rejects(depotOperations(), /128 properties/i))
   await withFetch(operation({ type: 'object', properties: {}, required: ['missing'] }), async () => assert.rejects(depotOperations(), /not declared/i))

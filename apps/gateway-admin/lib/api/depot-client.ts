@@ -23,8 +23,14 @@ const contractSchema = z.object({
 }).passthrough()
 
 const schemaScalar = z.union([z.string().max(4096), z.number().safe()])
+const schemaBaseType = z.enum(['string', 'boolean', 'integer', 'number', 'object', 'array'])
+const nullableSchemaType = z.union([
+  z.tuple([schemaBaseType, z.literal('null')]),
+  z.tuple([z.literal('null'), schemaBaseType]),
+])
+const schemaType = z.union([schemaBaseType, nullableSchemaType])
 const schemaItem = z.object({
-  type: z.enum(['string', 'boolean', 'integer', 'number', 'object', 'array']),
+  type: schemaType,
   description: bounded(4096).optional(),
   enum: z.array(schemaScalar).max(100).optional(),
   minimum: z.number().safe().optional(), maximum: z.number().safe().optional(),
@@ -32,25 +38,27 @@ const schemaItem = z.object({
   pattern: bounded(512).optional(),
   minProperties: z.number().int().min(0).max(256).optional(), maxProperties: z.number().int().min(0).max(256).optional(),
 }).strict()
+const unconstrainedSchemaItem = z.object({}).strict()
 const operationPropertySchema = schemaItem.extend({
   description: bounded(4096).optional(),
-  default: z.union([schemaScalar, z.boolean(), z.array(schemaScalar).max(100), z.record(z.string(), schemaScalar)]).optional(),
+  default: z.union([schemaScalar, z.boolean(), z.null(), z.array(schemaScalar).max(100), z.record(z.string(), schemaScalar)]).optional(),
   minItems: z.number().int().min(0).max(1000).optional(), maxItems: z.number().int().min(0).max(1000).optional(),
-  uniqueItems: z.boolean().optional(), items: schemaItem.optional(),
+  uniqueItems: z.boolean().optional(), items: z.union([schemaItem, unconstrainedSchemaItem]).optional(),
 }).strict().superRefine((property, context) => {
   if (property.minimum !== undefined && property.maximum !== undefined && property.minimum > property.maximum) context.addIssue({ code: 'custom', message: 'minimum exceeds maximum' })
   if (property.minLength !== undefined && property.maxLength !== undefined && property.minLength > property.maxLength) context.addIssue({ code: 'custom', message: 'minLength exceeds maxLength' })
   if (property.minItems !== undefined && property.maxItems !== undefined && property.minItems > property.maxItems) context.addIssue({ code: 'custom', message: 'minItems exceeds maxItems' })
   if (property.minProperties !== undefined && property.maxProperties !== undefined && property.minProperties > property.maxProperties) context.addIssue({ code: 'custom', message: 'minProperties exceeds maxProperties' })
   if (property.pattern !== undefined) try { new RegExp(property.pattern) } catch { context.addIssue({ code: 'custom', message: 'pattern is not a valid regular expression' }) }
+  const type = Array.isArray(property.type) ? property.type.find(value => value !== 'null') : property.type
   const hasNumeric = property.minimum !== undefined || property.maximum !== undefined
   const hasString = property.minLength !== undefined || property.maxLength !== undefined || property.pattern !== undefined
   const hasArray = property.minItems !== undefined || property.maxItems !== undefined || property.uniqueItems !== undefined || property.items !== undefined
   const hasObject = property.minProperties !== undefined || property.maxProperties !== undefined
-  if (hasNumeric && property.type !== 'integer' && property.type !== 'number') context.addIssue({ code: 'custom', message: 'numeric constraints require a numeric type' })
-  if (hasString && property.type !== 'string') context.addIssue({ code: 'custom', message: 'string constraints require a string type' })
-  if (hasArray && property.type !== 'array') context.addIssue({ code: 'custom', message: 'array constraints require an array type' })
-  if (hasObject && property.type !== 'object') context.addIssue({ code: 'custom', message: 'object constraints require an object type' })
+  if (hasNumeric && type !== 'integer' && type !== 'number') context.addIssue({ code: 'custom', message: 'numeric constraints require a numeric type' })
+  if (hasString && type !== 'string') context.addIssue({ code: 'custom', message: 'string constraints require a string type' })
+  if (hasArray && type !== 'array') context.addIssue({ code: 'custom', message: 'array constraints require an array type' })
+  if (hasObject && type !== 'object') context.addIssue({ code: 'custom', message: 'object constraints require an object type' })
 })
 const operationPropertiesSchema = z.record(bounded(128), operationPropertySchema).superRefine((properties, context) => {
   if (Object.keys(properties).length > 128) context.addIssue({ code: 'custom', message: 'schema contains more than 128 properties' })

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { DepotAdministrationPage, OperationGrid } from './depot-administration-page'
+import { sourcePresentation } from './source-administration'
+import type { DepotSource } from '@/lib/api/depot-client'
 
 test('administration uses compact attached workspace navigation and visible header actions', () => {
   const html = renderToStaticMarkup(<DepotAdministrationPage />)
@@ -21,6 +23,17 @@ test('administration uses compact attached workspace navigation and visible head
   assert.doesNotMatch(html, /Control target connected/)
   assert.match(html, /Control target/)
   assert.match(html, /Tenant \/ team/)
+})
+
+test('persisted source presentation covers every refreshable Depot source kind', () => {
+  const source = (kind: string, args: Record<string, unknown>): DepotSource => ({ id: 'src-' + kind, kind, args, enabled: true, intervalSeconds: 3600 })
+  assert.deepEqual(sourcePresentation(source('repo', { namespace: 'team', url: 'https://github.com/unraid/unmarket' })), { label: 'team', location: 'https://github.com/unraid/unmarket' })
+  assert.deepEqual(sourcePresentation(source('well_known', { domain: 'skills.example.com' })), { label: 'well known', location: 'skills.example.com' })
+  assert.deepEqual(sourcePresentation(source('ard_catalog', { domain: 'ard.example.com' })), { label: 'ard catalog', location: 'ard.example.com' })
+  assert.deepEqual(sourcePresentation(source('marketplace', { source: 'acme/marketplace' })), { label: 'marketplace', location: 'acme/marketplace' })
+  assert.deepEqual(sourcePresentation(source('mcp', { endpoint: 'https://skills.example.com/mcp' })), { label: 'mcp', location: 'https://skills.example.com/mcp' })
+  assert.deepEqual(sourcePresentation(source('mcp_registry', { registry: 'https://registry.example.com' })), { label: 'mcp registry', location: 'https://registry.example.com' })
+  assert.deepEqual(sourcePresentation(source('acp_registry', { source: 'https://agents.example.com/registry.json' })), { label: 'acp registry', location: 'https://agents.example.com/registry.json' })
 })
 
 test('operation catalog groups search and dense cards while retaining safety labels', () => {

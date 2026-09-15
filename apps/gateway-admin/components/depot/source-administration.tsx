@@ -33,8 +33,17 @@ function formatTimestamp(value?: string): string {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
 }
 
-function sourceLabel(source: DepotSource): string {
-  return text(source.args.namespace) ?? text(source.args.url) ?? source.id
+export function sourcePresentation(source: DepotSource): { label: string; location: string } {
+  const location = text(source.args.url)
+    ?? text(source.args.domain)
+    ?? text(source.args.source)
+    ?? text(source.args.endpoint)
+    ?? text(source.args.registry)
+    ?? source.id
+  return {
+    label: text(source.args.namespace) ?? source.kind.replaceAll('_', ' '),
+    location,
+  }
 }
 
 function SourceState({ source }: { source: DepotSource }) {
@@ -44,7 +53,7 @@ function SourceState({ source }: { source: DepotSource }) {
   return <Badge variant="secondary">Awaiting first refresh</Badge>
 }
 
-export function DepotSourceAdministration() {
+export function DepotSourceAdministration({ onOpenCatalog }: { onOpenCatalog?: () => void }) {
   const [sources, setSources] = useState<DepotSource[]>([])
   const [jobs, setJobs] = useState<DepotIngestJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -111,16 +120,14 @@ export function DepotSourceAdministration() {
     })
   }
 
-  const repoSources = sources.filter(source => source.kind === 'repo')
-
   return (
     <div className="space-y-6">
       <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
         <Card>
           <CardHeader>
-            <CardTitle>Repository sources</CardTitle>
+            <CardTitle>Persisted sources</CardTitle>
             <CardDescription>
-              Durable Depot repositories, refresh policy, revision state, and source health. Changes here update Depot itself.
+              Every durable refreshable Depot source, including repositories, registries, marketplaces, ARD, well-known catalogs, and Skills-over-MCP endpoints.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -129,7 +136,7 @@ export function DepotSourceAdministration() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Repository</TableHead>
+                    <TableHead>Source</TableHead>
                     <TableHead>State</TableHead>
                     <TableHead>Refresh</TableHead>
                     <TableHead>Revision</TableHead>
@@ -140,9 +147,10 @@ export function DepotSourceAdministration() {
                 <TableBody>
                   {loading ? (
                     <TableRow><TableCell colSpan={6} className="py-10 text-center text-aurora-text-muted"><Loader2 className="mr-2 inline size-4 animate-spin" />Loading Depot sources</TableCell></TableRow>
-                  ) : repoSources.length === 0 ? (
-                    <TableRow><TableCell colSpan={6} className="py-10 text-center text-aurora-text-muted">No repository sources are configured.</TableCell></TableRow>
-                  ) : repoSources.map(source => {
+                  ) : sources.length === 0 ? (
+                    <TableRow><TableCell colSpan={6} className="py-10 text-center text-aurora-text-muted">No persisted sources are configured.</TableCell></TableRow>
+                  ) : sources.map(source => {
+                    const presentation = sourcePresentation(source)
                     const rowBusy = busy?.endsWith(source.id) ?? false
                     const intervalDraft = intervalDrafts[source.id] ?? String(source.intervalSeconds)
                     const parsedInterval = Number(intervalDraft)
@@ -151,9 +159,10 @@ export function DepotSourceAdministration() {
                     return (
                       <TableRow key={source.id}>
                         <TableCell className="max-w-[320px] align-top">
-                          <div className="font-medium text-aurora-text-primary">{sourceLabel(source)}</div>
-                          <div className="mt-1 break-all font-mono text-xs text-aurora-text-muted">{text(source.args.url) ?? source.id}</div>
+                          <div className="font-medium text-aurora-text-primary">{presentation.label}</div>
+                          <div className="mt-1 break-all font-mono text-xs text-aurora-text-muted">{presentation.location}</div>
                           <div className="mt-1 flex flex-wrap gap-1">
+                            <Badge variant="outline">{source.kind.replaceAll('_', ' ')}</Badge>
                             {text(source.args.ref) ? <Badge variant="outline">ref {text(source.args.ref)}</Badge> : null}
                             {text(source.args.subdir) ? <Badge variant="outline">{text(source.args.subdir)}</Badge> : null}
                             {text(source.args.credential) ? <Badge variant="secondary">credential {text(source.args.credential)}</Badge> : null}
@@ -163,7 +172,7 @@ export function DepotSourceAdministration() {
                         <TableCell className="min-w-[190px] align-top text-sm text-aurora-text-secondary">
                           <div className="flex items-center gap-1.5">
                             <Input
-                              aria-label={`Refresh interval seconds for ${sourceLabel(source)}`}
+                              aria-label={`Refresh interval seconds for ${presentation.label}`}
                               className="h-8 w-28 font-mono text-xs"
                               type="number"
                               min={1}
@@ -223,13 +232,17 @@ export function DepotSourceAdministration() {
               {busy === 'add-repository' ? <Loader2 className="size-4 animate-spin" /> : <GitBranch className="size-4" />}
               Start repository ingest
             </Button>
+            <div className="rounded-md border border-aurora-border-subtle bg-aurora-control-surface p-3 text-xs leading-5 text-aurora-text-muted">
+              Repository creation is first-class here for the Team Depot workflow. Well-known, ARD, marketplace, MCP, MCP Registry, and ACP Registry sources use Depot’s canonical ingest schemas and appear in this inventory after creation.
+              {onOpenCatalog ? <Button className="mt-2" size="sm" variant="outline" onClick={onOpenCatalog}>Open all ingest operations</Button> : null}
+            </div>
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader className="flex-row items-start justify-between gap-4">
-          <div><CardTitle>Recent ingest jobs</CardTitle><CardDescription>Durable Depot job state, including repository refreshes and retries.</CardDescription></div>
+          <div><CardTitle>Recent ingest jobs</CardTitle><CardDescription>Durable Depot job state across every ingest and scheduled source refresh.</CardDescription></div>
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}><RefreshCw className="size-4" />Refresh</Button>
         </CardHeader>
         <CardContent>
@@ -261,9 +274,9 @@ export function DepotSourceAdministration() {
       <AlertDialog open={Boolean(deleteCandidate)} onOpenChange={open => { if (!open) setDeleteCandidate(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete repository source?</AlertDialogTitle>
+            <AlertDialogTitle>Delete persisted source?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes the persisted source and its refresh schedule. Already installed skills remain in Depot.
+              This removes the persisted source and its refresh schedule. Already installed artifacts and skills remain in Depot.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

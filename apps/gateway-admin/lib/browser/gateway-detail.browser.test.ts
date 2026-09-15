@@ -295,6 +295,7 @@ test('Depot Administration renders live schemas and guards destructive operation
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ operations: [
         { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', group: 'access', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.', items: { type: 'string' } } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
         { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', group: 'access', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
+        { name: 'depot.artifacts.set_license', title: 'Set Artifact license policy', description: 'Set authoritative license review state.', group: 'catalog', requiredScope: 'write', transportAvailable: true, inputSchema: { type: 'object', properties: { artifactId: { type: 'string', description: 'Hosted Artifact ID.', minLength: 1 }, expectedVersion: { type: 'string', description: 'Mutable Artifact state version.', minLength: 1 }, declared: { type: ['string', 'null'], description: 'Declared license; null clears it.', minLength: 1 }, detected: { type: 'array', description: 'Detected license evidence.', items: {} } }, required: ['artifactId', 'expectedVersion'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false } },
         { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', group: 'operations', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
       ] }) })
       return
@@ -341,6 +342,17 @@ test('Depot Administration renders live schemas and guards destructive operation
   assert.equal(calls[2]?.operation, 'depot.tokens.revoke')
   assert.deepEqual(calls[2]?.params, { tokenId: 'token-2' })
   assert.notEqual(calls[2]?.destructiveIntent?.idempotencyKey, calls[1]?.destructiveIntent?.idempotencyKey)
+
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /^Catalog/ }).click()
+  await page.getByRole('button', { name: /Set Artifact license policy/ }).click()
+  await page.getByLabel('artifactId').fill('artifact-1')
+  await page.getByLabel('expectedVersion').fill('version-7')
+  await page.getByLabel('detected').fill('[{"kind":"license","value":"MIT"}]')
+  await page.getByLabel('Send null (clear)').check()
+  await page.getByRole('button', { name: 'Review and run' }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[3], { operation: 'depot.artifacts.set_license', params: { artifactId: 'artifact-1', expectedVersion: 'version-7', declared: null, detected: [{ kind: 'license', value: 'MIT' }] } })
 
   await page.keyboard.press('Escape')
   await page.setViewportSize({ width: 390, height: 844 })
