@@ -137,3 +137,34 @@ sleep 10
         "log noise must not be remembered as a legacy lifecycle"
     );
 }
+
+/// A legacy server that terminates on an unknown first request leaves nothing
+/// to classify, so the operator can pin it to `initialize`. The child records
+/// the first request it receives and exits.
+#[tokio::test]
+async fn stdio_lifecycle_initialize_override_opens_with_initialize() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first_request = dir.path().join("first-request.log");
+    let script = dir.path().join("record-first-request.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nIFS= read -r line\nprintf '%s\\n' \"$line\" > \"$1\"\nexit 1\n",
+    )
+    .expect("write fixture");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let mut config = test_upstream_config();
+    config.name = "pinned-legacy".to_string();
+    config.command = Some(script.to_string_lossy().into_owned());
+    config.args = vec![first_request.to_string_lossy().into_owned()];
+    config.lifecycle = Some(labby_runtime::gateway_config::UpstreamLifecycle::Initialize);
+    let command = config.command.as_deref().expect("command");
+
+    drop(connect_stdio_upstream(command, &config.args, &config, None, None, (), None).await);
+
+    let first = std::fs::read_to_string(&first_request).expect("child recorded its first request");
+    assert!(
+        first.contains("\"initialize\"") && !first.contains("server/discover"),
+        "a lifecycle=initialize upstream must open with initialize, got: {first}"
+    );
+}

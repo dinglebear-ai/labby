@@ -80,6 +80,8 @@ async fn manager_get_preserves_bearer_token_env_reference() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-http".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
@@ -119,6 +121,8 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            display_name: None,
+            lifecycle: None,
             enabled: true,
             name: "fixture-stdio".to_string(),
             url: None,
@@ -164,6 +168,8 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
 #[tokio::test]
 async fn server_view_redacts_sensitive_target_url_components() {
     let upstream = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-http".to_string(),
         url: Some("http://user:pass@127.0.0.1:9001/callback?token=secret&mode=1".to_string()),
@@ -198,6 +204,8 @@ async fn server_view_redacts_sensitive_target_url_components() {
 #[tokio::test]
 async fn server_view_redacts_invalid_target_urls() {
     let upstream = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-http".to_string(),
         url: Some("http://user:pass@[::1".to_string()),
@@ -232,6 +240,8 @@ async fn server_view_redacts_invalid_target_urls() {
 #[tokio::test]
 async fn server_view_redacts_stdio_env_targets() {
     let upstream = UpstreamConfig {
+        display_name: None,
+        lifecycle: None,
         enabled: true,
         name: "fixture-stdio".to_string(),
         url: None,
@@ -484,6 +494,39 @@ async fn lazily_seeded_healthy_upstream_reports_connected_before_first_use() {
     assert_eq!(view.warnings.len(), 1);
     assert_eq!(view.warnings[0].code, "catalog_warming");
     assert!(view.warnings[0].message.contains("catalog"));
+}
+
+#[tokio::test]
+async fn oauth_upstream_with_empty_shared_catalog_is_not_reported_as_warming() {
+    // Regression: OAuth upstreams (Asana, Linear, Notion) list tools per
+    // authenticated subject, so the shared catalog never materializes. They
+    // must not sit in "needs attention" behind a permanent warming warning.
+    use labby_runtime::gateway_config::{
+        UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    };
+
+    let pool = UpstreamPool::new();
+    let mut upstream = fixture_http_upstream("oauth-upstream");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "test-client".to_string(),
+            client_secret_env: None,
+        },
+        scopes: None,
+        credential: Default::default(),
+        prefer_client_metadata_document: None,
+    });
+    pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
+        .await;
+
+    let view = server_view_from_upstream(Some(&pool), &upstream).await;
+    assert!(view.connected);
+    assert!(
+        view.warnings.is_empty(),
+        "OAuth upstreams have no shared catalog to warm; warnings: {:?}",
+        view.warnings
+    );
 }
 
 #[tokio::test]
