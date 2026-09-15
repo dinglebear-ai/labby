@@ -82,51 +82,29 @@ Access actions use the canonical agent error envelope
 
 ## Onboard a teammate ("No access yet")
 
-A teammate who signs in without durable authority sees "No access yet".
-`GET /auth/session` then reports `authority_state: "unprovisioned"` and the
-remediation "Ask an administrator to add this identity to a team." Signing out
-and in again does not change this. The steps below are what the administrator
-does.
+1. **Add the email.** In **Settings → Authentication → Allowed users**, enter
+   the teammate's email and choose a role: **Member** (Initial Team member,
+   default Project member) or **Admin** (Initial Team admin, default Project
+   admin, and platform administrator). API: `POST /v1/auth/allowed-emails`
+   with `{"email": "...", "role": "member" | "admin"}`; `role` defaults to
+   `member`. Only a configured admin's browser session may do this.
+2. **The teammate signs in.** On their first `GET /auth/session` the server
+   matches the provider-verified email (never the session's display email)
+   against the allowlist and creates the Principal, Team membership, Project
+   membership, and any platform-admin grant in one transaction
+   (`crates/labby/src/access/team_provision.rs`, `provision_allowlisted`).
+   The session projects `ready` immediately. Emails listed in
+   `LABBY_AUTH_ADMIN_EMAIL` are admitted as `admin` the same way.
+3. **Later changes** use the `access` service: `access.team.member.role.set`,
+   `access.platform_admin.grant` / `.revoke`, `access.team.member.remove`.
+   Removing the allowlist entry (`DELETE /v1/auth/allowed-emails/:email`)
+   signs the identity out and blocks future sign-in; it does not delete the
+   Principal.
 
-1. **Admit the identity.** As the configured admin, add the email to the
-   allowlist: **Settings → Authentication** in the web UI, or
-   `POST /v1/auth/allowed-emails` with
-   `{"email": "teammate@example.com"}`. The allowlist routes accept only the
-   browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
-   `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the
-   [open issue](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface).
-2. **The teammate signs in.** Browser sign-in alone admits the identity but
-   does not create a Principal, so the session is `unprovisioned`.
-3. **Get the teammate a Principal.** Today a Principal is created only by:
-   - owner bootstrap (the first owner only);
-   - MCP team auto-provision: the teammate's first OAuth-delegated request to a
-     project-bound protected MCP route whose upstreams include `team-depot`.
-     It creates the Principal and a Project membership with role `member`;
-   - the [automatic Viewer policy](#automatic-viewer-membership) (Google only):
-     the first `/v1` request after a qualifying sign-in creates the Principal
-     with a Viewer membership on the host-selected Project.
-
-   There is no action that creates a Principal for a browser-only teammate.
-   This is a known product gap.
-4. **Learn the `principal_id`.** No action lists Principals. Once the teammate
-   has a Principal, their own `GET /auth/session` shows `authority_state:
-   "ready"` and `authority.principal_id`. They send you that value.
-5. **Add them to a Team** (needs `membership.manage` on that Team, for example
-   as its `owner` or `admin`, or platform administration). Either:
-   - add directly: `access.team.member.add` with `team_id`, `principal_id`, and
-     `role`; or
-   - invite: `access.team_invitation.create` with `team_id`, `principal_id`,
-     `role` (not `owner`), `token` (an opaque secret you generate), and
-     `ttl_seconds`. Give the token to the teammate over a private channel. The
-     teammate calls `access.team_invitation.accept` with `{"token": ...}` from
-     their own session. Accept succeeds only for the invited Principal, before
-     expiry, and only if the Team's membership epoch has not changed since the
-     invitation was created (otherwise create a new invitation).
-6. **Give the Team a Project**, if it does not have one:
-   `access.team_project.assign` with `team_id`, `project_id`, and `role`.
-7. **Optional: platform administration.** `access.platform_admin.grant` with
-   `principal_id` (requires `lab:admin` and `platform.manage`). The teammate's
-   browser session is then elevated to `lab:admin` on `/v1` routes.
+"No access yet" now only appears for an identity that signed in but is on
+neither the allowlist nor the admin list, for example one admitted by
+`LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` alone. Add the email with a role to admit
+it.
 
 ### Using a second account (for example work and personal)
 

@@ -266,6 +266,11 @@ admission kind:
 | Any other allowlisted identity, or an Authelia domain-allowlisted identity | the static-token scopes with each `<prefix>:admin` lowered to `<prefix>` (`lab:read lab`) |
 | Admitted only by the Viewer domain policy | `lab:read` |
 
+Durable authority is separate: an allowlisted identity is also provisioned
+into the access store on its first session read with the role chosen when it
+was allowed (see [Access
+service](../services/ACCESS.md#onboard-a-teammate-no-access-yet)).
+
 An allowlist entry is therefore never an administrative grant. On `/v1`
 routes, a browser session whose durable Principal holds `platform.manage`
 (for example after `access.platform_admin.grant`) is raised to `lab:admin`
@@ -280,9 +285,10 @@ Consequences for operators:
   `server_logs`, `doctor`, `fs`, and `browser` admin actions) are available to
   the configured admin's browser session and to Principals granted
   `platform.manage`, not to every allowlisted colleague.
-- To give a colleague administrative reach, grant it durably with
-  `access.platform_admin.grant` on their `principal_id`. Adding their email to
-  the allowlist does not do it.
+- To give a colleague administrative reach, either allow their email with the
+  `admin` role (which grants `platform.manage` at first sign-in) or grant it
+  durably later with `access.platform_admin.grant` on their `principal_id`.
+  Allowing an email with the default `member` role does not do it.
 
 ### Domain allowlist behavior by provider and surface
 
