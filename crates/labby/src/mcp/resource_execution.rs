@@ -384,6 +384,8 @@ mod tests {
     fn gateway_config(expose_resources: bool) -> GatewayConfig {
         GatewayConfig {
             upstream: vec![UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "alpha".into(),
                 url: None,

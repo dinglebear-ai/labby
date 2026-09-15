@@ -1271,6 +1271,8 @@ mod tests {
         .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry()));
         let config = || GatewayConfig {
             upstream: vec![UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "alpha".into(),
                 url: None,

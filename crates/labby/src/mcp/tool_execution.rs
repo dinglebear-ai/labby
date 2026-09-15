@@ -599,6 +599,8 @@ mod tests {
             upstream: ["alpha", "bravo"]
                 .into_iter()
                 .map(|name| UpstreamConfig {
+                    display_name: None,
+                    lifecycle: None,
                     enabled: true,
                     name: name.into(),
                     url: None,
