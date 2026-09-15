@@ -1,13 +1,13 @@
 [mcp]
 transport = "http"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8765
 
 [[upstream]]
 name = "team-depot"
 transport = "http"
-url = "http://team-depot:4100/mcp"
-bearer_token_env = "TEAM_DEPOT_TOKEN"
+url = "http://127.0.0.1:4100/mcp"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN"
 proxy_resources = true
 proxy_prompts = true
 proxy_skills = true
@@ -15,8 +15,8 @@ proxy_skills = true
 [[upstream]]
 name = "catalog-depot"
 transport = "http"
-url = "http://catalog-depot:4100/mcp"
-bearer_token_env = "CATALOG_DEPOT_TOKEN"
+url = "http://127.0.0.1:4101/mcp"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_CATALOG_LOCAL_TOKEN"
 proxy_resources = true
 proxy_prompts = true
 proxy_skills = true
@@ -69,3 +69,20 @@ expose_code_mode = true
 [depot.publish]
 route_id = "team-depot-publish"
 project_id = "replace-with-bound-project-id"
+
+[depot]
+read_project_id = "replace-with-bound-project-id"
+public_enabled = true
+legacy_migrated = true
+
+[[depot.local_providers]]
+id = "team-local"
+name = "Team Depot"
+endpoint = "http://127.0.0.1:4100/"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN"
+
+[[depot.local_providers]]
+id = "catalog-local"
+name = "Catalog Depot"
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_PROVIDER_CATALOG_LOCAL_TOKEN"

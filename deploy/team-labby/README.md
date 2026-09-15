@@ -50,6 +50,13 @@ every referenced artifact byte already exists in R2.
    team deployment. If domain-wide admission is intentionally disabled, leave it
    empty and add each employee to Labby's persisted allowlist before cutover.
 
+This Compose topology is intentionally Linux/Unraid-specific. Labby uses host
+networking but binds its own MCP listener to host loopback. Team and Catalog
+Depot remain on the backend bridge and publish ports 4100/4101 to host loopback
+only. That gives Labby genuine `127.0.0.1` Depot endpoints, which is required
+for immutable host-managed Discover providers, without exposing either Depot to
+the LAN. Do not widen these binds to `0.0.0.0`.
+
 Render the deployment before creating anything:
 
 ```sh
@@ -69,9 +76,11 @@ docker compose --env-file .env exec catalog-depot \
   /app/bin/depot rpc 'Depot.Auth.Token.create("team-labby", ["skills:read"]) |> elem(1) |> IO.puts()'
 ```
 
-Put the resulting values in `TEAM_DEPOT_TOKEN` and `CATALOG_DEPOT_TOKEN` in
-`state/labby/.env`. Copy the team read token into `LABBY_DEPOT_TOKEN` there as
-well, then start the complete stack:
+Put the Team value in `LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN` and the Catalog
+value in `LABBY_DEPOT_PROVIDER_CATALOG_LOCAL_TOKEN` in `state/labby/.env`. Copy
+the Team read token into `LABBY_DEPOT_TOKEN` there as well. These provider env
+references back both the immutable Discover providers and the corresponding MCP
+upstreams. Then start the complete stack:
 
 ```sh
 docker compose --env-file .env up -d
@@ -121,9 +130,9 @@ must also succeed.
 The service bearer remains read-only. For each write, Labby revalidates the
 employee's bound grant and signs a fresh, single-operation assertion lasting no
 more than 60 seconds. Depot verifies that assertion and consumes its `jti` once.
-Do not add `skills:write` to `TEAM_DEPOT_TOKEN` and do not enable
-`DEPOT_CONTROL_PLANE_SERVICE_WRITES`; either change would bypass the delegated
-employee authority.
+Do not add `skills:write` to `LABBY_DEPOT_PROVIDER_TEAM_LOCAL_TOKEN` or
+`LABBY_DEPOT_TOKEN`, and do not enable `DEPOT_CONTROL_PLANE_SERVICE_WRITES`; any
+of those changes would bypass the delegated employee authority.
 
 The mappings in `state/labby/.env` and `team-depot.env` are one exact contract:
 

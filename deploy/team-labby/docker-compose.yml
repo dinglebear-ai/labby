@@ -14,8 +14,10 @@ services:
         condition: service_healthy
       catalog-depot:
         condition: service_healthy
-    ports:
-      - "127.0.0.1:${LABBY_HOST_PORT:-8765}:8765"
+    # Unraid/Linux deployment: host networking lets Labby consume the Depots
+    # through genuine 127.0.0.1 endpoints while both Depot ports remain bound
+    # only to host loopback below. Labby itself also binds loopback only.
+    network_mode: host
     volumes:
       - ./state/labby:/home/labby/.labby
       - labby-data:/home/labby/.local
@@ -23,10 +25,9 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
     environment:
       LABBY_HOME: /home/labby/.labby
-      LABBY_MCP_HTTP_HOST: 0.0.0.0
-      LABBY_MCP_HTTP_PORT: "8765"
+      LABBY_MCP_HTTP_HOST: 127.0.0.1
+      LABBY_MCP_HTTP_PORT: "${LABBY_HOST_PORT:-8765}"
       RUST_LOG: labby=info,warn
-    networks: [backend]
     healthcheck:
       test: [CMD, /usr/local/bin/labby-healthcheck]
       interval: 30s
@@ -53,6 +54,8 @@ services:
       DEPOT_AUTH_MODE: oauth
       DEPOT_DEPLOYMENT_ID: team-depot
       DEPOT_BACKEND_ID: r2
+    ports:
+      - "127.0.0.1:4100:4100"
     volumes:
       - team-depot-data:/data
       - ${TEAM_DEPOT_GIT_CREDENTIALS_FILE:?set TEAM_DEPOT_GIT_CREDENTIALS_FILE to the Team Depot Git credential JSON}:/run/secrets/team-depot-git-credentials.json:ro
@@ -85,6 +88,8 @@ services:
       DEPOT_AUTH_MODE: bearer
       DEPOT_DEPLOYMENT_ID: catalog-depot
       DEPOT_BACKEND_ID: r2
+    ports:
+      - "127.0.0.1:4101:4100"
     volumes:
       - catalog-depot-data:/data
     tmpfs:
@@ -106,6 +111,7 @@ volumes:
   catalog-depot-data: {}
 
 networks:
-  # No Depot port is published. This ordinary bridge still permits outbound R2
-  # and notification-worker traffic; an `internal` network would block it.
+  # Depot remains on an ordinary bridge for outbound R2/OAuth traffic. Its two
+  # published ports bind host loopback only; Labby reaches them from host mode.
+  # An `internal` network would block the required outbound traffic.
   backend: {}
