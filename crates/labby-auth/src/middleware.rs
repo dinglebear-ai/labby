@@ -665,7 +665,7 @@ async fn authenticate(
             .store
             .find_authorized_bound_browser_session(
                 &session_id,
-                &auth_state.config.admin_email,
+                &auth_state.config.admin_emails,
                 if matches!(
                     auth_state.inbound_provider.kind(),
                     crate::config::InboundProviderKind::Authelia
@@ -720,7 +720,7 @@ async fn authenticate(
                 // admitted, but an allowlist entry is not an administrative
                 // grant: products elevate them only from durable authority.
                 let is_configured_admin = is_configured_admin_email(
-                    &auth_state.config.admin_email,
+                    &auth_state.config.admin_emails,
                     session.email.as_deref(),
                 );
                 let browser_scopes = browser_session_scopes(
@@ -1055,11 +1055,11 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
     Some(response)
 }
 
-/// Whether a browser session email is the configured admin (ASCII
-/// case-insensitive). The configured admin is always an authorized browser
+/// Whether a browser session email is one of the configured admins (ASCII
+/// case-insensitive). A configured admin is always an authorized browser
 /// identity.
-pub fn is_configured_admin_email(admin_email: &str, email: Option<&str>) -> bool {
-    email.is_some_and(|email| email.eq_ignore_ascii_case(admin_email))
+pub fn is_configured_admin_email(admin_emails: &[String], email: Option<&str>) -> bool {
+    email.is_some_and(|email| crate::config::is_listed_admin(admin_emails, email))
 }
 
 /// Scopes granted to an OAuth browser-session identity.

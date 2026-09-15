@@ -2250,7 +2250,7 @@ mod tests {
         )
         .unwrap();
         let mut config = (*base.config).clone();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         let state = AuthState::for_tests_with_provider(
             config,
             base.store.clone(),
@@ -2315,7 +2315,7 @@ mod tests {
         )
         .unwrap();
         let mut config = (*base.config).clone();
-        config.admin_email = "admin@example.com".into();
+        config.admin_emails = vec!["admin@example.com".into()];
         let state = AuthState::for_tests_with_provider(
             config,
             base.store.clone(),
@@ -2751,7 +2751,7 @@ mod tests {
         let replacement = first_json.refresh_token.expect("replacement refresh token");
 
         let mut config = (*state.config).clone();
-        config.admin_email = "replacement-admin@example.com".to_string();
+        config.admin_emails = vec!["replacement-admin@example.com".to_string()];
         let offboarded = AuthState::for_tests(
             config,
             state.store.clone(),
@@ -4005,7 +4005,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = (*authorized.config).clone();
-        config.admin_email = "replacement-admin@example.com".to_string();
+        config.admin_emails = vec!["replacement-admin@example.com".to_string()];
         let state = AuthState::for_tests(
             config,
             authorized.store.clone(),

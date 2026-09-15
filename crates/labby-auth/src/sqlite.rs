@@ -574,11 +574,12 @@ impl SqliteStore {
     pub async fn find_authorized_bound_browser_session(
         &self,
         session_id: &str,
-        admin_email: &str,
+        admin_emails: &[String],
         allowed_domains: &[String],
     ) -> Result<Option<(crate::types::ProviderBound<BrowserSessionRow>, bool)>, AuthError> {
         let session_id = session_id.to_string();
-        let admin_email = admin_email.to_string();
+        let admin_emails = serde_json::to_string(admin_emails)
+            .map_err(|error| AuthError::Storage(format!("encode admin emails: {error}")))?;
         let domains = serde_json::to_string(allowed_domains)
             .map_err(|error| AuthError::Storage(format!("encode allowed domains: {error}")))?;
         let now = now_unix();
@@ -587,7 +588,7 @@ impl SqliteStore {
                 "SELECT session_id, subject, email, csrf_token, created_at, expires_at,
                         project_binding_json, identity_issuer, provider_generation,
                         CASE WHEN email IS NOT NULL AND (
-                          email = ?3 COLLATE NOCASE OR
+                          EXISTS (SELECT 1 FROM json_each(?3) WHERE lower(value) = lower(browser_sessions.email)) OR
                           EXISTS (SELECT 1 FROM allowed_users WHERE allowed_users.email = browser_sessions.email COLLATE NOCASE) OR
                           EXISTS (SELECT 1 FROM json_each(?4) WHERE
                             lower(value) = lower(substr(browser_sessions.email, instr(browser_sessions.email, '@') + 1)))
@@ -595,7 +596,7 @@ impl SqliteStore {
                    FROM browser_sessions
                   WHERE session_id = ?1 AND expires_at > ?2
                     AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
-                params![session_id, now, admin_email, domains],
+                params![session_id, now, admin_emails, domains],
                 |row| Ok((crate::types::ProviderBound {
                     value: row_to_browser_session(row)?,
                     binding: crate::types::ProviderBinding {

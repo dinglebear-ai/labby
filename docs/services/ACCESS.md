@@ -21,9 +21,9 @@ the operator guide for it:
 Admission and authority are separate. `LABBY_AUTH_ADMIN_EMAIL`, the allowlist,
 and the domain settings decide who may sign in. Durable Team, Project, and
 platform-administration records decide what a signed-in identity may do. Only
-the browser session of `LABBY_AUTH_ADMIN_EMAIL` receives `lab:admin` from
-configuration; everyone else gets administrative reach only through
-`access.platform_admin.grant`. See
+browser sessions whose email is listed in `LABBY_AUTH_ADMIN_EMAIL` (one address
+or a comma-separated list) receive `lab:admin` from configuration; everyone
+else gets administrative reach only through `access.platform_admin.grant`. See
 [Browser session scopes](../runtime/OAUTH.md#browser-session-scopes-and-domain-admission).
 
 ## Access actions
@@ -89,7 +89,8 @@ and in again does not change this. The steps below are what the administrator
 does.
 
 1. **Admit the identity.** As the configured admin, add the email to the
-   allowlist: the settings UI, or `POST /v1/auth/allowed-emails` with
+   allowlist: **Settings → Authentication** in the web UI, or
+   `POST /v1/auth/allowed-emails` with
    `{"email": "teammate@example.com"}`. The allowlist routes accept only the
    browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
    `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the

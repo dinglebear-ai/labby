@@ -358,6 +358,12 @@ pub fn schema_response() -> SettingsSchemaResponse {
                 advanced: false,
             },
             SettingsSectionSpec {
+                id: "authentication",
+                label: "Authentication",
+                description: "Browser sign-in administrators. Only the operator may change them.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
                 id: "surfaces",
                 label: "Surfaces",
                 description: "Safe scalar HTTP, MCP, URL, and CORS settings.",
@@ -386,8 +392,31 @@ pub fn schema_response() -> SettingsSchemaResponse {
     }
 }
 
+/// The administrator list. Each listed email's browser session receives the
+/// configured admin scopes; writing it is reserved for the operator.
+fn admin_emails_field() -> SettingsFieldSpec {
+    let mut field = editable(
+        "authentication",
+        ADMIN_EMAILS_KEY,
+        "Administrators",
+        "Emails whose browser sign-in receives full admin access. One per line. \
+         Takes effect after restart; at least one is required.",
+        SettingsBackend::Env,
+        SettingsControl::StringList,
+        SettingsApplyMode::Restart,
+        None,
+        Some("owner@example.com"),
+    );
+    field.risk = SettingsRisk::SecuritySensitive;
+    field.required = true;
+    field
+}
+
+const ADMIN_EMAILS_KEY: &str = "LABBY_AUTH_ADMIN_EMAIL";
+
 pub fn settings_fields() -> Vec<SettingsFieldSpec> {
     let mut fields = vec![
+        admin_emails_field(),
         editable(
             "core",
             "LABBY_MCP_HTTP_HOST",
@@ -1098,6 +1127,7 @@ fn env_process_value(field: &SettingsFieldSpec) -> Value {
         Some(value) if field.control == SettingsControl::Number => value
             .parse::<i64>()
             .map_or_else(|_| json!(value), |parsed| json!(parsed)),
+        Some(value) if field.control == SettingsControl::StringList => env_list_value(&value),
         Some(value) => json!(value),
         None => Value::Null,
     }
@@ -1434,6 +1464,7 @@ pub fn env_entries_from_updates(
                 validate_string_field(field, &raw)?;
                 raw
             }
+            SettingsControl::StringList => env_string_list_value(field, &entry.value)?,
             _ => return Err(invalid_field(field, "has unsupported env control")),
         };
         out.push(crate::dispatch::setup::DraftEntry {
@@ -1442,6 +1473,59 @@ pub fn env_entries_from_updates(
         });
     }
     Ok(out)
+}
+
+/// Serialize a list setting to its comma-separated `.env` form. The
+/// administrator list is validated with the same parser the server uses at
+/// startup, so a value saved here cannot make the next start fail closed.
+fn env_string_list_value(field: &SettingsFieldSpec, value: &Value) -> Result<String, ToolError> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| invalid_field(field, "must be a list of strings"))?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .ok_or_else(|| invalid_field(field, "must be a list of strings"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if items.iter().any(|item| item.contains(',')) {
+        return Err(invalid_field(field, "entries must not contain commas"));
+    }
+    let joined = items
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    if field.key == ADMIN_EMAILS_KEY {
+        let emails = labby_auth::config::parse_admin_emails(&joined);
+        if emails.is_empty() {
+            return Err(invalid_field(
+                field,
+                "must list at least one administrator; an empty list locks every account out",
+            ));
+        }
+        if !emails
+            .iter()
+            .all(|email| labby_auth::config::is_plausible_email(email))
+        {
+            return Err(invalid_field(
+                field,
+                "entries must each be a single email address",
+            ));
+        }
+        return Ok(emails.join(","));
+    }
+    Ok(joined)
+}
+
+fn env_list_value(raw: &str) -> Value {
+    json!(
+        raw.split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>()
+    )
 }
 
 pub fn validate_env_previous(
@@ -1496,6 +1580,9 @@ fn env_file_value(
         return Ok(raw
             .parse::<i64>()
             .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed))));
+    }
+    if field.control == SettingsControl::StringList {
+        return Ok(Some(env_list_value(&raw)));
     }
     Ok(Some(json!(raw)))
 }

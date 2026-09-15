@@ -116,7 +116,7 @@ mod tests {
                 public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
                 sqlite_path: root.join("auth.db"),
                 key_path: root.join("auth-key.pem"),
-                admin_email: "owner@admin.example".into(),
+                admin_emails: vec!["owner@admin.example".into()],
                 session_cookie_name: "__Host-labby-session".into(),
                 viewer_email_domains: vec!["example.org".into()],
                 google: labby_auth::config::GoogleConfig {
