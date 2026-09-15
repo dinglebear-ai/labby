@@ -26,6 +26,52 @@ Testing must prove:
 - service integrations are observable and diagnosable
 - destructive operations are not casually exercised
 
+## MCP specification oracles
+
+The dated MCP inventory under `conformance/mcp-spec-*.json` separates four
+things: immutable specification sources, extracted normative requirements,
+reviewed product applicability, and executable test oracles. An oracle is an
+independent expected outcome checked against the implementation; extracting a
+requirement or registering a test is not execution evidence.
+
+`mcp-spec-sources.json` pins the upstream Git revision and source hashes.
+`mcp-spec-requirements.json` is mechanically regenerated; do not edit its
+wording or inferred metadata. `mcp-spec-schema.json` separately inventories
+structural JSON Schema constraints, definitions, and local references. Both
+extractors verify the pinned Git blobs, not merely the checkout's HEAD. The
+current denominator contains 927 prose entries and 1,296 structural entries;
+these are coverage obligations to review, not a count of unique protocol
+features or passing tests. Product applicability belongs in
+`mcp-spec-dispositions.json`, bound to each extracted requirement's hash.
+`mcp-spec-oracles.json` maps exact tests to requirements and declares their
+role, transport, and evidence level. A client unit test does not qualify a
+server wire or actual-host requirement.
+
+Given a checkout of the specification revision pinned in the source manifest:
+
+```bash
+just mcp-spec-check /path/to/specification
+just mcp-spec-oracles /path/to/specification
+just mcp-spec-compliance /path/to/specification
+```
+
+The first command checks extraction and reporter integrity. The second gates
+all registered executable oracles while retaining uncovered requirements as
+gaps. The third is the strict full-compliance gate: unreviewed applicability,
+missing oracles, insufficient evidence scope, failed tests, and stale receipts
+all prevent success. The current inventory is not fully mapped; a green
+registered-oracle gate must not be described as full MCP compliance.
+
+Receipts and reports live under `target/mcp-spec-compliance/`. They bind the
+catalogs, actual worktree bytes, resolved Cargo dependencies (including dirty
+external path dependencies), and Rust toolchain. CI prepares the complete
+locked dependency graph with `cargo fetch --locked` before the reporter binds
+it using offline Cargo metadata. Python oracles must execute
+exactly one non-skipped unittest; Cargo oracles use exact nextest selectors
+with zero tests treated as failure. Tests own fixture cleanup; the runner
+additionally terminates the test process group on timeout. A receipt is local
+test evidence, not a signed attestation or proof of all possible behavior.
+
 ## TDD Rule
 
 Implementation work must follow test-driven development.

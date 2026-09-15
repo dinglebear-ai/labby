@@ -56,9 +56,23 @@ class WindowsCiPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("continue-on-error: true", block)
 
-    def test_workspace_windows_job_is_required_and_desktop_is_advisory(self) -> None:
+    def test_windows_jobs_run_only_when_explicitly_dispatched(self) -> None:
+        self.assertIn("      run_windows:\n", self.workflow)
+        self.assertIn("        type: boolean\n", self.workflow)
+        self.assertIn("        default: false\n", self.workflow)
+
+        installer = job_block(self.workflow, "windows-installer", "macos-installer")
         windows = job_block(self.workflow, "test-windows", "release-contract")
-        self.assertIn("if: ${{ needs.changes.outputs.rust_test == 'true' }}", windows)
+        desktop = job_block(self.workflow, "desktop-windows", "rust-coverage")
+        manual_gate = "github.event_name == 'workflow_dispatch' && inputs.run_windows == true"
+        self.assertIn(manual_gate, installer)
+        self.assertIn(manual_gate, windows)
+        self.assertIn(manual_gate, desktop)
+
+        for block in (installer, windows, desktop):
+            self.assertNotIn("github.event_name != 'pull_request'", block)
+
+    def test_workspace_windows_job_remains_visible_to_ci_gate_when_skipped(self) -> None:
         block = self.workflow[self.workflow.index("  ci-gate:\n") :]
         self.assertIn("      - test-windows\n", block)
         self.assertNotIn("      - desktop-windows\n", block)

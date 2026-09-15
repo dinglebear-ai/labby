@@ -16,6 +16,8 @@ interface GatewayCustomConnectionFormProps {
   onTransportChange: (transport: TransportType) => void
   name: string
   onNameChange: (name: string) => void
+  displayName: string
+  onDisplayNameChange: (displayName: string) => void
   url: string
   onUrlChange: (url: string) => void
   command: string
@@ -30,7 +32,7 @@ interface GatewayCustomConnectionFormProps {
 
 export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormProps) {
   const {
-    transport, onTransportChange, name, onNameChange, url, onUrlChange,
+    transport, onTransportChange, name, onNameChange, displayName, onDisplayNameChange, url, onUrlChange,
     command, onCommandChange, envText, onEnvTextChange, envCount, errors,
     isProbing, oauthDiscovered,
   } = props
@@ -73,9 +75,15 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
 
       <div className="mt-4 grid gap-4">
         <Field>
-          <FieldLabel htmlFor="name">Name</FieldLabel>
+          <FieldLabel htmlFor="display_name">Display name</FieldLabel>
+          <Input id="display_name" value={displayName} onChange={(event) => onDisplayNameChange(event.target.value)} placeholder="My Gateway" maxLength={80} className={cn(inputClassName, errors.display_name && 'border-destructive')} />
+          {errors.display_name ? <p className="text-sm text-destructive">{errors.display_name}</p> : <FieldDescription>Any label you like. Shown in Labby only.</FieldDescription>}
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor="name">ID</FieldLabel>
           <Input id="name" value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="my-gateway" className={cn(inputClassName, errors.name && 'border-destructive')} />
-          {errors.name ? <p className="text-sm text-destructive">{errors.name}</p> : <FieldDescription>Letters, digits, underscores, hyphens. For URLs, Labby can fill this from the host.</FieldDescription>}
+          {errors.name ? <p className="text-sm text-destructive">{errors.name}</p> : <FieldDescription>Stable identifier used in tool names and routes. Lowercase letters, digits, hyphens. Filled from the display name or host.</FieldDescription>}
         </Field>
 
         {transport === 'http' ? (

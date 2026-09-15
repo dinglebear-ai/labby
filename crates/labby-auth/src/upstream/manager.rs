@@ -28,7 +28,7 @@
 //! Authorization server metadata is fetched once per upstream (not per-subject) and
 //! cached to avoid an HTTP round-trip on every `build_auth_client` call.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use labby_runtime::gateway_config::{
     UpstreamConfig, UpstreamOauthCredentialSource, UpstreamOauthRegistration,
@@ -53,6 +53,8 @@ use crate::upstream::http_client::{
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
 mod discovery;
+
+static SHARED_GOOGLE_REFRESH_FLIGHTS: OnceLock<Arc<RefreshLocks>> = OnceLock::new();
 
 pub use discovery::discover_published_metadata;
 use discovery::{
@@ -246,7 +248,7 @@ impl UpstreamOauthManager {
                 e
             })?;
 
-        self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
+        drop(self.install_credential_store(&mut manager, subject, scopes_owned.clone())?);
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
         manager.set_state_store(state_store);
 
@@ -368,7 +370,7 @@ impl UpstreamOauthManager {
     ) -> Result<(), OauthError> {
         let started = std::time::Instant::now();
 
-        let auth_manager = self
+        let (auth_manager, _) = self
             .configured_authorization_manager(
                 subject,
                 DynamicClientRegistrationUse::CompleteAuthorization,
@@ -524,7 +526,7 @@ impl UpstreamOauthManager {
         let started = std::time::Instant::now();
         self.preflight_shared_google_credential().await?;
 
-        let mut manager = self
+        let (mut manager, google_store) = self
             .configured_authorization_manager(
                 subject,
                 DynamicClientRegistrationUse::StoredCredentials,
@@ -612,12 +614,20 @@ impl UpstreamOauthManager {
         }
 
         let access_result = if refresh_due {
-            let (_, result) = self
-                .locks
-                .run_shared(&self.upstream.name, subject, || async {
+            let (coordination, coordination_upstream, coordination_subject) =
+                self.refresh_coordination_key(subject).await?;
+            let (_, result) = coordination
+                .run_shared(&coordination_upstream, &coordination_subject, || async {
                     match manager.get_access_token().await {
                         Ok(_) => Ok(()),
-                        Err(error) => Err(self.map_refresh_error_and_maybe_invalidate(error).await),
+                        Err(error) => Err(self
+                            .map_refresh_error_and_maybe_invalidate(
+                                error,
+                                google_store
+                                    .as_ref()
+                                    .and_then(GoogleProviderCredentialStore::take_refresh_attempt),
+                            )
+                            .await),
                     }
                 })
                 .await;
@@ -680,13 +690,11 @@ impl UpstreamOauthManager {
     /// cannot report a stale credential row as connected.
     pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
         let started = std::time::Instant::now();
-        let lock = self.acquire_refresh_lock(subject).await?;
-        let _guard = lock.lock().await;
         self.preflight_shared_google_credential().await?;
 
-        // A status caller may have waited behind another status/request refresh.
-        // Re-read inside the single-flight lock and do not replay the refresh
-        // against a token that is no longer near expiry.
+        // Fast-path callers whose credential is already outside the refresh
+        // window. The authoritative due check is repeated by the shared-flight
+        // owner below after concurrent callers have joined.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -723,7 +731,7 @@ impl UpstreamOauthManager {
             return Err(recent_error);
         }
 
-        let mut manager = self
+        let (mut manager, google_store) = self
             .configured_authorization_manager(
                 subject,
                 DynamicClientRegistrationUse::StoredCredentials,
@@ -766,12 +774,30 @@ impl UpstreamOauthManager {
         self.reconfigure_client_after_store_init(&mut manager, subject)
             .await?;
 
-        let (executed, refresh_result) = self
-            .locks
-            .run_shared(&self.upstream.name, subject, || async {
+        let (coordination, coordination_upstream, coordination_subject) =
+            self.refresh_coordination_key(subject).await?;
+        let did_refresh = std::sync::atomic::AtomicBool::new(false);
+        let (executed, refresh_result) = coordination
+            .run_shared(&coordination_upstream, &coordination_subject, || async {
+                let now = now_unix()?;
+                let still_due = self
+                    .credential_row(subject)
+                    .await?
+                    .is_some_and(|row| row.access_token_expires_at - now <= 300);
+                if !still_due {
+                    return Ok(());
+                }
+                did_refresh.store(true, std::sync::atomic::Ordering::Release);
                 match manager.refresh_token().await {
                     Ok(_) => Ok(()),
-                    Err(error) => Err(self.map_refresh_error_and_maybe_invalidate(error).await),
+                    Err(error) => Err(self
+                        .map_refresh_error_and_maybe_invalidate(
+                            error,
+                            google_store
+                                .as_ref()
+                                .and_then(GoogleProviderCredentialStore::take_refresh_attempt),
+                        )
+                        .await),
                 }
             })
             .await;
@@ -789,7 +815,7 @@ impl UpstreamOauthManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: status refresh succeeded"
         );
-        Ok(executed)
+        Ok(executed && did_refresh.load(std::sync::atomic::Ordering::Acquire))
     }
 
     pub async fn credential_row(
@@ -886,14 +912,15 @@ impl UpstreamOauthManager {
         &self,
         subject: &str,
         dynamic_registration_use: DynamicClientRegistrationUse,
-    ) -> Result<AuthorizationManager, OauthError> {
+    ) -> Result<(AuthorizationManager, Option<GoogleProviderCredentialStore>), OauthError> {
         let upstream_url = self.upstream_url()?;
         let scopes_owned = self.effective_scopes()?;
         let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
 
         let mut manager = authorization_manager_for_upstream(upstream_url.as_str()).await?;
 
-        self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
+        let google_store =
+            self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
         manager.set_state_store(state_store);
 
@@ -908,7 +935,7 @@ impl UpstreamOauthManager {
         manager
             .configure_client(client_cfg)
             .map_err(|e| OauthError::Internal(format!("configure client: {e}")))?;
-        Ok(manager)
+        Ok((manager, google_store))
     }
 
     fn verify_google_provider_issuer(
@@ -991,7 +1018,7 @@ impl UpstreamOauthManager {
         manager: &mut AuthorizationManager,
         subject: &str,
         required_scopes: Vec<String>,
-    ) -> Result<(), OauthError> {
+    ) -> Result<Option<GoogleProviderCredentialStore>, OauthError> {
         match &self.oauth_config()?.credential {
             UpstreamOauthCredentialSource::Dedicated => {
                 manager.set_credential_store(SqliteCredentialStore::new(
@@ -999,13 +1026,15 @@ impl UpstreamOauthManager {
                     self.key.clone(),
                     &self.upstream.name,
                     subject,
-                ))
+                ));
+                Ok(None)
             }
             UpstreamOauthCredentialSource::GoogleProvider { .. } => {
-                manager.set_credential_store(self.google_credential_store(required_scopes)?)
+                let store = self.google_credential_store(required_scopes)?;
+                manager.set_credential_store(store.clone());
+                Ok(Some(store))
             }
         }
-        Ok(())
     }
 
     async fn acquire_refresh_lock(
@@ -1040,9 +1069,37 @@ impl UpstreamOauthManager {
         Ok(())
     }
 
+    async fn refresh_coordination_key(
+        &self,
+        subject: &str,
+    ) -> Result<(Arc<RefreshLocks>, String, String), OauthError> {
+        if !self.oauth_config()?.credential.is_google_provider() {
+            return Ok((
+                Arc::clone(&self.locks),
+                self.upstream.name.clone(),
+                subject.to_string(),
+            ));
+        }
+        let row = self
+            .google_credential_store(self.effective_scopes()?)?
+            .credential_row()
+            .await?
+            .ok_or_else(|| {
+                OauthError::NeedsReauth(
+                    "no central Google provider credential is available".to_string(),
+                )
+            })?;
+        Ok((
+            Arc::clone(SHARED_GOOGLE_REFRESH_FLIGHTS.get_or_init(|| Arc::new(RefreshLocks::new()))),
+            "<shared-google-provider>".to_string(),
+            row.subject,
+        ))
+    }
+
     async fn map_refresh_error_and_maybe_invalidate(
         &self,
         error: rmcp::transport::AuthError,
+        attempted_google_generation: Option<(String, i64)>,
     ) -> OauthError {
         let (terminal, mapped) = map_refresh_error(error);
         if terminal
@@ -1050,30 +1107,20 @@ impl UpstreamOauthManager {
                 .oauth_config()
                 .is_ok_and(|oauth| oauth.credential.is_google_provider())
         {
-            let store = match self
-                .google_credential_store(self.effective_scopes().unwrap_or_default())
-            {
-                Ok(store) => store,
-                Err(build_error) => {
-                    tracing::warn!(
-                        upstream = %self.upstream.name,
-                        kind = build_error.kind(),
-                        "shared Google credential invalidation skipped because broker resolution failed"
-                    );
-                    return mapped;
-                }
-            };
-            match store.credential_row().await {
-                Ok(Some(row)) => {
+            match attempted_google_generation {
+                Some((attempted_subject, attempted_generation)) => {
                     match self
                         .sqlite
-                        .invalidate_google_provider_credential(&row.subject, row.generation)
+                        .invalidate_google_provider_credential(
+                            &attempted_subject,
+                            attempted_generation,
+                        )
                         .await
                     {
                         Ok(invalidation) => tracing::warn!(
                             upstream = %self.upstream.name,
-                            subject_id = %crate::util::fingerprint(&row.subject),
-                            provider_generation = row.generation,
+                            subject_id = %crate::util::fingerprint(&attempted_subject),
+                            provider_generation = attempted_generation,
                             invalidated = invalidation.invalidated,
                             revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
                             revoked_authorization_codes = invalidation.revoked_authorization_codes,
@@ -1082,19 +1129,18 @@ impl UpstreamOauthManager {
                         ),
                         Err(invalidate_error) => tracing::warn!(
                             upstream = %self.upstream.name,
-                            subject_id = %crate::util::fingerprint(&row.subject),
-                            provider_generation = row.generation,
+                            subject_id = %crate::util::fingerprint(&attempted_subject),
+                            provider_generation = attempted_generation,
                             kind = "internal_error",
                             error = %invalidate_error,
                             "failed to invalidate terminal shared Google credential"
                         ),
                     }
                 }
-                Ok(None) => {}
-                Err(resolve_error) => tracing::warn!(
+                None => tracing::warn!(
                     upstream = %self.upstream.name,
-                    kind = resolve_error.kind(),
-                    "shared Google credential invalidation skipped because account resolution failed"
+                    kind = mapped.kind(),
+                    "shared Google credential invalidation skipped because failed attempt generation was unavailable"
                 ),
             }
         }
@@ -1456,12 +1502,15 @@ fn now_unix() -> Result<i64, OauthError> {
 
 fn missing_identity_message(upstream: &str, subject: &str, identity: &str) -> String {
     format!(
-        "no {identity} for upstream '{upstream}' actor '{}'",
+        "no {identity} for upstream '{upstream}' actor '{}'. Authorization is specific to the caller; authorization for a different identity does not authorize this caller. A successful browser flow may belong to a shared identity instead. Check the connector account and granted scopes before repeating authorization.",
         crate::util::fingerprint(subject)
     )
 }
 
 fn map_refresh_error(error: rmcp::transport::AuthError) -> (bool, OauthError) {
+    if matches!(error, rmcp::transport::AuthError::CredentialStoreError(_)) {
+        return (false, map_auth_error(error));
+    }
     let terminal = match &error {
         rmcp::transport::AuthError::AuthorizationRequired
         | rmcp::transport::AuthError::TokenRefreshRejected(_) => true,
@@ -1499,6 +1548,9 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
         rmcp::transport::AuthError::TokenRefreshRejected(msg) => {
             OauthError::NeedsReauth(format!("refresh token rejected: {msg}"))
         }
+        rmcp::transport::AuthError::CredentialStoreError(_) => OauthError::Internal(
+            "OAuth credential store coordination failed; retry the request".to_string(),
+        ),
         rmcp::transport::AuthError::AuthorizationServerMismatch {
             expected_issuer,
             received_issuer,
@@ -1517,14 +1569,15 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
 #[cfg(test)]
 mod url_tests {
     use super::{
-        MAX_AUTHORIZATION_SERVERS, ProtectedResourceMetadata, UpstreamOauthManager,
-        authorization_metadata_candidates, bounded_authorization_servers,
+        AuthorizationMetadata, MAX_AUTHORIZATION_SERVERS, ProtectedResourceMetadata,
+        UpstreamOauthManager, authorization_metadata_candidates, bounded_authorization_servers,
         discover_published_metadata, google_offline_access_url, map_auth_error, map_refresh_error,
         missing_identity_message,
     };
     use crate::upstream::types::OauthError;
     use labby_runtime::gateway_config::{
-        UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+        UpstreamConfig, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
+        UpstreamOauthRegistration,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1538,11 +1591,44 @@ mod url_tests {
     }
 
     #[test]
+    fn credential_store_error_mapping_does_not_disclose_backend_detail() {
+        let error = map_auth_error(rmcp_client::transport::AuthError::CredentialStoreError(
+            "database=/private/auth.db token=secret".to_string(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "internal_error: OAuth credential store coordination failed; retry the request"
+        );
+    }
+
+    #[test]
+    fn refresh_credential_store_error_is_nonterminal_and_sanitized() {
+        let sentinel = "database=/private/auth.db token=secret";
+        let (terminal, error) = map_refresh_error(
+            rmcp_client::transport::AuthError::CredentialStoreError(sentinel.to_string()),
+        );
+        assert!(!terminal);
+        assert_eq!(
+            error.to_string(),
+            "internal_error: OAuth credential store coordination failed; retry the request"
+        );
+        assert!(!error.to_string().contains(sentinel));
+    }
+
+    #[test]
     fn user_visible_identity_errors_never_include_raw_subjects() {
         let sentinel = "raw-subject-sentinel@example.com";
         let message = missing_identity_message("calendar", sentinel, "stored credentials");
         assert!(!message.contains(sentinel));
         assert!(message.contains(&crate::util::fingerprint(sentinel)));
+    }
+
+    #[test]
+    fn missing_credentials_explain_caller_scope_without_granting_access() {
+        let message = missing_identity_message("linear", "personal-user", "stored credentials");
+        assert!(message.contains("Authorization is specific to the caller"));
+        assert!(message.contains("does not authorize this caller"));
+        assert!(!message.contains("personal-user"));
     }
 
     #[test]
@@ -1738,6 +1824,8 @@ mod url_tests {
             sqlite,
             key,
             UpstreamConfig {
+                display_name: None,
+                lifecycle: None,
                 enabled: true,
                 name: "transport-parity".to_string(),
                 url: Some(format!("{}/mcp", server.uri())),
@@ -1783,6 +1871,218 @@ mod url_tests {
 
         assert_eq!(default_error.kind(), "oauth_needs_reauth");
         assert_eq!(supplied_error.kind(), default_error.kind());
+    }
+
+    #[tokio::test]
+    async fn google_aliases_across_upstreams_share_one_token_exchange() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open_with_key(
+            dir.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "manager-google-refresh-test-key",
+            )),
+        )
+        .await
+        .expect("sqlite store");
+        let now = crate::util::now_unix();
+        sqlite
+            .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                subject: "google-subject".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec![
+                    "openid".to_string(),
+                    "email".to_string(),
+                    "profile".to_string(),
+                ],
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 60,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .expect("insert credential");
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0_u8; 32],
+        ))
+        .expect("encryption key");
+        let server = MockServer::start().await;
+        let upstream_url = format!("{}/mcp", server.uri());
+        let make_manager = |name: &str, account: &str| {
+            UpstreamOauthManager::new(
+                sqlite.clone(),
+                key.clone(),
+                UpstreamConfig {
+                    enabled: true,
+                    name: name.to_string(),
+                    display_name: None,
+                    lifecycle: None,
+                    url: Some(upstream_url.clone()),
+                    transport: None,
+                    socket_path: None,
+                    headers: Default::default(),
+                    command: None,
+                    args: vec![],
+                    bearer_token_env: None,
+                    env: Default::default(),
+                    proxy_resources: false,
+                    proxy_prompts: false,
+                    proxy_skills: false,
+                    expose_tools: None,
+                    expose_resources: None,
+                    expose_prompts: None,
+                    expose_skills: None,
+                    code_mode_hint: None,
+                    oauth: Some(UpstreamOauthConfig {
+                        mode: UpstreamOauthMode::AuthorizationCodePkce,
+                        registration: UpstreamOauthRegistration::Preregistered {
+                            client_id: "google-client".to_string(),
+                            client_secret_env: None,
+                        },
+                        scopes: Some(vec!["openid".to_string()]),
+                        credential: UpstreamOauthCredentialSource::GoogleProvider {
+                            account: Some(account.to_string()),
+                        },
+                        prefer_client_metadata_document: None,
+                    }),
+                    imported_from: None,
+                    priority: 1.0,
+                },
+                "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+            )
+        };
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "access_token": "refreshed-access",
+                        "refresh_token": "rotated-refresh",
+                        "token_type": "Bearer",
+                        "expires_in": 3600
+                    })),
+            )
+            .mount(&server)
+            .await;
+        let by_subject = make_manager("calendar", "google-subject");
+        let by_email = make_manager("drive", "admin@example.com");
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_endpoint": format!("{}/token", server.uri()),
+            "issuer": "https://accounts.google.com",
+            "code_challenge_methods_supported": ["S256"]
+        }))
+        .expect("metadata");
+        *by_subject.metadata_cache.write().await = Some(metadata.clone());
+        *by_email.metadata_cache.write().await = Some(metadata);
+
+        let (subject_result, email_result) = tokio::join!(
+            by_subject.refresh_auth_client_if_due("actor-a"),
+            by_email.refresh_auth_client_if_due("actor-b")
+        );
+        let mut outcomes = [subject_result.unwrap(), email_result.unwrap()];
+        outcomes.sort_unstable();
+        assert_eq!(outcomes, [false, true]);
+        let token_posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST" && request.url.path() == "/token")
+            .count();
+        assert_eq!(token_posts, 1);
+
+        // Start another real refresh, then replace the credential while its
+        // token POST is in flight. The stale response must fail its attempted
+        // generation CAS and leave the replacement untouched.
+        let current = sqlite
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        let now = crate::util::now_unix();
+        assert!(
+            sqlite
+                .replace_google_provider_token_bundle_if_generation(
+                    crate::types::GoogleProviderCredentialUpdate {
+                        subject: "google-subject".to_string(),
+                        email: Some("admin@example.com".to_string()),
+                        client_id: "google-client".to_string(),
+                        granted_scopes: current.granted_scopes.clone(),
+                        access_token: "due-access".to_string(),
+                        refresh_token: "due-refresh".to_string(),
+                        token_received_at: now,
+                        access_token_expires_at: now + 60,
+                        issuer: Some("https://accounts.google.com".to_string()),
+                        refreshed: true,
+                        scope_upgraded: false,
+                    },
+                    current.generation,
+                )
+                .await
+                .unwrap()
+        );
+        let attempted = sqlite
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        let refresh = tokio::spawn({
+            let manager = by_subject.clone();
+            async move { manager.refresh_auth_client_if_due("actor-a").await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let posts = server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|request| {
+                        request.method.as_str() == "POST" && request.url.path() == "/token"
+                    })
+                    .count();
+                if posts >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second token exchange started");
+        assert!(
+            sqlite
+                .replace_google_provider_token_bundle_if_generation(
+                    crate::types::GoogleProviderCredentialUpdate {
+                        subject: "google-subject".to_string(),
+                        email: Some("admin@example.com".to_string()),
+                        client_id: "google-client".to_string(),
+                        granted_scopes: attempted.granted_scopes,
+                        access_token: "replacement-access".to_string(),
+                        refresh_token: "replacement-refresh".to_string(),
+                        token_received_at: now,
+                        access_token_expires_at: now + 3600,
+                        issuer: Some("https://accounts.google.com".to_string()),
+                        refreshed: true,
+                        scope_upgraded: false,
+                    },
+                    attempted.generation,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(refresh.await.unwrap().is_err());
+        let replacement = sqlite
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .expect("replacement survives stale refresh response");
+        assert_eq!(replacement.refresh_token, "replacement-refresh");
     }
 
     #[test]

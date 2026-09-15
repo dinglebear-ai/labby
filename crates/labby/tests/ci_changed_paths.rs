@@ -4,7 +4,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -138,19 +137,9 @@ fn rustfmt_lane_selects_writable_rust_homes_before_toolchain_install() {
 }
 
 fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "lab-ci-paths-{}-{}-{}",
-        std::process::id(),
-        files.len(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time after unix epoch")
-            .as_nanos()
-    ));
-    drop(fs::remove_dir_all(&temp_dir));
-    fs::create_dir_all(&temp_dir).expect("create temp dir");
-    let changed = temp_dir.join("changed.txt");
-    let output = temp_dir.join("github_output.txt");
+    let temp_dir = tempfile::tempdir().expect("create isolated classifier fixture");
+    let changed = temp_dir.path().join("changed.txt");
+    let output = temp_dir.path().join("github_output.txt");
     fs::write(&changed, files.join("\n")).expect("write changed file list");
 
     let status = Command::new("python3")
@@ -282,6 +271,56 @@ fn shared_rust_setup_does_not_require_desktop_packages() {
 }
 
 #[test]
+fn verification_workspace_changes_route_to_the_required_jobs() {
+    // Runner/backend code remains isolated from the product workspace.
+    let out = classify(
+        "pull_request",
+        &["verification/crates/verify-runner/src/lib.rs"],
+    );
+    assert_eq!(out["verification"], "true");
+    assert_eq!(out["rust_compile"], "false");
+    assert_eq!(out["rust_test"], "false");
+    assert_eq!(out["web"], "false");
+    assert_eq!(out["docker"], "false");
+    assert_eq!(out["release"], "false");
+
+    // The product's M3 model imports verify-core and verify-scenario, so edits
+    // to those shared crates must also exercise the product Rust matrix.
+    let out = classify(
+        "pull_request",
+        &[
+            "verification/crates/verify-core/src/lib.rs",
+            "verification/crates/verify-scenario/src/lib.rs",
+        ],
+    );
+    assert_eq!(out["verification"], "true");
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["rust_test"], "true");
+}
+
+#[test]
+fn verification_runs_when_its_inherited_build_inputs_change() {
+    for path in [
+        "rust-toolchain.toml",
+        "clippy.toml",
+        "Justfile",
+        ".cargo/config.toml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["verification"], "true", "{path}");
+    }
+}
+
+#[test]
+fn product_changes_do_not_enable_the_verification_workspace_job() {
+    // The inverse direction: the two workspaces are independent, so a product
+    // source edit has no reason to rebuild the toolkit.
+    let out = classify("pull_request", &["crates/labby/src/lib.rs"]);
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["verification"], "false");
+}
+
+#[test]
 fn docs_only_changes_skip_expensive_runtime_categories() {
     let out = classify("pull_request", &["docs/runtime/CICD.md", "docs/README.md"]);
     assert_eq!(out["docs"], "true");
@@ -393,6 +432,10 @@ fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
     assert!(script.contains("live-identity-protected-restart"));
     assert!(script.contains("live-http-observability"));
     assert!(script.contains("live-http-ipv6"));
+    assert!(script.contains("mcp-app-host) PLAYWRIGHT_BROWSERS_PATH="));
+    assert!(script.contains(
+        "--test mcp_apps_host_qualification --locked -- q4_real_resources_render_in_distinct_openai_and_anthropic_emulators --exact --ignored --test-threads=1"
+    ));
     assert!(script.contains("residual-audit.json"));
     assert!(!script.contains("\"signature\""));
     assert!(script.contains("child_root=\"$run_root/repeats/seed-$repeat_seed\""));
@@ -563,11 +606,62 @@ fn auth_matrix_changes_route_to_conformance() {
         "scripts/ci/publish_mcp_auth_disposition.py",
         "scripts/ci/openai-auth-conformance.sh",
         "scripts/ci/auth_backup_restore_drill.py",
+        "conformance/mcp-spec-dispositions.json",
+        "conformance/mcp-spec-requirements.json",
+        "conformance/mcp-spec-sources.json",
+        "conformance/mcp-spec-schema.json",
+        "conformance/mcp-spec-oracles.json",
+        "scripts/ci/mcp_spec_compliance.py",
+        "scripts/ci/extract_mcp_spec_requirements.py",
+        "scripts/ci/extract_mcp_schema_requirements.py",
+        "scripts/ci/mcp_oracle_runner.py",
+        "scripts/ci/test_mcp_spec_compliance.py",
+        "scripts/ci/test_extract_mcp_spec_requirements.py",
+        "scripts/ci/test_extract_mcp_schema_requirements.py",
+        "scripts/ci/test_mcp_oracle_runner.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");
         assert_eq!(out["rust_test"], "true", "{path}");
     }
+}
+
+#[test]
+fn verification_workspace_uses_its_own_advisory_lane() {
+    for path in [
+        "verification/Cargo.lock",
+        "verification/crates/verify-runner/src/registry.rs",
+        "verification/schemas/invariants.schema.json",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["rust_compile"], "false", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+    for path in [
+        "verification/Cargo.toml",
+        "verification/crates/verify-core/src/catalog.rs",
+        "verification/crates/verify-scenario/src/envelope.rs",
+        "crates/labby-model/src/lib.rs",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["rust_compile"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+    }
+    let out = classify(
+        "pull_request",
+        &["scripts/ci/test_verification_workflow.py"],
+    );
+    assert_eq!(out["workflow"], "true");
+    let workflow = ci_workflow_yaml(include_str!("../../../.github/workflows/verification.yml"));
+    let paths = workflow["on"]["pull_request"]["paths"]
+        .as_array()
+        .expect("path triggers");
+    assert!(paths.iter().any(|path| path == "verification/**"));
+    assert_eq!(workflow["jobs"]["core"]["timeout-minutes"], 15);
+    assert_eq!(
+        workflow["jobs"]["core"]["name"],
+        "Verification core (advisory)"
+    );
 }
 
 #[test]
@@ -947,7 +1041,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["desktop-windows"];
+const ADVISORY_JOBS: &[&str] = &["desktop-windows", "verification-t1"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow

@@ -24,6 +24,9 @@ use serde_json::Value;
 
 use labby_runtime::agent_error::{AgentErrorContext, AgentErrorOrigin, AgentSideEffectRisk};
 
+#[cfg(feature = "gateway")]
+use crate::dispatch::upstream::pool::CapabilityCallError;
+
 use crate::mcp::agent_error::{
     internal as internal_agent_error, invalid_params as invalid_params_agent_error,
 };
@@ -84,6 +87,22 @@ fn prompt_error_context(
         context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
     }
     context
+}
+
+#[cfg(feature = "gateway")]
+fn classify_prompt_fetch_failure(error: &CapabilityCallError) -> (&'static str, &'static str) {
+    match error {
+        CapabilityCallError::ResponseTooLarge { .. } => {
+            ("response_too_large", "response exceeded the gateway cap")
+        }
+        CapabilityCallError::QueueSaturated { .. } => (
+            "queue_saturated",
+            "could not be admitted to the gateway queue",
+        ),
+        CapabilityCallError::Timeout { .. } => ("timeout", "fetch timed out"),
+        CapabilityCallError::Cancelled { .. } => ("cancelled", "fetch was cancelled"),
+        _ => ("upstream_error", "upstream fetch failed"),
+    }
 }
 
 impl LabMcpServer {
@@ -641,7 +660,7 @@ impl LabMcpServer {
             };
             let upstream_outcome = match (relay_config, relay_capabilities) {
                 (Some(config), Some(capabilities)) => {
-                    pool.get_prompt_relayed(
+                    pool.get_prompt_relayed_typed(
                         &config,
                         None,
                         request,
@@ -653,10 +672,11 @@ impl LabMcpServer {
                     )
                     .await
                 }
-                _ => pool
-                    .get_prompt(&upstream_name, request)
-                    .await
-                    .map(|outcome| outcome.map(Into::into)),
+                _ => match pool.get_prompt_typed(&upstream_name, request).await {
+                    Some(Ok(result)) => Some(Ok(result.into())),
+                    Some(Err(error)) => Some(Err(error)),
+                    None => None,
+                },
             };
             let outcome = match upstream_outcome {
                 Some(Ok(result)) => {
@@ -683,6 +703,11 @@ impl LabMcpServer {
                 }
                 Some(Err(message)) => {
                     let elapsed_ms = start.elapsed().as_millis();
+                    let (kind, summary) = classify_prompt_fetch_failure(&message);
+                    let level = match kind {
+                        "cancelled" | "response_too_large" => LoggingLevel::Warning,
+                        _ => LoggingLevel::Error,
+                    };
                     tracing::warn!(
                         surface = "mcp",
                         service = "labby",
@@ -690,8 +715,8 @@ impl LabMcpServer {
                         prompt = %prompt_name,
                         upstream = %upstream_name,
                         elapsed_ms,
-                        kind = "internal_error",
-                        error = %message,
+                        kind,
+                        failure_summary = summary,
                         "prompt proxy failed"
                     );
                     self.emit_dispatch_notification(
@@ -700,15 +725,15 @@ impl LabMcpServer {
                         "get_prompt",
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
-                            level: LoggingLevel::Error,
-                            kind: "internal_error".into(),
+                            level,
+                            kind: kind.into(),
                         },
                     )
                     .await;
                     let error_context =
-                        prompt_error_context(&prompt_name, Some(&upstream_name), Some(&message));
+                        prompt_error_context(&prompt_name, Some(&upstream_name), Some(summary));
                     Err(internal_agent_error(
-                        "upstream_error",
+                        kind,
                         format!(
                             "Upstream `{upstream_name}` failed while fetching prompt `{prompt_name}`."
                         ),
@@ -786,22 +811,26 @@ impl LabMcpServer {
                 );
                 let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
                 let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-                    pool.get_prompt_relayed(
-                        &config,
-                        Some(oauth_subject.as_ref()),
-                        request,
-                        context.peer.clone(),
-                        context.id.clone(),
-                        context.ct.clone(),
-                        self.relay_session_id,
-                        capabilities,
-                    )
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(format!("relayed upstream `{}` connect failed", config.name))
-                    })
+                    match pool
+                        .get_prompt_relayed_typed(
+                            &config,
+                            Some(oauth_subject.as_ref()),
+                            request,
+                            context.peer.clone(),
+                            context.id.clone(),
+                            context.ct.clone(),
+                            self.relay_session_id,
+                            capabilities,
+                        )
+                        .await
+                    {
+                        Some(outcome) => outcome,
+                        None => Err(CapabilityCallError::Other {
+                            message: format!("relayed upstream `{}` connect failed", config.name),
+                        }),
+                    }
                 } else {
-                    pool.subject_scoped_get_prompt(&config, oauth_subject.as_ref(), request)
+                    pool.subject_scoped_get_prompt_typed(&config, oauth_subject.as_ref(), request)
                         .await
                         .map(Into::into)
                 };
@@ -831,6 +860,11 @@ impl LabMcpServer {
                     }
                     Err(message) => {
                         let elapsed_ms = start.elapsed().as_millis();
+                        let (kind, summary) = classify_prompt_fetch_failure(&message);
+                        let level = match kind {
+                            "cancelled" | "response_too_large" => LoggingLevel::Warning,
+                            _ => LoggingLevel::Error,
+                        };
                         tracing::warn!(
                             surface = "mcp",
                             service = "labby",
@@ -838,8 +872,8 @@ impl LabMcpServer {
                             prompt = %prompt_name,
                             upstream = %config.name,
                             elapsed_ms,
-                            kind = "upstream_error",
-                            error = %message,
+                            kind,
+                            failure_summary = summary,
                             "subject-scoped prompt proxy failed"
                         );
                         self.emit_dispatch_notification(
@@ -848,15 +882,15 @@ impl LabMcpServer {
                             "get_prompt",
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
-                                level: LoggingLevel::Warning,
-                                kind: "upstream_error".into(),
+                                level,
+                                kind: kind.into(),
                             },
                         )
                         .await;
                         let error_context =
-                            prompt_error_context(&prompt_name, Some(&config.name), Some(&message));
+                            prompt_error_context(&prompt_name, Some(&config.name), Some(summary));
                         Err(invalid_params_agent_error(
-                            "upstream_error",
+                            kind,
                             format!(
                                 "Upstream `{}` failed while fetching prompt `{prompt_name}`.",
                                 config.name
@@ -934,6 +968,54 @@ mod tests {
                 panic!("local prompt unexpectedly required input")
             }
             _ => panic!("unexpected prompt response variant"),
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn prompt_fetch_failure_classification_uses_variants() {
+        for message in ["cancelled", "timed out", "response too large"] {
+            let error = CapabilityCallError::Mcp {
+                data: ErrorData::invalid_params(message, None),
+                message: format!("upstream prompt get failed: {message}"),
+            };
+            let (kind, summary) = classify_prompt_fetch_failure(&error);
+            assert_eq!(kind, "upstream_error");
+            assert!(!summary.contains(message));
+        }
+        for (error, expected_kind) in [
+            (
+                CapabilityCallError::ResponseTooLarge {
+                    message: "opaque".into(),
+                },
+                "response_too_large",
+            ),
+            (
+                CapabilityCallError::Timeout {
+                    message: "opaque".into(),
+                },
+                "timeout",
+            ),
+            (
+                CapabilityCallError::Cancelled {
+                    message: "opaque".into(),
+                },
+                "cancelled",
+            ),
+            (
+                CapabilityCallError::QueueSaturated {
+                    message: "opaque".into(),
+                },
+                "queue_saturated",
+            ),
+            (
+                CapabilityCallError::Other {
+                    message: "cancelled timed out response too large".into(),
+                },
+                "upstream_error",
+            ),
+        ] {
+            assert_eq!(classify_prompt_fetch_failure(&error).0, expected_kind);
         }
     }
 

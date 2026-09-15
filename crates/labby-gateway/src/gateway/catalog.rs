@@ -1264,6 +1264,19 @@ pub const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "gateway.oauth.authorize",
+        description: "Authorize an upstream for the authenticated caller using a non-admin transport scope. Open the returned URL in a browser signed into the same Labby account, then retry the upstream call. Does not grant admin scope or use shared credentials.",
+        destructive: false,
+        requires_admin: false,
+        returns: "BeginAuthorization",
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
+    },
+    ActionSpec {
         name: "gateway.oauth.start",
         description: "Start the upstream OAuth flow for the shared gateway credential and return the browser authorization URL",
         destructive: false,
@@ -1558,7 +1571,7 @@ mod tests {
                 || spec.name.starts_with("gateway.protected_route.");
             assert_eq!(
                 spec.requires_admin,
-                !(discovery || team_scoped),
+                !(discovery || team_scoped || spec.name == "gateway.oauth.authorize"),
                 "`{}` requires_admin={} disagrees with its authority class",
                 spec.name,
                 spec.requires_admin

@@ -144,7 +144,7 @@ async fn code_mode_resource_discovery_uses_callers_oauth_connection() {
             "alpha".to_string(),
             &caller,
             CodeModeSurface::Mcp,
-            &ToolScope::default().read_only(),
+            &ToolScope::default(),
         )
         .await
         .expect("use the caller's cached OAuth connection");
@@ -866,7 +866,7 @@ async fn code_mode_catalog_preserves_upstream_output_schema_for_describe_types()
 }
 
 #[tokio::test]
-async fn code_mode_host_list_tools_for_mcp_does_not_block_on_cold_unhealthy_upstreams() {
+async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind hanging upstream fixture");
@@ -884,31 +884,34 @@ async fn code_mode_host_list_tools_for_mcp_does_not_block_on_cold_unhealthy_upst
     hanging.url = Some(format!("http://{addr}/mcp"));
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![hanging, fixture_http_upstream("beta")]).await;
-    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "ping"))
-        .await;
+    let mut beta = healthy_entry_with_tool("beta", "ping");
+    let ping = beta.tools.get_mut("ping").expect("fixture tool");
+    ping.destructive = false;
+    ping.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    pool.insert_entry_for_tests("beta", beta).await;
 
     let render = tokio::time::timeout(
-        Duration::from_millis(100),
+        Duration::from_secs(20),
         CodeModeHost::list_tools(
             &manager,
             &CodeModeCaller::Scoped {
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
                     can_read: true,
-                    can_execute: true,
+                    can_execute: false,
                     can_use_snippets: false,
                     is_admin: false,
                 },
                 sub: Some("user-1".to_string()),
             },
             CodeModeSurface::Mcp,
-            &ToolScope::default(),
+            &ToolScope::default().read_only(),
             false,
             false,
         ),
     )
     .await
-    .expect("MCP proxy generation must not wait for cold upstream refresh")
-    .expect("MCP Code Mode proxy generation should use current healthy tools");
+    .expect("MCP proxy cold-connect budget must be finite")
+    .expect("MCP Code Mode proxy generation should retain healthy tools");
 
     let ids = render
         .entries

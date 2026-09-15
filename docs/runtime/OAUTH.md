@@ -43,8 +43,8 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
 | `LABBY_AUTH_ENABLE_DYNAMIC_REGISTRATION` | no | Enable public RFC 7591 registration. Defaults to `true`; set `false` (or `auth.enable_dynamic_registration = false`) to require CIMD or preregistered clients. Registration grants no user authority; redirect checks, rate limits, PKCE, and access policy still apply. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
-| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Additional users come from the SQLite-backed allowlist. |
-| `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Google authorization matches the provider-asserted `hd` claim; Authelia authorization matches the exact domain of its verified email claim. `email_verified` is enforced first. Empty (the default) disables domain-based access. |
+| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Only this identity's browser session receives the configured static-token scopes (default `lab:read lab:admin`). Additional users come from the SQLite-backed allowlist and are admitted without admin scope; see [Browser session scopes](#browser-session-scopes-and-domain-admission). |
+| `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated domains admitted in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. `email_verified` is enforced first. At the login callback, Google matches the provider-asserted `hd` claim and Authelia matches the exact domain of its verified email claim. Later checks differ by provider and surface; see [Domain allowlist behavior](#domain-allowlist-behavior-by-provider-and-surface). Empty (the default) disables domain-based access. |
 | `LABBY_AUTH_VIEWER_EMAIL_DOMAINS` | no | Separate, default-off browser Viewer admission policy. Matches the exact domain of a provider-verified email address, not a hosted-domain claim. Overrides `auth.viewer_email_domains`; requires an explicit host-configured `auth.viewer_project_id`. Does not grant admin or execution scope. See [automatic Viewer membership](../services/ACCESS.md#automatic-viewer-membership). |
 | `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
@@ -246,6 +246,78 @@ Startup also fails if:
 - OAuth is selected without `LABBY_TOKEN_ENCRYPTION_KEY`
 - `LABBY_AUTH_ADMIN_EMAIL` is missing, so no provider identity is explicitly permitted
 - the auth database or signing key has insecure file permissions
+
+## Browser session scopes and domain admission
+
+Admission (may this identity sign in?) and authority (what may it do?) are
+separate. The allowlist and domain settings only admit an identity. Durable
+authority comes from the access store (Teams, Projects, platform
+administration); see [Access service](../services/ACCESS.md).
+
+### Browser session scopes
+
+On every authenticated browser request, the auth middleware
+(`crates/labby-auth/src/middleware.rs`) assigns the transport scope ceiling by
+admission kind:
+
+| Admission kind | Scopes (default config) |
+| --- | --- |
+| Verified email equals `LABBY_AUTH_ADMIN_EMAIL` | the configured static-token scopes (`lab:read lab:admin`) |
+| Any other allowlisted identity, or an Authelia domain-allowlisted identity | the static-token scopes with each `<prefix>:admin` lowered to `<prefix>` (`lab:read lab`) |
+| Admitted only by the Viewer domain policy | `lab:read` |
+
+An allowlist entry is therefore never an administrative grant. On `/v1`
+routes, a browser session whose durable Principal holds `platform.manage`
+(for example after `access.platform_admin.grant`) is raised to `lab:admin`
+from the access store (`crates/labby/src/api/platform_admin_elevation.rs`).
+Elevation needs a Ready access runtime; if the store is unavailable, the
+session keeps its lowered scopes. Elevation does not apply to MCP routes,
+OAuth JWTs, or the static bearer.
+
+Consequences for operators:
+
+- `requires_admin` actions (for example `setup` drafts, `snippets`,
+  `server_logs`, `doctor`, `fs`, and `browser` admin actions) are available to
+  the configured admin's browser session and to Principals granted
+  `platform.manage`, not to every allowlisted colleague.
+- To give a colleague administrative reach, grant it durably with
+  `access.platform_admin.grant` on their `principal_id`. Adding their email to
+  the allowlist does not do it.
+
+### Domain allowlist behavior by provider and surface
+
+`LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` is evaluated in three places, and they do
+not agree today:
+
+| Check | Google | Authelia |
+| --- | --- | --- |
+| Login callback (`crates/labby-auth/src/authorize.rs`, `check_email_allowlist`) | matches the provider `hd` claim | matches the verified email domain |
+| Browser-session re-check on each authenticated request (`middleware.rs`, `sqlite.rs` `find_authorized_bound_browser_session`) | domain list is not passed; a domain-only session is not authorized. Unless the Viewer domain policy matches, the identity is revoked and the request returns `401` | matches the email address suffix |
+| MCP team auto-provision: OAuth-delegated requests on a project-bound protected route whose upstreams include `team-depot` (`crates/labby/src/api/protected_mcp_route.rs` → `AuthState::is_current_identity_authorized` → `is_email_authorized`) | matches the email address suffix, not `hd` | matches the email address suffix |
+
+In practice, a Google user admitted only by domain can complete the login
+callback but does not keep a browser session past the first authenticated
+request (unless the Viewer domain policy admits them). The same user can be
+auto-provisioned as a Project member through a project-bound protected MCP
+route, where the match is on the address suffix rather than on `hd`.
+
+> **Open issue.** This per-surface inconsistency is known (review finding
+> SEC-M1 on PR #637) and a product decision on the intended rule is pending.
+> Until it is resolved, do not rely on `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for
+> Google browser access, and treat it as able to admit MCP auto-provisioning
+> by address suffix. Use explicit allowlist entries or the
+> [Viewer domain policy](../services/ACCESS.md#automatic-viewer-membership)
+> instead.
+
+### Identities and Principals
+
+Labby keys a Principal on the provider issuer plus subject, not on the email
+address. Each IdP account is a separate Principal. A second account (for
+example a personal Google account next to a work account) is a different
+Principal even when a person owns both, and it signs in as `unprovisioned`
+until it is onboarded. Merging Principals is not supported; the only identity
+linking is the bootstrap owner's
+[owner-link](../services/ACCESS.md#owner-identity-link).
 
 ## Owner bootstrap and project-bound credentials
 
@@ -701,12 +773,14 @@ Browser-session introspection semantics:
   logged-out outcome
 - the same payload includes `login_available` so browser clients can suppress
   the hosted-login CTA when OAuth browser login is not configured
-- a request that carries `Authorization: Bearer <LABBY_MCP_HTTP_TOKEN>` is treated
-  as an authenticated admin caller and gets `authenticated: true` with
-  `sub: "static-bearer"`, `is_admin: true`, and an empty `csrf_token` (CSRF is
-  unnecessary for bearer-authenticated requests). This is the bridge that lets
-  automation tooling (e.g. `agent-browser --headers`) drive the UI alongside
-  OAuth browser users without the flag-and-disable dance
+- a request that carries `Authorization: Bearer <LABBY_MCP_HTTP_TOKEN>` gets
+  `authenticated: true` with `sub: "static-bearer"` and an empty `csrf_token`
+  (CSRF is unnecessary for bearer-authenticated requests). Its authority is
+  resolved like any other identity (see the field table under
+  [Frontend Expectations](#frontend-expectations)): `is_admin` is `true` in the
+  `transport` state, and in the `ready` state only when the resolved Principal
+  holds `platform.manage`. This lets automation tooling (e.g.
+  `agent-browser --headers`) drive the UI alongside OAuth browser users
 - internal failures from session lookup, persistence, signing, or provider
   coordination remain structured 5xx responses instead of collapsing into
   `authenticated: false`
@@ -768,6 +842,48 @@ They must also:
 - invalidate or refresh cached session state when later requests fail with
   `auth_failed` or a CSRF-style `validation_failed` response
 - not treat unrelated validation failures as implicit logout/session-expiry events
+
+#### `GET /auth/session` authenticated body
+
+An authenticated response always carries `authority_state`, which is one of
+three values (`crates/labby/src/api/browser_session.rs`,
+`authenticated_session_body`):
+
+| `authority_state` | Meaning | `authority` | `remediation` |
+| --- | --- | --- | --- |
+| `ready` | The identity is linked to a durable Principal. | `{principal_id, organization_id, authority_generation}` | absent |
+| `transport` | No durable access store exists on this process yet (owner bootstrap has not run, or this process is not the lifecycle owner). Authority is projected from the transport credential only. | `null` | text telling the operator to complete owner bootstrap |
+| `unprovisioned` | The identity signed in, but no Principal link exists. The UI shows "No access yet". Signing out and in again does not change this. | `null` | "This identity is authenticated but has no access authority yet. Ask an administrator to add this identity to a team." |
+
+The server `remediation` string is canonical; the web UI shows it and falls
+back to an identical built-in string only when the field is absent. Onboarding
+steps are in [Onboard a teammate](../services/ACCESS.md#onboard-a-teammate-no-access-yet).
+
+Other fields present in all three states: `authenticated`, `login_available`,
+`is_admin`, `user` (`sub`, `email`), `project_id`, `project`, `owner`,
+`organization_id`, `teams`, `projects`, `capabilities`, `authority_generation`,
+`expires_at`, `csrf_token`, and `owner_bootstrap_available`. In the `transport`
+and `unprovisioned` states the lists are empty and the IDs are `null`.
+
+- `is_admin` is `true` in `ready` only when `capabilities` contains
+  `platform.manage`; in `transport` it reflects whether the transport
+  credential carries `lab:admin`; in `unprovisioned` it is always `false`.
+- `owner_bootstrap_available` is `true` only when `authority_state` is
+  `transport` and the caller is an OAuth browser session for the same subject,
+  holding `lab:admin`, whose email equals `LABBY_AUTH_ADMIN_EMAIL`. It is always
+  `false` for the static bearer, for project sessions, and for every
+  `unprovisioned` identity. The UI offers owner setup only when it is `true`.
+
+Development bypass (`web_ui_auth_disabled`) returns a different, dev-only
+shape: `authenticated: true`, `login_available: false`, `is_admin: true`,
+`dev_authority_bypass: true`, a synthetic `labby-dev` user, and an empty
+`csrf_token`, with no `authority_state` or `owner_bootstrap_available`.
+
+Follow-up: `/auth/session` (and `/v1/access/owner-link/consume`) are listed in
+the [generated route catalog](../generated/api-routes.md) but are not yet
+registered in `crates/labby/src/api/openapi.rs`, so they are absent from the
+generated OpenAPI document. Fix the registration and regenerate; do not
+hand-edit generated files.
 
 ### OAuth Error Kinds
 
@@ -1153,11 +1269,38 @@ policy denial cannot fall through to a global connection. Other upstream churn
 remains discoverable inside `codemode.search(...)` / `codemode.describe(...)`
 without expanding the host Tool JSON.
 
+## Browser authorization and MCP caller scope
+
+The gateway browser OAuth controls manage the shared upstream grant. A successful
+browser callback confirms that flow completed; it does not prove that a particular
+MCP connector can use the grant. Admin callers (`lab:admin`) use the shared gateway
+identity. Authenticated non-admin callers use their own subject and cannot borrow
+that shared grant. Repeating the browser authorization does not populate their
+personal credential entry.
+
+When an upstream reports missing personal credentials, call the native Gateway
+service action `gateway.oauth.authorize` with `{ "upstream": "<name>" }` from
+a connector with `lab` scope. Creating a personal grant requires `scope.manage`;
+a `lab:read`-only connector cannot initiate authorization. Use a `lab`-scoped
+connector for the same account to establish the grant, then retry from the
+read-only connector. Open the returned `authorization_url` in a browser signed into the same
+Labby account, approve the upstream authorization, then retry the upstream call.
+The action obtains the credential subject from the verified transport context,
+rejects subject overrides and route-hidden upstreams, and cannot replace central
+Google-provider or shared operator credentials. The callback requires the matching
+browser account and consumes the expiring PKCE state once. No admin scope is added.
+
+Check the connector's account and granted scopes. For an operator connector intended to have admin
+access, explicitly request and approve `lab:admin` through the connector's login
+flow. Do not automatically elevate restricted connectors or copy shared credentials
+into a personal entry. Reconnect if the client retains an older session, then
+verify an actual upstream tool call; discovery alone is not sufficient proof.
+
 ## Auth Precedence
 
 When both static bearer and OAuth are configured, auth is checked in this order:
 
-1. **Static bearer token** — constant-time comparison via `LABBY_MCP_HTTP_TOKEN`. If it matches, the request is authenticated with implicit `lab:read` and `lab:admin` scopes.
+1. **Static bearer token** — constant-time comparison via `LABBY_MCP_HTTP_TOKEN`. If it matches, the request is authenticated with the configured static-token scopes (`static_token_scopes` in `crates/labby-auth/src/config.rs`; default `lab:read` and `lab:admin`). The same list seeds the browser session of `LABBY_AUTH_ADMIN_EMAIL`; other allowlisted browser sessions receive it with admin scopes lowered.
 2. **OAuth JWT** — if the static bearer check fails (or no static token is configured), the token is validated as a JWT against the cached JWKS. Tokens for Labby's own `/mcp` resource use the configured Labby scope; Gateway-managed protected MCP routes may advertise and enforce route-specific scopes such as `mcp:read mcp:write`.
 3. **401** — if both checks fail (or neither auth method is configured for the token presented).
 

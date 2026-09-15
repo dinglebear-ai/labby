@@ -19,6 +19,14 @@
 //! 3. **Core provider reachable** — trusted-host mode is not ready unless its
 //!    configured private Core provider answers the negotiated protocol health.
 //!
+//! ## Degraded state
+//!
+//! When every predicate passes but an optional subsystem is unavailable (a
+//! recorded startup degradation or a non-ready access store), `/ready` returns
+//! 200 with `status: "degraded"` and a `degraded` list of stable codes. It
+//! never returns plain `ready` in that state. Detail is not exposed on these
+//! public probes; `doctor system.checks` reports it.
+//!
 //! **FLAG for AUTH agent:** `AppState` was not modified. Readiness is derived
 //! from *existing* fields (`registry`, `gateway_manager`). If AUTH needs an
 //! explicit `ready: AtomicBool` flag set at a precise moment during serve
@@ -32,8 +40,8 @@ use super::state::AppState;
 #[cfg_attr(feature = "api-docs", derive(utoipa::ToSchema))]
 #[derive(Debug, serde::Serialize)]
 pub struct HealthResponse {
-    /// Status string: `"ok"` for liveness, `"ready"` or `"not_ready"` for
-    /// readiness.
+    /// Status string: `"ok"` for liveness; `"ready"`, `"degraded"`, or
+    /// `"not_ready"` for readiness.
     pub status: String,
     /// Process role: `"master"` or `"node"`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,6 +56,11 @@ pub struct HealthResponse {
     /// Present only on 503 responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending: Option<Vec<String>>,
+    /// Stable codes of subsystems that are degraded while the process still
+    /// serves traffic (HTTP 200, `status: "degraded"`). Codes only; detail is
+    /// served by the authenticated `doctor system.checks` action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<Vec<String>>,
     /// Sealed runtime capability profile. Integrated mode reports a distinct
     /// value so Core can reject a standalone/all-features artifact at
     /// readiness time.
@@ -84,6 +97,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         pid: Some(std::process::id()),
         uptime_s: Some(uptime_s),
         pending: None,
+        degraded: None,
         capability_profile: Some(if integrated {
             "unraid-core-integrated-v1"
         } else {
@@ -94,8 +108,41 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
-/// Readiness probe. Returns 200 once all predicates are satisfied, 503
-/// otherwise.
+/// Stable codes for subsystems that are degraded but do not block serving.
+///
+/// - recorded startup degradations (for example `artifacts_unavailable`);
+/// - `access_setup_pending`: the access store exists but is uninitialized or
+///   has a prepared owner bootstrap/migration that has not completed;
+/// - `access_blocked`: the access store is insecure, corrupt, newer-schema,
+///   locked, read-only, or unavailable.
+///
+/// A missing access store is not reported: it is the normal state of an
+/// installation that has not enabled access control.
+async fn degraded_subsystems(state: &AppState) -> Vec<String> {
+    use crate::access::{AccessRuntimeStatus, AccessSetupReason};
+
+    let mut degraded: Vec<String> = state
+        .subsystem_health
+        .degraded_codes()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    match state.access_runtime.status().await {
+        AccessRuntimeStatus::Ready
+        | AccessRuntimeStatus::SetupRequired(AccessSetupReason::Missing) => {}
+        AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized) => {
+            degraded.push("access_setup_pending".to_owned());
+        }
+        AccessRuntimeStatus::Blocked(_) => degraded.push("access_blocked".to_owned()),
+    }
+    degraded
+}
+
+/// Readiness probe. Returns 503 until all predicates are satisfied. Once they
+/// are, returns 200 with `status: "ready"`, or `status: "degraded"` plus a
+/// `degraded` code list when an optional subsystem is unavailable. Degraded
+/// stays 200 so rolling deploy gates keep a serving process; gates that must
+/// refuse degraded deploys check `status == "ready"`.
 pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     let mut pending: Vec<String> = Vec::new();
 
@@ -153,14 +200,21 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     if pending.is_empty() {
+        let degraded = degraded_subsystems(&state).await;
         (
             StatusCode::OK,
             Json(HealthResponse {
-                status: "ready".to_string(),
+                status: if degraded.is_empty() {
+                    "ready"
+                } else {
+                    "degraded"
+                }
+                .to_string(),
                 mode: None,
                 pid: None,
                 uptime_s: None,
                 pending: None,
+                degraded: (!degraded.is_empty()).then_some(degraded),
                 capability_profile: None,
                 provider_protocol: None,
                 authority_projection_ready: authority_projection_ready(),
@@ -175,6 +229,7 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
                 pid: None,
                 uptime_s: None,
                 pending: Some(pending),
+                degraded: None,
                 capability_profile: None,
                 provider_protocol: None,
                 authority_projection_ready: authority_projection_ready(),
@@ -239,6 +294,72 @@ mod tests {
             StatusCode::OK,
             "/ready must return 200 when no gateway manager is wired"
         );
+    }
+
+    fn ready_state_without_stash() -> AppState {
+        let mut registry = crate::registry::ToolRegistry::new();
+        for service in AppState::new().registry.services() {
+            if service.name != "stash" {
+                registry.register(service.clone());
+            }
+        }
+        AppState::from_registry(registry)
+            .with_subsystem_health(Arc::new(crate::runtime_health::SubsystemHealth::default()))
+    }
+
+    async fn ready_body(state: AppState) -> (StatusCode, serde_json::Value) {
+        let response = ready(State(state)).await.into_response();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn ready_reports_plain_ready_only_when_nothing_is_degraded() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        // A missing access store is the normal pre-access-control state.
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = Arc::new(crate::access::AccessRuntime::initialize(path).await);
+        let state = ready_state_without_stash().with_access_runtime(runtime);
+
+        let (status, body) = ready_body(state).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ready");
+        assert!(body.get("degraded").is_none());
+    }
+
+    #[tokio::test]
+    async fn ready_reports_degraded_startup_subsystems_without_detail() {
+        let health = Arc::new(crate::runtime_health::SubsystemHealth::default());
+        health.record_degraded(
+            crate::runtime_health::ARTIFACTS_UNAVAILABLE,
+            "configure Skill Library exact-source adapters: secret-free cause".into(),
+        );
+        let state = ready_state_without_stash().with_subsystem_health(health);
+
+        let (status, body) = ready_body(state).await;
+        assert_eq!(status, StatusCode::OK, "degraded keeps serving");
+        assert_eq!(body["status"], "degraded");
+        let degraded = body["degraded"].as_array().unwrap();
+        assert!(degraded.iter().any(|code| code == "artifacts_unavailable"));
+        assert!(!body.to_string().contains("exact-source"), "detail leaked");
+    }
+
+    #[tokio::test]
+    async fn ready_reports_a_blocked_access_store_as_degraded() {
+        // `AppState::new()` wires the conservative blocked-unavailable runtime.
+        let (status, body) = ready_body(ready_state_without_stash()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["degraded"], serde_json::json!(["access_blocked"]));
     }
 
     #[tokio::test]

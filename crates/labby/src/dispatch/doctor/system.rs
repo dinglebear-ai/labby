@@ -766,7 +766,78 @@ pub async fn run_system_checks() -> Vec<Finding> {
         )
         .await,
     );
+    findings.extend(config_startup_findings());
+    findings.extend(subsystem_findings(
+        &crate::runtime_health::SubsystemHealth::process(),
+    ));
     findings
+}
+
+/// Run the offline `labby serve` config validations (shared with `setup check`).
+fn config_startup_findings() -> Vec<Finding> {
+    let (_, problems) = crate::composition::config_check::check_installed_config();
+    if problems.is_empty() {
+        return vec![Finding {
+            service: "lab".into(),
+            check: "config:startup-validation".into(),
+            severity: Severity::Ok,
+            message: "config.toml passes labby serve startup validation".into(),
+        }];
+    }
+    problems
+        .into_iter()
+        .map(|problem| Finding {
+            service: "lab".into(),
+            check: "config:startup-validation".into(),
+            severity: if problem.fatal {
+                Severity::Fail
+            } else {
+                Severity::Warn
+            },
+            message: if problem.fatal {
+                format!("labby serve would refuse to start: {}", problem.message)
+            } else {
+                problem.message
+            },
+        })
+        .collect()
+}
+
+/// Project subsystems this process recorded as degraded at startup.
+///
+/// Only a serving process records degradations; a standalone CLI run reports
+/// none here and relies on `config:startup-validation` instead.
+fn subsystem_findings(health: &crate::runtime_health::SubsystemHealth) -> Vec<Finding> {
+    health
+        .degraded_details()
+        .into_iter()
+        .map(|(code, detail)| Finding {
+            service: "lab".into(),
+            check: format!("subsystem:{code}"),
+            severity: Severity::Fail,
+            message: format!("subsystem degraded since startup: {detail}"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod subsystem_finding_tests {
+    use super::*;
+
+    #[test]
+    fn doctor_reports_recorded_degradations_with_detail() {
+        let health = crate::runtime_health::SubsystemHealth::default();
+        assert!(subsystem_findings(&health).is_empty());
+        health.record_degraded(
+            crate::runtime_health::ARTIFACTS_UNAVAILABLE,
+            "configure Skill Library exact-source adapters: pin must be public".into(),
+        );
+        let findings = subsystem_findings(&health);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].check, "subsystem:artifacts_unavailable");
+        assert!(matches!(findings[0].severity, Severity::Fail));
+        assert!(findings[0].message.contains("pin must be public"));
+    }
 }
 
 #[cfg(target_os = "linux")]

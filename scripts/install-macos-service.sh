@@ -241,11 +241,18 @@ install_service() {
         rm -f "$previous_plist"
         return "$status"
     }
-    rm -f "$previous_plist"
     if [[ "$service_auto_update" == 1 ]]; then
         # Only retire the standalone job after the combined server is healthy.
-        "$binary_path" update --auto-update disable
+        if "$binary_path" update --auto-update disable; then
+            :
+        else
+            status=$?
+            restore_install_state "$previous_plist" "$was_loaded" || echo "error: failed to restore prior macOS service state" >&2
+            rm -f "$previous_plist"
+            return "$status"
+        fi
     fi
+    rm -f "$previous_plist"
     echo "Labby macOS service is running: ${service_domain}/${service_label}"
     echo "health: http://${service_host}:${service_port}/health"
 }

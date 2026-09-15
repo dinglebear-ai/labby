@@ -1,6 +1,6 @@
 {
   "schema": "labby.authority-action-expectations/v1",
-  "resource_under_test": "one Team-owned resource; other_team_member holds member role only in a different Team; personal_no_membership holds no Team membership",
+  "resource_under_test": "one Team-owned resource; other_team_member holds member role only in a different Team; personal_no_membership holds no Team membership; gateway.oauth.authorize instead targets each caller's own personal resource",
   "actions": {
     "access:access.gateway_credential.bind": {
       "required_capability": "scope.manage",
@@ -648,6 +648,15 @@
       "team_owner": "deny",
       "other_team_member": "deny",
       "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "gateway:gateway.oauth.authorize": {
+      "required_capability": "scope.manage",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "allow",
+      "personal_no_membership": "allow",
       "platform_admin": "allow"
     },
     "gateway:gateway.oauth.clear": {

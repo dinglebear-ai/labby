@@ -387,6 +387,7 @@ pub async fn read_response_body_capped(
 #[derive(Debug)]
 pub enum CappedStreamError {
     Reqwest(reqwest::Error),
+    Budget(CappedResponseBodyError),
     TooLarge { event_bytes: u64, max_bytes: usize },
 }
 
@@ -398,6 +399,7 @@ impl std::fmt::Display for CappedStreamError {
             // not bare reqwest. `source()` still chains to the inner error
             // for `{:#}` formatters.
             Self::Reqwest(e) => write!(f, "upstream stream error: {e}"),
+            Self::Budget(error) => error.fmt(f),
             Self::TooLarge {
                 event_bytes,
                 max_bytes,
@@ -413,6 +415,7 @@ impl std::error::Error for CappedStreamError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Reqwest(e) => Some(e),
+            Self::Budget(error) => Some(error),
             Self::TooLarge { .. } => None,
         }
     }
@@ -459,13 +462,67 @@ fn per_event_capped_byte_stream(
     stream.boxed()
 }
 
-fn hold_response_budget(
-    stream: BoxStream<'static, Result<bytes::Bytes, CappedStreamError>>,
-    permit: tokio::sync::OwnedSemaphorePermit,
+/// Reserve only the stream's observed buffering high-water mark. Reserving
+/// max_bytes at connection time lets a few idle SSE subscriptions monopolize
+/// the shared budget and reject unrelated HTTP discovery/calls.
+///
+/// Keep the high-water reservation until drop: the downstream SSE parser may
+/// retain allocation capacity after delivering an event. Growth is admitted
+/// before giving another chunk to that parser; per-event caps still apply.
+fn budgeted_sse_byte_stream(
+    inner: impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send + 'static,
+    max_bytes: usize,
+    budget: Arc<tokio::sync::Semaphore>,
 ) -> BoxStream<'static, Result<bytes::Bytes, CappedStreamError>> {
-    stream
-        .scan(permit, |_permit, item| futures::future::ready(Some(item)))
-        .boxed()
+    let capped = per_event_capped_byte_stream(inner, max_bytes);
+    futures::stream::try_unfold(
+        (
+            capped,
+            0u64,
+            EventBoundaryState::default(),
+            None::<tokio::sync::OwnedSemaphorePermit>,
+        ),
+        move |(mut stream, count, boundary, mut permit)| {
+            let budget = Arc::clone(&budget);
+            async move {
+                let Some(chunk) = stream.next().await else {
+                    return Ok(None);
+                };
+                let chunk = chunk?;
+                // A chunk can hold several events. Charge the entire chunk plus
+                // the previous unfinished event until the parser consumes it.
+                let required_bytes = count.saturating_add(chunk.len() as u64);
+                if required_bytes > AGGREGATE_RESPONSE_BUDGET_BYTES as u64 {
+                    return Err(CappedStreamError::Budget(
+                        CappedResponseBodyError::BudgetExhausted,
+                    ));
+                }
+                let required = (required_bytes as usize).div_ceil(RESPONSE_BUDGET_QUANTUM);
+                let reserved = permit
+                    .as_ref()
+                    .map_or(0, tokio::sync::OwnedSemaphorePermit::num_permits);
+                if required > reserved {
+                    let additional = acquire_response_permit(budget, (required - reserved) as u32)
+                        .await
+                        .map_err(CappedStreamError::Budget)?;
+                    if let Some(permit) = permit.as_mut() {
+                        permit.merge(additional);
+                    } else {
+                        permit = Some(additional);
+                    }
+                }
+                let (count, boundary) =
+                    account_event_bytes(&chunk, count, boundary, max_bytes as u64).map_err(
+                        |event_bytes| CappedStreamError::TooLarge {
+                            event_bytes,
+                            max_bytes,
+                        },
+                    )?;
+                Ok(Some((chunk, (stream, count, boundary, permit))))
+            }
+        },
+    )
+    .boxed()
 }
 
 /// Account the bytes of `chunk` against the per-event counter, resetting
@@ -594,10 +651,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                 return Err(StreamableHttpError::UnexpectedContentType(None));
             }
         }
-        let permit = self.acquire_response_budget().await?;
-        let capped = hold_response_budget(
-            per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes),
-            permit,
+        let capped = budgeted_sse_byte_stream(
+            response.bytes_stream(),
+            self.max_bytes,
+            Arc::clone(&self.response_budget),
         );
         Ok(SseStream::from_bytes_stream(capped).boxed())
     }
@@ -749,10 +806,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         }
         match content_type.as_deref() {
             Some(ct) if ct.as_bytes().starts_with(EVENT_STREAM_MIME_TYPE.as_bytes()) => {
-                let permit = self.acquire_response_budget().await?;
-                let capped = hold_response_budget(
-                    per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes),
-                    permit,
+                let capped = budgeted_sse_byte_stream(
+                    response.bytes_stream(),
+                    self.max_bytes,
+                    Arc::clone(&self.response_budget),
                 );
                 Ok(StreamableHttpPostResponse::Sse(
                     SseStream::from_bytes_stream(capped).boxed(),
@@ -807,6 +864,90 @@ mod tests {
         let client = build(AGGREGATE_RESPONSE_BUDGET_BYTES + 1);
         assert_eq!(client.max_bytes(), AGGREGATE_RESPONSE_BUDGET_BYTES);
         assert_eq!(build(1024).max_bytes(), 1024);
+    }
+
+    #[tokio::test]
+    async fn idle_sse_connections_do_not_starve_unrelated_responses() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: hello\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        // Enough capacity for two maximum-sized responses, but many tiny streams.
+        let budget = Arc::new(tokio::sync::Semaphore::new(20 * 1024));
+        let client = BodyCappedHttpClient::with_response_budget(
+            reqwest::Client::new(),
+            10 * 1024 * 1024,
+            Arc::clone(&budget),
+        );
+        let mut streams = Vec::new();
+        for _ in 0..12 {
+            streams.push(
+                client
+                    .get_stream(server.uri().into(), None, None, None, HashMap::new())
+                    .await
+                    .expect("idle SSE must not reserve the maximum response size"),
+            );
+        }
+        for stream in &mut streams {
+            let event = stream.next().await.unwrap().unwrap();
+            assert_eq!(event.data.as_deref(), Some("hello"));
+        }
+        // Retain all streams: a normal response must still have memory admission.
+        drop(
+            client
+                .acquire_response_budget()
+                .await
+                .expect("tiny SSE streams must leave room for ordinary responses"),
+        );
+        drop(streams);
+        assert_eq!(budget.available_permits(), 20 * 1024);
+    }
+
+    #[tokio::test]
+    async fn sse_partial_event_growth_stays_inside_aggregate_budget() {
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let chunks = futures::stream::iter([
+            Ok(bytes::Bytes::from(vec![b'a'; 700])),
+            Ok(bytes::Bytes::from(vec![b'b'; 700])),
+        ]);
+        let mut stream = budgeted_sse_byte_stream(chunks, 4096, Arc::clone(&budget));
+        assert_eq!(stream.next().await.unwrap().unwrap().len(), 700);
+        assert_eq!(budget.available_permits(), 0);
+        assert!(matches!(
+            stream.next().await.unwrap(),
+            Err(CappedStreamError::Budget(
+                CappedResponseBodyError::BudgetExhausted
+            ))
+        ));
+        assert!(
+            stream.next().await.is_none(),
+            "budget failure terminates the stream"
+        );
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn sse_completed_events_do_not_accumulate_reservations() {
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let chunks = futures::stream::iter(
+            (0..100).map(|_| Ok(bytes::Bytes::from(format!("data: {}\n\n", "x".repeat(700))))),
+        );
+        let mut stream = SseStream::from_bytes_stream(budgeted_sse_byte_stream(
+            chunks,
+            1024,
+            Arc::clone(&budget),
+        ));
+        let mut count = 0;
+        while let Some(event) = stream.next().await {
+            assert_eq!(event.unwrap().data.unwrap().len(), 700);
+            count += 1;
+        }
+        assert_eq!(count, 100);
+        assert_eq!(budget.available_permits(), 1);
     }
 
     #[tokio::test]

@@ -77,7 +77,70 @@ case "$*" in
   *) exit 64 ;;
 esac
 EOF
-    chmod 755 "$bin/uname" "$bin/curl" "$bin/gh"
+    cat >"$bin/sync" <<'EOF'
+#!/bin/sh
+if [ -n "${LABBY_TEST_SYNC_LOG:-}" ]; then printf 'sync\n' >>"$LABBY_TEST_SYNC_LOG"; fi
+if [ -n "${LABBY_TEST_SYNC_HOLD:-}" ] && [ ! -e "$LABBY_TEST_SYNC_HOLD.release" ]; then
+    : >"$LABBY_TEST_SYNC_HOLD.ready"
+    while [ ! -e "$LABBY_TEST_SYNC_HOLD.release" ]; do sleep 0.02; done
+fi
+[ -z "${LABBY_TEST_SYNC_FAIL:-}" ]
+EOF
+    chmod 755 "$bin/uname" "$bin/curl" "$bin/gh" "$bin/sync"
+}
+
+test_installers_share_a_process_level_transaction_lock() {
+    local case_root="$test_root/transaction-lock" fixtures="$test_root/transaction-lock/fixtures"
+    local fake_bin="$test_root/transaction-lock/fake-bin" home="$test_root/transaction-lock/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    mkdir -p "$home/bin/.labby-install/transaction-lock"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        >"$case_root/starting.out" 2>"$case_root/starting.err"; then
+        fail "installer reclaimed a transaction lock before its owner was published"
+    fi
+    assert_contains "$case_root/starting.err" "another Labby installation is starting"
+    rm -rf "$home/bin/.labby-install/transaction-lock"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        LABBY_TEST_SYNC_HOLD="$case_root/hold" >"$case_root/first.out" 2>"$case_root/first.err" &
+    first=$!
+    for _ in $(seq 1 200); do [ -e "$case_root/hold.ready" ] && break; sleep 0.02; done
+    [ -e "$case_root/hold.ready" ] || fail "first installer never acquired the transaction lock"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        >"$case_root/second.out" 2>"$case_root/second.err"; then
+        fail "concurrent installer entered the shared transaction"
+    fi
+    assert_contains "$case_root/second.err" "another Labby installation is running"
+    : >"$case_root/hold.release"
+    wait "$first"
+    [ "$($home/bin/labby)" = release-v1 ] || fail "lock owner did not complete normally"
+}
+
+test_artifact_retention_keeps_only_current_and_rollback() {
+    local case_root="$test_root/artifact-retention" fixtures="$test_root/artifact-retention/fixtures"
+    local fake_bin="$test_root/artifact-retention/fake-bin" home="$test_root/artifact-retention/home"
+    mkdir -p "$fixtures" "$home"
+    for version in 1 2 3 4; do make_release "$fixtures" "v$version.0.0" "release-v$version"; done
+    make_fake_tools "$fake_bin" "$fixtures"
+    for version in 1 2 3 4; do run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION="v$version.0.0" >/dev/null 2>&1; done
+    [ "$(find "$home/bin/.labby-install/artifacts" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2 ] || fail "artifact history is not bounded to current plus rollback"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_ROLLBACK=1 >/dev/null 2>&1
+    [ "$($home/bin/labby)" = release-v3 ] || fail "bounded retention broke offline rollback"
+}
+
+test_durability_barrier_failure_prevents_activation() {
+    local case_root="$test_root/durability" fixtures="$test_root/durability/fixtures"
+    local fake_bin="$test_root/durability/fake-bin" home="$test_root/durability/home"
+    mkdir -p "$fixtures" "$home/bin"
+    make_release "$fixtures" v2.0.0 release-v2
+    make_fake_tools "$fake_bin" "$fixtures"
+    printf '#!/bin/sh\necho sentinel\n' >"$home/bin/labby"; chmod 755 "$home/bin/labby"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 LABBY_TEST_SYNC_FAIL=1 >"$case_root/out" 2>"$case_root/err"; then
+        fail "installer ignored a failed durability barrier"
+    fi
+    [ "$($home/bin/labby)" = sentinel ] || fail "durability failure changed the live binary"
+    assert_contains "$case_root/err" "cannot durably flush installer transaction"
 }
 
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
@@ -240,13 +303,80 @@ EOF
             fail "crash injection at $boundary unexpectedly succeeded"
         fi
         /bin/rm -f "$fake_bin/mv" "$fixtures/releases/v2.0.0/lab-x86_64-unknown-linux-gnu.tar.gz"
-        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 \
-            >"$case_root/recovery.out" 2>"$case_root/recovery.err"; then
-            fail "post-recovery unavailable release unexpectedly succeeded"
-        fi
+        run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/recovery-downloads" \
+            >"$case_root/recovery.out" 2>"$case_root/recovery.err"
+        [ ! -e "$case_root/recovery-downloads" ] || fail "recovery-only attempted network access"
         [ "$("$home/bin/labby")" = release-v1 ] || fail "recovery at $boundary did not restore binary"
         cmp "$case_root/receipt.before" "$home/bin/.labby-install/receipt" || fail "recovery at $boundary did not restore receipt"
         [ ! -e "$home/bin/.labby-install/activation-journal" ] || fail "recovery at $boundary retained completed journal"
+    done
+}
+
+
+test_interrupted_journal_cleanup_preserves_committed_files() {
+    local mode
+    for mode in recovery activation; do
+        local case_root="$test_root/journal-cleanup-$mode"
+        local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" case_home="$case_root/home"
+        local journal="$case_home/bin/.labby-install/activation-journal"
+        mkdir -p "$fixtures" "$case_home"
+        make_release "$fixtures" v1.0.0 release-v1
+        make_release "$fixtures" v2.0.0 release-v2
+        make_fake_tools "$fake_bin" "$fixtures"
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+        if [ "$mode" = recovery ]; then
+            mkdir "$journal"
+            cp "$case_home/bin/labby" "$journal/old-binary"
+            cp "$case_home/bin/.labby-install/receipt" "$journal/old-receipt"
+            : >"$journal/old-binary.present"
+            : >"$journal/old-receipt.present"
+            printf 'binary-activated\n' >"$journal/state"
+            printf '#!/bin/sh\necho interrupted\n' >"$case_home/bin/labby"
+        fi
+        cat >"$fake_bin/rm" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "$*" = "-rf $LABBY_TEST_JOURNAL" ]; then
+    # Interrupt recursive cleanup after deleting one backup-presence marker.
+    # The durable state marker must already be retired before this starts.
+    /bin/rm -f "$LABBY_TEST_JOURNAL/old-binary.present"
+    kill -9 "$PPID"
+    exit 137
+fi
+exec /bin/rm "$@"
+EOF
+        chmod 755 "$fake_bin/rm"
+        if [ "$mode" = recovery ]; then
+            if run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+                LABBY_TEST_JOURNAL="$journal" >"$case_root/out" 2>"$case_root/err"; then
+                fail "recovery cleanup crash injection did not interrupt installer"
+            fi
+        elif run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 \
+            LABBY_TEST_JOURNAL="$journal" >"$case_root/out" 2>"$case_root/err"; then
+            fail "activation cleanup crash injection did not interrupt installer"
+        fi
+        /bin/rm -f "$fake_bin/rm"
+        [ ! -e "$journal/state" ] || fail "cleanup began before retiring recovery marker"
+        cp "$case_home/bin/labby" "$case_root/binary.committed"
+        cp "$case_home/bin/.labby-install/receipt" "$case_root/receipt.committed"
+        if [ "$mode" = activation ]; then
+            cp "$case_home/bin/.labby-install/previous-receipt" "$case_root/previous.committed"
+        fi
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/downloads" >/dev/null 2>&1
+        run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
+            LABBY_TEST_CURL_LOG="$case_root/downloads" >/dev/null 2>&1
+        cmp "$case_root/binary.committed" "$case_home/bin/labby" || fail "residual cleanup changed binary"
+        cmp "$case_root/receipt.committed" "$case_home/bin/.labby-install/receipt" || fail "residual cleanup changed receipt"
+        if [ "$mode" = activation ]; then
+            cmp "$case_root/previous.committed" "$case_home/bin/.labby-install/previous-receipt" || fail "residual cleanup changed previous receipt"
+            [ "$("$case_home/bin/labby")" = release-v2 ] || fail "committed activation was reverted"
+        else
+            [ "$("$case_home/bin/labby")" = release-v1 ] || fail "committed recovery was reverted"
+        fi
+        [ ! -e "$journal" ] || fail "residual journal retained after recovery"
+        [ ! -e "$case_root/downloads" ] || fail "repeated recovery-only accessed network"
     done
 }
 
@@ -697,8 +827,61 @@ EOF
     if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=invalid >"$case_root/out" 2>"$case_root/err"; then
         fail "accepted invalid auto-update mode"
     fi
+
+    local rollback_root="$test_root/launchd-auto-update-rollback"
+    fake_bin="$rollback_root/fake-bin"; home="$rollback_root/home"
+    mkdir -p "$home/.local/bin"
+    cat >"$home/.local/bin/labby" <<'EOF'
+#!/bin/sh
+if [ "$*" = "update --auto-update disable" ]; then exit 23; fi
+exit 0
+EOF
+    chmod 755 "$home/.local/bin/labby"
+    make_fake_launchd_tools "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' >"$fake_bin/gh"; chmod 755 "$fake_bin/gh"
+    if run_macos_service "$home" "$fake_bin" install LABBY_SERVICE_AUTO_UPDATE=1 >"$rollback_root/out" 2>"$rollback_root/err"; then
+        fail "scheduler handoff failure left the combined service installed"
+    fi
+    [ ! -e "$home/Library/LaunchAgents/ai.dinglebear.labby.plist" ] || fail "scheduler handoff failure retained the combined plist"
+    [ ! -e "$home/launchctl.state" ] || fail "scheduler handoff failure retained the combined launchd job"
 }
 
+test_failed_journal_retirement_preserves_backups() {
+    local case_root="$test_root/retirement-failure"
+    local fixtures fake_bin case_home
+    fixtures="$case_root/fixtures"
+    fake_bin="$case_root/tools"
+    case_home="$case_root/home"
+    mkdir -p "$fixtures" "$case_home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_release "$fixtures" v2.0.0 release-v2
+    make_fake_tools "$fake_bin" "$fixtures"
+    run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+    cat > "$fake_bin/rm" <<'SH'
+#!/bin/sh
+if [ "$*" = "-f $LABBY_TEST_JOURNAL/state" ]; then
+  exit 1
+fi
+if [ "$*" = "-rf $LABBY_TEST_JOURNAL" ]; then
+  touch "$LABBY_TEST_CALLED"
+  exit 1
+fi
+exec /bin/rm "$@"
+SH
+    chmod 755 "$fake_bin/rm"
+    if run_installer "$case_home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 LABBY_TEST_JOURNAL="$case_home/bin/.labby-install/activation-journal" LABBY_TEST_CALLED="$case_root/recursive-called" > "$case_root/out" 2>&1; then
+        fail "retirement failure unexpectedly succeeded"
+    fi
+    if [ -e "$case_root/recursive-called" ]; then
+        fail "recursive journal deletion was attempted after state retirement failed"
+    fi
+    [ -f "$case_home/bin/.labby-install/activation-journal/old-binary.present" ] || fail "retirement failure lost rollback backup"
+}
+
+test_failed_journal_retirement_preserves_backups
+test_installers_share_a_process_level_transaction_lock
+test_artifact_retention_keeps_only_current_and_rollback
+test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
 test_latest_api_failure_never_uses_mutable_latest_download
@@ -709,6 +892,7 @@ test_local_candidate_requires_and_records_exact_digest
 test_local_candidate_stages_once_before_verification
 test_activation_failure_restores_binary_and_both_receipts
 test_crash_recovery_restores_every_activation_boundary
+test_interrupted_journal_cleanup_preserves_committed_files
 test_recovery_failure_is_reported_and_journal_is_retained
 test_unprepared_journal_never_changes_live_installation
 test_launchd_uses_stable_labby_home_not_installer_working_directory
