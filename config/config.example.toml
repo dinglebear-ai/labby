@@ -143,17 +143,26 @@
 
 # ── Phoenix Assistant ────────────────────────────────────────────────────────
 #
-# Phoenix talks only to a Codex App Server launched inside the Labby runtime.
-# Keep this disabled until Codex and an isolated Codex home are provisioned in
-# the Incus container. Phoenix forces a read-only sandbox and never accepts
-# executable, home, or workspace paths from the browser.
+# Phoenix can launch a container-local Codex App Server (the default) or use
+# an operator-configured OpenAI-compatible HTTP endpoint. Provider endpoints
+# and API keys belong in $LABBY_HOME/.env and are never accepted from the
+# browser. Codex mode forces a read-only sandbox.
 
 [phoenix]
 # enabled = true
+# provider = "codex_app_server"           # default
 # command = "/home/labby/.local/bin/codex"
 # codex_home = "/home/labby/.codex"
 # workspace_root = "/home/labby"
 # model = "gpt-5.6-sol"
+#
+# ExGPT / OpenAI-compatible example:
+# provider = "openai_compatible"
+# model = "chatgpt-browser-medium"
+# Set LABBY_PHOENIX_OPENAI_BASE_URL=http://host:port/v1 in $LABBY_HOME/.env.
+# Full Assistant session lifecycle also requires the provider to expose the ExGPT-style
+# /v1/sessions create, rename, cancel, and close extensions used by this adapter.
+# Set LABBY_PHOENIX_OPENAI_API_KEY there too if the endpoint requires auth.
 
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #

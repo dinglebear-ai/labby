@@ -3,9 +3,9 @@ import { performServiceAction, type ServiceActionError } from './service-action-
 export interface PhoenixStatus {
   enabled: boolean
   available: boolean
-  runtime: 'container_local'
-  service: 'codex-app-server'
-  sandbox: 'read-only'
+  runtime: 'container_local' | 'remote_http'
+  service: 'codex-app-server' | 'openai-compatible'
+  sandbox: 'read-only' | 'remote'
   protocol?: {
     schema: string
     runtime_version?: string | null
