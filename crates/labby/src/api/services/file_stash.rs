@@ -1676,7 +1676,11 @@ mod tests {
             "owner",
         )
         .unwrap();
-        crate::access::bootstrap_owner(&access, identity.clone(), "Local".into(), "Default".into())
+        access
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Local", "Default")
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let principal = access

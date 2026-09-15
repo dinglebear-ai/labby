@@ -189,6 +189,19 @@ jobs:
               raise SystemExit(f"expected exactly 1 substitution in {path}, got {count}")
           open(path, "w").write(patched)
 
+          # The separate verification workspace pins the product's
+          # labby-model at the exact release version.
+          verify_host_path = "verification/hosts/labby/Cargo.toml"
+          text = open(verify_host_path).read()
+          patched, count = re.subn(
+              r'(\nlabby-model = \{ version = "=)[^"]+(")',
+              lambda m: m.group(1) + new_version + m.group(2),
+              text,
+          )
+          if count != 1:
+              raise SystemExit(f"expected exactly 1 substitution in {verify_host_path}, got {count}")
+          open(verify_host_path, "w").write(patched)
+
           package_path = "packages/labby-mcp/package.json"
           with open(package_path) as fh:
               npm_manifest = json.load(fh)
@@ -218,13 +231,17 @@ jobs:
           # after the version bump — no compilation required. Offline first;
           # fall back to a networked update if the lockfile needs anything new.
           cargo update --workspace --offline || cargo update --workspace
-          git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
+          cargo update --manifest-path verification/Cargo.toml -p labby-model --offline \
+            || cargo update --manifest-path verification/Cargo.toml -p labby-model
+          git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json \
+            verification/hosts/labby/Cargo.toml verification/Cargo.lock
 
       - name: Commit and push if changed
         if: ${{ steps.pr.outputs.found == 'true' }}
         run: |
           set -euo pipefail
-          paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json)
+          paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
+            verification/hosts/labby/Cargo.toml verification/Cargo.lock)
           if git diff --quiet -- "${paths[@]}"; then
             echo "Release metadata already in sync, nothing to commit."
             exit 0

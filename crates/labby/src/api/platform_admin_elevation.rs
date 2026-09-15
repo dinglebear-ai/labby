@@ -173,6 +173,138 @@ mod tests {
         assert!(!scopes.iter().any(|scope| scope == ADMIN_SCOPE));
     }
 
+    /// Links principal `ops-principal` to the browser identity `ops` inside the
+    /// bootstrap organization, without any platform authority.
+    const SEED_OPS_PRINCIPAL: &str = "
+        INSERT INTO principals(principal_id,organization_id,kind,status,display_name,created_at,updated_at)
+          VALUES('ops-principal','bootstrap-local','user','active',NULL,2,2);
+        INSERT INTO principal_links(link_id,principal_id,link_kind,issuer,subject,credential_id,status,verification_generation,link_generation,created_at,updated_at)
+          VALUES('link-ops-principal','ops-principal','external','https://accounts.google.com','ops',NULL,'active',1,1,2,2);";
+
+    async fn elevated(state: &AppState, subject: &str) -> bool {
+        scopes_after_elevation(
+            state.clone(),
+            context(subject, true),
+            browser_identity(subject),
+        )
+        .await
+        .iter()
+        .any(|scope| scope == ADMIN_SCOPE)
+    }
+
+    fn ops_grant() -> crate::access::PlatformAdministratorInput {
+        crate::access::PlatformAdministratorInput::new(browser_identity("owner"), "ops-principal")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn non_owner_platform_admin_is_elevated_until_revoked() {
+        let (_directory, state) = owner_state().await;
+        let store = state.access_runtime.store().await.unwrap();
+        store
+            .execute_test_statement(SEED_OPS_PRINCIPAL)
+            .await
+            .unwrap();
+        assert!(!elevated(&state, "ops").await, "no grant, no elevation");
+
+        store
+            .grant_platform_administrator(ops_grant())
+            .await
+            .unwrap();
+        assert!(elevated(&state, "ops").await, "granted platform.manage");
+
+        store
+            .revoke_platform_administrator(ops_grant())
+            .await
+            .unwrap();
+        assert!(
+            !elevated(&state, "ops").await,
+            "revocation applies to the next request; nothing is cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivated_principal_with_an_active_grant_is_not_elevated() {
+        let (_directory, state) = owner_state().await;
+        let store = state.access_runtime.store().await.unwrap();
+        store
+            .execute_test_statement(SEED_OPS_PRINCIPAL)
+            .await
+            .unwrap();
+        store
+            .grant_platform_administrator(ops_grant())
+            .await
+            .unwrap();
+        assert!(elevated(&state, "ops").await);
+
+        store
+            .deactivate_principal_for_test("ops-principal")
+            .await
+            .unwrap();
+        assert!(!elevated(&state, "ops").await);
+    }
+
+    #[tokio::test]
+    async fn blocked_and_setup_required_runtimes_never_elevate() {
+        use crate::access::{AccessBlockedReason, AccessRuntime, AccessRuntimeStatus};
+        for reason in [
+            AccessBlockedReason::Insecure,
+            AccessBlockedReason::Corrupt,
+            AccessBlockedReason::NewerSchema,
+            AccessBlockedReason::Locked,
+            AccessBlockedReason::ReadOnly,
+            AccessBlockedReason::Unavailable,
+        ] {
+            let state = AppState::new()
+                .with_access_runtime(Arc::new(AccessRuntime::blocked_for_test(reason)));
+            assert!(!elevated(&state, "owner").await, "{reason:?}");
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let runtime = Arc::new(AccessRuntime::initialize(path).await);
+        assert!(matches!(
+            runtime.status().await,
+            AccessRuntimeStatus::SetupRequired(_)
+        ));
+        let state = AppState::new().with_access_runtime(runtime);
+        assert!(!elevated(&state, "owner").await);
+    }
+
+    #[tokio::test]
+    async fn store_error_never_elevates() {
+        let (_directory, state) = owner_state().await;
+        let store = state.access_runtime.store().await.unwrap();
+        store
+            .execute_test_statement(SEED_OPS_PRINCIPAL)
+            .await
+            .unwrap();
+        store
+            .grant_platform_administrator(ops_grant())
+            .await
+            .unwrap();
+        assert!(elevated(&state, "ops").await);
+
+        store
+            .execute_test_statement("ALTER TABLE principal_links RENAME TO principal_links_hidden;")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .session_authority(browser_identity("ops"))
+                .await
+                .is_err(),
+            "fixture must make the authority read fail"
+        );
+        assert!(!elevated(&state, "ops").await);
+    }
+
     #[tokio::test]
     async fn non_session_callers_and_uninitialized_stores_are_never_elevated() {
         let (_directory, state) = owner_state().await;
