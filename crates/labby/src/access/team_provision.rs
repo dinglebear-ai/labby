@@ -42,12 +42,141 @@ pub(super) fn provision_viewer(
     provision_with_role(connection, identity, project_id, InitialRole::Viewer)
 }
 
+const INITIAL_TEAM_ID: &str = "bootstrap-initial-team";
+
+/// Access an allowlist entry grants at first sign-in. Product-owned admission
+/// only; callers cannot request `owner`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AllowlistRole {
+    Member,
+    Admin,
+}
+
+impl AllowlistRole {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "member" => Some(Self::Member),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+/// Admit an allowlisted identity: a Principal (if missing), an Initial Team
+/// membership, a default-Project membership, and for `Admin` a platform
+/// administrator grant — one transaction, idempotent. An existing active
+/// Project membership means the identity was already admitted; nothing is
+/// upgraded and `AlreadyActive` is returned.
+pub(super) fn provision_allowlisted(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    role: AllowlistRole,
+) -> AccessStoreResult<TeamMemberProvisionOutcome> {
+    let project_id = super::bootstrap::PROJECT_ID;
+    let outcome = provision_with_role(
+        connection,
+        identity,
+        project_id,
+        match role {
+            AllowlistRole::Member => InitialRole::Member,
+            AllowlistRole::Admin => InitialRole::Admin,
+        },
+    )?;
+    if outcome == TeamMemberProvisionOutcome::AlreadyActive {
+        return Ok(outcome);
+    }
+    let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
+        return Err(AccessStoreError::NotAuthorized);
+    };
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    let (principal_id, organization_id): (String, String) = transaction
+        .query_row(
+            "SELECT p.principal_id,p.organization_id FROM principal_links l
+             JOIN principals p ON p.principal_id=l.principal_id
+             WHERE l.link_kind='external' AND l.issuer=?1 AND l.subject=?2 AND l.status='active'",
+            params![issuer, subject],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(map_sqlite_error)?;
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| AccessStoreError::MalformedVocabulary)?
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO team_memberships(membership_id,organization_id,team_id,principal_id,role,status,membership_epoch,created_by,created_at,updated_at,revoked_at)
+             VALUES(?1,?2,?3,?4,?5,'active',1,?4,?6,?6,NULL)",
+            params![
+                format!("team-member-{INITIAL_TEAM_ID}-{principal_id}"),
+                organization_id,
+                INITIAL_TEAM_ID,
+                principal_id,
+                role.as_str(),
+                now
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction
+        .execute(
+            "UPDATE groups SET membership_epoch=membership_epoch+1,updated_at=?1
+             WHERE organization_id=?2 AND group_id=?3 AND status!='deleted'",
+            params![now, organization_id, INITIAL_TEAM_ID],
+        )
+        .map_err(map_sqlite_error)?;
+    if role == AllowlistRole::Admin {
+        transaction
+            .execute(
+                "INSERT INTO platform_administrators(principal_id,status,authority_epoch,granted_by,created_at,updated_at,revoked_at)
+                 VALUES(?1,'active',1,?1,?2,?2,NULL)
+                 ON CONFLICT(principal_id) DO UPDATE SET status='active',authority_epoch=platform_administrators.authority_epoch+1,updated_at=excluded.updated_at,revoked_at=NULL",
+                params![principal_id, now],
+            )
+            .map_err(map_sqlite_error)?;
+    }
+    transaction
+        .execute(
+            "UPDATE access_metadata SET global_revision=global_revision+1,updated_at=?1 WHERE singleton=1",
+            [now],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction
+        .execute(
+            "INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json)
+             VALUES(?1,?2,NULL,?3,?4,?5,'access.allowlist.provision','team_membership',?6,'allow','allowlist_admission',1,?7)",
+            params![
+                format!("allowlist-provision-{}", identity.safe_fingerprint().replace(':', "-")),
+                now,
+                principal_id,
+                organization_id,
+                project_id,
+                format!("{INITIAL_TEAM_ID}\0{principal_id}"),
+                serde_json::json!({"role": role.as_str()}).to_string()
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(TeamMemberProvisionOutcome::Created)
+}
+
 /// Only product-owned admission paths select an initial role; callers cannot
 /// request administrative roles or replace an existing membership's role.
 #[derive(Clone, Copy)]
 enum InitialRole {
     Member,
     Viewer,
+    Admin,
 }
 
 impl InitialRole {
@@ -55,6 +184,7 @@ impl InitialRole {
         match self {
             Self::Member => "member",
             Self::Viewer => "viewer",
+            Self::Admin => "admin",
         }
     }
 }
@@ -226,6 +356,99 @@ mod tests {
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
             ).map_err(map_sqlite_error)
         }).await.unwrap()
+    }
+
+    async fn membership_rows(
+        store: &AccessStore,
+    ) -> (Vec<(String, String)>, Vec<(String, String)>, i64) {
+        store
+            .with_connection(|connection| {
+                let mut teams = connection
+                    .prepare("SELECT team_id, role FROM team_memberships WHERE principal_id LIKE 'team-member-%' ORDER BY team_id")
+                    .map_err(map_sqlite_error)?;
+                let teams = teams
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(map_sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(map_sqlite_error)?;
+                let mut projects = connection
+                    .prepare("SELECT project_id, role FROM project_memberships WHERE principal_id LIKE 'team-member-%' ORDER BY project_id")
+                    .map_err(map_sqlite_error)?;
+                let projects = projects
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(map_sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(map_sqlite_error)?;
+                let admins: i64 = connection
+                    .query_row(
+                        "SELECT count(*) FROM platform_administrators WHERE status='active' AND principal_id LIKE 'team-member-%'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_sqlite_error)?;
+                Ok((teams, projects, admins))
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn allowlisted_member_gets_team_and_project_membership_once() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli");
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Member)
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::Created
+        );
+        let (teams, projects, admins) = membership_rows(&store).await;
+        assert_eq!(
+            teams,
+            vec![("bootstrap-initial-team".to_owned(), "member".to_owned())]
+        );
+        assert_eq!(
+            projects,
+            vec![("bootstrap-default".to_owned(), "member".to_owned())]
+        );
+        assert_eq!(admins, 0);
+        // Repeat sign-in is a no-op and never upgrades the role.
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::AlreadyActive
+        );
+        assert_eq!(membership_rows(&store).await, (teams, projects, 0));
+        let snapshot = store.session_authority(eli).await.unwrap();
+        assert!(!snapshot.platform_administrator);
+    }
+
+    #[tokio::test]
+    async fn allowlisted_admin_is_team_admin_and_platform_admin() {
+        let (_directory, store) = fixture().await;
+        let eli = identity("eli-admin");
+        assert_eq!(
+            store
+                .provision_allowlisted(eli.clone(), AllowlistRole::Admin)
+                .await
+                .unwrap(),
+            TeamMemberProvisionOutcome::Created
+        );
+        let (teams, projects, admins) = membership_rows(&store).await;
+        assert_eq!(
+            teams,
+            vec![("bootstrap-initial-team".to_owned(), "admin".to_owned())]
+        );
+        assert_eq!(
+            projects,
+            vec![("bootstrap-default".to_owned(), "admin".to_owned())]
+        );
+        assert_eq!(admins, 1);
+        let snapshot = store.session_authority(eli).await.unwrap();
+        assert!(snapshot.platform_administrator);
     }
 
     #[tokio::test]

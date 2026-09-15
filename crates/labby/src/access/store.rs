@@ -1341,6 +1341,19 @@ impl AccessStore {
         .await
     }
 
+    /// Called only after the session handler has matched the identity's
+    /// provider-verified email against the allowlist or configured admins.
+    pub(crate) async fn provision_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        role: super::AllowlistRole,
+    ) -> AccessStoreResult<super::TeamMemberProvisionOutcome> {
+        self.with_connection(move |connection| {
+            super::team_provision::provision_allowlisted(connection, &identity, role)
+        })
+        .await
+    }
+
     pub(crate) async fn authorize_skill_library(
         &self,
         identity: labby_auth::VerifiedIdentity,
