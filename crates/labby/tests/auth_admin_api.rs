@@ -960,6 +960,76 @@ async fn list_shows_added_emails() {
 
 // ── email normalization ───────────────────────────────────────────────────────
 
+// ── role handling ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn post_admin_session_adds_email_with_role_and_lists_it() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let app = h.router();
+    let response = app
+        .clone()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"eli@example.com","role":"admin"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["entry"]["role"], "admin");
+
+    let response = app
+        .oneshot(Harness::get_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+        ))
+        .await
+        .unwrap();
+    let json = body_json(response).await;
+    let entry = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["email"] == "eli@example.com")
+        .unwrap();
+    assert_eq!(entry["role"], "admin");
+}
+
+#[tokio::test]
+async fn post_without_role_defaults_to_member() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(body_json(response).await["entry"]["role"], "member");
+}
+
+#[tokio::test]
+async fn post_owner_role_returns_422() {
+    let h = Harness::new().await;
+    let session = h.seed_admin_session().await;
+    let response = h
+        .router()
+        .oneshot(Harness::post_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+            r#"{"email":"bob@example.com","role":"owner"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 #[tokio::test]
 async fn post_normalizes_email_to_lowercase() {
     let h = Harness::new().await;

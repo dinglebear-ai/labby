@@ -254,12 +254,31 @@ async fn list_allowed_emails(
 #[derive(Deserialize)]
 struct AddEmailBody {
     email: String,
+    #[serde(default = "default_allowlist_role")]
+    role: String,
+}
+
+fn default_allowlist_role() -> String {
+    "member".to_string()
+}
+
+/// Validate a caller-supplied allowlist role against the store's accepted set.
+fn validate_role(raw: &str) -> Result<&str, ToolError> {
+    let role = raw.trim();
+    if labby_auth::sqlite::SqliteStore::ALLOWED_USER_ROLES.contains(&role) {
+        Ok(role)
+    } else {
+        Err(ToolError::Sdk {
+            sdk_kind: "validation_failed".to_string(),
+            message: "role must be `member` or `admin`".to_string(),
+        })
+    }
 }
 
 /// `POST /v1/auth/allowed-emails`
 ///
-/// Body: `{ "email": "alice@example.com" }`
-/// Returns `{ "entry": {email, added_by, created_at} }` (201).
+/// Body: `{ "email": ..., "role": "member" | "admin" }`
+/// Returns `{ "entry": {email, added_by, created_at, role} }` (201).
 async fn add_allowed_email(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -327,6 +346,20 @@ async fn add_allowed_email(
         }
     };
 
+    let role = match validate_role(&body.role) {
+        Ok(role) => role.to_owned(),
+        Err(err) => {
+            log_auth_dispatch(
+                action,
+                req_id.as_deref(),
+                start,
+                Some(err.kind()),
+                actor_key,
+            );
+            return no_store(ApiError::new(err).into_response());
+        }
+    };
+
     let email_fp = fingerprint(&email);
     let added_by = auth.sub.clone();
     let created_at = now_unix();
@@ -342,8 +375,7 @@ async fn add_allowed_email(
 
     match auth_state
         .store
-        // TODO(Task 4): pass the caller-selected role instead of the literal "member".
-        .add_allowed_user(&email, &added_by, "member", created_at)
+        .add_allowed_user(&email, &added_by, &role, created_at)
         .await
     {
         Ok(()) => {}
@@ -367,7 +399,7 @@ async fn add_allowed_email(
         email: email.clone(),
         added_by,
         created_at,
-        role: "member".into(),
+        role: role.clone(),
     };
 
     tracing::info!(
