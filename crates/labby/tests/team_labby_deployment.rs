@@ -6,6 +6,7 @@ const LABBY_CONFIG: &str = include_str!("../../../deploy/team-labby/config.toml.
 const GIT_CREDENTIALS: &str =
     include_str!("../../../deploy/team-labby/team-depot-git-credentials.json.example");
 const SOURCE_BOOTSTRAP: &str = include_str!("../../../deploy/team-labby/bootstrap-team-sources.sh");
+const DEPLOYMENT_README: &str = include_str!("../../../deploy/team-labby/README.md");
 
 #[test]
 fn team_depot_mounts_a_named_private_git_credential_map() {
@@ -41,6 +42,17 @@ fn team_source_bootstrap_covers_every_required_unraid_repository() {
     assert!(SOURCE_BOOTSTRAP.contains("depot.skills.ingest_repo"));
     assert!(SOURCE_BOOTSTRAP.contains("github-private"));
     assert!(SOURCE_BOOTSTRAP.contains("sources list"));
+}
+
+#[test]
+fn systemd_team_depot_documents_secure_private_git_credential_installation() {
+    assert!(
+        DEPLOYMENT_README.contains("/var/lib/team-labby/team-depot/secrets/git-credentials.json")
+    );
+    assert!(DEPLOYMENT_README.contains("/etc/team-labby/team-depot.env"));
+    assert!(DEPLOYMENT_README.contains("install -m 0640 -o root -g team-depot"));
+    assert!(DEPLOYMENT_README.contains("systemctl restart team-depot"));
+    assert!(DEPLOYMENT_README.contains("Depot.Ingest.GitCredential.validate(\"github-private\""));
 }
 
 #[test]

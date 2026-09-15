@@ -104,8 +104,52 @@ instead of creating a second schedule. Each repository source refreshes hourly
 by default and persists only the `github-private` credential reference, never
 the token.
 
-For the current systemd release layout, run the same contract by pointing the
-script at the installed operator CLI instead of Compose:
+For the current systemd release layout, the credential has to be installed by a
+host/root operator before the unprivileged Labby account can bootstrap sources.
+The live service runs as `team-depot`, reads
+`/etc/team-labby/team-depot.env`, and keeps mutable state under
+`/var/lib/team-labby/team-depot`. Run these steps from an authorized root
+session on the Team Labby VM:
+
+```sh
+install -d -m 0750 -o root -g team-depot /var/lib/team-labby/team-depot/secrets
+install -m 0640 -o root -g team-depot \
+  /secure/operator-input/team-depot-git-credentials.json \
+  /var/lib/team-labby/team-depot/secrets/git-credentials.json
+```
+
+Set this exact value in `/etc/team-labby/team-depot.env` without putting the
+GitHub token itself in the environment file:
+
+```text
+DEPOT_GIT_CREDENTIALS_FILE=/var/lib/team-labby/team-depot/secrets/git-credentials.json
+```
+
+Restart Team Depot and prove the service is healthy before starting any ingest:
+
+```sh
+systemctl restart team-depot
+systemctl is-active --quiet team-depot
+/opt/team-labby/team-depot/bin/depotctl --json status
+```
+
+The credential file must contain the same `github-private` map shown in
+`team-depot-git-credentials.json.example`. Validate the reference against all
+three repositories without printing the secret:
+
+```sh
+/opt/team-labby/team-depot/bin/depot rpc '
+for url <- [
+  "https://github.com/unraid/unmarket",
+  "https://github.com/unraid/limetech-ai-skills",
+  "https://github.com/unraid/limetech-elixir-skills"
+] do
+  IO.inspect({url, Depot.Ingest.GitCredential.validate("github-private", url)})
+end'
+```
+
+Every tuple must end in `:ok`. Only then run the same bootstrap contract by
+pointing the script at the installed operator CLI instead of Compose:
 
 ```sh
 TEAM_DEPOTCTL=/opt/team-labby/team-depot/bin/depotctl ./bootstrap-team-sources.sh
