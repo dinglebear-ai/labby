@@ -1066,7 +1066,8 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 
 /// Structural check only: exactly one `@` with non-empty local and domain
 /// parts and no whitespace. Provider email verification is the real proof.
-fn is_plausible_email(email: &str) -> bool {
+#[must_use]
+pub fn is_plausible_email(email: &str) -> bool {
     match email.split_once('@') {
         Some((local, domain)) => {
             !local.is_empty()

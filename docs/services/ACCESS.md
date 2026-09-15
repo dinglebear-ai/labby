@@ -89,7 +89,8 @@ and in again does not change this. The steps below are what the administrator
 does.
 
 1. **Admit the identity.** As the configured admin, add the email to the
-   allowlist: the settings UI, or `POST /v1/auth/allowed-emails` with
+   allowlist: **Settings → Authentication** in the web UI, or
+   `POST /v1/auth/allowed-emails` with
    `{"email": "teammate@example.com"}`. The allowlist routes accept only the
    browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
    `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the
