@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
 import { gatewayRequestInit } from './gateway-request'
 import { refreshBrowserSession } from './service-action-client'
+import { mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
+
+const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
@@ -349,6 +352,7 @@ async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T
 }
 
 export async function listArtifacts(input: { provider?: string; query?: string; kind?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
+  if (USE_MOCK_DATA) return structuredClone(mockListArtifacts(input))
   const query = input.query ?? ''
   if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
   const kind = input.kind === 'all' ? undefined : input.kind
@@ -363,6 +367,7 @@ export async function listArtifacts(input: { provider?: string; query?: string; 
 }
 
 export async function getArtifact(providerId: string, artifactId: string, signal?: AbortSignal) {
+  if (USE_MOCK_DATA) return structuredClone(mockGetArtifact(providerId, artifactId))
   const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response', 'retry-once')
   if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Labby catalog returned the wrong artifact identity')
   return value
@@ -373,6 +378,7 @@ export async function listProviders(signal?: AbortSignal): Promise<DepotProvider
 }
 
 export async function listProviderOptions(signal?: AbortSignal): Promise<DepotProviderOption[]> {
+  if (USE_MOCK_DATA) return structuredClone(mockDepotProviderOptions)
   const providers = await requestV2('/v1/depot/providers', { signal }, z.array(z.union([providerOptionSchema, providerSchema])).max(16), 'provider options response')
   return providers.map(({ id, name, enabled, health }) => ({ id, name, enabled, health }))
 }

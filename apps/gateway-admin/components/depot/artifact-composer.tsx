@@ -24,6 +24,8 @@ import {
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { consumeOwnerLinkApproval, depotPublishCapability, publishDepotSkill, type DepotPublishCapability } from '@/lib/api/depot-client'
+import { gatewayApi } from '@/lib/api/gateway-client'
+import { getMockGatewayFallback } from '@/lib/api/mock-fallback'
 import { getBrowserSessionContextIdentity, getBrowserSessionEpoch, getBrowserSessionState, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { ArtifactFrontmatterPreview } from './artifact-frontmatter-preview'
 import { ArtifactValidationPanel } from './artifact-validation-panel'
@@ -41,6 +43,7 @@ import {
   browserModelContext, registerCreatePageWebMcpTools,
   type CreatePageDraftPatch, type CreatePageDraftSnapshot, type CreatePagePublishReceipt,
 } from './create-page-webmcp'
+import { gatewaySkillDraft } from './gateway-skill-draft'
 
 const STARTER_BODY = `## When to use
 
@@ -83,6 +86,7 @@ function HighlightedArtifactSource({ content }: { content: string }) {
   })}</>
 }
 const CREATE_DRAFT_SAVE_DELAY_MS = 120
+const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
 export function createDraftStorageKey(contextIdentity: string) {
   return `${CREATE_DRAFT_PREFIX}${encodeURIComponent(contextIdentity)}`
@@ -165,6 +169,7 @@ export function ArtifactComposer() {
   const [publishing, setPublishing] = React.useState(false)
   const publishingRef = React.useRef(false)
   const webMcpRuntimeRef = React.useRef<CreatePageWebMcpRuntime | null>(null)
+  const gatewayDraftRequestRef = React.useRef<string | null>(null)
   const [linkingOwner, setLinkingOwner] = React.useState(false)
   const linkingOwnerRef = React.useRef(false)
   const [publishMessage, setPublishMessage] = React.useState('')
@@ -188,6 +193,7 @@ export function ArtifactComposer() {
     setDraftLoaded(false)
     if (!draftStorageKey) {
       setDraftStatus('session')
+      setDraftLoaded(true)
       return
     }
     try {
@@ -211,6 +217,45 @@ export function ArtifactComposer() {
     } catch { setDraftStatus('error') }
     setDraftLoaded(true)
   }, [draftStorageKey, sessionEpoch])
+
+  React.useEffect(() => {
+    if (!draftLoaded) return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('intent') !== 'generate-skill') return
+    const gatewayId = params.get('gateway')?.trim()
+    if (!gatewayId || gatewayDraftRequestRef.current === gatewayId) return
+    gatewayDraftRequestRef.current = gatewayId
+    const controller = new AbortController()
+    const gatewayRequest = USE_MOCK_DATA
+      ? Promise.resolve(getMockGatewayFallback(gatewayId)).then((gateway) => {
+          if (!gateway) throw new Error('Gateway not found')
+          return gateway
+        })
+      : gatewayApi.get(gatewayId, controller.signal)
+    void gatewayRequest.then((gateway) => {
+      if (controller.signal.aborted) return
+      const draft = gatewaySkillDraft(gateway)
+      setKind('Skill')
+      setMetadata(draft.metadata)
+      setContent(draft.content)
+      setWorkspaceMode('artifact')
+      setBundleEntries({})
+      setDraftStatus('unsaved')
+      const url = new URL(window.location.href)
+      url.searchParams.delete('gateway')
+      url.searchParams.delete('intent')
+      window.history.replaceState(window.history.state, '', url)
+      toast.success(`Drafted skill from ${gateway.name}`)
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return
+      gatewayDraftRequestRef.current = null
+      toast.error(error instanceof Error ? error.message : 'Could not generate a skill draft from this server.')
+    })
+    return () => {
+      controller.abort()
+      if (gatewayDraftRequestRef.current === gatewayId) gatewayDraftRequestRef.current = null
+    }
+  }, [draftLoaded, sessionEpoch])
 
   const source = React.useMemo(() => composeArtifactSource(kind, metadata, content), [content, kind, metadata])
   const storedDraft = React.useMemo<StoredCreateDraft>(() => ({ version: 1, kind, metadata, content, workspaceMode, bundleEntries }), [bundleEntries, content, kind, metadata, workspaceMode])

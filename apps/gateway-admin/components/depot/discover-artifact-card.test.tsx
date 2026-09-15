@@ -75,9 +75,25 @@ test('grid card uses the inset kind stripe and compact header geometry', () => {
   assert.match(markup, /data-kind-stripe="true"/)
   assert.match(markup, /bottom-3\.5 left-0 top-3\.5 w-0\.5/)
   assert.doesNotMatch(markup, /border-l-2|border-left-color/)
-  assert.match(markup, /size-8 shrink-0 place-items-center/)
+  assert.ok(markup.includes('size-[34px] shrink-0 place-items-center'))
   assert.match(markup, /px-4 pt-3\.5 pb-\[13px\]/)
   assert.doesNotMatch(markup, /Verified|Installs|Stars/)
+})
+
+test('list rows use the shared reference geometry and cards show only proven search-match cues', () => {
+  const list = renderToStaticMarkup(<DiscoverArtifactCard artifact={{ providerId: 'catalog', artifactId: 'row', kind: 'skill', title: 'Row' }} compact selected={false} href="/depot" />)
+  assert.match(list, /border-t border-l-2/)
+  assert.ok(list.includes('gap-2.5 border-t border-l-2'))
+  assert.ok(list.includes('px-4 py-1.5'))
+  assert.match(list, /w-\[78px\]/)
+  assert.match(list, /w-\[120px\]/)
+  assert.match(list, /w-24/)
+  assert.match(list, /w-\[62px\]/)
+  const matched = renderToStaticMarkup(<DiscoverArtifactCard artifact={{ providerId: 'catalog', artifactId: 'search', title: 'Search result' }} compact={false} selected={false} href="/depot" matchLabel="matched in tags" />)
+  assert.match(matched, /data-match-label=/)
+  assert.match(matched, /matched in tags/)
+  const unmatched = renderToStaticMarkup(<DiscoverArtifactCard artifact={{ providerId: 'catalog', artifactId: 'search', title: 'Search result' }} compact={false} selected={false} href="/depot" />)
+  assert.doesNotMatch(unmatched, /data-match-label|matched in/)
 })
 
 test('reported verification and safe metrics render without inferring missing evidence', () => {

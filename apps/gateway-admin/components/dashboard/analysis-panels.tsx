@@ -129,7 +129,7 @@ export function TokensByToolPanel({
 
 // ── Upstreams ────────────────────────────────────────────────────────────
 
-export function UpstreamsPanel({ upstreams, onSelect }: { upstreams: UpstreamUsage[]; onSelect?: (name: string) => void }) {
+export function UpstreamsPanel({ upstreams, onSelect, window }: { upstreams: UpstreamUsage[]; onSelect?: (name: string) => void; window?: MetricsWindow }) {
   const items: MetricBarItem[] = upstreams.map((u) => ({
     key: u.name,
     label: u.name,
@@ -141,7 +141,7 @@ export function UpstreamsPanel({ upstreams, onSelect }: { upstreams: UpstreamUsa
     <DashboardPanel
       title="Most active servers"
       icon={<Server className="size-4" />}
-      meta={`${upstreams.length} server${upstreams.length === 1 ? '' : 's'}`}
+      meta={window ? `by calls · ${WINDOW_LABELS[window]}` : `${upstreams.length} server${upstreams.length === 1 ? '' : 's'}`}
     >
       <MetricBarList items={items} mono />
     </DashboardPanel>

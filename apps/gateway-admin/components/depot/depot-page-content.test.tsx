@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { depotCoveragePulse, discoveryCountLabel, exactImportConnection, mergeArtifactPages } from './depot-page-content'
+import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, exactImportConnection, mergeArtifactPages } from './depot-page-content'
 
 test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
   assert.equal(discoveryCountLabel(0, false, true), '—')
@@ -46,6 +48,24 @@ test('mergeArtifactPages appends unique cursor results in order', () => {
 
 test('mergeArtifactPages drops cursor rows without a stable artifact identity', () => {
   assert.deepEqual(mergeArtifactPages([], [{ title: 'Missing identity' }]), [])
+})
+
+test('Discover result states preserve loading, empty, and partial-provider explanations', () => {
+  const base = {
+    artifacts: [], activeQuery: '', view: 'cards' as const, density: 'comfortable' as const,
+    artifactHref: () => '/depot/', onReset: () => {}, selectionMode: false, selectedBulkKeys: [], cursorIndex: -1,
+    onToggleSelected: () => {}, onEnterSelectionMode: () => {}, onAdd: async () => {}, isInLibrary: () => false, actionPending: false,
+  }
+  const loading = renderToStaticMarkup(<ArtifactResults {...base} loading incomplete={false}/>)
+  assert.match(loading, /Searching catalog…/)
+  const empty = renderToStaticMarkup(<ArtifactResults {...base} loading={false} incomplete={false}/>)
+  assert.match(empty, /No artifacts match that filter./)
+  assert.match(empty, /Clear the kind and source filters, or publish the first one./)
+  assert.match(empty, /Reset Filters/)
+  const partial = renderToStaticMarkup(<ArtifactResults {...base} loading={false} incomplete/>)
+  assert.match(partial, /Search results are not complete yet./)
+  assert.match(partial, /Retry once every source is available./)
+  assert.doesNotMatch(partial, /Reset Filters/)
 })
 
 test('exactImportConnection requires a source connection matching the discovery provider', () => {

@@ -12,7 +12,7 @@ export function TopToolsChart({ tools, onSelect }: { tools: ToolUsageEntry[]; on
         <span className="mb-1 flex min-w-0 items-baseline gap-2">
           <span className="w-[18px] shrink-0 text-[10px] font-semibold tabular-nums text-aurora-text-muted">{String(index + 1).padStart(2, '0')}</span>
           <span title={tool.label ?? tool.name} className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-aurora-text-primary">{label}</span>
-          {tool.failed > 0 ? <span className="shrink-0 text-[10px] font-semibold tabular-nums text-aurora-error">{tool.failed} failed</span> : null}
+          {tool.failed > 0 ? <span className="shrink-0 text-[10px] font-semibold tabular-nums text-aurora-error">{tool.failed} err</span> : null}
           <span className="shrink-0 text-[11px] font-semibold tabular-nums text-aurora-text-muted">{tool.calls.toLocaleString('en-US')}</span>
         </span>
         <span aria-hidden="true" className="ml-[26px] block h-1 overflow-hidden rounded-full bg-aurora-control-surface"><span className="block h-full rounded-full bg-gradient-to-r from-aurora-accent-deep to-aurora-accent-primary" style={{ width: `${maximum > 0 ? Math.max(0, tool.calls) / maximum * 100 : 0}%` }}/></span>

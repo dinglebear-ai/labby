@@ -1,24 +1,20 @@
 'use client'
 
-import { Clock3, Download, GitFork, LayoutGrid, ShieldCheck } from 'lucide-react'
+import type { ComponentType } from 'react'
+import { Clock3, Download, Flame, GitFork, Layers3, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import type { FederatedArtifact } from '@/lib/api/depot-client'
-import type { DiscoverySort } from './discover-model'
+import { DISCOVERY_SHELVES, type DiscoveryShelf } from './discover-model'
 
-const tabs = [
-  { sort: 'catalog', label: 'Catalog', icon: LayoutGrid },
-  { sort: 'newest', label: 'New', icon: Clock3 },
-  { sort: 'installs', label: 'Popular', icon: Download },
-  { sort: 'forks', label: 'Forks', icon: GitFork },
-  { sort: 'verified', label: 'Verified', icon: ShieldCheck },
-] as const
+const ICONS = {
+  trending: Flame, new: Clock3, popular: Download, bundled: Layers3, forks: GitFork, curated: ShieldCheck,
+} satisfies Record<DiscoveryShelf, ComponentType<{ className?: string; strokeWidth?: number }>>
 
-export function DiscoverResultTabs({ artifacts, sort, setSort }: { artifacts: readonly FederatedArtifact[]; sort: DiscoverySort; setSort: (sort: DiscoverySort) => void }) {
-  return <div role="group" aria-label="Artifact result order" className="aurora-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto">
-    {tabs.map(tab => {
-      const available = tab.sort === 'catalog' || artifacts.some(artifact => tab.sort === 'newest' ? Boolean(artifact.currentRevision?.authoredAt) : tab.sort === 'verified' ? artifact.publisherVerified !== undefined : artifact.metrics?.[tab.sort] !== undefined)
-      const title = !available ? 'Connected sources have not supplied this metadata.' : tab.sort === 'catalog' ? 'Order supplied by the catalog.' : tab.sort === 'newest' ? 'Revision dates in loaded results.' : tab.sort === 'verified' ? 'Publisher verification reported in loaded results.' : `${tab.sort === 'installs' ? 'Installs' : 'Forks'} reported in loaded results.`
-      return <Button data-visible-label key={tab.sort} variant="ghost" size="sm" disabled={!available} aria-pressed={sort === tab.sort} title={title} onClick={() => setSort(tab.sort)} className="h-[34px] shrink-0 gap-1.5 rounded-none border-0 border-b-2 px-3 text-xs font-[650]" style={{ borderBottomColor: sort === tab.sort ? 'var(--aurora-accent-primary)' : 'transparent', color: sort === tab.sort ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)' }}><tab.icon aria-hidden className="size-[13px]" strokeWidth={1.7} />{tab.label}</Button>
+export function DiscoverResultTabs({ shelf, setShelf }: { shelf: DiscoveryShelf; setShelf: (shelf: DiscoveryShelf) => void }) {
+  return <div role="group" aria-label="Artifact shelves" className="aurora-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto">
+    {DISCOVERY_SHELVES.map(item => {
+      const Icon = ICONS[item.id]
+      const active = shelf === item.id
+      return <Button data-visible-label key={item.id} variant="ghost" size="sm" aria-pressed={active} title={item.hint} onClick={() => setShelf(item.id)} className="-mb-px h-[34px] shrink-0 gap-1.5 rounded-none border-0 border-b-2 px-3 text-[12.5px] font-bold" style={{ paddingInline: 12, borderBottomColor: active ? 'var(--aurora-accent-primary)' : 'transparent', color: active ? 'var(--aurora-text-primary)' : 'var(--aurora-text-muted)' }}><Icon aria-hidden className="size-[13px]" strokeWidth={1.7} />{item.label}</Button>
     })}
   </div>
 }

@@ -7,7 +7,7 @@ import { DashboardPanel } from './panel'
 import { MetricBarList } from './metric-bars'
 import { readableTarget } from '@/lib/dashboard/readable-target'
 import { DASH_METRIC_SM, dashPill } from './ui'
-import { formatCompactNumber } from '@/lib/dashboard/dashboard-metrics'
+import { formatCompactNumber, WINDOW_LABELS } from '@/lib/dashboard/dashboard-metrics'
 import type {
   ActorKind,
   ActorUsageEntry,
@@ -86,28 +86,34 @@ export function MostActivePanel({
   window,
   onSelectActor,
   actorKindsCollected = true,
+  overviewMode = false,
 }: {
   actors: DashboardMetrics['actors']
   window: MetricsWindow
   onSelectActor: (entry: ActorUsageEntry) => void
   actorKindsCollected?: boolean
+  overviewMode?: boolean
 }) {
-  const [facet, setFacet] = useState<ActorKind>(() => actors.client?.active ? 'client' : actors.subject?.active ? 'subject' : actors.agent.active ? 'agent' : actors.unknown ? 'unknown' : 'agent')
-  const current = actors[facet] ?? { active: 0, top: [] }
-  const meta = ACTOR_FACETS.find((f) => f.key === facet)!
+  const preferredFacet: ActorKind = actors.client?.active ? 'client' : actors.subject?.active ? 'subject' : actors.agent.active ? 'agent' : actors.unknown ? 'unknown' : 'agent'
+  const [facet, setFacet] = useState<ActorKind>(() => preferredFacet)
+  const activeFacet = overviewMode ? preferredFacet : facet
+  const current = actors[activeFacet] ?? { active: 0, top: [] }
+  const meta = ACTOR_FACETS.find((f) => f.key === activeFacet)!
   const top = current.top.slice(0, 5)
   const maxCalls = Math.max(0, ...top.map(entry => entry.calls))
 
   return (
     <DashboardPanel
-      title={actorKindsCollected ? `Most active ${meta.label.toLowerCase()}` : actors.unknown ? 'Most active unknown identities' : 'Most active subjects'}
+      title={overviewMode ? 'Most active agents' : actorKindsCollected ? `Most active ${meta.label.toLowerCase()}` : actors.unknown ? 'Most active unknown identities' : 'Most active subjects'}
       iconTone="pink"
       icon={<Bot className="size-4" />}
-      meta={actorKindsCollected
-        ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
-        : `${current.active} subject${current.active === 1 ? '' : 's'}`}
+      meta={overviewMode
+        ? `top_actors · ${WINDOW_LABELS[window]}`
+        : actorKindsCollected
+          ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
+          : `${current.active} subject${current.active === 1 ? '' : 's'}`}
     >
-      {actorKindsCollected ? <div
+      {actorKindsCollected && !overviewMode ? <div
         role="tablist"
         aria-label="Actor facet"
         className="inline-flex items-center gap-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface p-0.5"
@@ -215,7 +221,7 @@ export function LeastUsedPanel({
   onSelect?: (tool: string) => void
 }) {
   return (
-    <DashboardPanel title="Least used" iconTone="warn" icon={<TrendingDown className="size-4" />} meta={`of ${distinct} distinct`}>
+    <DashboardPanel title="Least used tools" iconTone="warn" icon={<TrendingDown className="size-4" />} meta={`of ${distinct} distinct`}>
       <MetricBarList tone="warn" empty="No upstream calls in this window." items={tools.slice(0, 4).map(tool => ({
         key: tool.id ?? tool.name, label: readableTarget(tool.label ?? tool.name), title: tool.name, value: tool.calls,
         display: `${formatCompactNumber(tool.calls)} calls`,

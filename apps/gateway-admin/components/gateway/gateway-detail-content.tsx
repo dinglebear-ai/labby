@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Pencil,
   Trash2,
-  Check,
   AlertTriangle,
   Clock,
   FileText,
@@ -77,7 +76,6 @@ import { ProtectedMcpRoutesPanel } from './protected-mcp-routes-panel'
 import useSWR from 'swr'
 import { fetchToolCalls, fetchGatewayUsageMetrics } from '@/lib/api/metrics-client'
 import { LogsPageContent } from '@/components/logs/logs-page-content'
-import { WarningsPill } from './warnings-pill'
 import { GatewayCompactCatalog } from './gateway-compact-catalog'
 import { GatewayActivityPanels } from './gateway-activity-panels'
 import { gatewayDetailStatus } from './gateway-detail-status'
@@ -251,7 +249,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isReloading, setIsReloading] = useState(false)
   const [isCleaningRuntime, setIsCleaningRuntime] = useState(false)
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
-  const [configCopied, setConfigCopied] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
@@ -379,9 +376,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const handleCopyConfig = async () => {
     try {
       await navigator.clipboard.writeText(clientConfigJson)
-      setConfigCopied(true)
       toast.success('Configuration copied to clipboard')
-      setTimeout(() => setConfigCopied(false), 2000)
     } catch {
       toast.error('Failed to copy configuration to clipboard')
     }
@@ -687,10 +682,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     order is Test · View in Logs · Reload · Generate skill · Edit · More, where
     More is a chevron menu holding Copy .mcp.json / Enable-Disable / Remove.
 
-    Two of those have nothing behind them here — there is no per-server log
-    route and no skill generator — so they are omitted rather than rendered
-    dead. Remove stays a visible button instead of moving into a More menu we
-    have no other occupants for; its confirm flow is unchanged.
+    View in Logs uses the real detail log tab. Generate skill opens the Create
+    workspace with a draft derived from this server's current discovery catalog,
+    so the mock affordance is functional rather than decorative. More keeps
+    configuration, client-config copy, and destructive removal together.
   */
   const headerActions = (
     <div className="relative flex h-8 items-center" style={{ gap: 5 }}>
@@ -736,9 +731,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         </DetailTopbarButton>
       )}
       <DetailTopbarButton
-        onClick={() => router.push(`/create?gateway=${encodeURIComponent(gateway.id)}`)}
-        aria-label="Create artifact from server"
-        title="Generate artifact"
+        onClick={() => router.push(`/create?gateway=${encodeURIComponent(gateway.id)}&intent=generate-skill`)}
+        aria-label="Generate skill"
+        title="Generate SKILL.md from this server's schema"
+        style={{
+          borderColor: 'color-mix(in srgb, var(--aurora-accent-pink-deep) 55%, transparent)',
+          background: 'color-mix(in srgb, var(--aurora-accent-pink) 8%, var(--aurora-control-surface))',
+          color: 'var(--aurora-accent-pink)',
+        }}
       >
         <Sparkles size={13} />
       </DetailTopbarButton>
@@ -1039,7 +1039,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                         toast.error('Failed to copy to clipboard')
                       }
                     }}
-                    aria-label="Copy command"
+                    aria-label={gateway.transport === 'http' ? 'Copy HTTP target' : 'Copy command'}
                     title={endpointDisplay}
                     style={{
                       color:
@@ -1049,13 +1049,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     }}
                   >
                     {gateway.transport === 'http' ? <Globe size={15} /> : <Terminal size={15} />}
-                  </HeaderMetaButton>
-                  <HeaderMetaButton
-                    onClick={handleCopyConfig}
-                    aria-label="Copy client configuration"
-                    title="Copy .mcp.json entry"
-                  >
-                    {configCopied ? <Check size={14} /> : <Braces size={14} />}
                   </HeaderMetaButton>
                   <HeaderMetaDot />
                   <span style={{ fontWeight: 650 }}>{transportLabel}</span>
@@ -1094,23 +1087,18 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       </DetailWarnPill>
                     </>
                   ) : null}
-                  <WarningsPill warnings={gateway.warnings} gatewayName={gateway.name} staleCount={gateway.status.likely_stale_count}/>
-                  <HeaderMetaDot />
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex cursor-default items-center gap-1.5"
-                        style={{ fontVariantNumeric: 'tabular-nums' }}
-                        title={updatedAtLabel}
-                        aria-label={`Last updated ${updatedAtLabel}`}
+                  {gateway.warnings.length > 0 || (gateway.status.likely_stale_count ?? 0) > 0 ? (
+                    <>
+                      <HeaderMetaDot />
+                      <span
+                        className="inline-grid size-[18px] place-items-center rounded-[5px] text-aurora-warn"
+                        title={gateway.warnings[0]?.message ?? `${gateway.status.likely_stale_count} likely stale processes`}
+                        aria-label="Server needs attention"
                       >
-                        <Clock size={11} />
-                        {updatedAtLabel}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">{updatedAtLabel}</TooltipContent>
-                  </Tooltip>
+                        <AlertTriangle size={13} />
+                      </span>
+                    </>
+                  ) : null}
                 </div>
               </div>
             </div>

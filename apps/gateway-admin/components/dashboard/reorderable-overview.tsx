@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import { ArrowDown, ArrowLeftRight, ArrowUp, GripVertical, Maximize, Minimize } from 'lucide-react'
+import { Maximize, Minimize } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type Lane = 'telemetry' | 'insights'
@@ -9,7 +9,7 @@ type Card = { id: string; content: ReactNode; wide?: boolean; rail?: boolean }
 export type OverviewLayout = { order: string[]; widths: Record<string, boolean>; lanes: Record<string, Lane> }
 type DropTarget = { id: string | null; lane: Lane; after: boolean }
 type Drag = { id: string; x: number; y: number }
-type PendingDrag = { id: string; x: number; y: number; pointerId: number; active: boolean; target: HTMLButtonElement }
+type PendingDrag = { id: string; x: number; y: number; pointerId: number; active: boolean; target: HTMLElement }
 type PackingItem = { id: string; span: number; wide: boolean }
 export type OverviewPackingPosition = { id: string; column: number; row: number; span: number; columns: number }
 const LAYOUT_KEY = 'labby:overview-layout:v2'
@@ -107,13 +107,13 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   const pending = useRef<PendingDrag | null>(null)
   const pointer = useRef({ x: 0, y: 0 })
   const animation = useRef<number | null>(null)
-  const handles = useRef(new Map<string, HTMLButtonElement>())
+  const cardNodes = useRef(new Map<string, HTMLElement>())
   const focusAfterMove = useRef<string | null>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
   const [drop, setDrop] = useState<DropTarget | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const [storageWarning, setStorageWarning] = useState(false)
-  const laneOf = (id: string) => layout.lanes[id] ?? (cards.find(card => card.id === id)?.rail ? 'insights' : 'telemetry')
+  const laneOf = (id: string) => cards.find(card => card.id === id)?.rail ? 'insights' : 'telemetry'
 
   useEffect(() => {
     try {
@@ -139,7 +139,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     const id = focusAfterMove.current
     if (!id) return
     focusAfterMove.current = null
-    handles.current.get(id)?.focus()
+    cardNodes.current.get(id)?.focus()
   }, [layout])
 
   useLayoutEffect(() => {
@@ -149,7 +149,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     let frame: number | null = null
     const pack = () => {
       frame = null
-      const unified = getComputedStyle(telemetry).display === 'contents'
+      const unified = false
       const packingGrid = unified ? columns : telemetry
       const styles = getComputedStyle(packingGrid)
       const rowHeight = Number.parseFloat(styles.gridAutoRows) || MASONRY_ROW_HEIGHT
@@ -160,8 +160,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
         card.style.gridRowStart = ''
         card.style.gridRowEnd = 'auto'
       }
-      const selector = unified ? '[data-overview-card]' : '[data-overview-lane="telemetry"] > [data-overview-card]'
-      const packingCards = [...columns.querySelectorAll<HTMLElement>(selector)]
+      const packingCards: HTMLElement[] = []
       for (const card of packingCards) {
         card.style.gridRowEnd = 'auto'
         card.style.gridRowEnd = `span ${overviewMasonrySpan(card.getBoundingClientRect().height, rowHeight, gap)}`
@@ -223,6 +222,8 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     const laneElement = element?.closest<HTMLElement>('[data-overview-lane]')
     if (!laneElement) return null
     const lane = laneElement.dataset.overviewLane as Lane
+    const sourceId = pending.current?.id
+    if (sourceId && lane !== laneOf(sourceId)) return null
     const card = element?.closest<HTMLElement>('[data-overview-card]')
     if (!card) {
       const sourceId = pending.current?.id
@@ -256,18 +257,19 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     }
     animation.current = requestAnimationFrame(autoScroll)
   }
-  const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>, id: string) => {
+  const pointerDown = (event: ReactPointerEvent<HTMLElement>, id: string) => {
     if (event.button !== 0 || pending.current) return
+    if ((event.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return
     pending.current = { id, x: event.clientX, y: event.clientY, pointerId: event.pointerId, active: false, target: event.currentTarget }
     pointer.current = { x: event.clientX, y: event.clientY }
     try {
       event.currentTarget.setPointerCapture(event.pointerId)
     } catch {
       clearDrag()
-      setAnnouncement(`Could not start pointer drag for ${id}. Use the move controls instead.`)
+      setAnnouncement(`Could not start pointer drag for ${id}. Use Alt+Arrow keys instead.`)
     }
   }
-  const pointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const pointerMove = (event: ReactPointerEvent<HTMLElement>) => {
     const source = pending.current
     if (!source || source.pointerId !== event.pointerId) return
     pointer.current = { x: event.clientX, y: event.clientY }
@@ -281,7 +283,7 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
     setDrag({ id: source.id, ...pointer.current })
     updateDrop()
   }
-  const pointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const pointerUp = (event: ReactPointerEvent<HTMLElement>) => {
     const source = pending.current
     if (!source || source.pointerId !== event.pointerId) return
     // Compute from release coordinates too, including after autoscrolling.
@@ -298,33 +300,47 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   const controlClass = 'rounded p-1 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary disabled:opacity-30'
 
   return <section ref={root} aria-label="Customizable overview cards" onKeyDown={event => { if (event.key === 'Escape' && pending.current) { clearDrag(); setAnnouncement('Card move cancelled.') } }}>
-    <p className={storageWarning ? 'mb-2 text-[10px] text-aurora-text-muted' : 'sr-only'}>{storageWarning ? 'Layout changes work for this session, but this device could not read or save them.' : 'Use a card’s drag handle to arrange your overview. Arrow buttons move within a column; the column button moves between columns. Layout is saved on this device.'}</p>
+    <p className={storageWarning ? 'mb-2 text-[10px] text-aurora-text-muted' : 'sr-only'}>{storageWarning ? 'Layout changes work for this session, but this device could not read or save them.' : 'Drag a card to rearrange it within its mock-defined lane. Alt+Arrow keys provide the keyboard equivalent. Layout is saved on this device.'}</p>
     <span role="status" aria-live="polite" className="sr-only">{announcement}</span>
-    <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-3 min-[1100px]:gap-y-1.5 min-[1100px]:[grid-auto-flow:row_dense] min-[1100px]:[grid-auto-rows:1px]">
+    <div data-overview-columns className="grid min-w-0 items-start gap-3 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]">
       {(['telemetry', 'insights'] as const).map(lane => {
         const laneIds = layout.order.filter(id => laneOf(id) === lane)
         return <div
           key={lane}
           data-overview-lane={lane}
           className={cn(
-            'grid min-h-16 min-w-0 content-start items-start self-stretch rounded-aurora-2 min-[1100px]:contents',
-            lane === 'telemetry' ? 'gap-x-3 gap-y-1.5 min-[700px]:grid-cols-2 [grid-auto-flow:row_dense] [grid-auto-rows:1px]' : 'gap-3',
+            lane === 'telemetry'
+              ? 'grid min-h-16 min-w-0 content-start items-start gap-3 min-[700px]:grid-cols-[repeat(auto-fit,minmax(250px,1fr))]'
+              : 'flex min-h-16 min-w-0 flex-col gap-3',
             drag && drop?.lane === lane && drop.id === null && 'ring-2 ring-aurora-accent-primary',
           )}
         >
-          {laneIds.map((id, index) => {
+          {laneIds.map((id) => {
             const card = cards.find(item => item.id === id)
             if (!card) return null
             const wide = layout.widths[id] ?? Boolean(card.wide)
             const targeted = drag && drag.id !== id && drop?.id === id
-            return <div key={id} data-overview-card={id} className={cn('group relative min-w-0 rounded-aurora-2', wide && lane === 'telemetry' && 'min-[700px]:col-span-2', drag?.id === id && 'opacity-40')}>
+            return <div
+              key={id}
+              ref={node => { if (node) cardNodes.current.set(id, node); else cardNodes.current.delete(id) }}
+              data-overview-card={id}
+              tabIndex={0}
+              aria-label={`Reorder ${id}`}
+              onPointerDown={event => pointerDown(event, id)}
+              onPointerMove={pointerMove}
+              onPointerUp={pointerUp}
+              onPointerCancel={() => clearDrag()}
+              onLostPointerCapture={event => { if (pending.current?.pointerId === event.pointerId) clearDrag(false) }}
+              onKeyDown={event => {
+                if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+                event.preventDefault()
+                move(id, event.key === 'ArrowDown' ? 1 : -1)
+              }}
+              className={cn('group relative min-w-0 rounded-aurora-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary [&_[data-panel-header]]:cursor-grab', wide && lane === 'telemetry' && 'min-[700px]:col-span-full', drag?.id === id && 'opacity-40')}
+            >
               {targeted ? <div data-overview-insertion={drop.after ? 'after' : 'before'} aria-hidden className={cn('pointer-events-none absolute -inset-x-0.5 z-20 h-[3px] rounded-full bg-aurora-accent-primary shadow-[0_0_8px_var(--aurora-accent-primary)]', drop.after ? '-bottom-2' : '-top-2')}/> : null}
-              <div className="absolute right-3 top-2 z-10 flex items-center gap-0.5 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-strong/95 p-0.5 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100">
-                <button ref={node => { if (node) handles.current.set(id, node); else handles.current.delete(id) }} type="button" aria-label={`Drag ${id}`} title="Drag to rearrange; arrow keys move within this column" className={cn(controlClass, 'touch-none cursor-grab active:cursor-grabbing')} onPointerDown={event => pointerDown(event, id)} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => clearDrag()} onLostPointerCapture={event => { if (pending.current?.pointerId === event.pointerId) clearDrag(false) }} onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); move(id, event.key === 'ArrowDown' ? 1 : -1) } }}><GripVertical className="size-3.5"/></button>
-                <button type="button" disabled={index === 0} onClick={() => move(id, -1)} className={controlClass} aria-label={`Move ${id} earlier`}><ArrowUp className="size-3"/></button>
-                <button type="button" disabled={index === laneIds.length - 1} onClick={() => move(id, 1)} className={controlClass} aria-label={`Move ${id} later`}><ArrowDown className="size-3"/></button>
-                <button type="button" onClick={() => commit(placeOverviewCard(layout, id, { id: null, lane: lane === 'telemetry' ? 'insights' : 'telemetry', after: true }), `${id} moved to the other column.`, id)} className={controlClass} aria-label={`Move ${id} to ${lane === 'telemetry' ? 'insights' : 'telemetry'} column`}><ArrowLeftRight className="size-3"/></button>
-                {lane === 'telemetry' && <button type="button" onClick={() => commit({ ...layout, widths: { ...layout.widths, [id]: !wide } }, `${id} is now ${wide ? 'half' : 'full'} width.`)} aria-label={`Toggle ${id} full width`} aria-pressed={wide} title="Toggle full-width" className={controlClass}>{wide ? <Minimize className="size-3"/> : <Maximize className="size-3"/>}</button>}
+              <div className="absolute right-3 top-[10px] z-10">
+                {lane === 'telemetry' && <button type="button" onPointerDown={event => event.stopPropagation()} onClick={() => commit({ ...layout, widths: { ...layout.widths, [id]: !wide } }, `${id} is now ${wide ? 'half' : 'full'} width.`, id)} aria-label="Toggle width" aria-pressed={wide} title="Toggle full-width" className={controlClass}>{wide ? <Minimize className="size-[11px]"/> : <Maximize className="size-[11px]"/>}</button>}
               </div>
               {card.content}
             </div>

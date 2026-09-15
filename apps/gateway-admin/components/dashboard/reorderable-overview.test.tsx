@@ -61,12 +61,12 @@ test('width control changes only the selected main card and survives a remount',
   window.localStorage.clear()
   let view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
-    assert.equal(document.querySelector('[aria-label="Toggle r full width"]'), null)
-    const toggle = () => document.querySelector<HTMLButtonElement>('[aria-label="Toggle a full width"]')!
+    assert.equal(document.querySelector('[data-overview-card="r"] [aria-label="Toggle width"]'), null)
+    const toggle = () => document.querySelector<HTMLButtonElement>('[data-overview-card="a"] [aria-label="Toggle width"]')!
     assert.equal(toggle().getAttribute('aria-pressed'), 'false')
     await act(async () => toggle().click())
     assert.equal(toggle().getAttribute('aria-pressed'), 'true')
-    assert.ok(toggle().closest('[data-overview-card]')!.classList.contains('min-[700px]:col-span-2'))
+    assert.ok(toggle().closest('[data-overview-card]')!.classList.contains('min-[700px]:col-span-full'))
     assert.deepEqual(lane('telemetry'), ['a', 'b'])
     await view.unmount()
     view = await renderClient(<ReorderableOverview cards={cards}/>)
@@ -76,19 +76,18 @@ test('width control changes only the selected main card and survives a remount',
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 
-test('desktop classes unify both logical lanes into one dense three-column packing grid', async () => {
+test('desktop classes preserve the mock two-thirds telemetry lane and one-third insight rail', async () => {
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
     const telemetry = document.querySelector<HTMLElement>('[data-overview-lane="telemetry"]')!
     const insights = document.querySelector<HTMLElement>('[data-overview-lane="insights"]')!
     const columns = document.querySelector<HTMLElement>('[data-overview-columns]')!
-    assert.ok(columns.className.includes('min-[1100px]:grid-cols-3'))
-    assert.ok(columns.className.includes('min-[1100px]:[grid-auto-flow:row_dense]'))
-    assert.ok(telemetry.className.includes('min-[1100px]:contents'))
-    assert.ok(insights.className.includes('min-[1100px]:contents'))
-    assert.ok(telemetry.className.includes('[grid-auto-flow:row_dense]'))
-    assert.ok(telemetry.className.includes('[grid-auto-rows:1px]'))
+    assert.ok(columns.className.includes('min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]'))
+    assert.ok(telemetry.className.includes('min-[700px]:grid-cols-[repeat(auto-fit,minmax(250px,1fr))]'))
+    assert.ok(insights.className.includes('flex-col'))
+    assert.ok(!columns.className.includes('grid-cols-3'))
+    assert.ok(!telemetry.className.includes('contents'))
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 
@@ -97,34 +96,31 @@ test('saved order rejects invalid duplicate and unknown identities and appends m
   for (const invalid of [null, {}, 'b', 3]) assert.deepEqual(normalizeOverviewOrder(invalid, ['a', 'b']), ['a', 'b'])
 })
 
-test('keyboard-accessible move buttons stay within each lane and persist the order', async () => {
+test('Alt+Arrow keyboard reorder stays within each mock-defined lane and persists order', async () => {
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Move a later"]')!.click())
+    const card = document.querySelector<HTMLElement>('[data-overview-card="a"]')!
+    await act(async () => card.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true })))
     assert.deepEqual(lane('telemetry'), ['b', 'a'])
     assert.deepEqual(lane('insights'), ['r', 's'])
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Move a later"]')!.click())
+    await act(async () => card.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true })))
     assert.deepEqual(lane('telemetry'), ['b', 'a'])
     assert.deepEqual(JSON.parse(window.localStorage.getItem(key)!).order, ['r', 'b', 'a', 's'])
   } finally { await view.unmount() }
 })
 
-test('keyboard reorder restores focus to the moved card after same-lane and cross-lane moves', async () => {
+test('keyboard reorder restores focus to the moved card and exposes no cross-lane controls', async () => {
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
-    const handle = () => document.querySelector<HTMLButtonElement>('[aria-label="Drag a"]')!
-    handle().focus()
-    await act(async () => handle().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
-    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Drag a')
+    const card = document.querySelector<HTMLElement>('[data-overview-card="a"]')!
+    card.focus()
+    await act(async () => card.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true })))
+    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Reorder a')
     assert.deepEqual(lane('telemetry'), ['b', 'a'])
-
-    const crossLane = document.querySelector<HTMLButtonElement>('[aria-label="Move a to insights column"]')!
-    crossLane.focus()
-    await act(async () => crossLane.click())
-    assert.equal(document.activeElement?.getAttribute('aria-label'), 'Drag a')
-    assert.deepEqual(lane('insights'), ['r', 's', 'a'])
+    assert.equal(document.querySelector('[aria-label*="to insights"]'), null)
+    assert.deepEqual(lane('insights'), ['r', 's'])
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 
@@ -132,7 +128,7 @@ test('pointer capture failure clears pending state so a later drag can start', a
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
-    const handle = document.querySelector<HTMLButtonElement>('[aria-label="Drag a"]')!
+    const handle = document.querySelector<HTMLElement>('[data-overview-card="a"]')!
     let attempts = 0
     const releases: number[] = []
     Object.defineProperties(handle, {
@@ -143,7 +139,7 @@ test('pointer capture failure clears pending state so a later drag can start', a
 
     await act(async () => handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 10, clientY: 10 })))
     assert.equal(attempts, 1)
-    assert.equal(document.querySelector('[role="status"]')?.textContent, 'Could not start pointer drag for a. Use the move controls instead.')
+    assert.equal(document.querySelector('[role="status"]')?.textContent, 'Could not start pointer drag for a. Use Alt+Arrow keys instead.')
 
     await act(async () => handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 2, clientX: 10, clientY: 10 })))
     assert.equal(attempts, 2)
@@ -155,7 +151,7 @@ test('pointer capture failure clears pending state so a later drag can start', a
 test('Escape and unmount release an owned pointer capture', async () => {
   window.localStorage.clear()
   const view = await renderClient(<ReorderableOverview cards={cards}/>)
-  const handle = document.querySelector<HTMLButtonElement>('[aria-label="Drag a"]')!
+  const handle = document.querySelector<HTMLElement>('[data-overview-card="a"]')!
   const captured = new Set<number>()
   const releases: number[] = []
   Object.defineProperties(handle, {
@@ -175,23 +171,20 @@ test('Escape and unmount release an owned pointer capture', async () => {
   window.localStorage.clear()
 })
 
-test('cross-column moves preserve width and survive remount without duplicates', async () => {
+test('legacy saved orders cannot move cards across the mock-defined lanes', async () => {
   window.localStorage.clear()
-  window.localStorage.setItem('labby:overview-card-order:v1', JSON.stringify(['b', 'b', null, 'unknown']))
+  window.localStorage.setItem(key, JSON.stringify({ order: ['b', 'r', 'a', 's'], widths: { b: true }, lanes: { b: 'insights', r: 'telemetry' } }))
   let view = await renderClient(<ReorderableOverview cards={cards}/>)
   try {
     assert.deepEqual(lane('telemetry'), ['b', 'a'])
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Move b to insights column"]')!.click())
-    assert.deepEqual(lane('telemetry'), ['a'])
-    assert.deepEqual(lane('insights'), ['r', 's', 'b'])
-    assert.equal(document.querySelector('[aria-label="Toggle b full width"]'), null)
+    assert.deepEqual(lane('insights'), ['r', 's'])
+    assert.equal(document.querySelector('[aria-label*="to insights"]'), null)
+    assert.equal(document.querySelector('[data-overview-card="b"] [aria-label="Toggle width"]')?.getAttribute('aria-pressed'), 'true')
     await view.unmount()
     view = await renderClient(<ReorderableOverview cards={cards}/>)
-    assert.deepEqual(lane('insights'), ['r', 's', 'b'])
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Move b to telemetry column"]')!.click())
-    assert.deepEqual(lane('telemetry'), ['a', 'b'])
+    assert.deepEqual(lane('telemetry'), ['b', 'a'])
+    assert.deepEqual(lane('insights'), ['r', 's'])
     assert.equal(document.querySelectorAll('[data-card="b"]').length, 1)
-    assert.equal(document.querySelector('[data-overview-card][draggable]'), null)
   } finally { await view.unmount(); window.localStorage.clear() }
 })
 

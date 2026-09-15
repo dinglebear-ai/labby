@@ -1,10 +1,9 @@
 'use client'
 
-import { Fragment, useRef, type CSSProperties, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type CSSProperties, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   Check,
-  GripVertical,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -53,9 +52,8 @@ import {
   gatewayStatusTone,
 } from './gateway-theme'
 
-import { GATEWAY_COLUMN_ORDER_KEY, GATEWAY_COLUMN_WIDTH, normalizeGatewayColumns, visibleGatewayColumns, moveGatewayColumn, type GatewayColumn } from './gateway-column-model'
 
-type SortKey = 'name' | 'endpoint' | 'exposed' | 'uptime'
+type SortKey = 'name' | 'clients' | 'endpoint' | 'exposed' | 'uptime'
 type SortDirection = 'asc' | 'desc'
 type StatusGroupId = 'attention' | 'healthy' | 'disabled'
 
@@ -73,6 +71,10 @@ const GW_CARD =
 
 const GW_GRID =
   'grid items-center'
+
+const GW_GRID_STYLE = {
+  gridTemplateColumns: 'minmax(0,1fr) 80px minmax(140px,300px) 170px 130px 18px',
+} as CSSProperties
 
 /**
  * The `--gw*` scrim ramp carries underscores in its token names, which Tailwind
@@ -171,24 +173,6 @@ export function GatewayTable({
   onBatchSetEnabled,
   onBatchReload,
 }: GatewayTableProps) {
-  const [columnOrder, setColumnOrder] = useState(() => normalizeGatewayColumns(null))
-  const [viewportWidth, setViewportWidth] = useState(1600)
-  const draggedColumn = useRef<GatewayColumn | null>(null)
-  const [layoutWarning, setLayoutWarning] = useState(false)
-  useEffect(() => {
-    try { setColumnOrder(normalizeGatewayColumns(JSON.parse(window.localStorage.getItem(GATEWAY_COLUMN_ORDER_KEY) ?? 'null'))) } catch { setLayoutWarning(true) }
-    const resize = () => setViewportWidth(window.innerWidth)
-    resize()
-    window.addEventListener('resize', resize)
-    return () => window.removeEventListener('resize', resize)
-  }, [])
-  const visibleColumns = visibleGatewayColumns(columnOrder, viewportWidth)
-  const gridStyle = { gridTemplateColumns: `minmax(0,1fr) ${visibleColumns.map(column => GATEWAY_COLUMN_WIDTH[column]).join(' ')} 18px` }
-  const moveColumn = (source: GatewayColumn, target: GatewayColumn) => {
-    const next = moveGatewayColumn(columnOrder, source, target)
-    setColumnOrder(next)
-    try { window.localStorage.setItem(GATEWAY_COLUMN_ORDER_KEY, JSON.stringify(next)) } catch { setLayoutWarning(true) }
-  }
   const [loadingAction, setLoadingAction] = useState<{ id: string; action: string } | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
@@ -287,6 +271,12 @@ export function GatewayTable({
         case 'name':
           result = left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
           break
+        case 'clients':
+          // The public client registry is gateway-wide today, not attributed
+          // to individual upstreams. Keep the mock's sortable column chrome
+          // without inventing per-server usage.
+          result = 0
+          break
         case 'endpoint':
           result = buildGatewayEndpointPreview(left).localeCompare(
             buildGatewayEndpointPreview(right),
@@ -306,7 +296,7 @@ export function GatewayTable({
           break
       }
 
-      if (result === 0) {
+      if (result === 0 && sortKey !== 'clients') {
         result = left.name.localeCompare(right.name)
       }
 
@@ -438,7 +428,7 @@ export function GatewayTable({
   }
 
   /** One desktop row, laid out on the mock's six-track grid. */
-  const renderDesktopRow = (gateway: Gateway, stripeIndex = 0) => {
+  const renderDesktopRow = (gateway: Gateway) => {
     const supportsProbeControls = gateway.source !== 'in_process'
     const canRemoveGatewayRow = canRemoveGateway(gateway)
     const endpointPreview = buildGatewayEndpointPreview(gateway)
@@ -450,20 +440,18 @@ export function GatewayTable({
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
     const isSelected = selectedGatewayIds.includes(gateway.id)
     const status = gateway.status
-    const discoveredSkills = status.discovered_skill_count ?? 0
-    const exposedSkills = status.exposed_skill_count ?? 0
     const isExpanded = expandedDesktopGatewayId === gateway.id
     const displayName = gatewayDisplayName(gateway.name)
 
-    const columnCells: Record<GatewayColumn, ReactNode> = {
-      endpoint: (<div className="min-w-0 w-full justify-self-start px-2.5 text-left">
+    const columnCells = {
+      endpoint: (<div className="min-w-0 max-w-full justify-self-center px-2.5 text-center">
           <button
             type="button"
             onClick={() => copyCommand(gateway, endpointPreview)}
             title={endpointPreview}
             aria-label={`Copy ${gateway.name} ${showsCommandLine ? 'command' : 'endpoint'}`}
             className={cn(
-              'block max-w-full cursor-pointer truncate rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-strong',
+              'block max-w-full cursor-pointer truncate rounded-md px-1.5 py-0.5 text-center text-[10.5px] transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-strong',
               copiedGatewayId === gateway.id
                 ? 'text-aurora-accent-strong'
                 : 'text-[color-mix(in_srgb,var(--aurora-text-muted)_85%,transparent)]',
@@ -474,8 +462,8 @@ export function GatewayTable({
         </div>),
       exposed: (<div className="min-w-0 justify-self-center">
           <span
-            className="grid grid-cols-[38px_38px_38px_38px] items-center gap-x-1"
-            title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count} · skills ${exposedSkills}/${discoveredSkills}`}
+            className="grid grid-cols-[40px_40px_40px] items-center gap-x-[6px]"
+            title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
           >
             <span
               className={cn(
@@ -507,25 +495,15 @@ export function GatewayTable({
               <span className="sr-only">Prompts:</span>
               {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
             </span>
-            <span
-              className={cn(
-                GW_COUNT,
-                exposureTone(exposedSkills, discoveredSkills),
-              )}
-            >
-              <BookOpen className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
-              <span className="sr-only">Skills:</span>
-              {discoveredSkills === 0 ? EM_DASH : exposedSkills}
-            </span>
           </span>
         </div>),
       uptime: (<div className="min-w-0 justify-self-center">
           <span
             className={cn('text-[10.5px] [font-weight:650] tabular-nums', GW_EMPTY_TONE)}
-            title={runtimeAgeLabel(gateway) ?? 'Runtime age is not reported by this server'}
+            title="Uptime is not reported by the gateway API"
           >
-            <span className="sr-only">Runtime age:</span>
-            {runtimeAgeLabel(gateway)?.replace(' old', '') ?? EM_DASH}
+            <span className="sr-only">Uptime:</span>
+            {EM_DASH}
           </span>
         </div>),
     }
@@ -534,13 +512,13 @@ export function GatewayTable({
       <Fragment key={gateway.id}>
         <div
           data-gwrow="1"
-          style={gridStyle}
+          style={GW_GRID_STYLE}
           data-hoverrow="1"
           className={cn(
             GW_GRID,
             'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
-            stripeIndex % 2 === 0 ? 'bg-[var(--gw-row)]' : 'bg-[color-mix(in_srgb,var(--aurora-panel-medium)_48%,var(--gw-row))]',
-            density === 'condensed' ? 'py-[7px]' : 'min-h-11 py-[7px]',
+            'bg-[var(--gw-row)]',
+            density === 'condensed' ? 'py-[7px]' : 'py-[11px]',
             isDisabled && 'text-aurora-text-muted',
           )}
         >
@@ -725,7 +703,16 @@ export function GatewayTable({
           </div>
         </div>
 
-        {visibleColumns.map(column => <Fragment key={column}>{columnCells[column]}</Fragment>)}
+        <div
+          className={cn('min-w-0 justify-self-center text-[10.5px] [font-weight:650]', GW_EMPTY_TONE)}
+          title="Client count is not reported by the gateway API"
+        >
+          <span className="sr-only">Clients:</span>
+          {EM_DASH}
+        </div>
+        {columnCells.endpoint}
+        {columnCells.exposed}
+        {columnCells.uptime}
 
         </div>
         {isExpanded ? (
@@ -907,28 +894,22 @@ export function GatewayTable({
           data-gwtablewrap="1"
           className="aurora-scrollbar overflow-x-auto min-[1101px]:overflow-x-visible"
         >
-          <div data-gwtable="1" className="min-w-0">
+          <div data-gwtable="1" className="min-w-[1010px]">
             <div
               data-gwhead="1"
-              style={gridStyle}
+              style={GW_GRID_STYLE}
               className={cn(
                 GW_GRID,
                 'sticky top-0 z-[18] h-10 border-b border-aurora-border-strong bg-[var(--gw-head)] pl-5',
               )}
             >
               <SortHeader label="Server" sort="name" align="start" />
-              {visibleColumns.map(column => <div key={column} data-gateway-column={column} className={cn('group/column flex min-w-0 items-center gap-1', column === 'endpoint' ? 'justify-start pl-2.5' : 'justify-center')} onDragOver={event => { if (draggedColumn.current) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (draggedColumn.current) moveColumn(draggedColumn.current, column); draggedColumn.current = null }}>
-                <button type="button" draggable aria-label={`Reorder ${column === 'uptime' ? 'runtime age' : column} column`} title="Drag to reorder; use left/right arrow keys to move" onDragStart={() => { draggedColumn.current = column }} onDragEnd={() => { draggedColumn.current = null }} onKeyDown={event => {
-                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-                  event.preventDefault()
-                  const index = visibleColumns.indexOf(column)
-                  const target = visibleColumns[index + (event.key === 'ArrowLeft' ? -1 : 1)]
-                  if (!target) return
-                  if (event.key === 'ArrowRight') moveColumn(target, column)
-                  else moveColumn(column, target)
-                }} className="rounded p-0.5 text-aurora-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary"><GripVertical className="size-[9px]"/></button>
-                {<SortHeader label={column === 'uptime' ? 'Uptime' : column === 'endpoint' ? 'Endpoint' : 'Exposed'} sort={column}/>}
-              </div>)}
+              <div data-gateway-column="clients" className="justify-self-center">
+                <SortHeader label="Clients" sort="clients" />
+              </div>
+              <SortHeader label="Endpoint" sort="endpoint" />
+              <SortHeader label="Exposed" sort="exposed" />
+              <SortHeader label="Uptime" sort="uptime" />
             </div>
 
             <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
@@ -996,7 +977,7 @@ export function GatewayTable({
                       className="h-px flex-1 bg-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))]"
                     />
                   </button>
-                  {expanded ? group.rows.map((gateway, index) => renderDesktopRow(gateway, index)) : null}
+                  {expanded ? group.rows.map((gateway) => renderDesktopRow(gateway)) : null}
                 </Fragment>
               )
             })}
@@ -1007,7 +988,6 @@ export function GatewayTable({
             {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
             {exposureTotals.exposed}/{exposureTotals.discovered} tools
             {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
-            {layoutWarning ? ' · Column layout could not be read or saved on this device.' : ''}
           </span>
         </div>
       </section>

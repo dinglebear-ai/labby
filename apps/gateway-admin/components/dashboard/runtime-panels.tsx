@@ -58,7 +58,7 @@ export function useOverviewRuntime() {
 }
 
 export function ConnectedClientsPanel({ clients, unavailable, loading, onRetry }: { clients?: ConnectedClient[]; unavailable?: boolean; loading?: boolean; onRetry?: () => void }) {
-  return <DashboardPanel title="Connected clients" icon={<Cable />} iconTone="success" meta="observed sessions">
+  return <DashboardPanel title="Connected clients" icon={<Cable />} iconTone="success" meta="live sessions">
     {unavailable ? <p className="text-xs text-aurora-text-muted">Connected clients are unavailable.{onRetry ? <button type="button" onClick={onRetry} className="ml-2 rounded text-aurora-accent-strong underline focus-visible:outline-2">Retry</button> : null}</p>
       : loading ? <p role="status" className="text-xs text-aurora-text-muted">Loading connected clients…</p>
       : !clients?.length ? <p className="text-xs text-aurora-text-muted">No connected clients observed.</p>
