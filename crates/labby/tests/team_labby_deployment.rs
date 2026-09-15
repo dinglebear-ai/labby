@@ -2,6 +2,7 @@ const COMPOSE: &str = include_str!("../../../deploy/team-labby/docker-compose.ym
 const HOST_ENV: &str = include_str!("../../../deploy/team-labby/.env.example");
 const TEAM_ENV: &str = include_str!("../../../deploy/team-labby/team-depot.env.example");
 const LABBY_ENV: &str = include_str!("../../../deploy/team-labby/labby.env.example");
+const LABBY_CONFIG: &str = include_str!("../../../deploy/team-labby/config.toml.example");
 const GIT_CREDENTIALS: &str =
     include_str!("../../../deploy/team-labby/team-depot-git-credentials.json.example");
 const SOURCE_BOOTSTRAP: &str = include_str!("../../../deploy/team-labby/bootstrap-team-sources.sh");
@@ -40,6 +41,21 @@ fn team_source_bootstrap_covers_every_required_unraid_repository() {
     assert!(SOURCE_BOOTSTRAP.contains("depot.skills.ingest_repo"));
     assert!(SOURCE_BOOTSTRAP.contains("github-private"));
     assert!(SOURCE_BOOTSTRAP.contains("sources list"));
+}
+
+#[test]
+fn team_deployment_binds_depot_mutations_to_the_publish_route_project() {
+    assert!(LABBY_CONFIG.contains("name = \"team-depot-publish\""));
+    assert!(LABBY_CONFIG.contains("public_path = \"/mcp/team-depot\""));
+    assert!(LABBY_CONFIG.contains("[depot.publish]"));
+    assert!(LABBY_CONFIG.contains("route_id = \"team-depot-publish\""));
+    assert_eq!(
+        LABBY_CONFIG
+            .matches("project_id = \"replace-with-bound-project-id\"")
+            .count(),
+        3,
+        "Linear target, Team Depot publish target, and Depot publish binding must share the project placeholder"
+    );
 }
 
 #[test]

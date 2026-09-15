@@ -40,9 +40,12 @@ every referenced artifact byte already exists in R2.
    control. Give the team and catalog Depots different R2 credentials scoped to
    different prefixes (or different buckets); neither credential may access
    the other Depot's objects.
-6. Set `public_host` to the exact host clients use. Keep `/mcp/linear` as the
-   public path when preserving the existing client URL. Set the route target's
-   `project_id` to the same bound project configured for Depot delegation.
+6. Set `public_host` on both protected routes to the exact host clients use.
+   Keep `/mcp/linear` as the Linear route path when preserving the existing
+   client URL. Keep `team-depot-publish` bound to `/mcp/team-depot`, and set its
+   target `project_id` plus `[depot.publish].project_id` to the same project.
+   `[depot.publish].route_id` must remain `team-depot-publish`; this is the
+   server-owned target used for browser publishing and Administration writes.
 7. Keep `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS=lime-technology.com` for the Lime
    team deployment. If domain-wide admission is intentionally disabled, leave it
    empty and add each employee to Labby's persisted allowlist before cutover.
