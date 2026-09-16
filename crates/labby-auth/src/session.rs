@@ -40,7 +40,9 @@ pub async fn create_browser_session(
     let session = BrowserSessionRow {
         session_id: random_token(24)?,
         subject,
-        email,
+        // Stored through the shared fold so SQL-side allowlist and admin
+        // comparisons against `allowed_users.email` match exactly.
+        email: email.as_deref().map(crate::util::normalize_email),
         csrf_token: random_token(18)?,
         created_at,
         expires_at: expires_at(
@@ -64,7 +66,9 @@ pub async fn create_bound_browser_session(
     let session = BrowserSessionRow {
         session_id: random_token(24)?,
         subject,
-        email,
+        // Stored through the shared fold so SQL-side allowlist and admin
+        // comparisons against `allowed_users.email` match exactly.
+        email: email.as_deref().map(crate::util::normalize_email),
         csrf_token: random_token(18)?,
         created_at,
         expires_at: expires_at(

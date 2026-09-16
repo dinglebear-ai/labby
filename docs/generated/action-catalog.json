@@ -680,6 +680,18 @@
         "description": ""
       },
       {
+        "name": "instructions",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
         "name": "content_digest",
         "ty": "string",
         "required": false,
@@ -714,18 +726,6 @@
         "ty": "string",
         "required": false,
         "description": ""
-      },
-      {
-        "name": "instructions",
-        "ty": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "model",
-        "ty": "string",
-        "required": false,
-        "description": ""
       }
     ],
     "returns": "object",
@@ -743,8 +743,8 @@
   {
     "service": "agents",
     "action": "agents.delete",
-    "description": "Delete an Agent",
-    "destructive": false,
+    "description": "Permanently delete an Agent definition",
+    "destructive": true,
     "requires_admin": false,
     "required_scopes": [],
     "authorization_boundary": "resource_capability",
@@ -874,6 +874,42 @@
   },
   {
     "service": "agents",
+    "action": "agents.session.cancel",
+    "description": "Request cancellation of a running Agent session",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.operate",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "agent_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
     "action": "agents.session.status",
     "description": "Read Agent session status",
     "destructive": false,
@@ -953,6 +989,54 @@
         "name": "agent_id",
         "ty": "string",
         "required": true,
+        "description": ""
+      },
+      {
+        "name": "content_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "repository_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "image_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "harness_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "loadout_digest",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "catalog_generation",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "ty": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "ty": "string",
+        "required": false,
         "description": ""
       }
     ],
@@ -9733,13 +9817,13 @@
         "description": ""
       },
       {
-        "name": "input_digest",
+        "name": "input",
         "ty": "string",
-        "required": false,
+        "required": true,
         "description": ""
       },
       {
-        "name": "input",
+        "name": "input_digest",
         "ty": "string",
         "required": false,
         "description": ""

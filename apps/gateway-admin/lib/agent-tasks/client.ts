@@ -19,6 +19,8 @@ export type AgentRunResult = {
   status: string
   output_digest: string
   output?: string | null
+  /** True when the inline output was cut at the 256 KiB cap; the digest keys the full bytes. */
+  output_truncated?: boolean
   authority_expires_at: number
 }
 
@@ -26,6 +28,11 @@ export type AgentSessionStatus = {
   agent_id: string
   session_id: string
   status: unknown
+}
+
+export type AgentSessionCancel = AgentSessionStatus & {
+  /** True when a live in-process run was signalled; false reports the durable status unchanged. */
+  cancel_requested: boolean
 }
 
 export type TaskView = {
@@ -40,7 +47,7 @@ export type TaskView = {
   error_code?: string | null
 }
 
-export type TaskResult = TaskView & { output?: string | null }
+export type TaskResult = TaskView & { output?: string | null; output_truncated?: boolean }
 
 export type CreateAgentInput = {
   agentId: string
@@ -106,8 +113,37 @@ async function action<T>(
   }
 }
 
+async function listAll<T>(
+  service: 'agents' | 'tasks',
+  name: 'agents.list' | 'tasks.list',
+  field: 'agents' | 'tasks',
+  signal?: AbortSignal,
+): Promise<T[]> {
+  const items: T[] = []
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+  while (true) {
+    const page = await action<{ agents?: T[]; tasks?: T[]; next_cursor?: string | null }>(
+      service,
+      name,
+      cursor ? { cursor } : {},
+      signal,
+    )
+    const pageItems = page[field]
+    if (!Array.isArray(pageItems)) throw new Error(service + ' request failed: malformed list response')
+    items.push(...pageItems)
+    const nextCursor = page.next_cursor
+    if (!nextCursor) return items
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(service + ' request failed: repeated pagination cursor')
+    }
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
+  }
+}
+
 export async function listAgents(signal?: AbortSignal): Promise<AgentView[]> {
-  return (await action<{ agents: AgentView[] }>('agents', 'agents.list', {}, signal)).agents
+  return listAll<AgentView>('agents', 'agents.list', 'agents', signal)
 }
 
 export async function getAgent(agentId: string, signal?: AbortSignal): Promise<AgentView> {
@@ -148,8 +184,12 @@ export async function getAgentSessionStatus(agentId: string, sessionId: string, 
   return action('agents', 'agents.session.status', { agent_id: agentId, session_id: sessionId }, signal)
 }
 
+export async function cancelAgentSession(agentId: string, sessionId: string, signal?: AbortSignal): Promise<AgentSessionCancel> {
+  return action('agents', 'agents.session.cancel', { agent_id: agentId, session_id: sessionId }, signal)
+}
+
 export async function listTasks(signal?: AbortSignal): Promise<TaskView[]> {
-  return (await action<{ tasks: TaskView[] }>('tasks', 'tasks.list', {}, signal)).tasks
+  return listAll<TaskView>('tasks', 'tasks.list', 'tasks', signal)
 }
 
 export async function getTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {

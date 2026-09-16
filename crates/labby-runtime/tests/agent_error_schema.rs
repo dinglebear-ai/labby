@@ -78,6 +78,10 @@ const KINDS: &[&str] = &[
     "connection_refused",
     "dns_error",
     "relay_forwarder_init_failed",
+    "unavailable",
+    "protocol_error",
+    // policy (Agent execution)
+    "authority_changed",
     // bridge
     "bridge_transport_error",
     // runtime / internal

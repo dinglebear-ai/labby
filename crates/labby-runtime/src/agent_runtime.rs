@@ -1,6 +1,6 @@
 //! Pluggable, authority-fenced Agent execution orchestration.
 
-use std::future::Future;
+use std::future::{Future, ready};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -14,7 +14,16 @@ use thiserror::Error;
 
 use crate::authority::{
     AuthorityEpochVector, AuthorityLease, AuthorityLeaseError, AuthoritySafeBoundary,
+    MAX_AUTHORITY_LEASE_MILLIS,
 };
+
+/// Hard runtime bound for one direct Agent run or one Agent Task attempt.
+///
+/// Every authority lease issued for execution must cover this bound, so it can
+/// never exceed the shared lease maximum; the assertion below keeps the two
+/// contracts from drifting apart silently.
+pub const AGENT_MAX_RUNTIME_MILLIS: u64 = 300_000;
+const _: () = assert!(AGENT_MAX_RUNTIME_MILLIS <= MAX_AUTHORITY_LEASE_MILLIS);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentResourceBounds {
@@ -111,6 +120,14 @@ pub trait AgentExecutor: Send + Sync {
         request: AgentExecutionRequest,
         guard: ExecutionGuard<'_>,
     ) -> impl Future<Output = Result<AgentExecutionOutput, AgentRuntimeError>> + Send;
+
+    /// Release executor-owned external resources after the runtime aborts an
+    /// attempt at its hard time bound. The default is a no-op for executors
+    /// without external lifecycle state. Implementations must keep cleanup
+    /// bounded because the runtime awaits it before returning.
+    fn cancel(&self, _request: &AgentExecutionRequest) -> impl Future<Output = ()> + Send {
+        ready(())
+    }
 }
 
 #[derive(Clone)]
@@ -126,7 +143,9 @@ impl Cancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release)
     }
-    pub(crate) fn is_cancelled(&self) -> bool {
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }
@@ -284,8 +303,11 @@ pub async fn execute_agent_bound<A: AgentAuthority, E: AgentExecutor>(
         revocation,
     };
     let bounds = request.bounds;
+    let cancellation_request = request.clone();
     // `max_runtime_millis` is a hard ceiling owned by the runtime. An executor
-    // that overruns it is cancelled and its result is discarded.
+    // that overruns it is cancelled and its result is discarded. The future is
+    // dropped by `timeout`, so the runtime must separately ask the executor to
+    // release provider/session state that cannot be cleaned up by future-drop.
     let output = match tokio::time::timeout(
         Duration::from_millis(bounds.max_runtime_millis),
         executor.execute(request, guard),
@@ -295,6 +317,7 @@ pub async fn execute_agent_bound<A: AgentAuthority, E: AgentExecutor>(
         Ok(result) => result?,
         Err(_) => {
             cancellation.cancel();
+            executor.cancel(&cancellation_request).await;
             return Err(AgentRuntimeError::ResourceLimit);
         }
     };
@@ -357,8 +380,10 @@ mod tests {
             1
         }
     }
-    struct SlowExec;
-    impl AgentExecutor for SlowExec {
+    struct CleanupExec {
+        cleaned: Arc<AtomicBool>,
+    }
+    impl AgentExecutor for CleanupExec {
         async fn execute(
             &self,
             _: AgentExecutionRequest,
@@ -370,6 +395,11 @@ mod tests {
                 bytes: 4,
                 external_effects: 0,
             })
+        }
+
+        fn cancel(&self, _: &AgentExecutionRequest) -> impl Future<Output = ()> + Send {
+            self.cleaned.store(true, Ordering::SeqCst);
+            ready(())
         }
     }
     struct Exec;
@@ -590,18 +620,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_bound_cancels_an_overrunning_executor() {
+    async fn runtime_bound_cancels_an_overrunning_executor_and_requests_cleanup() {
         let initial = epochs(1);
         let cancellation = Cancellation::new();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let executor = CleanupExec {
+            cleaned: Arc::clone(&cleaned),
+        };
         let authority = Auth(initial.clone());
         let mut bounded = request(&initial);
         bounded.bounds.max_runtime_millis = 20;
-        let execution = execute_agent(&authority, &SlowExec, bounded, cancellation.clone(), 1);
+        let execution = execute_agent(&authority, &executor, bounded, cancellation.clone(), 1);
         assert_eq!(
             execution.await.unwrap_err(),
             AgentRuntimeError::ResourceLimit
         );
         assert!(cancellation.is_cancelled());
+        assert!(cleaned.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

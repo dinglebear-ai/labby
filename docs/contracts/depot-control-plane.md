@@ -134,7 +134,11 @@ catalog (`GET /api/operations/catalog`), not only the operations authorized to
 the shared read bearer. Every entry carries its canonical `requiredScope`,
 transport set, current bootstrap authorization, and whether the API transport is
 available. Labby uses that metadata to choose read, write-delegated, or
-operator-delegated execution without hard-coding Depot operation names.
+operator-delegated execution without hard-coding Depot operation names. A
+`destructiveHint: true` entry always executes as at least a write delegation
+(operator scope is preserved when the entry requires it), so destructive intent
+never travels under the shared read bearer plus an actor header, and the
+browser route applies the same admin mutation gate it applies to writes.
 
 Administration gives repository sources and durable ingest jobs a dedicated
 Sources workspace and reuses Labby's Artifact Control Plane for discovery,

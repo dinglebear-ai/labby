@@ -18,6 +18,9 @@ use super::read::resolve_principal;
 use super::store::{AccessStore, map_sqlite_error};
 
 const ACTION_SCHEMA_VERSION: u16 = 1;
+/// Default lease for request-scoped actions. Long-running execution actions
+/// raise it to their runtime bound through
+/// [`ActionAuthoritySpec::with_lease_lifetime_millis`].
 const LEASE_LIFETIME_MILLIS: u64 = 30_000;
 
 /// Trusted action registry entry supplied by the product dispatcher.
@@ -26,6 +29,10 @@ pub(crate) struct ActionAuthoritySpec {
     action: ActionRef,
     resource_family: ResourceFamily,
     capability: Capability,
+    /// Lease lifetime the dispatcher needs for this action. The shared lease
+    /// contract still caps it, so an overlong declaration fails at issue time
+    /// instead of producing an unbounded lease.
+    lease_lifetime_millis: u64,
 }
 
 impl ActionAuthoritySpec {
@@ -40,7 +47,15 @@ impl ActionAuthoritySpec {
             action,
             resource_family,
             capability,
+            lease_lifetime_millis: LEASE_LIFETIME_MILLIS,
         }
+    }
+
+    /// Require a lease that covers `millis` of execution, for actions whose
+    /// runtime is checked against the lease at safe boundaries.
+    pub(crate) fn with_lease_lifetime_millis(mut self, millis: u64) -> Self {
+        self.lease_lifetime_millis = millis;
+        self
     }
 }
 
@@ -194,15 +209,16 @@ pub(crate) fn authorize_action_in_transaction(
     if action_schema_version != ACTION_SCHEMA_VERSION {
         return Err(AccessStoreError::NotAuthorized);
     }
-    let capability = registry
+    let spec = registry
         .iter()
         .find(|spec| {
             spec.action.service() == action.service()
                 && spec.action.action() == action.action()
                 && spec.resource_family == resource.family()
         })
-        .map(|spec| spec.capability)
         .ok_or(AccessStoreError::NotAuthorized)?;
+    let capability = spec.capability;
+    let lease_lifetime_millis = spec.lease_lifetime_millis;
     if !ceiling.allows(capability) {
         return Err(AccessStoreError::NotAuthorized);
     }
@@ -230,7 +246,7 @@ pub(crate) fn authorize_action_in_transaction(
         &resolved.epochs,
         issued_at_millis,
         issued_at_millis
-            .checked_add(LEASE_LIFETIME_MILLIS)
+            .checked_add(lease_lifetime_millis)
             .ok_or(AccessStoreError::MalformedVocabulary)?,
         safe_boundaries,
     )
@@ -750,6 +766,56 @@ mod tests {
              INSERT INTO team_memberships VALUES('member-membership','bootstrap-local','bootstrap-initial-team','member-1','member','active',2,'bootstrap-owner',10,10,NULL);"
         ).await.unwrap();
         (directory, store, owner, identity("member-subject"))
+    }
+
+    fn run_request(identity: VerifiedIdentity, lease_lifetime_millis: u64) -> AuthorityRequest {
+        let action = ActionRef::new("agents", "agents.run").unwrap();
+        AuthorityRequest::new(
+            identity,
+            ActionAuthoritySpec::SCHEMA_VERSION,
+            action.clone(),
+            ResourceRef::new(
+                OwnerScope::Team(TeamId::new("bootstrap-initial-team").unwrap()),
+                ResourceFamily::Agent,
+                ResourceId::new("agent-1").unwrap(),
+            ),
+            AuthorityCeiling::trusted_local(),
+            None,
+            1_000,
+            vec![AuthoritySafeBoundary::BeforeDispatch],
+            vec![
+                ActionAuthoritySpec::new(action, ResourceFamily::Agent, Capability::ScopeOperate)
+                    .with_lease_lifetime_millis(lease_lifetime_millis),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn authorize_action_lease_covers_agent_runtime_bound() {
+        use labby_runtime::agent_runtime::AGENT_MAX_RUNTIME_MILLIS;
+        use labby_runtime::authority::MAX_AUTHORITY_LEASE_MILLIS;
+
+        let (_directory, store, owner, _member) = fixture().await;
+        let lease = authorize_action(&store, run_request(owner.clone(), AGENT_MAX_RUNTIME_MILLIS))
+            .await
+            .unwrap();
+        assert!(lease.expires_at_millis() - lease.issued_at_millis() >= AGENT_MAX_RUNTIME_MILLIS);
+        // The default request lease stays short.
+        let default_lease = authorize_action(&store, agent_request(owner.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            default_lease.expires_at_millis() - default_lease.issued_at_millis(),
+            LEASE_LIFETIME_MILLIS
+        );
+        // A declaration beyond the shared contract maximum is malformed
+        // registry state, never a silently clamped or unbounded lease.
+        assert!(matches!(
+            authorize_action(&store, run_request(owner, MAX_AUTHORITY_LEASE_MILLIS + 1))
+                .await
+                .unwrap_err(),
+            AccessStoreError::MalformedVocabulary
+        ));
     }
 
     #[tokio::test]
