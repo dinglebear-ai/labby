@@ -588,13 +588,7 @@ async fn run_agent_session(
         .map_err(map)?;
     match result {
         Ok(output) => {
-            let (text, truncated) = match run_executor.output(&output.digest)? {
-                Some(text) => {
-                    let (text, truncated) = inline_output(text);
-                    (Value::String(text), truncated)
-                }
-                None => (Value::Null, false),
-            };
+            let (text, truncated) = inline_output(run_executor.output(&output.digest)?);
             Ok(json!({
                 "agent_id":run_definition.id,
                 "agent_version":run_definition.revision.version,
@@ -690,19 +684,50 @@ impl AgentAuthority for LiveExecutionAuthority {
 /// slice) and additionally requires `LABBY_E2E_DETERMINISTIC_EXECUTORS` at run
 /// time so live end-to-end matrices can drive the lifecycle. Product builds
 /// compile the branch out entirely; setting the variable there has no effect.
-pub(crate) struct DisabledExecutor;
+///
+/// It stands in for a provider, so it honors the executor contract the same
+/// way: the digest it returns keys bytes materialized in the output CAS that
+/// `tasks.result` and `agents.run` re-read by digest. A synthetic digest with
+/// no stored bytes settled Tasks `succeeded` with an `output_digest` that
+/// `tasks.result` could only report as `unavailable`.
+pub(crate) struct DisabledExecutor {
+    payloads: AgentPayloadStore,
+}
+
+/// Fixed text every deterministic run materializes.
+const DETERMINISTIC_OUTPUT: &str = "deterministic executor output";
+
+impl DisabledExecutor {
+    fn for_access_store(store: &crate::access::AccessStore) -> Self {
+        Self {
+            payloads: AgentPayloadStore::for_access_store(store),
+        }
+    }
+}
+
 impl AgentExecutor for DisabledExecutor {
     fn execute(
         &self,
-        _: AgentExecutionRequest,
+        request: AgentExecutionRequest,
         _: ExecutionGuard<'_>,
     ) -> impl Future<Output = Result<AgentExecutionOutput, AgentRuntimeError>> + Send {
         ready(if deterministic_executor_enabled() {
-            Ok(AgentExecutionOutput {
-                digest: format!("sha256:{}", "0".repeat(64)),
-                bytes: 0,
-                external_effects: 0,
-            })
+            self.payloads
+                .store_output(DETERMINISTIC_OUTPUT)
+                .map(|digest| AgentExecutionOutput {
+                    digest,
+                    bytes: DETERMINISTIC_OUTPUT.len(),
+                    external_effects: 0,
+                })
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_id = %request.definition.id,
+                        session_id = %request.session.session_id,
+                        kind = error.kind(),
+                        "deterministic executor could not materialize its output"
+                    );
+                    AgentRuntimeError::ExecutorFailed
+                })
         } else {
             Err(AgentRuntimeError::ExecutorFailed)
         })
@@ -716,13 +741,18 @@ pub(crate) enum ConfiguredExecutor {
 }
 
 impl ConfiguredExecutor {
-    /// Materialized output text for a completed run. Only the LLM executor
-    /// stores text; a stored digest that fails to load is an error, never a
-    /// silently absent field.
-    pub(crate) fn output(&self, digest: &str) -> Result<Option<String>, ToolError> {
+    /// Materialized output text for a completed run. Every executor that can
+    /// complete stores its text before returning the digest, so a digest that
+    /// fails to load is an error, never a silently absent field.
+    pub(crate) fn output(&self, digest: &str) -> Result<String, ToolError> {
         match self {
-            Self::Llm(executor) => executor.output(digest).map(Some),
-            Self::Deterministic(_) | Self::Unavailable => Ok(None),
+            Self::Llm(executor) => executor.output(digest),
+            Self::Deterministic(executor) => executor.payloads.load_output(digest),
+            // Never completes a run, so it never has a digest to resolve.
+            Self::Unavailable => Err(ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: "no executor produced the requested Agent output".into(),
+            }),
         }
     }
 }
@@ -752,7 +782,9 @@ pub(crate) fn configured_executor(
     input: String,
 ) -> Result<ConfiguredExecutor, ToolError> {
     if deterministic_executor_enabled() {
-        return Ok(ConfiguredExecutor::Deterministic(DisabledExecutor));
+        return Ok(ConfiguredExecutor::Deterministic(
+            DisabledExecutor::for_access_store(store),
+        ));
     }
     match LlmAgentExecutor::new(store, input) {
         Ok(executor) => Ok(ConfiguredExecutor::Llm(executor)),
@@ -772,7 +804,7 @@ pub(crate) fn configured_task_executor(
     input_digest: &str,
 ) -> ConfiguredExecutor {
     if deterministic_executor_enabled() {
-        return ConfiguredExecutor::Deterministic(DisabledExecutor);
+        return ConfiguredExecutor::Deterministic(DisabledExecutor::for_access_store(store));
     }
     match LlmAgentExecutor::from_task(store, input_digest) {
         Ok(executor) => ConfiguredExecutor::Llm(executor),
@@ -786,7 +818,26 @@ pub(crate) fn configured_task_executor(
     }
 }
 
+/// Process-wide switch for unit tests that drive the deterministic executor.
+/// The crate forbids unsafe code and `std::env::set_var` is unsafe in edition
+/// 2024, so tests pin the hook here instead of mutating the environment (the
+/// same seam shape as `phoenix_openai::install_test_base_url`). It exists only
+/// under `proxy-testkit`, so the release-profile tests that prove the branch
+/// is compiled out cannot reach it.
+#[cfg(all(test, feature = "proxy-testkit"))]
+static TEST_DETERMINISTIC_EXECUTORS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Select the deterministic executor for every later admission in this process.
+#[cfg(all(test, feature = "proxy-testkit"))]
+pub(crate) fn install_test_deterministic_executors() {
+    TEST_DETERMINISTIC_EXECUTORS.get_or_init(|| ());
+}
+
 fn deterministic_executor_enabled() -> bool {
+    #[cfg(all(test, feature = "proxy-testkit"))]
+    if TEST_DETERMINISTIC_EXECUTORS.get().is_some() {
+        return true;
+    }
     cfg!(feature = "proxy-testkit")
         && std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
 }

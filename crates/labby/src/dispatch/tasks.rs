@@ -1886,6 +1886,61 @@ mod tests {
         assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
     }
 
+    // Positive counterpart of the release-profile guard below: with the harness
+    // hook enabled, the deterministic executor stands in for a real provider,
+    // so a Task it settles `succeeded` must record a digest whose bytes are in
+    // the output CAS. `tasks.result` re-reads by that digest and must never
+    // fail `unavailable` for output the executor itself claimed to produce.
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    async fn deterministic_task_output_is_materialized_for_result() {
+        agents::install_test_deterministic_executors();
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "agent-1").await;
+        let context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("deterministic", "agent-1"),
+        )
+        .await
+        .unwrap();
+        let queued = dispatch(
+            context.clone(),
+            "tasks.queue",
+            json!({"task_id":"deterministic"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "deterministic").await;
+        assert_eq!(
+            stored.state,
+            TaskState::Succeeded,
+            "{:?}",
+            stored.error_code
+        );
+        let digest = stored
+            .output_digest
+            .clone()
+            .expect("a succeeded Task records its output digest");
+        let result = dispatch(context, "tasks.result", json!({"task_id":"deterministic"}))
+            .await
+            .unwrap();
+        assert_eq!(result["state"], "succeeded");
+        assert_eq!(result["output_digest"], digest);
+        assert_eq!(result["output_truncated"], false);
+        let output = result["output"]
+            .as_str()
+            .unwrap_or_else(|| panic!("materialized output text: {result}"));
+        assert_eq!(
+            AgentPayloadStore::for_access_store(&store)
+                .load_output(&digest)
+                .unwrap(),
+            output
+        );
+    }
+
     // Release-profile guard: without `proxy-testkit` the deterministic branch
     // is inert. Queue admission remains durable, while the owned attempt settles
     // as failed through the normal fenced runtime when no product executor can
