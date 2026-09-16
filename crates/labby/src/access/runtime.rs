@@ -254,6 +254,20 @@ impl AccessRuntime {
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
 
+    pub(crate) async fn provision_allowlisted(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        role: super::AllowlistRole,
+        admitted_by: super::AllowlistAdmission,
+    ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
+        let _writer = self.acquire_bootstrap_writer().await?;
+        self.security_store()
+            .await?
+            .provision_allowlisted(identity, role, admitted_by)
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+    }
+
     async fn security_store(&self) -> Result<AccessStore, AccessRuntimeError> {
         match &*self.state.lock().await {
             RuntimeState::Ready { store, .. } => Ok(store.clone()),

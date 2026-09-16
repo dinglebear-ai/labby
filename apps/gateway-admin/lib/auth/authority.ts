@@ -72,14 +72,27 @@ export function authorityIdentity(snapshot: AuthoritySnapshot | undefined): stri
   ].join(':')
 }
 
+/**
+ * A workspace selection the current authority projection cannot satisfy: the
+ * caller chose a team or project the server did not project, or no projection
+ * is available yet. Callers surface it to the operator; every other error is
+ * a programming fault and must propagate.
+ */
+export class WorkspaceSelectionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WorkspaceSelectionError'
+  }
+}
+
 export function selectAuthorityWorkspace(
   snapshot: AuthoritySnapshot,
   selection: { teamId?: string | null; projectId?: string | null },
 ): AuthoritySnapshot {
   const teamId = clean(selection.teamId)
   const projectId = clean(selection.projectId)
-  if (teamId && !snapshot.teams.some((team) => team.id === teamId)) throw new Error('Selected team is not available')
-  if (projectId && !snapshot.projects.some((project) => project.id === projectId)) throw new Error('Selected project is not available')
+  if (teamId && !snapshot.teams.some((team) => team.id === teamId)) throw new WorkspaceSelectionError('Selected team is not available')
+  if (projectId && !snapshot.projects.some((project) => project.id === projectId)) throw new WorkspaceSelectionError('Selected project is not available')
   if (projectId) return { ...snapshot, activeTeamId: teamId, activeProjectId: projectId, activeOwner: { kind: 'project', id: projectId } }
   if (teamId) return { ...snapshot, activeTeamId: teamId, activeProjectId: undefined, activeOwner: { kind: 'team', id: teamId } }
   return { ...snapshot, activeTeamId: undefined, activeProjectId: undefined, activeOwner: { kind: 'personal', id: snapshot.principalId } }

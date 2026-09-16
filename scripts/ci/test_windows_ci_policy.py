@@ -1,6 +1,8 @@
 from pathlib import Path
 import unittest
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -79,11 +81,32 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertIn("needs.test-windows.result", block)
         self.assertNotIn("needs.desktop-windows.result", block)
 
-    def test_repository_workflows_use_hosted_runners(self) -> None:
+    def test_self_hosted_jobs_are_declared_non_blocking_and_same_repository(self) -> None:
+        # Hosted runners stay the default. The self-hosted fleet is privileged
+        # (DinD on an Unraid host), so a job may only target it when it cannot
+        # gate a merge and cannot execute fork-PR code.
+        allowed = {("ci.yml", "test")}
         for path in WORKFLOW_DIR.glob("*.y*ml"):
-            workflow = path.read_text(encoding="utf-8")
-            self.assertNotIn("runs-on: ci-pool-", workflow, path)
-            self.assertNotIn("runs-on: self-hosted", workflow, path)
+            workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for name, job in (workflow.get("jobs") or {}).items():
+                runner = job.get("runs-on")
+                labels = runner if isinstance(runner, list) else [runner]
+                if not any(str(label).startswith("ci-pool-") or label == "self-hosted" for label in labels):
+                    continue
+                self.assertIn((path.name, name), allowed, f"{path.name}:{name} may not use the self-hosted fleet")
+                self.assertIs(True, job.get("continue-on-error"), f"{path.name}:{name} must be non-blocking")
+                self.assertIn(
+                    "github.event.pull_request.head.repo.full_name == github.repository",
+                    str(job.get("if", "")),
+                    f"{path.name}:{name} must refuse fork pull requests",
+                )
+
+    def test_ci_gate_does_not_wait_on_self_hosted_or_heavy_jobs(self) -> None:
+        gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]["needs"]
+        for job in ("test", "rust-coverage", "feature-slices", "live-e2e-core"):
+            self.assertNotIn(job, gate, f"{job} must stay out of the merge gate")
+        for job in ("test-windows", "test-fork", "clippy"):
+            self.assertIn(job, gate)
 
 
 if __name__ == "__main__":

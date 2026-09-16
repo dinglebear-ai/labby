@@ -189,7 +189,7 @@ pub(crate) use team::{
     TeamInvitationSnapshot, TeamMembershipInput, TeamMembershipSnapshot,
     TeamProjectAssignmentSnapshot, TeamSnapshot,
 };
-pub(crate) use team_provision::TeamMemberProvisionOutcome;
+pub(crate) use team_provision::{AllowlistAdmission, AllowlistRole, TeamMemberProvisionOutcome};
 #[allow(unused_imports)]
 pub(crate) use workflow::{
     OwnerBootstrapCaller, OwnerBootstrapError, bootstrap_owner, owner_bootstrap_admission,

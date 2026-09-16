@@ -425,7 +425,7 @@ mod depot_publish_revalidation_tests {
                 public_url: Some("https://labby.example".parse().unwrap()),
                 sqlite_path: dir.path().join("auth.db"),
                 key_path: dir.path().join("auth-key.der"),
-                admin_email: "allowed@example.test".into(),
+                admin_emails: vec!["allowed@example.test".into()],
                 google: labby_auth::config::GoogleConfig {
                     client_id: "test-client".into(),
                     client_secret: "test-secret".into(),

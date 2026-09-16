@@ -11,8 +11,6 @@ import {
 import { hasMockDataAuthMode, isStandaloneBearerAuthMode } from '@/lib/auth/auth-mode'
 import { buildGatewaySettingsSnapshot } from '@/lib/dashboard/admin-insights'
 import { useGateways } from '@/lib/hooks/use-gateways'
-import { useBrowserSession } from '@/lib/auth/session'
-import { AllowedUsersPanel } from '@/components/allowed-users-panel'
 
 /**
  * Doctor panel — control-plane posture and effective defaults, restyled onto
@@ -20,8 +18,6 @@ import { AllowedUsersPanel } from '@/components/allowed-users-panel'
  * label and description sit left of a right-aligned value.
  */
 export default function SettingsPage() {
-  const session = useBrowserSession()
-  const isAdmin = session.status === 'authenticated' && session.isAdmin === true
   const { data: gateways, isLoading, error } = useGateways()
   const snapshot = gateways ? buildGatewaySettingsSnapshot(gateways, {
     hasStandaloneBearerAuth: isStandaloneBearerAuthMode(),
@@ -167,8 +163,6 @@ export default function SettingsPage() {
         )}
       </SettingsCard>
 
-      {/* Allowed users (admin only) */}
-      {isAdmin ? <AllowedUsersPanel /> : null}
     </div>
   )
 }

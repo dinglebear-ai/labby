@@ -7,8 +7,9 @@ use crate::{
     },
     dispatch::{
         access_errors::map_store_error,
+        agent_payloads::AgentPayloadStore,
         agents::{
-            DisabledExecutor, LiveExecutionAuthority, map_agent_runtime_error,
+            LiveExecutionAuthority, configured_task_executor, map_agent_runtime_error,
             reject_server_assigned,
         },
         error::ToolError,
@@ -84,7 +85,8 @@ pub const ACTIONS: &[ActionSpec] = &[
             param("owner_kind"),
             param("owner_id"),
             param("agent_id"),
-            param("input_digest"),
+            optional_param("input_digest"),
+            optional_param("input"),
         ],
     ),
     action(
@@ -162,6 +164,7 @@ pub(crate) async fn dispatch(
             if agent.owner != owner || agent.state != AgentState::Active {
                 return Err(denied());
             }
+            let input_digest = materialize_task_input(&context.store, &params)?;
             let intent = TaskIntent {
                 id: task_id.clone(),
                 idempotency_key: required(&params, "idempotency_key")?,
@@ -176,7 +179,7 @@ pub(crate) async fn dispatch(
                 agent_id: agent.id,
                 agent_version: agent.revision.version,
                 agent_revision_digest: agent.revision.content_digest,
-                input_digest: required(&params, "input_digest")?,
+                input_digest,
                 catalog_generation: agent.revision.catalog_generation,
                 authority_fingerprint: context.identity.safe_fingerprint(),
             };
@@ -259,7 +262,14 @@ pub(crate) async fn dispatch(
             {
                 return Err(denied());
             }
-            Ok(render_result(&record))
+            let mut result = render_result(&record);
+            if let Some(digest) = record.output_digest.as_deref()
+                && let Ok(output) =
+                    AgentPayloadStore::for_access_store(&context.store).load_output(digest)
+            {
+                result["output"] = Value::String(output);
+            }
+            Ok(result)
         }
         "tasks.queue" | "tasks.cancel" => {
             let record = load(&context, &params).await?;
@@ -400,6 +410,17 @@ pub(crate) async fn dispatch(
         }
         _ => Err(unknown(name)),
     }
+}
+
+fn materialize_task_input(
+    store: &crate::access::AccessStore,
+    params: &Value,
+) -> Result<String, ToolError> {
+    if let Some(input) = params.get("input").and_then(Value::as_str) {
+        return AgentPayloadStore::for_access_store(store)
+            .store_task_input(input, params.get("input_digest").and_then(Value::as_str));
+    }
+    required(params, "input_digest")
 }
 
 async fn load(
@@ -597,6 +618,7 @@ async fn execute_queued(
         now,
     };
     let _ = ledger.recover_expired(now).await.map_err(|_| internal())?;
+    let executor = configured_task_executor(&context.store, &record.intent.input_digest);
     execute_task(
         &TASK_SCHEDULER,
         &ledger,
@@ -606,7 +628,7 @@ async fn execute_queued(
             owner: record.intent.owner.clone(),
             definition,
         },
-        &DisabledExecutor,
+        &executor,
         task,
         cancellation,
         now,
@@ -979,7 +1001,13 @@ mod tests {
             create
                 .params
                 .iter()
-                .any(|param| param.name == "input_digest" && param.required)
+                .any(|param| param.name == "input_digest" && !param.required)
+        );
+        assert!(
+            create
+                .params
+                .iter()
+                .any(|param| param.name == "input" && !param.required)
         );
     }
     #[tokio::test]
@@ -1475,14 +1503,12 @@ mod tests {
     }
 
     // Release-profile guard: without `proxy-testkit` the deterministic branch
-    // of the shared placeholder executor is compiled out, so
-    // `LABBY_E2E_DETERMINISTIC_EXECUTORS` cannot turn a product build into a
-    // fake-success backend. The crate forbids `unsafe`, so the variable cannot
-    // be set from inside the test; run the suite with it exported to exercise
-    // the guard in both states.
+    // is inert. Queue admission remains durable, while the owned attempt settles
+    // as failed through the normal fenced runtime when no product executor can
+    // materialize the pinned input/provider.
     #[cfg(not(feature = "proxy-testkit"))]
     #[tokio::test]
-    async fn disabled_executor_fails_closed_without_testkit() {
+    async fn unavailable_executor_settles_failed_without_testkit() {
         let (_dir, store, owner) = fixture().await;
         create_agent(&store, &owner, "agent-1").await;
         let context = task_context(&store, &owner);
@@ -1493,24 +1519,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let error = dispatch(context, "tasks.queue", json!({"task_id":"closed"}))
+        let queued = dispatch(context, "tasks.queue", json!({"task_id":"closed"}))
             .await
-            .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            "service_unavailable",
-            "deterministic hook must be inert (env set: {})",
-            std::env::var_os("LABBY_E2E_DETERMINISTIC_EXECUTORS").is_some()
-        );
-        assert_eq!(
-            envelope(&error)["message"],
-            "Agent execution backend is not configured"
-        );
-        let stored = store
-            .get_agent_task("closed".into())
-            .await
-            .unwrap()
             .unwrap();
+        assert_eq!(queued["state"], "queued");
+        let stored = wait_for_task_terminal(&store, "closed").await;
         assert_eq!(stored.state, TaskState::Failed);
         assert_eq!(stored.error_code.as_deref(), Some("execution_failed"));
         assert_eq!(stored.output_digest, None);

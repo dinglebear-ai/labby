@@ -676,6 +676,8 @@ pub struct AllowedUserRow {
     pub email: String,
     pub added_by: String,
     pub created_at: i64,
+    /// Access granted at first sign-in: `member` or `admin`.
+    pub role: String,
 }
 
 impl std::fmt::Debug for UpstreamOauthStateRow {

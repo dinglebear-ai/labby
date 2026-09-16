@@ -71,6 +71,7 @@ struct DepotDelegationSigner {
 pub struct DepotStatus {
     pub configured: bool,
     pub enabled: bool,
+    pub mutation_authority: bool,
     pub authority: DepotAuthority,
     pub max_response_bytes: usize,
 }
@@ -102,6 +103,9 @@ impl DestructiveRequest {
 pub struct OperationPolicy {
     pub read_only: bool,
     pub destructive: bool,
+    pub requires_write: bool,
+    pub requires_operator: bool,
+    pub transport_available: bool,
 }
 
 struct OperationCatalogSnapshot {
@@ -231,6 +235,7 @@ impl DepotClient {
         DepotStatus {
             configured,
             enabled: self.enabled,
+            mutation_authority: self.publishing_configured(),
             // Configuration proves only that Labby can attempt a request. Depot
             // remains authoritative for token scopes, so local state must not
             // claim write authority that Depot has not attested.
@@ -280,11 +285,13 @@ impl DepotClient {
         if let Ok(catalog) = self.operations(actor).await
             && let Ok(catalog) = serde_json::from_value::<OperationCatalog>(catalog)
         {
-            status.authority = if catalog
-                .operations
-                .iter()
-                .any(|operation| !operation.annotations.read_only_hint)
-            {
+            status.authority = if catalog.operations.iter().any(|operation| {
+                match operation.required_scope.as_deref() {
+                    Some("write") => operation.authorized.unwrap_or(false),
+                    Some(_) => false,
+                    None => !operation.annotations.read_only_hint,
+                }
+            }) {
                 DepotAuthority::Write
             } else {
                 DepotAuthority::Read
@@ -294,9 +301,17 @@ impl DepotClient {
     }
 
     pub async fn operations(&self, actor: &str) -> Result<Value, DepotError> {
-        let mut value = self
-            .request(reqwest::Method::GET, "api/operations", None, actor)
-            .await?;
+        let mut value = match self
+            .request(reqwest::Method::GET, "api/operations/catalog", None, actor)
+            .await
+        {
+            Ok(value) => value,
+            Err(DepotError::Upstream(StatusCode::NOT_FOUND, _)) => {
+                self.request(reqwest::Method::GET, "api/operations", None, actor)
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
         let policies = parse_operation_catalog(&value)?;
         project_operation_groups(&mut value)?;
         self.operation_catalogs.lock().await.insert(
@@ -342,6 +357,26 @@ impl DepotClient {
             .await
     }
 
+    pub async fn call_with_browser_authorization(
+        &self,
+        operation: &str,
+        params: Value,
+        actor: &str,
+        policy: OperationPolicy,
+        idempotency_key: Option<&str>,
+        authorization: &BrowserDepotAuthorization,
+    ) -> Result<Value, DepotError> {
+        self.call_with_subject(
+            operation,
+            params,
+            actor,
+            policy,
+            idempotency_key,
+            Some(authorization.into()),
+        )
+        .await
+    }
+
     pub async fn call_with_grant(
         &self,
         operation: &str,
@@ -371,12 +406,15 @@ impl DepotClient {
         idempotency_key: Option<&str>,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
+        if !policy.transport_available {
+            return Err(DepotError::UnsupportedOperation);
+        }
         if policy.destructive {
             let key = idempotency_key
                 .filter(|key| valid_idempotency_key(key))
                 .ok_or(DepotError::DestructiveIntentRequired)?;
             return self
-                .call_destructive(operation, params, actor, key, subject)
+                .call_destructive(operation, params, actor, key, policy, subject)
                 .await;
         }
         self.call_upstream(operation, params, actor, None, policy, subject)
@@ -389,6 +427,7 @@ impl DepotClient {
         params: Value,
         actor: &str,
         idempotency_key: &str,
+        policy: OperationPolicy,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
         let digest: [u8; 32] = Sha256::digest(
@@ -440,10 +479,7 @@ impl DepotClient {
                 params,
                 actor,
                 Some(idempotency_key),
-                OperationPolicy {
-                    read_only: false,
-                    destructive: true,
-                },
+                policy,
                 subject,
             )
             .await;
@@ -481,13 +517,20 @@ impl DepotClient {
         policy: OperationPolicy,
         subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
+        let delegation_scope = if policy.requires_operator {
+            Some(DepotDelegationScope::Operator)
+        } else if policy.requires_write {
+            Some(DepotDelegationScope::Write)
+        } else {
+            None
+        };
         self.request_with_idempotency(
             reqwest::Method::POST,
             &format!("api/operations/{operation}"),
             Some(params),
             actor,
             idempotency_key,
-            !policy.read_only,
+            delegation_scope,
             subject,
         )
         .await
@@ -501,7 +544,7 @@ impl DepotClient {
         body: Option<Value>,
         actor: &str,
     ) -> Result<Value, DepotError> {
-        self.request_with_idempotency(method, path, body, actor, None, false, None)
+        self.request_with_idempotency(method, path, body, actor, None, None, None)
             .await
     }
 
@@ -512,7 +555,7 @@ impl DepotClient {
         body: Option<Value>,
         actor: &str,
         idempotency_key: Option<&str>,
-        requires_delegation: bool,
+        delegation_scope: Option<DepotDelegationScope>,
         delegation_subject: Option<DepotDelegationSubject<'_>>,
     ) -> Result<Value, DepotError> {
         if !self.enabled {
@@ -526,12 +569,12 @@ impl DepotClient {
             })?
             .map_err(|_| DepotError::Unavailable(TransportFailure::Request))?;
         let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
-        let delegated_token = if requires_delegation {
+        let delegated_token = if let Some(scope) = delegation_scope {
             let operation = path
                 .strip_prefix("api/operations/")
                 .ok_or(DepotError::UnsupportedOperation)?;
             let params = body.as_ref().ok_or(DepotError::UnsupportedOperation)?;
-            Some(self.delegation_token(delegation_subject, operation, params)?)
+            Some(self.delegation_token(delegation_subject, operation, params, scope)?)
         } else {
             None
         };
@@ -573,32 +616,29 @@ impl DepotClient {
         subject: Option<DepotDelegationSubject<'_>>,
         operation: &str,
         params: &Value,
+        scope: DepotDelegationScope,
     ) -> Result<String, DepotError> {
         let subject = subject.ok_or(DepotError::DelegationUnavailable)?;
         let signer = self
             .delegation
             .as_ref()
             .ok_or(DepotError::DelegationUnavailable)?;
-        let token = match subject {
-            DepotDelegationSubject::ProductCredential(grant) => signer.keys.issue_depot_delegation(
-                &signer.target,
-                grant,
-                DepotDelegationScope::Write,
-                operation,
-                params,
-                30,
-            ),
-            DepotDelegationSubject::Browser(authorization) => {
-                signer.keys.issue_browser_depot_delegation(
-                    &signer.target,
-                    authorization,
-                    DepotDelegationScope::Write,
-                    operation,
-                    params,
-                    30,
-                )
-            }
-        };
+        let token =
+            match subject {
+                DepotDelegationSubject::ProductCredential(grant) => signer
+                    .keys
+                    .issue_depot_delegation(&signer.target, grant, scope, operation, params, 30),
+                DepotDelegationSubject::Browser(authorization) => {
+                    signer.keys.issue_browser_depot_delegation(
+                        &signer.target,
+                        authorization,
+                        scope,
+                        operation,
+                        params,
+                        30,
+                    )
+                }
+            };
         token.map_err(|_| DepotError::DelegationUnavailable)
     }
 
@@ -651,6 +691,7 @@ impl DepotClient {
             subject,
             super::depot_publish::UPLOAD_PUT_OPERATION,
             &binding,
+            DepotDelegationScope::Write,
         )?;
         let url = base
             .join(&format!("uploads/{upload_id}"))
@@ -731,6 +772,9 @@ impl DepotClient {
                 OperationPolicy {
                     read_only: false,
                     destructive: false,
+                    requires_write: true,
+                    requires_operator: false,
+                    transport_available: true,
                 },
                 None,
                 Some((&create_authorization).into()),
@@ -782,6 +826,9 @@ impl DepotClient {
             OperationPolicy {
                 read_only: false,
                 destructive: false,
+                requires_write: true,
+                requires_operator: false,
+                transport_available: true,
             },
             None,
             Some((&ingest_authorization).into()),
@@ -830,9 +877,13 @@ struct OperationCatalog {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CatalogOperation {
     name: String,
     annotations: CatalogAnnotations,
+    required_scope: Option<String>,
+    transport_available: Option<bool>,
+    authorized: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -861,9 +912,21 @@ fn parse_operation_catalog(
         {
             return Err(DepotError::InvalidCatalog);
         }
+        let (requires_write, requires_operator, transport_available) =
+            match item.required_scope.as_deref() {
+                None => (!item.annotations.read_only_hint, false, true),
+                Some("none" | "read") => (false, false, item.transport_available.unwrap_or(true)),
+                Some("write") => (true, false, item.transport_available.unwrap_or(true)),
+                Some("operator") => (false, true, item.transport_available.unwrap_or(true)),
+                Some("local") => (false, false, item.transport_available.unwrap_or(false)),
+                Some(_) => return Err(DepotError::InvalidCatalog),
+            };
         let policy = OperationPolicy {
             read_only: item.annotations.read_only_hint,
             destructive: item.annotations.destructive_hint,
+            requires_write,
+            requires_operator,
+            transport_available,
         };
         if policies.insert(item.name, policy).is_some() {
             return Err(DepotError::InvalidCatalog);
@@ -1019,6 +1082,7 @@ mod tests {
     struct ExactDelegation {
         operation: &'static str,
         params: Value,
+        scope: &'static str,
         seen_jtis: Arc<StdMutex<Vec<String>>>,
     }
 
@@ -1050,6 +1114,7 @@ mod tests {
             self.seen_jtis.lock().unwrap().push(jti.to_owned());
             claims["depot_operation"] == self.operation
                 && claims["depot_params_sha256"] == expected_digest
+                && claims["scope"] == self.scope
                 && !request.headers.contains_key("x-labby-actor")
         }
     }
@@ -1109,6 +1174,9 @@ mod tests {
                 OperationPolicy {
                     read_only: false,
                     destructive: false,
+                    requires_write: true,
+                    requires_operator: false,
+                    transport_available: true,
                 },
                 None,
             )
@@ -1152,12 +1220,124 @@ mod tests {
                 OperationPolicy {
                     read_only: false,
                     destructive: false,
+                    requires_write: true,
+                    requires_operator: false,
+                    transport_available: true,
                 },
                 None,
                 Some(&delegation_grant()),
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_operator_call_uses_exact_operator_delegation() {
+        let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.maintenance.upstream"))
+            .and(ExactDelegation {
+                operation: "depot.maintenance.upstream",
+                scope: "skills:read depot:operator",
+                params: json!({}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"ok":true}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client =
+            DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "shared-read-bearer");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+        assert!(client.status().mutation_authority);
+
+        client
+            .call_with_browser_authorization(
+                "depot.maintenance.upstream",
+                json!({}),
+                "browser-actor",
+                OperationPolicy {
+                    read_only: true,
+                    destructive: false,
+                    requires_write: false,
+                    requires_operator: true,
+                    transport_available: true,
+                },
+                None,
+                &browser_authorization(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen_jtis.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn browser_destructive_operator_call_preserves_operator_delegation() {
+        let server = MockServer::start().await;
+        let seen_jtis = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.maintenance.gc"))
+            .and(ExactDelegation {
+                operation: "depot.maintenance.gc",
+                scope: "skills:read depot:operator",
+                params: json!({}),
+                seen_jtis: Arc::clone(&seen_jtis),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"ok":true}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let keys =
+            Arc::new(SigningKeys::load_or_create(&temp.path().join("delegation-key.der")).unwrap());
+        let mut client =
+            DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "shared-read-bearer");
+        client.delegation = Some(Arc::new(DepotDelegationSigner {
+            keys,
+            target: DepotDelegationTarget {
+                issuer: "https://team-labby.example".into(),
+                audience: "https://depot.example".into(),
+                deployment_id: "depot-lime-prod".into(),
+                account_id: "account-lime".into(),
+                tenant_id: "tenant-lime".into(),
+                team_id: Some("team-lime".into()),
+            },
+        }));
+
+        client
+            .call_with_browser_authorization(
+                "depot.maintenance.gc",
+                json!({}),
+                "browser-actor",
+                OperationPolicy {
+                    read_only: false,
+                    destructive: true,
+                    requires_write: false,
+                    requires_operator: true,
+                    transport_available: true,
+                },
+                Some("operator-gc-1"),
+                &browser_authorization(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen_jtis.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1168,6 +1348,7 @@ mod tests {
             .and(path("/api/operations/depot.uploads.create"))
             .and(ExactDelegation {
                 operation: "depot.uploads.create",
+                scope: "skills:read skills:write",
                 params: json!({"filename":"skill.zip"}),
                 seen_jtis: Arc::clone(&seen_jtis),
             })
@@ -1181,6 +1362,7 @@ mod tests {
             .and(path("/uploads/upload-123"))
             .and(ExactDelegation {
                 operation: "depot.uploads.put",
+                scope: "skills:read skills:write",
                 params: json!({
                     "contentLength": 13,
                     "contentType": "application/octet-stream",
@@ -1198,6 +1380,7 @@ mod tests {
             .and(path("/api/operations/depot.ingest.start"))
             .and(ExactDelegation {
                 operation: "depot.ingest.start",
+                scope: "skills:read skills:write",
                 params: json!({
                     "kind":"archive",
                     "arguments":{"namespace":"team","uploadId":"upload-123"}
@@ -1480,23 +1663,62 @@ mod tests {
     }
 
     #[test]
-    fn operation_policy_comes_from_the_actor_filtered_catalog() {
+    fn operation_policy_separates_authority_from_side_effects() {
         let catalog = json!({"operations":[
-            {"name":"depot.new.read","annotations":{"readOnlyHint":true,"destructiveHint":false}},
-            {"name":"depot.new.destroy","annotations":{"readOnlyHint":false,"destructiveHint":true}}
+            {"name":"depot.new.read","requiredScope":"read","transportAvailable":true,"authorized":true,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
+            {"name":"depot.new.write_read","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
+            {"name":"depot.new.destroy","requiredScope":"write","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":false,"destructiveHint":true}},
+            {"name":"depot.new.operator","requiredScope":"operator","transportAvailable":true,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}},
+            {"name":"depot.new.local","requiredScope":"local","transportAvailable":false,"authorized":false,"annotations":{"readOnlyHint":true,"destructiveHint":false}}
         ]});
         assert_eq!(
             parse_operation_policy(&catalog, "depot.new.read").unwrap(),
             OperationPolicy {
                 read_only: true,
-                destructive: false
+                destructive: false,
+                requires_write: false,
+                requires_operator: false,
+                transport_available: true,
+            }
+        );
+        assert_eq!(
+            parse_operation_policy(&catalog, "depot.new.write_read").unwrap(),
+            OperationPolicy {
+                read_only: true,
+                destructive: false,
+                requires_write: true,
+                requires_operator: false,
+                transport_available: true,
             }
         );
         assert_eq!(
             parse_operation_policy(&catalog, "depot.new.destroy").unwrap(),
             OperationPolicy {
                 read_only: false,
-                destructive: true
+                destructive: true,
+                requires_write: true,
+                requires_operator: false,
+                transport_available: true,
+            }
+        );
+        assert_eq!(
+            parse_operation_policy(&catalog, "depot.new.operator").unwrap(),
+            OperationPolicy {
+                read_only: true,
+                destructive: false,
+                requires_write: false,
+                requires_operator: true,
+                transport_available: true,
+            }
+        );
+        assert_eq!(
+            parse_operation_policy(&catalog, "depot.new.local").unwrap(),
+            OperationPolicy {
+                read_only: true,
+                destructive: false,
+                requires_write: false,
+                requires_operator: false,
+                transport_available: false,
             }
         );
         assert!(matches!(
@@ -1533,10 +1755,12 @@ mod tests {
             Duration::from_secs(1),
         );
         assert!(matches!(client.status().authority, DepotAuthority::Unknown));
+        assert!(!client.status().mutation_authority);
         assert!(matches!(
             DepotClient::disabled().status().authority,
             DepotAuthority::Unknown
         ));
+        assert!(!DepotClient::disabled().status().mutation_authority);
     }
 
     #[test]

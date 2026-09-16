@@ -623,8 +623,9 @@ impl AuthState {
         }
     }
 
-    /// Returns the merged email allowlist: admin first, then all `allowed_users` rows,
-    /// deduplicating case-insensitively so admin is never counted twice.
+    /// Returns the merged email allowlist: configured admins first, then all
+    /// `allowed_users` rows, deduplicating case-insensitively so no admin is
+    /// counted twice.
     ///
     /// This is the single source of truth used in both OAuth callback branches. A DB
     /// error is surfaced as [`AuthError::Storage`] (fail-closed — server fault, not
@@ -633,9 +634,9 @@ impl AuthState {
     /// Never log the returned emails directly — pass them only to
     /// `check_email_allowlist`, which uses `fingerprint()` for safe diagnostics.
     pub async fn resolve_allowed_emails(&self) -> Result<Vec<String>, AuthError> {
-        let mut emails = vec![self.config.admin_email.clone()];
+        let mut emails = self.config.admin_emails.clone();
         for row in self.store.list_allowed_users().await? {
-            if !row.email.eq_ignore_ascii_case(&self.config.admin_email) {
+            if !self.config.is_admin_email(&row.email) {
                 emails.push(row.email);
             }
         }
@@ -675,8 +676,7 @@ impl AuthState {
     }
 
     pub async fn is_email_explicitly_allowed(&self, email: &str) -> Result<bool, AuthError> {
-        Ok(email.eq_ignore_ascii_case(&self.config.admin_email)
-            || self.store.is_allowed_user_email(email).await?)
+        Ok(self.config.is_admin_email(email) || self.store.is_allowed_user_email(email).await?)
     }
 
     /// Viewer evidence comes only from the provider-verified durable row, never
@@ -960,7 +960,7 @@ mod tests {
             key_path: dir.path().join("auth.pem"),
             bootstrap_secret: None,
             allowed_client_redirect_uris: Vec::new(),
-            admin_email: admin_email.to_string(),
+            admin_emails: vec![admin_email.to_string()],
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
@@ -1068,12 +1068,12 @@ mod tests {
         let state = resolve_state("admin@example.com").await;
         state
             .store
-            .add_allowed_user("alice@example.com", "admin", now_unix())
+            .add_allowed_user("alice@example.com", "admin", "member", now_unix())
             .await
             .unwrap();
         state
             .store
-            .add_allowed_user("bob@example.com", "admin", now_unix() + 1)
+            .add_allowed_user("bob@example.com", "admin", "member", now_unix() + 1)
             .await
             .unwrap();
         let emails = state.resolve_allowed_emails().await.unwrap();
@@ -1090,12 +1090,12 @@ mod tests {
         // add_allowed_user lowercases; admin_email may differ in case → still deduped.
         state
             .store
-            .add_allowed_user("Admin@Example.COM", "self", now_unix())
+            .add_allowed_user("Admin@Example.COM", "self", "member", now_unix())
             .await
             .unwrap();
         state
             .store
-            .add_allowed_user("other@example.com", "admin", now_unix() + 1)
+            .add_allowed_user("other@example.com", "admin", "member", now_unix() + 1)
             .await
             .unwrap();
         let emails = state.resolve_allowed_emails().await.unwrap();
@@ -1113,7 +1113,7 @@ mod tests {
             key_path: temp.path().join("auth.pem"),
             bootstrap_secret: None,
             allowed_client_redirect_uris: Vec::new(),
-            admin_email: "admin@example.com".to_string(),
+            admin_emails: vec!["admin@example.com".to_string()],
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
