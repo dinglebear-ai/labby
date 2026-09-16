@@ -413,6 +413,15 @@ fn rust_manifests_lockfiles_and_toolchains_run_full_tests() {
 }
 
 #[test]
+fn nextest_policy_changes_run_the_full_rust_test_path() {
+    let out = classify("pull_request", &[".config/nextest.toml"]);
+    assert_eq!(out["rust_compile"], "true");
+    assert_eq!(out["rust_test"], "true");
+    assert_eq!(out["docker"], "true");
+    assert_eq!(out["release"], "true");
+}
+
+#[test]
 fn frontend_changes_enable_web_release_and_container_without_rust_tests() {
     let out = classify("pull_request", &["apps/gateway-admin/app/page.tsx"]);
     assert_eq!(out["web"], "true");
