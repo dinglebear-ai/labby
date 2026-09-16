@@ -844,13 +844,14 @@ mod tests {
             .await;
         fixture
             .runtime
-            .provision_allowlisted(
-                colleague.clone(),
-                AllowlistRole::Admin,
-                AllowlistAdmission::AllowlistEntry {
-                    added_by_fingerprint: "fp".into(),
-                },
-            )
+            .provision_allowlisted(colleague.clone(), || async {
+                Some((
+                    AllowlistRole::Admin,
+                    AllowlistAdmission::AllowlistEntry {
+                        added_by_fingerprint: "fp".into(),
+                    },
+                ))
+            })
             .await
             .unwrap();
         let store = fixture.runtime.store().await.unwrap();

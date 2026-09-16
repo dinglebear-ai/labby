@@ -177,7 +177,10 @@ pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,
     OwnerBootstrapOffer,
 };
-pub(crate) use runtime::{AllowlistRevocation, CredentialLifecycleError, TeamMemberProvisionError};
+pub(crate) use runtime::{
+    AllowlistProvisionError, AllowlistRevocation, CredentialLifecycleError,
+    TeamMemberProvisionError,
+};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashOwnerAuthorization, FileStashPrincipalResolutionError};
 #[allow(unused_imports)]

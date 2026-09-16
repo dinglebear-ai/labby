@@ -101,6 +101,23 @@ pub(crate) enum AccessRuntimeError {
     LifecycleUnavailable,
 }
 
+/// Why a first-sign-in allowlist admission did not provision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum AllowlistProvisionError {
+    /// The re-check under the access writer no longer admits the identity:
+    /// the entry was removed or changed after the caller's first lookup.
+    #[error("allowlist admission was withdrawn before provisioning")]
+    Withdrawn,
+    /// Durable state refuses the admission — a disabled or suspended
+    /// membership, Principal, link, Project, or Organization. Expected while
+    /// that state stands; retrying cannot help.
+    #[error("existing durable state refuses allowlist admission")]
+    Refused,
+    /// The access store or its lifecycle is unavailable.
+    #[error(transparent)]
+    Runtime(AccessRuntimeError),
+}
+
 /// Result of [`AccessRuntime::revoke_allowlisted`]. Dropping it releases the
 /// admission fence, so callers hold it until their allowlist deletion commits.
 #[must_use = "drop only after the allowlist entry has been removed"]
@@ -262,18 +279,37 @@ impl AccessRuntime {
             .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
     }
 
-    pub(crate) async fn provision_allowlisted(
+    /// Admit an allowlisted identity at first sign-in.
+    ///
+    /// The allowlist lives in the auth database, so `revalidate` re-resolves
+    /// the admission under the access writer; what it returns — not the
+    /// caller's earlier lookup — is what gets provisioned. An entry removed
+    /// between the two lookups therefore admits nothing.
+    pub(crate) async fn provision_allowlisted<F, Fut>(
         &self,
         identity: labby_auth::VerifiedIdentity,
-        role: super::AllowlistRole,
-        admitted_by: super::AllowlistAdmission,
-    ) -> Result<super::TeamMemberProvisionOutcome, AccessRuntimeError> {
-        let _writer = self.acquire_bootstrap_writer().await?;
+        revalidate: F,
+    ) -> Result<super::TeamMemberProvisionOutcome, AllowlistProvisionError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Option<(super::AllowlistRole, super::AllowlistAdmission)>>,
+    {
+        let _writer = self
+            .acquire_bootstrap_writer()
+            .await
+            .map_err(AllowlistProvisionError::Runtime)?;
+        let Some((role, admitted_by)) = revalidate().await else {
+            return Err(AllowlistProvisionError::Withdrawn);
+        };
         self.security_store()
-            .await?
+            .await
+            .map_err(AllowlistProvisionError::Runtime)?
             .provision_allowlisted(identity, role, admitted_by)
             .await
-            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)
+            .map_err(|error| match error {
+                AccessStoreError::NotAuthorized => AllowlistProvisionError::Refused,
+                _ => AllowlistProvisionError::Runtime(AccessRuntimeError::LifecycleUnavailable),
+            })
     }
 
     /// Revoke the durable grants allowlist admission created for every
