@@ -1,6 +1,7 @@
 //! Per-upstream recovery and incarnation-fenced tool catalog publication.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -14,12 +15,25 @@ impl UpstreamPool {
     /// Restart the selected runtime without changing its desired enabled state.
     /// The manager owns the task so a disconnected operator request cannot
     /// interrupt the stop/start transaction.
-    pub async fn restart_upstream(
+    ///
+    /// `between_stop_and_start` runs after the owned connection has been shut
+    /// down and before the replacement connects, while the per-upstream
+    /// connect gate is still held. The manager uses it to reap stale runtime
+    /// processes from earlier generations: running it after the reconnect
+    /// would match the replacement child, and running it before the shutdown
+    /// would race the graceful process-group teardown. Its output is returned
+    /// unchanged so the caller can report it alongside the restart.
+    pub async fn restart_upstream<C, F>(
         &self,
         config: &UpstreamConfig,
         oauth_subject: Option<&str>,
         owner: Option<&UpstreamRuntimeOwner>,
-    ) -> anyhow::Result<()> {
+        between_stop_and_start: C,
+    ) -> anyhow::Result<F::Output>
+    where
+        C: FnOnce() -> F,
+        F: Future,
+    {
         anyhow::ensure!(config.enabled, "upstream `{}` is disabled", config.name);
         // A runtime swap may publish a fresh pool before its normal lazy-seed
         // reconciliation has run. Restart remains self-contained in that
@@ -36,15 +50,17 @@ impl UpstreamPool {
         {
             self.invalidate_oauth_subject_sessions(&config.name, subject, "upstream.restart")
                 .await;
+            let between = between_stop_and_start().await;
             self.acquire_or_connect_subject(config, subject).await?;
-            return Ok(());
+            return Ok(between);
         }
         self.begin_subscription_generation(&config.name).await;
         if let Some(connection) = self.remove_connection_binding(&config.name).await {
             connection.shutdown(&config.name, "upstream.restart").await;
         }
+        let between = between_stop_and_start().await;
         self.reprobe_upstream(config, oauth_subject, owner).await?;
-        Ok(())
+        Ok(between)
     }
 
     pub(super) async fn lazy_connect_gate_is_current(

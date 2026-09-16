@@ -345,9 +345,17 @@ impl GatewayManager {
 
     /// Complete admitted runtime restarts independently of the request lifetime.
     /// Desired configuration is never toggled to express a transient restart.
+    ///
+    /// The restart is one transaction on the upstream's connect gate: the owned
+    /// connection is shut down, stale runtime processes from earlier gateway
+    /// generations are reaped (`aggressive` widens the process match exactly as
+    /// `gateway.mcp.cleanup` does), and the replacement connects. The response
+    /// is the `GatewayView` plus that cleanup result, as the action metadata
+    /// promises on every surface.
     pub async fn restart_mcp_upstream(
         &self,
         name: &str,
+        aggressive: bool,
         scope: crate::gateway::params::GatewayEnrichmentScope,
         owner: Option<UpstreamRuntimeOwner>,
         wait: Duration,
@@ -376,12 +384,18 @@ impl GatewayManager {
                 sdk_kind: "service_unavailable".to_owned(),
                 message: "gateway runtime is not initialized".to_owned(),
             })?;
-            pool.restart_upstream(&upstream, scope.oauth_subject.as_deref(), owner.as_ref())
+            let cleanup = pool
+                .restart_upstream(
+                    &upstream,
+                    scope.oauth_subject.as_deref(),
+                    owner.as_ref(),
+                    || manager.kill_upstream_processes(&name, aggressive, false),
+                )
                 .await
                 .map_err(|error| ToolError::Sdk {
                     sdk_kind: "upstream_connect_error".to_owned(),
                     message: error.to_string(),
-                })?;
+                })??;
             if upstream.oauth.is_some()
                 && let Some(subject) = scope.oauth_subject.as_deref()
             {
@@ -400,14 +414,19 @@ impl GatewayManager {
             }
             let cfg = manager.config.read().await.clone();
             manager.reconcile_runtime_state(&cfg, Some(&pool)).await?;
-            manager.get_scoped(&name, &scope).await
+            let gateway = manager.get_scoped(&name, &scope).await?;
+            Ok::<_, ToolError>((gateway, cleanup))
         });
         match tokio::time::timeout(wait, &mut task).await {
             Ok(result) => {
-                let gateway = result.map_err(|error| {
+                let (gateway, cleanup) = result.map_err(|error| {
                     ToolError::internal_message(format!("gateway restart task failed: {error}"))
                 })??;
-                Ok(serde_json::json!({ "completed": true, "gateway": gateway }))
+                Ok(serde_json::json!({
+                    "completed": true,
+                    "gateway": gateway,
+                    "cleanup": cleanup,
+                }))
             }
             Err(_) => {
                 tokio::spawn(async move {
@@ -696,6 +715,23 @@ impl GatewayManager {
         aggressive: bool,
         dry_run: bool,
     ) -> Result<super::types::GatewayCleanupView, ToolError> {
+        let view = self
+            .kill_upstream_processes(name, aggressive, dry_run)
+            .await?;
+        self.reconcile_after_upstream_cleanup(name, dry_run).await?;
+        Ok(view)
+    }
+
+    /// The process-scan-and-kill half of `gateway.mcp.cleanup`, without the
+    /// pool reconciliation that follows it. `restart_mcp_upstream` runs this
+    /// between its own shutdown and reconnect phases, where the restart's
+    /// reconnect and runtime-state reconcile supersede a separate reconcile.
+    pub(crate) async fn kill_upstream_processes(
+        &self,
+        name: &str,
+        aggressive: bool,
+        dry_run: bool,
+    ) -> Result<super::types::GatewayCleanupView, ToolError> {
         let upstream = self
             .config
             .read()
@@ -774,8 +810,6 @@ impl GatewayManager {
             local_matches: local_matches.iter().map(cleanup_match_view).collect(),
             aggressive_matches: aggressive_matches.iter().map(cleanup_match_view).collect(),
         };
-
-        self.reconcile_after_upstream_cleanup(name, dry_run).await?;
 
         Ok(view)
     }

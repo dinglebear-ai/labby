@@ -4004,6 +4004,47 @@ async fn gateway_mcp_restart_rejects_a_disabled_upstream_without_enabling_it() {
     );
 }
 
+/// `gateway.mcp.restart` promises "GatewayView + cleanup result" on every
+/// surface: the stale-process cleanup runs inside the restart transaction and
+/// honors `aggressive`, and the response carries the cleanup view.
+#[tokio::test]
+async fn gateway_mcp_restart_response_matches_action_spec() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let mut config = upstream_fixture("restart-spec", Some(format!("{}/mcp", server.uri())), None);
+    config.enabled = true;
+    manager.replace_config_for_tests(vec![config]).await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": "restart-spec", "aggressive": true}),
+    )
+    .await
+    .expect("restart dispatch");
+
+    assert_eq!(value["completed"], true);
+    assert_eq!(value["gateway"]["config"]["name"], "restart-spec");
+    assert_eq!(value["gateway"]["config"]["enabled"], true);
+    assert_eq!(value["gateway"]["runtime"]["tool_count"], 1);
+    assert_eq!(value["cleanup"]["upstream"], "restart-spec");
+    assert_eq!(value["cleanup"]["aggressive"], true);
+    assert_eq!(value["cleanup"]["dry_run"], false);
+}
+
 #[tokio::test]
 async fn gateway_mcp_restart_replaces_catalog_and_completes_after_caller_stops_waiting() {
     use std::time::Duration;
@@ -4043,6 +4084,7 @@ async fn gateway_mcp_restart_replaces_catalog_and_completes_after_caller_stops_w
     let pending = manager
         .restart_mcp_upstream(
             "restart-dispatch",
+            false,
             GatewayEnrichmentScope::default(),
             None,
             Duration::from_millis(1),
@@ -4070,6 +4112,140 @@ async fn gateway_mcp_restart_replaces_catalog_and_completes_after_caller_stops_w
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("detached restart did not publish replacement catalog");
+}
+
+/// A newline-delimited stdio MCP stand-in that completes both the
+/// `server/discover` and legacy `initialize` handshakes and publishes one tool.
+/// Its trailing argument is a marker the upstream cleanup patterns match on.
+#[cfg(unix)]
+fn write_stdio_mcp_stand_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let script = dir.join("stdio-mcp-stand-in.py");
+    std::fs::write(
+        &script,
+        r#"import json, sys
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    request_id = msg.get("id")
+    if request_id is None:
+        continue
+    if method == "server/discover":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {
+            "resultType": "complete", "supportedVersions": ["2026-07-28"],
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "stdio-stand-in", "version": "1.0.0"},
+            "ttlMs": 0, "cacheScope": "private"}})
+    elif method == "initialize":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {
+            "protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-11-25"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "stdio-stand-in", "version": "1.0.0"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": [
+            {"name": "stand_in_echo", "description": "restart proof",
+             "inputSchema": {"type": "object"}}]}})
+    elif method == "ping":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    else:
+        send({"jsonrpc": "2.0", "id": request_id,
+              "error": {"code": -32601, "message": "Method not found"}})
+"#,
+    )
+    .expect("write stdio stand-in");
+    script
+}
+
+/// Restarting a stdio upstream replaces its child, reaps stray runtime
+/// processes left by earlier gateway generations (visible only where the
+/// process table can be scanned), and reconnects to a live replacement.
+#[cfg(unix)]
+#[tokio::test]
+async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_stdio_mcp_stand_in(dir.path());
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    let upstream_name = "restart-dispatch";
+    let runtime_arg = "restart-dispatch-mcp";
+    let mut config = upstream_fixture(upstream_name, None, Some("python3".to_string()));
+    config.enabled = true;
+    config.args = vec![
+        script.to_string_lossy().into_owned(),
+        runtime_arg.to_string(),
+    ];
+    manager.replace_config_for_tests(vec![config]).await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    // A stray runtime from an earlier gateway generation: not owned by this
+    // pool, but it matches the upstream's cleanup patterns.
+    let mut command = Command::new("python3");
+    command
+        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Cleanup kills process groups; keep the stand-in out of the test's group.
+    command.process_group(0);
+    let mut stray = command.spawn().expect("spawn stray stand-in");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    #[cfg(target_os = "linux")]
+    wait_for_cleanup_match(&manager, upstream_name).await;
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": upstream_name, "aggressive": false}),
+    )
+    .await
+    .expect("restart dispatch");
+
+    assert_eq!(value["completed"], true);
+    assert_eq!(value["gateway"]["config"]["name"], upstream_name);
+    assert_eq!(value["gateway"]["config"]["enabled"], true);
+    assert_eq!(value["gateway"]["runtime"]["tool_count"], 1);
+    assert_eq!(value["cleanup"]["upstream"], upstream_name);
+    assert_eq!(value["cleanup"]["aggressive"], false);
+
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            value["cleanup"]["gateway_killed"].as_u64().unwrap_or(0) >= 1,
+            "restart must report the reaped stray runtime: {value}"
+        );
+        for _ in 0..40 {
+            if stray.try_wait().expect("try_wait").is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        drop(stray.kill());
+        panic!("stray runtime process was not terminated by restart");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // No process table scan here: the stray is untouched and only cleaned
+        // up by the test itself.
+        assert!(stray.try_wait().expect("try_wait").is_none());
+        drop(stray.kill());
+        drop(stray.wait());
+    }
 }
 
 #[cfg(target_os = "linux")]

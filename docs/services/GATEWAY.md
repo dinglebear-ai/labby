@@ -41,6 +41,19 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+### Restarting An Upstream Connection
+
+`gateway.mcp.restart` replaces one enabled upstream's live connection without
+touching its desired configuration. It is one transaction on that upstream's
+connect gate: the owned connection is shut down, stale runtime processes left by
+earlier gateway generations are reaped with the same process matching as
+`gateway.mcp.cleanup` (`aggressive` widens the match to the upstream name), and
+the replacement connects. The response is `{completed, gateway, cleanup}`: the
+scoped `GatewayView` plus the `GatewayCleanupView` for that reap. When the
+restart is still running after the 20-second wait, the action returns
+`{completed: false}` and the restart finishes in the background; a later
+`gateway.get` or `gateway.mcp.list` shows the reconnected runtime.
+
 ### Stdio Gateways
 
 Stdio upstreams run a configured command on the local host running `lab` when
