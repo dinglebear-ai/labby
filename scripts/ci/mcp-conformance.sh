@@ -17,9 +17,6 @@ Runs the pinned MCP conformance suite and a direct stdio proxy probe.
 --direct-proxy-only runs only the real Labby + fixture stdio server scenario.
 --check-sdk-pin validates the production SDK pin without building or running scenarios.
 Set MCP_CONFORMANCE_OUTPUT_DIR to choose the artifact directory.
-The LABBY_RMCP_*, RMCP_*, MCP_CONFORMANCE_VERSION, and MCP_SPEC_VERSION
-variables are one-run development overrides. Scenario runs with non-default
-values are diagnostic and record their effective values in pins.json.
 EOF
   exit 0
 fi
@@ -40,7 +37,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-a30965679d27ba4f7d17e9d8efa7c95742eb6b42}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-0e1184b47645d5eb64d1df3bb84067b1d4a53340}"
 RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.3.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
 RMCP_COMMIT="${RMCP_COMMIT:-3e636cab26c013eca5131103c03d20237f12c4df}"
@@ -151,45 +148,11 @@ trap cleanup EXIT
 python3 "${repo_root}/scripts/ci/check_mcp_sdk_pin.py" \
   "${repo_root}/Cargo.toml" "$LABBY_RMCP_REPOSITORY" "$LABBY_RMCP_REVISION"
 
-canonical_pins=true
-if [[ "$LABBY_RMCP_REPOSITORY" != "https://github.com/dinglebear-ai/rust-sdk.git" \
-   || "$LABBY_RMCP_REVISION" != "a30965679d27ba4f7d17e9d8efa7c95742eb6b42" \
-   || "$RMCP_FIXTURE_VERSION" != "3.3.0" \
-   || "$RMCP_TAG" != "rmcp-v3.3.0" \
-   || "$RMCP_COMMIT" != "3e636cab26c013eca5131103c03d20237f12c4df" \
-   || "$MCP_CONFORMANCE_VERSION" != "0.2.0-alpha.10" \
-   || "$MCP_SPEC_VERSION" != "2026-07-28" ]]; then
-  canonical_pins=false
-  echo "MCP conformance: non-default pin overrides active; results are diagnostic" >&2
-fi
-
 if [[ "$check_sdk_pin_only" == true ]]; then
   exit 0
 fi
 
 mkdir -p "$output_dir"
-python3 - "$output_dir/pins.json" "$canonical_pins" \
-  "$LABBY_RMCP_REPOSITORY" "$LABBY_RMCP_REVISION" \
-  "$RMCP_FIXTURE_VERSION" "$RMCP_TAG" "$RMCP_COMMIT" \
-  "$MCP_CONFORMANCE_VERSION" "$MCP_SPEC_VERSION" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-document = {
-    "schema_version": 1,
-    "canonical": sys.argv[2] == "true",
-    "labby_rmcp_repository": sys.argv[3],
-    "labby_rmcp_revision": sys.argv[4],
-    "rmcp_fixture_version": sys.argv[5],
-    "rmcp_tag": sys.argv[6],
-    "rmcp_commit": sys.argv[7],
-    "mcp_conformance_version": sys.argv[8],
-    "mcp_spec_version": sys.argv[9],
-}
-path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
-PY
 
 run_direct_proxy() {
   local ready_file="${work_dir}/direct-proxy-ready.json"

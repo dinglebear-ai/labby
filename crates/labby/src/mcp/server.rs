@@ -55,29 +55,6 @@ use crate::registry::ToolRegistry;
 /// identity on HTTP.
 static RELAY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-static CURRENT_PROTOCOL_ONLY: &[ProtocolVersion] = &[ProtocolVersion::V_2026_07_28];
-
-/// Lifecycle contract for an inbound Labby MCP surface.
-///
-/// Streamable HTTP is deliberately stateless and only implements the current
-/// discovery lifecycle. Direct stdio retains bounded initialize compatibility
-/// for older clients whose process lifetime supplies the missing session
-/// boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum McpLifecycleProfile {
-    CurrentDiscoveryOnly,
-    DirectStdioLegacyCompatible,
-}
-
-impl McpLifecycleProfile {
-    fn supported_protocol_versions(self) -> Cow<'static, [ProtocolVersion]> {
-        match self {
-            Self::CurrentDiscoveryOnly => Cow::Borrowed(CURRENT_PROTOCOL_ONLY),
-            Self::DirectStdioLegacyCompatible => Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum ActiveRequestKey {
     Relay(String),
@@ -398,8 +375,6 @@ pub struct LabMcpServer {
     /// `ConnectedClient::transport` during discovery. One of `"stdio"`,
     /// `"http"`, `"in-process"` (built-in service peers), or `"test"`.
     pub(crate) transport_label: &'static str,
-    /// Protocol lifecycle implemented by this concrete transport.
-    pub(crate) lifecycle_profile: McpLifecycleProfile,
     /// Negotiated RMCP logging threshold for this server route.
     pub logging_level: Arc<AtomicU8>,
     /// Visibility and dispatch constraints for this MCP route.
@@ -538,7 +513,7 @@ fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
 
 impl ServerHandler for LabMcpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        self.lifecycle_profile.supported_protocol_versions()
+        Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
     async fn initialize(
@@ -546,36 +521,26 @@ impl ServerHandler for LabMcpServer {
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        if self.lifecycle_profile == McpLifecycleProfile::CurrentDiscoveryOnly {
-            return if request.protocol_version == ProtocolVersion::V_2026_07_28 {
-                Err(ErrorData::new(
-                    rmcp::model::ErrorCode::METHOD_NOT_FOUND,
-                    "initialize is not part of the 2026-07-28 lifecycle",
-                    None,
-                ))
-            } else {
-                Err(ErrorData::unsupported_protocol_version(
-                    request.protocol_version,
-                    CURRENT_PROTOCOL_ONLY,
-                ))
-            };
-        }
+        tracing::warn!(
+            surface = "mcp",
+            service = "labby",
+            action = "lifecycle.compat_legacy_initialize",
+            subsystem = "mcp_server",
+            requested_protocol_version = %request.protocol_version,
+            client_name = %request.client_info.name,
+            client_version = %request.client_info.version,
+            "adapting legacy MCP initialize lifecycle to the stateless server"
+        );
         context.peer.set_peer_info(request.clone());
-        let mut info = self.negotiate_initialize(&request)?;
-        if info.protocol_version != ProtocolVersion::V_2026_07_28 {
-            tracing::warn!(
-                surface = "mcp",
-                service = "labby",
-                action = "lifecycle.compat_legacy_initialize",
-                subsystem = "mcp_server",
-                requested_protocol_version = %request.protocol_version,
-                negotiated_protocol_version = %info.protocol_version,
-                client_name = %request.client_info.name,
-                client_version = %request.client_info.version,
-                "adapting legacy MCP initialize lifecycle"
-            );
-            withhold_legacy_unusable_capabilities(&mut info);
-        }
+        let mut info = self.get_info();
+        // RMCP adapts subsequent request validation and wire behavior from the
+        // negotiated peer version. Echo the requested version because every
+        // SDK-known historical version is explicitly declared above.
+        info.protocol_version = request.protocol_version;
+        // This is the only legacy entry point — modern clients negotiate via
+        // `discover`, which returns `get_info()` untouched — so it is also the
+        // only place a capability can be withheld from legacy sessions alone.
+        withhold_legacy_unusable_capabilities(&mut info);
         Ok(info)
     }
 
@@ -705,7 +670,7 @@ impl ServerHandler for LabMcpServer {
         }
 
         Ok(DiscoverResult::from_server_info(
-            CURRENT_PROTOCOL_ONLY.to_vec(),
+            self.supported_protocol_versions().into_owned(),
             self.get_info(),
         ))
     }
@@ -1076,19 +1041,19 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
-        McpLifecycleProfile, ServerCapabilities, ServerInfo, cancel_tracked_request_by_token,
-        request_cancellation_key, restore_request_meta, track_request_cancellation,
-        withhold_legacy_unusable_capabilities,
+        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
+        restore_request_meta, track_request_cancellation, withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
     use crate::registry::ToolRegistry;
+    use rmcp::ServerHandler;
+    use rmcp::ServiceExt;
     use rmcp::model::{
         CustomRequest, CustomResult, NumberOrString, ProtocolVersion, ServerNotification,
         SubscriptionFilter,
     };
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
-    use rmcp::{ClientHandler, ServerHandler, ServiceExt};
 
     fn stateless_test_server(peers: crate::mcp::peers::PeerRegistry) -> LabMcpServer {
         LabMcpServer {
@@ -1105,7 +1070,6 @@ mod tests {
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
-            lifecycle_profile: McpLifecycleProfile::CurrentDiscoveryOnly,
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
             )),
@@ -1116,59 +1080,13 @@ mod tests {
     }
 
     #[test]
-    fn stateless_http_declares_only_the_current_protocol() {
+    fn initialize_support_declares_every_adapted_protocol() {
         let server = stateless_test_server(Default::default());
-
-        assert_eq!(
-            server.supported_protocol_versions().as_ref(),
-            &[ProtocolVersion::V_2026_07_28]
-        );
-    }
-
-    #[test]
-    fn direct_stdio_retains_bounded_legacy_initialize_compatibility() {
-        let mut server = stateless_test_server(Default::default());
-        server.lifecycle_profile = McpLifecycleProfile::DirectStdioLegacyCompatible;
 
         assert_eq!(
             server.supported_protocol_versions().as_ref(),
             ProtocolVersion::KNOWN_VERSIONS
         );
-    }
-
-    #[derive(Clone)]
-    struct HistoricalClient;
-
-    impl ClientHandler for HistoricalClient {
-        fn get_info(&self) -> rmcp::model::ClientInfo {
-            let mut info = rmcp::model::ClientInfo::default();
-            info.protocol_version = ProtocolVersion::V_2025_11_25;
-            info
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_stdio_negotiates_a_historical_initialize_on_the_wire() {
-        let mut server = stateless_test_server(Default::default());
-        server.lifecycle_profile = McpLifecycleProfile::DirectStdioLegacyCompatible;
-        server.transport_label = "stdio";
-        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-
-        let (server_service, client_service) = tokio::join!(
-            server.serve(server_transport),
-            HistoricalClient
-                .serve_with_lifecycle(client_transport, ClientLifecycleMode::Initialize),
-        );
-        let server_service = server_service.expect("stdio server starts");
-        let client_service = client_service.expect("historical initialize succeeds");
-        let info = client_service
-            .peer()
-            .peer_info()
-            .expect("initialize returns server info");
-
-        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
-        client_service.cancel().await.expect("client stops");
-        server_service.cancel().await.expect("server stops");
     }
 
     #[test]

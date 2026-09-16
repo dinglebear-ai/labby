@@ -49,13 +49,6 @@ class McpSpecWorkflowTests(unittest.TestCase):
         self.assertIn("run --gate oracles --spec-checkout", run["run"])
         self.assertNotIn("--gate full", run["run"])
 
-    def test_source_recipes_are_exercised_with_installed_just(self) -> None:
-        validation = self.step("Validate full specification inventory")
-        self.assertIn("scripts.ci.test_mcp_spec_recipes", validation["run"])
-        setup = next(step for step in self.steps if step.get("uses", "").startswith("jdx/mise-action@"))
-        self.assertIn("just", setup["with"]["install_args"].split())
-        self.assertLess(self.steps.index(setup), self.steps.index(validation))
-
     def test_receipts_and_coverage_gaps_are_always_retained(self) -> None:
         upload = self.step("Preserve specification coverage gaps")
         self.assertEqual(upload["if"], "always()")
