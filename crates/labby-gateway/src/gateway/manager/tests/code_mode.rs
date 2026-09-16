@@ -2592,6 +2592,32 @@ async fn one_shot_cli_cached_catalog_honors_allowed_upstreams() {
     );
 }
 
+#[tokio::test]
+async fn one_shot_cli_cached_catalog_accepts_explicit_deny_all_scope() {
+    let alpha_responder = OneShotHttpResponder::new("ping", Duration::ZERO);
+    let (_alpha_server, alpha) = cold_http_upstream("alpha", alpha_responder.clone()).await;
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let (manager, _pool) = one_shot_manager_at(
+        vec![alpha],
+        4_000,
+        cache_dir.path().join("codemode-catalog.json"),
+    )
+    .await;
+    let allowed = std::collections::BTreeSet::new();
+
+    let tools = manager
+        .code_mode_catalog_tools_cached_allowed(None, None, Some(&allowed))
+        .await
+        .expect("deny-all scope needs no upstream catalog");
+
+    assert!(tools.is_empty());
+    assert_eq!(
+        alpha_responder.list_tools_requests(),
+        0,
+        "deny-all scope must not probe any upstream"
+    );
+}
+
 /// Partial means partial, not empty: when the budget ends before any upstream
 /// connected and nothing was served from cache, the one-shot catalog is an
 /// error naming what was still connecting, never a silently empty proxy.

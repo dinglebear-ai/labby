@@ -471,6 +471,9 @@ impl GatewayManager {
         if !cfg.code_mode.enabled {
             return Ok(Vec::new());
         }
+        if allowed_upstreams.is_some_and(BTreeSet::is_empty) {
+            return Ok(Vec::new());
+        }
 
         let cache_path = self.code_mode_catalog_cache_path();
         let cache = catalog_cache::CatalogCache::load_from(&cache_path);
