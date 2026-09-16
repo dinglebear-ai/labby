@@ -19,9 +19,12 @@ function deferred() {
 }
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 const page = (id: string) => <SearchParamsContext.Provider value={new URLSearchParams({ artifact: id })}><LibraryPageContent /></SearchParamsContext.Provider>
+// A project-bound session: the shape a product-credential or owner-link session projects.
+const bindProjectSession = (projectId = 'project-1') => __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId })
 
 test('detail responses and retained details cannot cross selection or session boundaries', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const reads: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
@@ -42,19 +45,26 @@ test('detail responses and retained details cannot cross selection or session bo
     await act(async () => reads[2].resolve(envelope({ artifact: { id: 'charlie', title: 'Charlie private details' } })))
     await act(async () => reads[0].resolve(envelope({ artifact: { id: 'alpha', title: 'Alpha stale details' } })))
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
-    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    bindProjectSession('project-2')
     await view.rerender(page('charlie'))
     assert.doesNotMatch(document.body.textContent ?? '', /Charlie private details/)
     await flush()
-    assert.equal(reads.length, 4)
+    assert.equal(reads.length, 4, 'a new project context issues its own read')
     await act(async () => reads[3].reject(new Error('new session denied')))
     assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details/)
     assert.match(document.body.textContent ?? '', /Artifact details are unavailable/)
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await view.rerender(page('charlie'))
+    await flush()
+    assert.equal(reads.length, 4, 'a session without a project issues no project-scoped read')
+    assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details|Artifact details are unavailable/)
+    assert.match(document.body.textContent ?? '', /Sign in to select a project workspace/)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 
 test('late page failures and successes cannot overwrite a new query', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const pending: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })

@@ -154,17 +154,20 @@ function deferred() {
 }
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 const page = (id: string) => <SearchParamsContext.Provider value={new URLSearchParams({ artifact: id })}><LibraryPageContent /></SearchParamsContext.Provider>
+// A project-bound session: the shape a product-credential or owner-link session projects.
+const bindProjectSession = (projectId = 'project-1') => __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', projectId })
 
 test('initial catalog load preserves an artifact deep link', async () => {
   const originalFetch = globalThis.fetch
   const originalUrl = window.location.href
   dom.happyDOM.setURL('http://localhost/library/?artifact=alpha')
-  const requested: Array<{ url: string; action: string; params: unknown }> = []
+  bindProjectSession()
+  const requested: Array<{ url: string; action: string; params: unknown; projectId: string | null }> = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
     if (url === '/v1/depot/publish') return Response.json({ available: false })
     const body = JSON.parse(String(init?.body))
-    requested.push({ url: String(url), action: body.action, params: body.params })
+    requested.push({ url: String(url), action: body.action, params: body.params, projectId: new Headers(init?.headers).get('x-labby-project-id') })
     return envelope(body.action === 'artifacts.get_remote' ? { artifact: { id: 'alpha', title: 'Linked artifact' } } : { artifacts: [] })
   }
   const view = await renderClient(page('alpha'))
@@ -176,6 +179,7 @@ test('initial catalog load preserves an artifact deep link', async () => {
     assert.ok(deepLink, 'the deep link must resolve through the artifacts control plane')
     assert.equal(deepLink.url, '/v1/artifacts')
     assert.deepEqual(deepLink.params, { id: 'alpha' })
+    assert.equal(deepLink.projectId, 'project-1', 'project-scoped reads carry the bound project')
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
@@ -185,6 +189,7 @@ test('initial catalog load preserves an artifact deep link', async () => {
 
 test('detail responses and retained details cannot cross selection or session boundaries', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const reads: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
@@ -212,19 +217,26 @@ test('detail responses and retained details cannot cross selection or session bo
     await act(async () => reads[2].resolve(envelope({ artifact: { id: 'charlie', title: 'Charlie private details' } })))
     await act(async () => reads[0].resolve(envelope({ artifact: { id: 'alpha', title: 'Alpha stale details' } })))
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale details/)
-    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    bindProjectSession('project-2')
     await view.rerender(page('charlie'))
     assert.doesNotMatch(document.body.textContent ?? '', /Charlie private details/)
     await flush()
-    assert.equal(reads.length, 4)
+    assert.equal(reads.length, 4, 'a new project context issues its own read')
     await act(async () => reads[3].reject(new Error('new session denied')))
     assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details/)
     assert.match(document.body.textContent ?? '', /Artifact details are unavailable/)
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await view.rerender(page('charlie'))
+    await flush()
+    assert.equal(reads.length, 4, 'a session without a project issues no project-scoped read')
+    assert.doesNotMatch(document.body.textContent ?? '', /Bravo private details|Charlie private details|Alpha stale details|Artifact details are unavailable/)
+    assert.match(document.body.textContent ?? '', /Sign in to select a project workspace/)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
 })
 
 test('late page failures and successes cannot overwrite a new query', async () => {
   const originalFetch = globalThis.fetch
+  bindProjectSession()
   const pending: ReturnType<typeof deferred>[] = []
   globalThis.fetch = async (url, init) => {
     if (url === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, maxResponseBytes: 10000 } })
@@ -284,7 +296,7 @@ function statValue(container: HTMLElement, label: string) {
 }
 
 async function renderLibrary(depot: Record<string, unknown>) {
-  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  bindProjectSession()
   const requested: string[] = []
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input), 'http://labby.test').pathname
@@ -331,4 +343,81 @@ test('a Depot status the browser cannot validate is surfaced as an error instead
   assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read + publish')
   assert.notEqual(statValue(broken.view.container, 'Your access'), 'Read only')
   await broken.view.unmount()
+})
+
+/**
+ * The server refuses every `artifacts.*` request that arrives without a
+ * project (`x-labby-project-id`), and a fresh browser session always starts in
+ * the Personal workspace with no project selected. The page must therefore
+ * gate on a project like the Skills page does: offer the server-projected
+ * projects, issue no project-scoped read until one is chosen, and keep the
+ * Library shell navigable meanwhile.
+ */
+async function renderPersonalWorkspaceLibrary(projects: Array<{ id: string; role: string; name?: string }>) {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'operator' },
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf',
+    authority: {
+      schemaVersion: 1,
+      compatibilityGeneration: 1,
+      principalId: 'principal-1',
+      organizationId: 'org-1',
+      activeOwner: { kind: 'personal', id: 'principal-1' },
+      teams: [],
+      projects,
+      capabilities: ['scope.read'],
+      generation: 1,
+    },
+  })
+  const requested: Array<{ path: string; projectId: string | null }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input), 'http://labby.test').pathname
+    requested.push({ path, projectId: new Headers(init?.headers).get('x-labby-project-id') })
+    if (path === '/v1/depot/status') return Response.json({ depot: { configured: true, enabled: true, authority: 'write', maxResponseBytes: 1_048_576 } })
+    if (path === '/v1/depot/publish') return Response.json({ available: true })
+    return Response.json({ artifacts: [], total: 0 })
+  }) as typeof globalThis.fetch
+  document.body.replaceChildren()
+  const view = await renderClient(
+    <AppRouterContext.Provider value={router as never}>
+      <PathnameContext.Provider value="/library">
+        <SearchParamsContext.Provider value={new URLSearchParams() as never}>
+          <LibraryPageContent />
+        </SearchParamsContext.Provider>
+      </PathnameContext.Provider>
+    </AppRouterContext.Provider>,
+  )
+  return { view, requested }
+}
+
+test('the Personal workspace offers the eligible projects before any project-scoped read', async () => {
+  const { view, requested } = await renderPersonalWorkspaceLibrary([{ id: 'project-1', role: 'owner', name: 'Project One' }])
+  try {
+    await flush()
+    assert.equal(requested.length, 0, 'no request may run before a project is selected')
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Depot unavailable|project context is required/)
+    assert.ok(view.container.querySelector('a[href="/loadouts"]'), 'the other Library sections stay reachable')
+    const choose = [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Project One'))
+    assert.ok(choose, 'the server-projected project is offered')
+    await act(async () => choose.click())
+    await waitFor(() => assert.ok(requested.some(request => request.path === '/v1/artifacts')))
+    const reads = requested.filter(request => request.path === '/v1/artifacts')
+    assert.ok(reads.every(request => request.projectId === 'project-1'), 'every artifact read carries the selected project')
+    await waitFor(() => assert.equal(statValue(view.container, 'Your access'), 'Read + publish'))
+    assert.doesNotMatch(view.container.textContent ?? '', /Project required/)
+  } finally { await view.unmount() }
+})
+
+test('a session with no eligible project explains the gap instead of issuing reads that must fail', async () => {
+  const { view, requested } = await renderPersonalWorkspaceLibrary([])
+  try {
+    await flush()
+    assert.equal(requested.length, 0, 'no request may run without an eligible project')
+    assert.match(view.container.textContent ?? '', /Project required/)
+    assert.match(view.container.textContent ?? '', /No eligible project is available/)
+    assert.equal(view.container.querySelector('[role="alert"]'), null)
+  } finally { await view.unmount() }
 })

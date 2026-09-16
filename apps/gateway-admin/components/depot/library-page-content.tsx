@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Archive, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, ShieldCheck, Table2, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
+import { ProjectWorkspaceRequired, sessionProjectId } from '@/components/auth/project-workspace-required'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
@@ -17,6 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
+import { useBrowserSession } from '@/lib/auth/session'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
@@ -113,9 +115,29 @@ export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | '
 }
 
 export function LibraryPageContent() {
+  const session = useBrowserSession()
   const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
-  // Session changes invalidate both retained data and every in-flight read.
-  return <SessionLibraryPage key={sessionEpoch} />
+  // Every `artifacts.*` read is project-scoped and the server refuses one that
+  // arrives without a project, so the collection mounts only for a
+  // project-bound session. Session changes invalidate both retained data and
+  // every in-flight read.
+  if (sessionProjectId(session)) return <SessionLibraryPage key={sessionEpoch} />
+  return (
+    <LibraryShell>
+      <ProjectWorkspaceRequired session={session} description="The Library is project-scoped. Select an eligible project workspace to continue." />
+    </LibraryShell>
+  )
+}
+
+/** The Library chrome without a project-bound collection: the other sections stay reachable. */
+function LibraryShell({ children }: { children: ReactNode }) {
+  return <>
+    <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
+    <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
+      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached />} pulse={{ color: 'var(--aurora-warn)', label: 'project required' }} actions={<Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button>} />
+      {children}
+    </div></div>
+  </>
 }
 
 function SessionLibraryPage() {
