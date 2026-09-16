@@ -244,6 +244,14 @@ and 32 addresses per host and cannot permit loopback, link-local, metadata, or
 mapped IPv6 addresses. TLS hostname verification still applies. This policy is
 host-file configuration; browser provider edits cannot change it.
 
+Every `[[artifacts.sources]]` entry is admitted once at startup under one
+shared rule for both the exact-acquisition path (`artifacts.import`) and the
+control-plane path (`artifacts.list`, curated operations, uploads). A source's
+`pinned_addresses` must be authorized for its `endpoint` host and, when it
+names a `control_plane_url`, for that host too; a private pin needs the exact
+`[depot.private_hosts]` grant for each host it is used with. A source that
+fails any check is disabled on both paths and logged once with the reason.
+
 ## Durable Depot Skill Imports
 
 For Authelia inbound OAuth, `[auth]` may contain the non-secret provider,

@@ -163,10 +163,16 @@ fn bootstrap_skill_library(
     let snapshot = store
         .library_snapshot()
         .context("load Skill Library metadata")?;
-    let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    // Admit `[[artifacts.sources]]` once so the import coordinator and the
+    // control plane project exactly the same sources and each disabled source
+    // is warned about exactly once.
+    let sources =
+        crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+    sources.warn_rejections();
+    let imports = configure_skill_library_imports(&sources, config, &artifacts_root)?;
     let controls = Arc::new(
-        crate::dispatch::artifact_control::ArtifactControlPlane::from_host_configs(
-            &config.artifacts,
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_admitted_sources(
+            &sources,
             &config.depot,
         )
         .map_err(|error| anyhow::anyhow!(error.to_string()))?,
@@ -223,12 +229,15 @@ fn bootstrap_skill_library(
 
 #[cfg(feature = "skills")]
 fn configure_skill_library_imports(
+    sources: &crate::dispatch::artifact_sources::HostArtifactSources<'_>,
     config: &LabConfig,
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
-    crate::dispatch::skill_library::import::ImportCoordinator::from_host_config(
+    crate::dispatch::skill_library::import::ImportCoordinator::from_admitted_sources(
+        sources,
         config,
         &artifacts_root.join("acquisition"),
+        &|name| std::env::var_os(name),
     )
     .map(Arc::new)
     .context("configure Skill Library exact-source adapters")
@@ -2935,10 +2944,14 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
+        let sources =
+            crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
 
         config.artifacts = ArtifactPreferences::default();
-        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
+        let sources =
+            crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+        assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
     }
 
     #[test]
