@@ -5,7 +5,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
-const AUTOMATIC_FEATURE_CHILD_TIMEOUT: Duration = Duration::from_secs(60);
+const AUTOMATIC_FEATURE_CHILD_TIMEOUT: Duration = Duration::from_mins(1);
 
 fn executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
