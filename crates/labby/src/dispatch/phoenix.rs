@@ -721,6 +721,9 @@ impl PhoenixRuntime {
         if input.len() > MAX_INPUT_BYTES {
             return Err(invalid("input", "input cannot exceed 32768 bytes"));
         }
+        if input.trim().is_empty() && !attachments_present(attachments) {
+            return Err(invalid("input", "provide text or at least one attachment"));
+        }
         let session = self.session(owner, session_id).await?;
         let openai = matches!(session.lock().await.backend, SessionBackend::OpenAi { .. });
         let protocol_inputs = if openai {
@@ -904,6 +907,7 @@ impl PhoenixRuntime {
                 ));
             }
         };
+        let output = bounded(&output);
         let mut state = session.lock().await;
         state.turn_in_progress = false;
         state.active_turn_id = None;
@@ -1890,13 +1894,25 @@ mod tests {
                 "/v1/sessions" => {
                     ResponseTemplate::new(200).set_body_json(json!({"status":"ready"}))
                 }
-                "/v1/chat/completions" => ResponseTemplate::new(200).set_body_json(json!({
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "EXGPT_ADAPTER_OK"},
-                        "finish_reason": "stop"
-                    }]
-                })),
+                "/v1/chat/completions" => {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    let input = body
+                        .pointer("/messages/0/content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let content = if input == "oversized" {
+                        "x".repeat(MAX_OUTPUT_BYTES + 128)
+                    } else {
+                        "EXGPT_ADAPTER_OK".to_owned()
+                    };
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": content},
+                            "finish_reason": "stop"
+                        }]
+                    }))
+                }
                 path if path.starts_with("/v1/sessions/") && path.ends_with("/close") => {
                     ResponseTemplate::new(200).set_body_json(json!({"status":"closed"}))
                 }
@@ -1937,6 +1953,19 @@ mod tests {
             .await
             .unwrap();
         let session_id = started["session_id"].as_str().unwrap();
+        let empty = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.turn.send",
+                json!({"session_id": session_id, "input": "   "}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            empty.kind(),
+            "invalid_param",
+            "OpenAI-compatible turns must reject the same empty input as Codex turns",
+        );
         let completed = runtime
             .dispatch(
                 "principal-a",
@@ -1947,6 +1976,24 @@ mod tests {
             .unwrap();
         assert_eq!(completed["messages"][0]["role"], "user");
         assert_eq!(completed["messages"][1]["text"], "EXGPT_ADAPTER_OK");
+
+        let oversized = runtime
+            .dispatch(
+                "principal-a",
+                "phoenix.turn.send",
+                json!({"session_id": session_id, "input": "oversized"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            oversized["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .and_then(|message| message["text"].as_str())
+                .map(str::len),
+            Some(MAX_OUTPUT_BYTES),
+            "OpenAI-compatible turns must obey the same retained output bound as Codex turns",
+        );
 
         let closed = runtime
             .dispatch(

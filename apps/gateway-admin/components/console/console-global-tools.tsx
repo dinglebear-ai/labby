@@ -129,7 +129,19 @@ export function PhoenixAvailability() {
     setError(undefined)
     setSending(false)
     setInterrupting(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
+    setLoadingDiagnostics(false)
     setCopiedIndex(undefined)
+    setNewThreadOnSend(false)
+    setTitle('Phoenix')
+    setEditingTitle(false)
+    setModelMenuOpen(false)
+    setReasoningMenuOpen(false)
+    setThreadMenuOpen(false)
+    setSettingsOpen(false)
+    setThreadHistory([])
+    closeAfterTurnRef.current = undefined
     // Identity changes and unmount revoke pending work; layout changes do not.
     return () => { requestGenerationRef.current += 1 }
   }, [identity])
@@ -307,6 +319,8 @@ export function PhoenixAvailability() {
     const text = input.trim()
     const outgoingAttachments = attachments
     if (!sessionId || (!text && outgoingAttachments.length === 0) || steering) return
+    const activeSessionId = sessionId
+    const requestGeneration = requestGenerationRef.current
     const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
     setSteering(true)
     setError(undefined)
@@ -314,17 +328,20 @@ export function PhoenixAvailability() {
     setAttachments([])
     setMessages((current) => [...current, { role: 'user', text: displayText }])
     try {
-      const updated = await phoenixApi.steer(sessionId, text, outgoingAttachments)
-      const refreshed = await phoenixApi.read(sessionId).catch(() => undefined)
+      const updated = await phoenixApi.steer(activeSessionId, text, outgoingAttachments)
+      if (requestGeneration !== requestGenerationRef.current) return
+      const refreshed = await phoenixApi.read(activeSessionId).catch(() => undefined)
+      if (requestGeneration !== requestGenerationRef.current) return
       if (refreshed) { setMessages(refreshed.messages); setEvents(refreshed.events ?? []) }
       setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
     } catch (reason) {
+      if (requestGeneration !== requestGenerationRef.current) return
       setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
       setAttachments((current) => [...outgoingAttachments, ...current].slice(0, 4))
       setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== displayText))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not steer the active turn')
     } finally {
-      setSteering(false)
+      if (requestGeneration === requestGenerationRef.current) setSteering(false)
     }
   }
 
@@ -345,6 +362,7 @@ export function PhoenixAvailability() {
 
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return
+    const requestGeneration = requestGenerationRef.current
     const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
     const textLike = (file: File) => file.type.startsWith('text/') || /^(application\/(json|javascript|xml|yaml|x-yaml))$/.test(file.type) || /\.(md|txt|json|jsonl|ya?ml|toml|csv|ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|kts|sh|bash|zsh|fish|html?|css|scss|xml|sql|graphql|gql|ini|conf|log)$/i.test(file.name)
     const classify = (file: File): PhoenixAttachment['type'] | undefined => {
@@ -364,6 +382,7 @@ export function PhoenixAvailability() {
       reader.onerror = reject
       reader.readAsDataURL(file)
     })))
+    if (requestGeneration !== requestGenerationRef.current) return
     setAttachments((current) => [...current, ...encoded].slice(0, 4))
   }
 
@@ -373,9 +392,16 @@ export function PhoenixAvailability() {
 
   const closeThread = async (id: string) => {
     if (sending && id === sessionId) return
-    await phoenixApi.close(id)
-    setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
-    if (id === sessionId) startNewThread()
+    const requestGeneration = requestGenerationRef.current
+    try {
+      await phoenixApi.close(id)
+      if (requestGeneration !== requestGenerationRef.current) return
+      setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
+      if (id === sessionId) startNewThread()
+    } catch (reason) {
+      if (requestGeneration !== requestGenerationRef.current) return
+      setError(reason instanceof Error ? reason.message : 'Phoenix could not close that thread')
+    }
   }
 
   const interruptTurn = async () => {
@@ -409,6 +435,7 @@ export function PhoenixAvailability() {
   const switchThread = async (id: string) => {
     const requestGeneration = ++requestGenerationRef.current
     setSending(false)
+    setSteering(false)
     setError(undefined)
     try {
       const thread = await phoenixApi.read(id)
@@ -427,6 +454,7 @@ export function PhoenixAvailability() {
   const startNewThread = () => {
     requestGenerationRef.current += 1
     setSending(false)
+    setSteering(false)
     setSessionId(undefined)
     setMessages([])
     setEvents([])
@@ -440,10 +468,14 @@ export function PhoenixAvailability() {
     setTitle(nextTitle)
     setEditingTitle(false)
     if (!sessionId) return
+    const activeSessionId = sessionId
+    const requestGeneration = requestGenerationRef.current
     try {
-      const renamed = await phoenixApi.rename(sessionId, nextTitle)
-      setThreadHistory((current) => current.map((thread) => thread.session_id === sessionId ? renamed : thread))
+      const renamed = await phoenixApi.rename(activeSessionId, nextTitle)
+      if (requestGeneration !== requestGenerationRef.current) return
+      setThreadHistory((current) => current.map((thread) => thread.session_id === activeSessionId ? renamed : thread))
     } catch (reason) {
+      if (requestGeneration !== requestGenerationRef.current) return
       setTitle(priorTitle)
       setError(reason instanceof Error ? reason.message : 'Phoenix could not rename that thread')
     }
