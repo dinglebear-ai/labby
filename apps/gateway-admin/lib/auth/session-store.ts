@@ -209,6 +209,16 @@ export function getSessionProjectId() {
   return isProjectBoundSession(currentState) ? currentState.projectId : undefined
 }
 
+/**
+ * The session context identity while the session is project-bound, or `''`.
+ * A primitive snapshot for `useSyncExternalStore`: project-scoped pages key
+ * their content on it, and a transport-only refresh (CSRF token, expiry)
+ * leaves it unchanged so nothing re-renders.
+ */
+export function getProjectBoundSessionScope(): string {
+  return isProjectBoundSession(currentState) ? sessionIdentity(currentState) : ''
+}
+
 export function getSessionAuthority() {
   return currentState.status === 'authenticated' ? currentState.authority : undefined
 }

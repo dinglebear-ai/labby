@@ -21,7 +21,7 @@ import {
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
 import { isAbortError } from '@/lib/api/service-action-client'
-import { authorityIdentity, getBrowserSessionContextIdentity, isProjectBoundSession, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionContextIdentity, useProjectBoundSessionScope } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -66,15 +66,11 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 }
 
 export function SkillLibraryPageContent() {
-  const session = useBrowserSession()
-
-  if (isProjectBoundSession(session)) {
-    // Key the project-scoped editor to the caller and current authority
-    // identity so workspace, login, or policy changes cannot leave stale
-    // Artifacts or in-flight editor state visible in a new context.
-    const scopeKey = `${session.user.sub}:${session.projectId}:${authorityIdentity(session.authority)}`
-    return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
-  }
+  // Key the project-scoped editor to the session scope (caller, authority,
+  // project) so workspace, login, or policy changes cannot leave stale
+  // Artifacts or in-flight editor state visible in a new context.
+  const scope = useProjectBoundSessionScope()
+  if (scope) return <ProjectScopedSkillLibraryPageContent key={scope} />
 
   return (
     <div className="grid gap-4">
@@ -82,7 +78,7 @@ export function SkillLibraryPageContent() {
         <h2 className="font-display text-xl font-semibold">Artifact Library</h2>
         <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p>
       </div>
-      <ProjectWorkspaceRequired session={session} description="The Artifact Library is project-scoped. Select an eligible project workspace to continue." />
+      <ProjectWorkspaceRequired description="The Artifact Library is project-scoped. Select an eligible project workspace to continue." />
     </div>
   )
 }

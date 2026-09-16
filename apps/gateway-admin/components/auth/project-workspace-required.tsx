@@ -6,7 +6,7 @@ import { AURORA_DENSE_META } from '@/components/aurora/tokens'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
-import { WorkspaceSelectionError, selectSessionWorkspace, type BrowserSessionState } from '@/lib/auth/session'
+import { WorkspaceSelectionError, selectSessionWorkspace, useBrowserSession } from '@/lib/auth/session'
 import { cn } from '@/lib/utils'
 
 /**
@@ -15,8 +15,8 @@ import { cn } from '@/lib/utils'
  * An OAuth or bearer sign-in starts in the Personal workspace with no project
  * selected; only a source-bound project session arrives already bound. The
  * Skills and Depot Library pages mount their collections only for a bound
- * session (`isProjectBoundSession`) and render this otherwise, because the
- * server refuses every `artifacts.*` action that arrives without
+ * session (`useProjectBoundSessionScope`) and render this otherwise, because
+ * the server refuses every `artifacts.*` action that arrives without
  * `x-labby-project-id`.
  *
  * Two states reach operators: mock data mode, where the session never loads,
@@ -27,20 +27,19 @@ import { cn } from '@/lib/utils'
  *
  * Choosing a project goes through `selectSessionWorkspace`, the same switch
  * the sidebar uses, so `gatewayHeaders` and every page keyed on the session
- * identity observe the same context. The client only accepts a project the
+ * scope observe the same context. The client only accepts a project the
  * server projected; the server re-authorizes membership on every request.
  */
-export function ProjectWorkspaceRequired({ session, description }: { session: BrowserSessionState; description: string }) {
-  if (session.status !== 'authenticated') {
-    if (session.status === 'loading' && shouldBypassBrowserSessionAuth()) {
-      return (
-        <DashboardPanel title="Project required">
-          <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to continue.</p>
-        </DashboardPanel>
-      )
-    }
-    return null
+export function ProjectWorkspaceRequired({ description }: { description: string }) {
+  const session = useBrowserSession()
+  if (session.status === 'loading' && shouldBypassBrowserSessionAuth()) {
+    return (
+      <DashboardPanel title="Project required">
+        <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to continue.</p>
+      </DashboardPanel>
+    )
   }
+  if (session.status !== 'authenticated') return null
   if (!session.authority) {
     return (
       <DashboardPanel title="Project required">

@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
-import { authorityIdentity, isProjectBoundSession, useBrowserSession } from '@/lib/auth/session'
+import { useProjectBoundSessionScope } from '@/lib/auth/session'
 import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
@@ -115,18 +115,17 @@ export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | '
 }
 
 export function LibraryPageContent() {
-  const session = useBrowserSession()
   // Every `artifacts.*` read is project-scoped and the server refuses one that
   // arrives without a project, so the collection mounts only for a
-  // project-bound session. Keying it on the caller, project, and authority
-  // identity remounts it whenever that context changes, which discards
-  // retained data and lets every in-flight read see a stale epoch.
-  if (isProjectBoundSession(session)) {
-    return <SessionLibraryPage key={`${session.user.sub}:${session.projectId}:${authorityIdentity(session.authority)}`} />
-  }
+  // project-bound session. Keying it on the session scope (caller, authority,
+  // project) remounts it whenever that context changes, which discards
+  // retained data and lets every in-flight read see a stale epoch, while a
+  // transport-only session refresh re-renders nothing.
+  const scope = useProjectBoundSessionScope()
+  if (scope) return <SessionLibraryPage key={scope} />
   return (
     <LibraryShell pulse={{ color: 'var(--aurora-warn)', label: 'project required' }}>
-      <ProjectWorkspaceRequired session={session} description="The Library is project-scoped. Select an eligible project workspace to continue." />
+      <ProjectWorkspaceRequired description="The Library is project-scoped. Select an eligible project workspace to continue." />
     </LibraryShell>
   )
 }

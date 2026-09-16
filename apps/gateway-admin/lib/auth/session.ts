@@ -8,6 +8,7 @@ export {
   LogoutRevocationError,
   getBrowserSessionContextIdentity,
   getBrowserSessionState,
+  getProjectBoundSessionScope,
   getSessionCsrfToken,
   getSessionAuthority,
   getSessionProjectId,
@@ -37,12 +38,25 @@ export {
   type AuthoritySnapshot,
   type AuthorityTeam,
 } from './authority.ts'
-import { getBrowserSessionState, subscribeToBrowserSession } from './session-store.ts'
+import { getBrowserSessionState, getProjectBoundSessionScope, subscribeToBrowserSession } from './session-store.ts'
 
 export function useBrowserSession() {
   return useSyncExternalStore(
     subscribeToBrowserSession,
     getBrowserSessionState,
     getBrowserSessionState,
+  )
+}
+
+/**
+ * The project-bound session scope, or `''` while the session has no project.
+ * Re-renders only when that scope changes, unlike `useBrowserSession`, which
+ * re-renders on every session emit.
+ */
+export function useProjectBoundSessionScope() {
+  return useSyncExternalStore(
+    subscribeToBrowserSession,
+    getProjectBoundSessionScope,
+    getProjectBoundSessionScope,
   )
 }
