@@ -2055,7 +2055,10 @@ mod tests {
         let context = static_cookie_context(&state, &row);
         assert_eq!(middleware["via_session"], context.via_session);
         assert_eq!(middleware["sub"], context.sub);
-        assert_eq!(middleware["csrf_token"], serde_json::json!(context.csrf_token));
+        assert_eq!(
+            middleware["csrf_token"],
+            serde_json::json!(context.csrf_token)
+        );
         assert_eq!(middleware_scopes, context.scopes);
 
         // Introspection for the same cookie must project the same facts.

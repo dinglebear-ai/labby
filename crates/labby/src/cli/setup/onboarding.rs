@@ -1675,7 +1675,10 @@ mod tests {
             Some(PathBuf::from("/root")),
         )
         .unwrap();
-        assert_eq!(verified.invoking_user.as_deref(), Some(account.name.as_str()));
+        assert_eq!(
+            verified.invoking_user.as_deref(),
+            Some(account.name.as_str())
+        );
         assert_eq!(verified.invoking_home, account.dir);
 
         // A plan that points the privileged chown elsewhere is refused.
@@ -1691,7 +1694,10 @@ mod tests {
         );
 
         // SUDO_USER must name the SUDO_UID account.
-        assert!(rederive_invoking_identity(plan.clone(), Some(&uid), Some("someone-else"), None).is_err());
+        assert!(
+            rederive_invoking_identity(plan.clone(), Some(&uid), Some("someone-else"), None)
+                .is_err()
+        );
 
         // Without sudo's record there is no delegated identity to apply.
         assert!(
