@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,12 +15,9 @@ from scripts.ci.extract_mcp_schema_requirements import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def pinned_source() -> Path:
-    """Use the recipe/workflow source checkout, including an explicit override."""
-    configured = Path(os.environ.get("LABBY_MCP_SPEC_SOURCE", "target/mcp-spec-source"))
-    return configured if configured.is_absolute() else ROOT / configured
+# The conformance workflow checks out the immutable source at this repository
+# path; tests must not depend on a developer's temporary checkout.
+PINNED_SOURCE = ROOT / "target/mcp-spec-source"
 
 
 class McpSchemaExtractionTests(unittest.TestCase):
@@ -32,13 +28,13 @@ class McpSchemaExtractionTests(unittest.TestCase):
 
     def test_committed_inventory_matches_pinned_source(self) -> None:
         self.assertEqual(
-            extract(pinned_source()),
+            extract(PINNED_SOURCE),
             json.loads((ROOT / "conformance/mcp-spec-schema.json").read_text()),
         )
 
     def test_inventory_covers_every_definition_and_has_no_static_outcome(self) -> None:
-        source = json.loads((pinned_source() / SOURCE_PATH).read_text())
-        document = extract(pinned_source())
+        source = json.loads((PINNED_SOURCE / SOURCE_PATH).read_text())
+        document = extract(PINNED_SOURCE)
         self.assertEqual(
             [row["name"] for row in document["definitions"]],
             sorted(source["$defs"]),
@@ -198,8 +194,8 @@ class McpSchemaExtractionTests(unittest.TestCase):
                 extract(root)
 
     def test_missing_definition_or_altered_constraint_changes_inventory(self) -> None:
-        original = json.loads((pinned_source() / SOURCE_PATH).read_text())
-        baseline = extract(pinned_source())
+        original = json.loads((PINNED_SOURCE / SOURCE_PATH).read_text())
+        baseline = extract(PINNED_SOURCE)
         missing = deepcopy(original)
         missing["$defs"].pop(next(iter(missing["$defs"])))
         with self.assertRaisesRegex(ValueError, "dangling local schema reference"):
