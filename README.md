@@ -113,6 +113,13 @@ MCP clients that prefer npm launchers can run Labby through the Node wrapper:
 npx -y @dinglebear/labby mcp
 ```
 
+The npm launcher is a weaker trust path than the installer scripts. It
+downloads the release archive for the current platform and verifies only the
+`.sha256` sidecar (or the `SHA256SUMS` manifest) published next to it on the
+same release; it does not require `gh` and does not verify GitHub build
+provenance. Use `labby-install.sh` or `labby-install.ps1` when provenance
+verification matters.
+
 Windows PowerShell:
 
 ```powershell
