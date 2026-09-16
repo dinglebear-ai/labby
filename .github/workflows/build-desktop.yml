@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 60
     # The desktop leg is advisory: stable promotion of the binaries, npm
     # launcher, Incus image, and MCP manifest must never wait on a desktop
-    # bundle. A `uses:` caller job cannot set continue-on-error, so the
+    # bundle. A reusable-workflow caller job cannot set continue-on-error, so the
     # boundary lives here.
     continue-on-error: true
     permissions:
