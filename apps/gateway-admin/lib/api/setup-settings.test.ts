@@ -87,6 +87,93 @@ test('settingsConfigUpdate sends confirm and entries through setup action transp
   }
 })
 
+test('publicProxyRender uses the shared setup action and keeps advanced format selection explicit', async () => {
+  const originalFetch = globalThis.fetch
+  let requestBody: unknown
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(JSON.stringify({
+      public_origin: 'https://labby.example.com',
+      backend_origin: 'http://127.0.0.1:8765',
+      oauth_callback_url: 'https://labby.example.com/auth/google/callback',
+      mcp_url: 'https://labby.example.com/mcp',
+      recommended: 'caddy',
+      configs: { nginx: 'server {}' },
+      verification: ['curl --fail-with-body https://labby.example.com/health'],
+    }), { status: 200 })
+  }) as typeof fetch
+
+  try {
+    const result = await setupApi.publicProxyRender('https://labby.example.com', { format: 'nginx' })
+    assert.equal(result.recommended, 'caddy')
+    assert.equal(result.oauth_callback_url, 'https://labby.example.com/auth/google/callback')
+    assert.equal(result.mcp_url, 'https://labby.example.com/mcp')
+    assert.deepEqual(requestBody, {
+      action: 'public_proxy.render',
+      params: { public_url: 'https://labby.example.com', format: 'nginx' },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Tailscale Funnel client keeps inspection read-only and mutations explicit', async () => {
+  const originalFetch = globalThis.fetch
+  const requestBodies: unknown[] = []
+  globalThis.fetch = (async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { action: string }
+    requestBodies.push(body)
+    if (body.action === 'tailscale_funnel.inspect') {
+      return new Response(JSON.stringify({
+        cli_available: true,
+        version: '1.90.0',
+        backend_running: true,
+        online: true,
+        dns_name: 'labby.tailnet.ts.net',
+        public_origin: 'https://labby.tailnet.ts.net',
+        https_port: 443,
+        funnel_status_readable: true,
+        configured_backend: null,
+        https_enabled: true,
+        funnel_enabled: true,
+        activation_required: false,
+        ready_to_configure: true,
+        blockers: [],
+        verification: [],
+      }), { status: 200 })
+    }
+    return new Response(JSON.stringify({
+      changed: true,
+      configured: body.action === 'tailscale_funnel.configure',
+      public_origin: 'https://labby.tailnet.ts.net:8443',
+      backend_origin: 'http://127.0.0.1:8765',
+      https_port: 8443,
+      oauth_callback_url: 'https://labby.tailnet.ts.net:8443/auth/google/callback',
+      mcp_url: 'https://labby.tailnet.ts.net:8443/mcp',
+      activation_required: false,
+      activation_url: null,
+      activation_message: null,
+      verification: [],
+    }), { status: 200 })
+  }) as typeof fetch
+
+  try {
+    await setupApi.tailscaleFunnelInspect()
+    await setupApi.tailscaleFunnelConfigure({ httpsPort: 8443 })
+    await setupApi.tailscaleFunnelDisable({ backendUrl: 'http://127.0.0.1:8765', httpsPort: 8443 })
+    assert.deepEqual(requestBodies, [
+      { action: 'tailscale_funnel.inspect', params: { https_port: 443 } },
+      { action: 'tailscale_funnel.configure', params: { https_port: 8443 } },
+      {
+        action: 'tailscale_funnel.disable',
+        params: { backend_url: 'http://127.0.0.1:8765', https_port: 8443 },
+      },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('settingsEnvUpdate sends confirm and entries through setup action transport', async () => {
   const originalFetch = globalThis.fetch
   let requestBody: unknown

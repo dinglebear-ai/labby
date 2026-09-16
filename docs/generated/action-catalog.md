@@ -14,14 +14,14 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `access` | `access.project.effective.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
 | `access` | `access.team.activate` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string` | `object` | mcp, api |
 | `access` | `access.team.create` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `team_id*: string`<br>`name*: string` | `object` | mcp, api |
-| `access` | `access.team.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
+| `access` | `access.team.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api, web |
 | `access` | `access.team.member.add` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `access.team.member.remove` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
 | `access` | `access.team.member.role.set` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `access.team.member.suspend` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
 | `access` | `access.team.suspend` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string` | `object` | mcp, api |
-| `access` | `access.team_invitation.accept` | false | false | false |  | `resource_capability` | `scope.operate` | `platform` | `token*: string` | `object` | mcp, api |
-| `access` | `access.team_invitation.create` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string`<br>`token*: string`<br>`ttl_seconds*: integer` | `object` | mcp, api |
+| `access` | `access.team_invitation.accept` | false | false | false |  | `resource_capability` | `scope.operate` | `platform` | `token*: string` | `object` | mcp, api, web |
+| `access` | `access.team_invitation.create` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`email*: string`<br>`role*: string`<br>`ttl_seconds*: integer` | `object` | mcp, api, web |
 | `access` | `access.team_project.assign` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`project_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `access` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
@@ -225,6 +225,9 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `setup` | `install_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
 | `setup` | `installed_plugins` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | mcp, api, web |
+| `setup` | `organization_profile.apply` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `profile*: object`<br>`expected_signer_fingerprint*: string` | `OrganizationBootstrapApplyOutcome` | mcp, api, web |
+| `setup` | `organization_profile.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `organization_id*: string`<br>`team_depot_url*: string`<br>`key_id*: string`<br>`signing_key_env: string` | `OrganizationBootstrapProfile` | mcp, api, web |
+| `setup` | `organization_profile.preview` | false | false | false |  | `transport` | `-` | `-` | `profile*: object` | `OrganizationBootstrapPreview` | mcp, api, web |
 | `setup` | `plugin.install` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
 | `setup` | `plugin.uninstall` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | cli, mcp, api |
 | `setup` | `plugin_connectivity` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api |
@@ -233,6 +236,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `plugin_sync` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `PluginSyncOutcome` | cli, mcp, api |
 | `setup` | `plugins.installed` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
+| `setup` | `public_proxy.render` | false | false | false |  | `transport` | `-` | `-` | `public_url*: string`<br>`backend_url: string`<br>`format: caddy\|nginx\|traefik\|all` | `PublicProxyRenderOutcome` | cli, mcp, api, web |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
@@ -246,6 +250,9 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `settings.state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `section: string` | `SettingsState` | mcp, api, web |
 | `setup` | `settings.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupSnapshot` | cli, mcp, api, web |
+| `setup` | `tailscale_funnel.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `backend_url: string`<br>`https_port: integer` | `TailscaleFunnelMutationOutcome` | cli, mcp, api, web |
+| `setup` | `tailscale_funnel.disable` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `backend_url: string`<br>`https_port: integer` | `TailscaleFunnelMutationOutcome` | cli, mcp, api, web |
+| `setup` | `tailscale_funnel.inspect` | false | false | false |  | `transport` | `-` | `-` | `https_port: integer` | `TailscaleFunnelInspection` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `service*: string` | `PluginMutationResult` | mcp, api, web |
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |

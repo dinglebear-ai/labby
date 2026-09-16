@@ -198,6 +198,9 @@ pub async fn dispatch_with_clients_relay_and_auth(
                     (config.map(Arc::new), error)
                 }
             };
+            let browser_oauth_expected = resolved_auth
+                .as_ref()
+                .is_some_and(|auth| auth.mode == labby_auth::config::AuthMode::OAuth);
             tokio::spawn(async move {
                 service::stream_audit_full_with_relay_and_auth(
                     clients,
@@ -214,6 +217,8 @@ pub async fn dispatch_with_clients_relay_and_auth(
             if let Some(error) = config_error.as_deref() {
                 findings.push(super::auth_config_error_finding(error));
             }
+            let readiness = super::personal_readiness_finding(&findings, browser_oauth_expected);
+            findings.push(readiness);
             to_json(Report { findings })
         }
         unknown => Err(ToolError::UnknownAction {

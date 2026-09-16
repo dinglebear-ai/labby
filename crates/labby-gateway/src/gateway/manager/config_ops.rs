@@ -223,6 +223,57 @@ impl GatewayManager {
             .await
     }
 
+    /// Add a set of upstreams with all-or-nothing config semantics.
+    ///
+    /// Every spec is validated and inserted into an in-memory candidate while
+    /// the shared config-mutation lock is held. Any failure returns before the
+    /// config is persisted, so callers never observe a partially installed set.
+    /// This intentionally omits best-effort enrichment suggestions; it is for
+    /// transactional bootstrap/configuration flows rather than discovery/import.
+    pub async fn batch_add_atomic(
+        &self,
+        specs: Vec<UpstreamConfig>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+    ) -> Result<Vec<String>, ToolError> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let started = Instant::now();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let previous = self.load_config_for_mutation().await?;
+        let mut cfg = previous.clone();
+        let mut added_names = Vec::with_capacity(specs.len());
+
+        for mut spec in specs {
+            if let Some(ref env_name) = spec.bearer_token_env {
+                let trimmed = env_name.trim().to_string();
+                validate_bearer_token_env_name(&trimmed)?;
+                spec.bearer_token_env = Some(trimmed);
+            }
+            let name = spec.name.clone();
+            insert_upstream(&mut cfg, spec)?;
+            added_names.push(name);
+        }
+
+        let diff = self
+            .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+            .await?;
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.batch_add_atomic",
+            event = "batch_install.finish",
+            added = added_names.len(),
+            tools_changed = diff.tools_changed,
+            resources_changed = diff.resources_changed,
+            prompts_changed = diff.prompts_changed,
+            elapsed_ms = started.elapsed().as_millis(),
+            "gateway atomic batch reconcile"
+        );
+        Ok(added_names)
+    }
+
     pub(crate) async fn batch_add_scoped(
         &self,
         specs: Vec<UpstreamConfig>,

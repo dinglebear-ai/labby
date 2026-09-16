@@ -409,7 +409,7 @@
     "env_var": "LABBY_DEPOT_AUTHORITY_SIGNING_KEY",
     "required": false,
     "secret": true,
-    "description": "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes and delegated assertions (default variable for depot.authority_signing_key_env)",
+    "description": "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes, delegated assertions, and organization bootstrap profiles",
     "example": "<labby_depot_authority_signing_key>",
     "default_port": null
   },
@@ -420,6 +420,24 @@
     "secret": true,
     "description": "Bearer token presented to Depot's managed authority inbox (default variable for depot.authority_bearer_token_env)",
     "example": "<labby_depot_authority_token>",
+    "default_port": null
+  },
+  {
+    "service": "setup",
+    "env_var": "LABBY_ORGANIZATION_BOOTSTRAP_KEY_ID",
+    "required": false,
+    "secret": false,
+    "description": "Public key identifier stamped into organization bootstrap profiles",
+    "example": "team-bootstrap-2026-09",
+    "default_port": null
+  },
+  {
+    "service": "setup",
+    "env_var": "LABBY_ORGANIZATION_BOOTSTRAP_TEAM_DEPOT_URL",
+    "required": false,
+    "secret": false,
+    "description": "Externally reachable HTTPS Team Depot MCP endpoint offered to newly enrolled teammates",
+    "example": "https://team.example/mcp",
     "default_port": null
   }
 ]

@@ -6,7 +6,6 @@ pub mod config;
 pub mod oauth;
 #[cfg(feature = "gateway")]
 pub mod runtime;
-#[cfg(feature = "gateway")]
 pub mod tailscale;
 
 #[cfg(test)]

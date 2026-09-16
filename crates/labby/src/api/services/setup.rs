@@ -283,10 +283,15 @@ mod tests {
     }
 
     #[test]
-    fn credential_bootstrap_and_connectivity_probe_are_local_only() {
+    fn credential_bootstrap_connectivity_and_funnel_mutations_are_local_only() {
         assert!(local_only_action("bootstrap"));
         assert!(local_only_action("setup.bootstrap"));
         assert!(local_only_action("plugin_connectivity"));
+        assert!(local_only_action("tailscale_funnel.configure"));
+        assert!(local_only_action("setup.tailscale_funnel.configure"));
+        assert!(local_only_action("tailscale_funnel.disable"));
+        assert!(local_only_action("setup.tailscale_funnel.disable"));
+        assert!(!local_only_action("tailscale_funnel.inspect"));
         assert!(!local_only_action("draft.commit"));
 
         assert!(request_is_loopback(Some("127.0.0.1:1234".parse().unwrap())));

@@ -287,6 +287,9 @@ fn release(tag: &str) -> Release {
             Asset {
                 name: format!("{ASSET}.sha256"),
             },
+            Asset {
+                name: PROVENANCE_BUNDLE.into(),
+            },
         ],
     }
 }

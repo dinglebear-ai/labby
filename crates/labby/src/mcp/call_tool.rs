@@ -1792,6 +1792,9 @@ impl LabMcpServer {
                 let identity =
                     crate::mcp::context::verified_identity_from_extensions(&context.extensions)
                         .cloned();
+                let verified_email = auth
+                    .filter(|context| context.via_session)
+                    .and_then(|context| context.email.clone());
                 let bound_installation_id =
                     crate::mcp::context::bound_access_grant_from_extensions(&context.extensions)
                         .map(|grant| grant.installation_id.clone());
@@ -1840,6 +1843,7 @@ impl LabMcpServer {
                                             crate::dispatch::access::AccessDispatchContext {
                                                 store,
                                                 identity,
+                                                verified_email,
                                                 ceiling,
                                                 installation_id,
                                                 #[cfg(feature = "gateway")]

@@ -247,7 +247,7 @@ mod tests {
             toml::to_string(&config).expect("serialize config"),
         )
         .expect("write config");
-        crate::config::set_test_config_toml_path(Some(config_path));
+        let _config_path_guard = crate::config::TestConfigTomlPathGuard::set(config_path);
 
         let response = request(
             app_with_auth(auth(&["lab:read", "lab:admin"])),
@@ -257,7 +257,6 @@ mod tests {
         )
         .await;
 
-        crate::config::set_test_config_toml_path(None);
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await

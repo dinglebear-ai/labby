@@ -17,12 +17,17 @@ export function installTestDom() {
   Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true })
   Object.defineProperty(globalThis, 'DOMException', { value: window.DOMException, configurable: true })
   Object.defineProperty(globalThis, 'Node', { value: window.Node, configurable: true })
+  Object.defineProperty(globalThis, 'NodeFilter', { value: window.NodeFilter, configurable: true })
   Object.defineProperty(globalThis, 'MouseEvent', { value: window.MouseEvent, configurable: true })
   Object.defineProperty(globalThis, 'PointerEvent', { value: window.PointerEvent, configurable: true })
   Object.defineProperty(globalThis, 'KeyboardEvent', { value: window.KeyboardEvent, configurable: true })
+  Object.defineProperty(globalThis, 'Event', { value: window.Event, configurable: true })
   Object.defineProperty(globalThis, 'CustomEvent', { value: window.CustomEvent, configurable: true })
+  Object.defineProperty(globalThis, 'InputEvent', { value: window.InputEvent, configurable: true })
   Object.defineProperty(globalThis, 'Element', { value: window.Element, configurable: true })
   Object.defineProperty(globalThis, 'HTMLElement', { value: window.HTMLElement, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLInputElement', { value: window.HTMLInputElement, configurable: true })
+  Object.defineProperty(globalThis, 'DocumentFragment', { value: window.DocumentFragment, configurable: true })
   Object.defineProperty(globalThis, 'getComputedStyle', {
     value: window.getComputedStyle.bind(window),
     configurable: true,

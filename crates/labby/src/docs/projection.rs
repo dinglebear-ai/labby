@@ -812,7 +812,8 @@ pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
         api: service_has_http_surface(service),
         web_ui: matches!(
             service,
-            "gateway"
+            "access"
+                | "gateway"
                 | "setup"
                 | "fs"
                 | "artifacts"

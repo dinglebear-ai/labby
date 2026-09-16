@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 const LABEL: &str = "net.labby.auto-update";
 const ASSET: &str = "lab-aarch64-apple-darwin.tar.gz";
+const PROVENANCE_BUNDLE: &str = "release-provenance.sigstore.json";
 const REPO: &str = "dinglebear-ai/labby";
 const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
 const INSTALL_CONTROL_VARIABLES: &[&str] = &[
@@ -49,9 +50,13 @@ fn select_release(releases: &[Release], current: [u64; 3]) -> Option<&str> {
         .iter()
         .filter(|r| !r.draft && !r.prerelease)
         .filter(|r| {
-            [ASSET.to_string(), format!("{ASSET}.sha256")]
-                .iter()
-                .all(|name| r.assets.iter().any(|a| &a.name == name))
+            [
+                ASSET.to_string(),
+                format!("{ASSET}.sha256"),
+                PROVENANCE_BUNDLE.to_string(),
+            ]
+            .iter()
+            .all(|name| r.assets.iter().any(|a| &a.name == name))
         })
         .filter_map(|r| {
             version(&r.tag_name)
@@ -420,7 +425,15 @@ fn launch_agent(binary: &Path, log: &Path, path: &str) -> Result<String> {
     ))
 }
 
-fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
+struct ScheduleLock(fs::File);
+
+impl Drop for ScheduleLock {
+    fn drop(&mut self) {
+        drop(self.0.unlock());
+    }
+}
+
+fn acquire_schedule_lock(plist: &Path) -> Result<ScheduleLock> {
     fs::create_dir_all(plist.parent().context("Missing LaunchAgents directory")?)?;
     let lock = fs::OpenOptions::new()
         .create(true)
@@ -429,7 +442,7 @@ fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
         .open(plist.with_extension("lock"))?;
     lock.try_lock()
         .context("Another updater schedule operation is running")?;
-    Ok(lock)
+    Ok(ScheduleLock(lock))
 }
 
 /// Configure or inspect the per-user launchd job, which invokes this executable.

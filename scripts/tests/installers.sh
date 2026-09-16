@@ -34,6 +34,7 @@ make_release() {
     shasum -a 256 "$release_dir/lab-x86_64-unknown-linux-gnu.tar.gz" |
         awk '{print $1 "  lab-x86_64-unknown-linux-gnu.tar.gz"}' \
             >"$release_dir/lab-x86_64-unknown-linux-gnu.tar.gz.sha256"
+    printf '{"test":"sigstore-bundle"}\n' >"$release_dir/release-provenance.sigstore.json"
 }
 
 make_fake_tools() {
@@ -72,9 +73,9 @@ if [ -n "$out" ]; then cp "$source_path" "$out"; else cat "$source_path"; fi
 EOF
     cat >"$bin/gh" <<'EOF'
 #!/bin/sh
+[ -z "${LABBY_TEST_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$LABBY_TEST_GH_LOG"
 case "$*" in
   "attestation verify "*) exit 0 ;;
-  "auth status --hostname github.com") exit 0 ;;
   *) exit 64 ;;
 esac
 EOF
@@ -193,27 +194,19 @@ EOF
     [ ! -s "$case_root/curl.log" ] || fail "installer performed network I/O before reporting unsupported GitHub CLI"
 }
 
-test_release_install_fails_before_network_without_gh_authentication() {
-    local case_root="$test_root/unauthenticated-gh"
+test_release_install_uses_published_provenance_bundle_without_gh_authentication() {
+    local case_root="$test_root/provenance-bundle"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     mkdir -p "$fixtures" "$home"
     make_release "$fixtures" v1.0.0 release-v1
     make_fake_tools "$fake_bin" "$fixtures"
-    cat >"$fake_bin/gh" <<'EOF'
-#!/bin/sh
-case "$*" in
-  "attestation verify --help") exit 0 ;;
-  "auth status --hostname github.com") exit 1 ;;
-  *) exit 64 ;;
-esac
-EOF
-    chmod 755 "$fake_bin/gh"
-    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
-        LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
-        fail "release installer succeeded without authenticated GitHub CLI"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        LABBY_TEST_CURL_LOG="$case_root/curl.log" LABBY_TEST_GH_LOG="$case_root/gh.log" >/dev/null 2>&1
+    assert_contains "$case_root/curl.log" "/v1.0.0/release-provenance.sigstore.json"
+    assert_contains "$case_root/gh.log" "--bundle"
+    if grep -Fq "auth status" "$case_root/gh.log"; then
+        fail "installer required GitHub CLI authentication despite a published provenance bundle"
     fi
-    assert_contains "$case_root/err" "GitHub CLI must be authenticated to fetch Labby release attestations"
-    [ ! -s "$case_root/curl.log" ] || fail "installer downloaded a release before reporting unauthenticated GitHub CLI"
 }
 
 test_latest_api_failure_never_uses_mutable_latest_download() {
@@ -252,6 +245,14 @@ test_release_failure_matrix_preserves_existing_binary() {
     assert_contains "$case_root/err" "require checksum verification"
     [ "$("$home/bin/labby")" = sentinel ] || fail "sidecar failure replaced existing binary"
     mv "$case_root/sidecar" "$fixtures/releases/v1.0.0/lab-x86_64-unknown-linux-gnu.tar.gz.sha256"
+
+    mv "$fixtures/releases/v1.0.0/release-provenance.sigstore.json" "$case_root/provenance-bundle"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >"$case_root/out" 2>"$case_root/err"; then
+        fail "missing provenance bundle unexpectedly succeeded"
+    fi
+    assert_contains "$case_root/err" "release does not publish release-provenance.sigstore.json"
+    [ "$("$home/bin/labby")" = sentinel ] || fail "provenance bundle failure replaced existing binary"
+    mv "$case_root/provenance-bundle" "$fixtures/releases/v1.0.0/release-provenance.sigstore.json"
 
     printf 'not-a-digest  lab-x86_64-unknown-linux-gnu.tar.gz\n' \
         >"$fixtures/releases/v1.0.0/lab-x86_64-unknown-linux-gnu.tar.gz.sha256"
@@ -937,6 +938,37 @@ SH
     [ -f "$case_home/bin/.labby-install/activation-journal/old-binary.present" ] || fail "retirement failure lost rollback backup"
 }
 
+test_first_run_setup_rejects_missing_or_old_setup_contract() {
+    local case_root="$test_root/setup-contract"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/tools" case_home="$case_root/home"
+    mkdir -p "$fixtures" "$case_home"
+    make_fake_tools "$fake_bin" "$fixtures"
+
+    cat > "$case_root/labby" <<'SH'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'labby 1.0.0'; exit 0; fi
+if [ "$1" = "setup" ] && [ "${2:-}" = "contract" ]; then
+  if [ "${LABBY_TEST_SETUP_CONTRACT:-2}" = "missing" ]; then exit 2; fi
+  echo "${LABBY_TEST_SETUP_CONTRACT:-2}"
+  exit 0
+fi
+exit 0
+SH
+    chmod 755 "$case_root/labby"
+    local digest
+    digest=$(shasum -a 256 "$case_root/labby" | awk '{print $1}')
+    for contract in missing 1; do
+        if run_installer "$case_home" "$fixtures" "$fake_bin" \
+            LABBY_INSTALL_LOCAL_BINARY="$case_root/labby" LABBY_INSTALL_LOCAL_SHA256="$digest" \
+            LABBY_INSTALL_VERSION=v1.0.0 LABBY_INSTALL_NO_SETUP=0 LABBY_SETUP_ROLE=server \
+            LABBY_TEST_SETUP_CONTRACT="$contract" > "$case_root/$contract.out" 2>&1; then
+            fail "first-run setup accepted setup contract $contract"
+        fi
+    done
+    assert_contains "$case_root/missing.out" "does not expose the required setup contract"
+    assert_contains "$case_root/1.out" "older than required contract 2"
+}
+
 test_first_run_setup_forwards_options_and_propagates_failure() {
     local case_root="$test_root/first-run"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/tools" case_home="$case_root/home"
@@ -945,6 +977,7 @@ test_first_run_setup_forwards_options_and_propagates_failure() {
     cat > "$case_root/labby" <<'SH'
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo 'labby 1.0.0'; exit 0; fi
+if [ "$1" = "setup" ] && [ "${2:-}" = "contract" ]; then echo 2; exit 0; fi
 printf '%s\n' "$@" > "$LABBY_TEST_SETUP_ARGS"
 exit "${LABBY_TEST_SETUP_STATUS:-0}"
 SH
@@ -969,6 +1002,7 @@ SH
     fi
 }
 
+test_first_run_setup_rejects_missing_or_old_setup_contract
 test_first_run_setup_forwards_options_and_propagates_failure
 test_failed_journal_retirement_preserves_backups
 test_installers_share_a_process_level_transaction_lock
@@ -978,7 +1012,7 @@ test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
 test_release_install_fails_before_network_without_gh
 test_release_install_fails_before_network_without_gh_attestation_support
-test_release_install_fails_before_network_without_gh_authentication
+test_release_install_uses_published_provenance_bundle_without_gh_authentication
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary
 test_checksum_ignores_sidecar_subject_and_hashes_requested_archive

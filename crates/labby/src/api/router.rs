@@ -5797,14 +5797,16 @@ mod tests {
     fn isolated_lab_home() -> (
         tempfile::TempDir,
         std::path::PathBuf,
+        crate::config::TestConfigTomlPathGuard,
         crate::dispatch::helpers::TestLabHomeGuard,
     ) {
         let temp = tempfile::tempdir().unwrap();
         let lab_dir = temp.path().join("lab-home");
         fs::create_dir_all(&lab_dir).unwrap();
-        crate::config::set_test_config_toml_path(Some(temp.path().join("config.toml")));
-        let guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
-        (temp, lab_dir, guard)
+        let config_guard =
+            crate::config::TestConfigTomlPathGuard::set(temp.path().join("config.toml"));
+        let lab_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
+        (temp, lab_dir, config_guard, lab_guard)
     }
 
     fn owner_identity() -> labby_auth::VerifiedIdentity {
@@ -5865,7 +5867,7 @@ mod tests {
             "browser",
             "fs",
         ];
-        let (_home, _lab_dir, _guard) = isolated_lab_home();
+        let (_home, _lab_dir, _config_guard, _lab_guard) = isolated_lab_home();
         let (auth_state, admin, colleague) = colleague_and_admin_auth_state().await;
         let app = build_router(
             AppState::new()
@@ -5959,7 +5961,7 @@ mod tests {
     /// gateway's authentication keys; only the configured admin can.
     #[tokio::test]
     async fn non_operator_setup_draft_never_changes_auth_env() {
-        let (_home, lab_dir, _guard) = isolated_lab_home();
+        let (_home, lab_dir, _config_guard, _lab_guard) = isolated_lab_home();
         let env = lab_dir.join(".env");
         let draft = lab_dir.join(".env.draft");
         fs::write(&env, "LABBY_MCP_HTTP_TOKEN=sentinel-operator-token\n").unwrap();
@@ -6064,7 +6066,7 @@ mod tests {
     /// find no identity and never elevate).
     #[tokio::test]
     async fn durable_platform_admin_who_is_not_configured_admin_is_elevated_until_revoked() {
-        let (_home, _lab_dir, _guard) = isolated_lab_home();
+        let (_home, _lab_dir, _config_guard, _lab_guard) = isolated_lab_home();
         let (_access_dir, runtime) = ready_access_runtime_with_colleague_principal().await;
         let (auth_state, _admin, colleague) = colleague_and_admin_auth_state().await;
         let app = build_router(

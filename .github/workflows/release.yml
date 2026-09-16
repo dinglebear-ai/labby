@@ -517,6 +517,7 @@ jobs:
           touch /tmp/labby-release-was-draft
           scripts/ci/upload-immutable-release-assets.sh -- "${files[@]}"
       - name: Attest release artifacts
+        id: attest_release
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-path: |
@@ -534,6 +535,14 @@ jobs:
             labby-install.sh.sha256
             labby-install.ps1.sha256
             release-manifest.json
+      - name: Publish release provenance bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cp "${{ steps.attest_release.outputs.bundle-path }}" release-provenance.sigstore.json
+          scripts/ci/upload-immutable-release-assets.sh -- release-provenance.sigstore.json
       - name: Verify release provenance as a consumer
         env:
           GH_TOKEN: ${{ github.token }}

@@ -87,27 +87,142 @@ config reference.
 
 #### Claude Code MCP
 
-Claude Code exposes its native MCP server with `claude mcp serve`. Prefer the
-native, current Claude Code binary on the target machine and verify its path
-before persisting the upstream. A local Claude Code MCP on the same host as
-Labby needs no spawn-guard override:
+Claude Code exposes its native MCP server with `claude mcp serve`. Labby can launch
+that server directly when Claude Code is installed on the Labby host, or launch it
+on another workstation through hardened non-interactive SSH.
+
+The lowest-friction path is to let Labby print the exact commands for the target
+instead of constructing repeated `--arg` values by hand.
+
+##### Local Claude Code on the Labby host
+
+1. Install/update the native Claude Code binary as the same account that will run
+   the MCP server.
+2. Sign in and prove the installation:
 
 ```bash
+claude auth login
+claude auth status --text
 claude doctor
+claude --version
 command -v claude
+```
+
+3. Ask Labby to calculate the upstream definition. It auto-detects `claude` from
+   `PATH`; pass `--claude-path` if the service account uses a different path:
+
+```bash
+labby setup claude-code
+# or:
+labby setup claude-code \
+  --name claude-local \
+  --claude-path /absolute/path/to/claude
+```
+
+4. Run the generated `labby gateway add ...` command.
+5. Run the generated `labby gateway test --name ...` command.
+6. Invoke one safe Claude MCP tool and verify the actual target identity:
+   `hostname`, `whoami`, operating system/platform, and current working directory.
+
+The equivalent direct commands are:
+
+```bash
 labby gateway add \
   --name claude-local \
   --command /absolute/path/to/claude \
   --arg=mcp \
   --arg=serve
+
 labby gateway test --name claude-local
 ```
 
-For a Claude Code MCP on another machine, use `ssh` as the local stdio command
-and invoke the remote native Claude binary directly. Use a dedicated key,
-`BatchMode=yes`, a dedicated known-hosts file, strict host-key verification,
-and a bounded connect/keepalive policy. Do not rely on an interactive shell
-profile to locate Claude:
+Labby launches exactly `/absolute/path/to/claude mcp serve`; it does not need an
+interactive shell profile to find Claude.
+
+##### Remote Claude Code over hardened SSH
+
+Remote mode is useful when Labby runs in an always-on server/Incus container but
+Claude Code is authenticated on a coworker's macOS, Linux, WSL, or Windows host.
+
+Do these steps in order.
+
+1. **Prepare Claude Code on the remote workstation.** Install/update the native
+   Claude Code binary as the account that should serve MCP. Then run:
+
+```bash
+/absolute/path/to/claude auth login
+/absolute/path/to/claude auth status --text
+/absolute/path/to/claude doctor
+/absolute/path/to/claude --version
+```
+
+Record the exact executable path. Examples are `/Users/operator/.local/bin/claude`
+on macOS and `/home/operator/.local/bin/claude` on Linux. Do not depend on a
+remote interactive shell's `PATH`.
+
+2. **Create a dedicated SSH key as the Labby service account.** Do not overwrite
+   an existing key. For the standard Incus service account:
+
+```bash
+install -d -m 700 /home/labby/.ssh
+
+# Only if this file does not already exist:
+ssh-keygen \
+  -t ed25519 \
+  -f /home/labby/.ssh/labby-claude-remote \
+  -C labby-claude-remote
+
+chmod 600 /home/labby/.ssh/labby-claude-remote
+chmod 644 /home/labby/.ssh/labby-claude-remote.pub
+```
+
+3. **Authorize only the public key on the remote account.** Append the contents of
+   `/home/labby/.ssh/labby-claude-remote.pub` to the intended remote user's
+   `~/.ssh/authorized_keys`. Never copy the private key to the remote machine.
+
+4. **Verify the remote SSH host key independently.** Get the host-key fingerprint
+   through a trusted channel, compare it to the target machine, and place the
+   verified host key in a dedicated file such as:
+
+```text
+/home/labby/.ssh/known_hosts.claude-remote
+```
+
+`ssh-keyscan` can collect a presented key, but its output is not proof of the
+server's identity by itself. Do not turn off `StrictHostKeyChecking`.
+
+5. **Ask Labby to generate the exact commands.**
+
+```bash
+labby setup claude-code \
+  --name claude-remote \
+  --ssh-target operator@remote-host \
+  --claude-path /absolute/path/to/claude \
+  --identity-file /home/labby/.ssh/labby-claude-remote \
+  --known-hosts-file /home/labby/.ssh/known_hosts.claude-remote
+```
+
+Use `--json` when another setup system needs the generated preflight/add/test
+commands as structured data.
+
+6. **Run the generated SSH preflight as the same account that runs Labby.** The
+   command intentionally uses:
+
+- the dedicated identity file
+- `IdentitiesOnly=yes`
+- the dedicated `UserKnownHostsFile`
+- `BatchMode=yes`
+- `StrictHostKeyChecking=yes`
+- `ControlMaster=no` plus `-S none`
+- `ConnectTimeout=10`
+- `ServerAliveInterval=30`
+- `ServerAliveCountMax=3`
+- the exact remote Claude executable path
+
+The preflight must return the remote Claude Code version without asking for a
+password, host-key confirmation, shell initialization, or other interactive input.
+
+7. **Run the generated `labby gateway add` command.** Its logical definition is:
 
 ```toml
 [[upstream]]
@@ -125,7 +240,7 @@ args = [
   "-o", "ServerAliveInterval=30",
   "-o", "ServerAliveCountMax=3",
   "-o", "StrictHostKeyChecking=yes",
-  "user@remote-host",
+  "operator@remote-host",
   "/absolute/path/to/claude", "mcp", "serve",
 ]
 proxy_resources = true
@@ -133,17 +248,31 @@ proxy_prompts = true
 proxy_skills = false
 ```
 
-The same definition can be created with `labby gateway add --command /usr/bin/ssh`
-and repeated `--arg` options. Validate the raw non-interactive SSH command as
-the Labby service account first, then run `labby gateway test --name
-claude-remote`. After the upstream is reachable, use one safe Claude MCP tool
-to verify `hostname`, `whoami`, platform, and current working directory so a
-Windows, WSL, macOS, or Linux target cannot be silently confused with a
-similarly named machine.
+8. **Test the upstream.**
 
-Keep `disable_spawn_guard = false` (the default). A global bypass allows any
-configured command to execute and is unnecessary for either the built-in
-`claude` or `ssh` integration.
+```bash
+labby gateway test --name claude-remote
+```
+
+9. **Prove you reached the right workstation.** Through the newly connected Claude
+   MCP, invoke safe read-only/identity commands and verify `hostname`, `whoami`,
+   platform, and current working directory. This is especially important when one
+   person has similarly named Windows, WSL, macOS, or Linux targets.
+
+Keep `disable_spawn_guard = false` (the default). Current Labby permits normal
+`claude` and `ssh` upstreams without a global spawn-guard bypass.
+
+##### Claude Code MCP troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `Claude Code was not found on PATH` | Labby service account has a different PATH | Run `command -v claude` as the serving account and pass the absolute path to `labby setup claude-code --claude-path ...` |
+| `claude auth status` says signed out | Claude was authenticated as another OS account | Run `claude auth login` as the exact local/remote account that serves MCP |
+| `Permission denied (publickey)` | Wrong remote user/key or public key not authorized | Verify `user@host`, the dedicated identity, and that only its `.pub` content is present in the target account's `authorized_keys` |
+| `Host key verification failed` | Missing/stale/different trusted host key | Re-verify the fingerprint through a trusted channel and update the dedicated known-hosts file deliberately |
+| SSH preflight works interactively but Labby times out | Command still relies on prompts/profile state | Run the exact `BatchMode=yes` preflight as the Labby service account and invoke the absolute Claude path |
+| `gateway test` reports a spawn-guard error | Old Labby build or nonstandard wrapper command | Upgrade Labby; current builds allow `claude` and `ssh`. If a wrapper is intentional, scope `gateway.extra_stdio_commands` to that command rather than disabling the guard |
+| Claude MCP reaches the wrong computer/account | Ambiguous host alias or remote account | Verify hostname/whoami/platform/CWD through a safe Claude MCP call before trusting the connection |
 
 ## Tool, Resource, and Prompt Exposure
 

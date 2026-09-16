@@ -17,15 +17,18 @@ mod dispatch;
 mod draft;
 pub(crate) mod host_service;
 pub(crate) mod incus;
+pub(crate) mod organization_profile;
 pub(crate) mod owner_link;
 mod params;
 mod plugin_hook;
 pub(crate) mod provision;
 pub(crate) mod proxy;
+pub(crate) mod public_proxy;
 mod secret_mask;
 mod secure_file;
 mod settings;
 mod state;
+pub(crate) mod tailscale_funnel;
 mod token;
 mod types;
 
@@ -39,7 +42,12 @@ pub use bootstrap::{
 };
 pub use caller::{SetupCaller, SetupCallerEvidence};
 pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
+pub(crate) use client::draft_path as setup_draft_path;
 pub use dispatch::{dispatch, dispatch_for_caller};
+pub(crate) use draft::{
+    discard as discard_setup_draft, merge_entries as merge_setup_draft_entries,
+    read_entries as read_setup_draft_entries,
+};
 pub use token::generate_mcp_token;
 pub use types::{
     AccessBootstrapManifest, AccessBootstrapPrepare, AccessBootstrapPrepareOutcome, CommitOutcome,
@@ -66,9 +74,23 @@ const OPTIONAL_ENV: &[EnvVar] = &[
     },
     EnvVar {
         name: crate::config::depot::DEFAULT_AUTHORITY_SIGNING_KEY_ENV,
-        description: "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes and delegated assertions (default variable for depot.authority_signing_key_env)",
+        description: "Active Ed25519 signing seed (base64url, no padding, 32 bytes) for Depot projection envelopes, delegated assertions, and organization bootstrap profiles",
         example: "<base64url-ed25519-seed>",
         secret: true,
+        ui: None,
+    },
+    EnvVar {
+        name: organization_profile::TEAM_DEPOT_URL_ENV,
+        description: "Externally reachable HTTPS Team Depot MCP endpoint offered to newly enrolled teammates",
+        example: "https://team.example/mcp",
+        secret: false,
+        ui: None,
+    },
+    EnvVar {
+        name: organization_profile::SIGNING_KEY_ID_ENV,
+        description: "Public key identifier stamped into organization bootstrap profiles",
+        example: "team-bootstrap-2026-09",
+        secret: false,
         ui: None,
     },
 ];

@@ -87,18 +87,20 @@ the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ### Install A Release
 
-Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before any Labby release download so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify. Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
+Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and a GitHub CLI (`gh`) build that supports `gh attestation verify --bundle`. The installer checks these before the Labby archive download. Current installer-bearing releases publish a Sigstore attestation bundle beside the artifacts, so coworkers do **not** need `gh auth login` or a personal GitHub token merely to install Labby. Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases and verify `gh attestation verify --help`.
 
 Linux/macOS:
 
-> **Release compatibility gate:** this installer-bearing flow starts with a qualified release that publishes `labby-install.sh` and contains the first-run `labby setup --role ...` interface. The public `v1.13.3` release predates that contract, so do not use it with this runbook. Confirm the selected tag exposes `labby-install.sh` before continuing.
+> **Release compatibility gate:** this flow starts with a qualified release that publishes `labby-install.sh`, `release-provenance.sigstore.json`, and the first-run `labby setup --role ...` interface. The public `v1.13.3` release predates that contract, so do not use it with this runbook. Confirm those installer/provenance assets exist on the selected tag before continuing.
 
 ```bash
 version=vX.Y.Z
 base="https://github.com/dinglebear-ai/labby/releases/download/$version"
 curl -fSLO "$base/labby-install.sh"
 curl -fSLO "$base/labby-install.sh.sha256"
+curl -fSLO "$base/release-provenance.sigstore.json"
 gh attestation verify labby-install.sh \
+  --bundle release-provenance.sigstore.json \
   --repo dinglebear-ai/labby \
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
   --source-ref "refs/tags/$version" \
@@ -120,7 +122,9 @@ $Version = "vX.Y.Z"
 $Base = "https://github.com/dinglebear-ai/labby/releases/download/$Version"
 Invoke-WebRequest "$Base/labby-install.ps1" -OutFile labby-install.ps1
 Invoke-WebRequest "$Base/labby-install.ps1.sha256" -OutFile labby-install.ps1.sha256
+Invoke-WebRequest "$Base/release-provenance.sigstore.json" -OutFile release-provenance.sigstore.json
 gh attestation verify labby-install.ps1 `
+  --bundle release-provenance.sigstore.json `
   --repo dinglebear-ai/labby `
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml `
   --source-ref "refs/tags/$Version" `
@@ -134,8 +138,7 @@ labby serve --host 127.0.0.1 --port 8765
 ```
 
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
-platform asset, require `gh`, verify the archive's attestation against the
-Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
+platform asset, require an attestation-capable `gh`, download the release-published Sigstore bundle, verify the archive's attestation locally against the Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
 user PATH. On Linux and macOS the shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
 Server setup configures authentication and a managed native service, or an Incus

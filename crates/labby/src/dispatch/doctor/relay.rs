@@ -230,9 +230,6 @@ async fn probe_target(target: &RelayTarget) -> Finding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
-
-    static LAB_HOME_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[tokio::test]
     async fn relay_health_reports_loaded_empty_registry_without_target_probe() {
@@ -274,15 +271,14 @@ mod tests {
 
     #[tokio::test]
     async fn relay_health_reports_corrupt_registry_when_manager_missing() {
-        let _guard = LAB_HOME_TEST_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        crate::dispatch::helpers::set_test_lab_home(Some(dir.path().to_path_buf()));
+        let _lab_home_guard =
+            crate::dispatch::helpers::TestLabHomeGuard::set(dir.path().to_path_buf());
         let path = PublicRelayRegistryStore::default_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{not valid json").unwrap();
 
         let report = check_public_relay(None, false).await;
-        crate::dispatch::helpers::set_test_lab_home(None);
 
         let finding = report
             .findings

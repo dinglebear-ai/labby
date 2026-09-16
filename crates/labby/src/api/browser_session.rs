@@ -270,7 +270,7 @@ enum SessionAuthority {
 // An unprovisioned identity only exists once owner bootstrap has completed, so
 // bootstrap is never a remedy for it.
 const UNPROVISIONED_REMEDIATION: &str = "This identity is authenticated but has no access authority yet. \
-     Ask an administrator to add this identity to a team.";
+     Use the team invitation for this account, or ask an administrator to invite this verified email.";
 const TRANSPORT_REMEDIATION: &str = "Durable access authority is not initialized on this process; \
      authority is projected from the transport credential only. Complete owner bootstrap to enable \
      multi-user authority.";

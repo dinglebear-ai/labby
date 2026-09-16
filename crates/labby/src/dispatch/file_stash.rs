@@ -1138,7 +1138,9 @@ mod tests {
 
     #[tokio::test]
     async fn operation_event_is_structured_and_does_not_log_sensitive_params() {
-        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let logs = crate::test_support::SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()

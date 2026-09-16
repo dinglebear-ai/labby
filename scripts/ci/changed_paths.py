@@ -11,6 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 OUTPUT_KEYS = [
     "all",
     "docs",
@@ -40,7 +43,7 @@ def any_match(paths: list[str], predicate: Callable[[str], bool]) -> bool:
 
 
 def lifecycle_paths() -> set[str]:
-    inventory = Path("scripts/ci/lifecycle-scripts.json")
+    inventory = REPO_ROOT / "scripts/ci/lifecycle-scripts.json"
     if not inventory.is_file():
         return set()
     data = json.loads(inventory.read_text())

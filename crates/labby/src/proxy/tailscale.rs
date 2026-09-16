@@ -30,6 +30,10 @@ struct TailscaleSelf {
     online: bool,
     #[serde(rename = "DNSName")]
     dns_name: String,
+    #[serde(default, rename = "CapMap")]
+    cap_map: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +78,16 @@ impl TailscaleStatus {
     pub fn dns_name(&self) -> &str {
         &self.self_node.dns_name
     }
+
+    #[must_use]
+    pub fn has_capability(&self, capability: &str) -> bool {
+        self.self_node.cap_map.contains_key(capability)
+            || self
+                .self_node
+                .capabilities
+                .iter()
+                .any(|candidate| candidate == capability)
+    }
 }
 
 /// Relevant fields from `tailscale serve status --json`.
@@ -85,6 +99,8 @@ pub struct ServeStatus {
     #[serde(default)]
     web: BTreeMap<String, ServeWeb>,
     #[serde(default)]
+    allow_funnel: BTreeMap<String, bool>,
+    #[serde(default)]
     foreground: BTreeMap<String, ServeConfig>,
 }
 
@@ -95,6 +111,8 @@ struct ServeConfig {
     tcp: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     web: BTreeMap<String, ServeWeb>,
+    #[serde(default)]
+    allow_funnel: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -112,7 +130,9 @@ struct ServeHandler {
 
 impl ServeStatus {
     pub fn parse(json: &str) -> Result<Self> {
-        serde_json::from_str(json).context("invalid `tailscale serve status --json` response")
+        serde_json::from_str::<Option<Self>>(json)
+            .context("invalid `tailscale serve status --json` response")
+            .map(Option::unwrap_or_default)
     }
 
     #[must_use]
@@ -144,6 +164,19 @@ impl ServeStatus {
                 .find_map(|config| backend_from_web(&config.web, &authority))
         })
     }
+
+    /// Return the HTTP backend only when this exact host:port is explicitly
+    /// public through Tailscale Funnel. A plain Serve handler is tailnet-only
+    /// and must never be mistaken for internet exposure.
+    #[must_use]
+    pub fn funnel_backend_for(&self, dns_name: &str, port: u16) -> Option<&str> {
+        let authority = format!("{dns_name}:{port}");
+        funnel_backend_from_config(&self.allow_funnel, &self.web, &authority).or_else(|| {
+            self.foreground.values().find_map(|config| {
+                funnel_backend_from_config(&config.allow_funnel, &config.web, &authority)
+            })
+        })
+    }
 }
 
 fn extend_ports(ports: &mut BTreeSet<u16>, web: &BTreeMap<String, ServeWeb>) {
@@ -156,6 +189,19 @@ fn extend_ports(ports: &mut BTreeSet<u16>, web: &BTreeMap<String, ServeWeb>) {
 
 fn backend_from_web<'a>(web: &'a BTreeMap<String, ServeWeb>, authority: &str) -> Option<&'a str> {
     web.get(authority)?.handlers.get("/")?.proxy.as_deref()
+}
+
+fn funnel_backend_from_config<'a>(
+    allow_funnel: &BTreeMap<String, bool>,
+    web: &'a BTreeMap<String, ServeWeb>,
+    authority: &str,
+) -> Option<&'a str> {
+    allow_funnel
+        .get(authority)
+        .copied()
+        .unwrap_or(false)
+        .then(|| backend_from_web(web, authority))
+        .flatten()
 }
 
 pub fn build_public_url(dns_name: &str, port: u16, path: &str) -> Result<url::Url> {

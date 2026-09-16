@@ -52,6 +52,7 @@ SETUP_PUBLIC_URL="${LABBY_SETUP_PUBLIC_URL:-}"
 SETUP_OAUTH="${LABBY_SETUP_OAUTH:-}"
 SETUP_DESKTOP="${LABBY_SETUP_DESKTOP:-}"
 SETUP_NO_BROWSER="${LABBY_SETUP_NO_BROWSER:-0}"
+REQUIRED_SETUP_CONTRACT=2
 INSTALL_METADATA_DIR="$INSTALL_DIR/.labby-install"
 ARTIFACTS_DIR="$INSTALL_METADATA_DIR/artifacts"
 TRANSACTION_LOCK="$INSTALL_METADATA_DIR/transaction-lock"
@@ -76,6 +77,21 @@ make_tmp_dir() {
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { say "install.sh: $*"; exit 1; }
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "$2"
+}
+
+require_release_prerequisites() {
+    require_command curl "curl is required for release installation"
+    require_command tar "tar is required to unpack the Labby release archive"
+    require_command gh "GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer"
+    gh attestation verify --help >/dev/null 2>&1 ||
+        fail "GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer"
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        fail "sha256sum or shasum is required to verify the Labby release checksum"
+    fi
+}
 
 print_banner() {
     say ""
@@ -155,15 +171,18 @@ sha256_check() {
 verify_release_provenance() {
     artifact=$1
     resolved=$2
+    bundle=$3
     command -v gh >/dev/null 2>&1 \
         || fail "GitHub CLI (gh) is required to verify release provenance"
+    [ -f "$bundle" ] || fail "release provenance bundle is missing"
     gh attestation verify "$artifact" \
+        --bundle "$bundle" \
         --repo "$REPO" \
         --signer-workflow "$REPO/.github/workflows/release.yml" \
         --source-ref "refs/tags/$resolved" \
         --deny-self-hosted-runners >/dev/null \
         || fail "GitHub provenance verification FAILED for $asset"
-    say "GitHub provenance verified"
+    say "GitHub provenance verified from published bundle"
 }
 
 latest_release_with_asset() {
@@ -402,6 +421,7 @@ rollback_offline() {
 }
 
 install_from_release() {
+    require_release_prerequisites
     triple="$(target_triple)" || return 1
     asset="lab-${triple}.tar.gz"
     if [ "$VERSION" = "latest" ]; then
@@ -430,7 +450,12 @@ install_from_release() {
         fail "no .sha256 asset published for $asset; release installs require checksum verification"
     fi
 
-    verify_release_provenance "$tmp/$asset" "${resolved_version:-$VERSION}"
+    provenance_bundle=release-provenance.sigstore.json
+    curl -fsSL --connect-timeout 10 --max-time 300 --retry 3 \
+        -o "$tmp/$provenance_bundle" "${base}/${provenance_bundle}" \
+        || fail "release does not publish $provenance_bundle; choose a current installer-bearing release"
+
+    verify_release_provenance "$tmp/$asset" "${resolved_version:-$VERSION}" "$tmp/$provenance_bundle"
 
     tar -xzf "$tmp/$asset" -C "$tmp"
     bin="$(find "$tmp" -type f -name labby | head -n 1)"
@@ -447,6 +472,12 @@ run_first_run_setup() {
 
     setup_binary="$INSTALL_DIR/labby"
     [ -x "$setup_binary" ] || fail "installed binary is not executable: $setup_binary"
+    setup_contract="$("$setup_binary" setup contract 2>/dev/null || true)"
+    case "$setup_contract" in
+        *[!0-9]*|'') fail "installed Labby release does not expose the required setup contract; choose a current installer-bearing release" ;;
+    esac
+    [ "$setup_contract" -ge "$REQUIRED_SETUP_CONTRACT" ] || fail "installed Labby setup contract $setup_contract is older than required contract $REQUIRED_SETUP_CONTRACT; choose a newer release"
+    say "setup contract $setup_contract verified"
     say ""
     say "[2/2] Configure Labby"
 

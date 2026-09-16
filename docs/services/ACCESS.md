@@ -1,19 +1,19 @@
 ---
 title: "Access Service"
 created: "2026-08-23"
-updated: "2026-09-13"
+updated: "2026-09-16"
 ---
 
 # Access Service
 
 Labby's durable multi-user authority lives in the access store
-(`$LABBY_HOME/access.db`, schema v7; see the
-[data model](../access-control/DATA_MODEL.md#schema-v7-current)). This page is
+(`$LABBY_HOME/access.db`, schema v8; see the
+[data model](../access-control/DATA_MODEL.md#schema-v8-current)). This page is
 the operator guide for it:
 
 - the registered `access` service (Teams, invitations, platform
   administration, Team credentials);
-- onboarding a teammate, including what "No access yet" means;
+- onboarding a teammate through the Join your team invitation flow;
 - owner bootstrap (browser and offline proof), owner identity link, and owner
   recovery;
 - the registered `projects` service and the automatic Viewer policy.
@@ -29,8 +29,8 @@ configuration; everyone else gets administrative reach only through
 ## Access actions
 
 The generated [action catalog](../generated/action-catalog.md) is authoritative
-for the 19 `access` actions (17 domain actions plus `help` and `schema`), their
-parameters, required capabilities, and `requires_admin` flags. Do not copy that
+for the current `access` actions, their parameters, required capabilities, and
+`requires_admin` flags. Do not copy that
 table here. In summary:
 
 | Group | Actions | Required capability |
@@ -80,13 +80,15 @@ Access actions use the canonical agent error envelope
 - `service_unavailable`: the access store is missing, uninitialized, locked,
   read-only, corrupt, insecure, newer than this binary, or busy.
 
-## Onboard a teammate ("No access yet")
+## Onboard a teammate ("Join your team")
 
-A teammate who signs in without durable authority sees "No access yet".
-`GET /auth/session` then reports `authority_state: "unprovisioned"` and the
-remediation "Ask an administrator to add this identity to a team." Signing out
-and in again does not change this. The steps below are what the administrator
-does.
+A teammate who signs in without durable authority has
+`authority_state: "unprovisioned"`. The browser presents **Join your team**
+with invitation-link/code acceptance instead of a dead-end authorization
+message. `GET /auth/session` advises using the invitation for that account or
+asking an administrator to invite the verified email. Signing out and in again
+does not create authority by itself. The steps below are the normal onboarding
+flow.
 
 1. **Admit the identity.** As the configured admin, add the email to the
    allowlist: the settings UI, or `POST /v1/auth/allowed-emails` with
@@ -94,36 +96,40 @@ does.
    browser session of `LABBY_AUTH_ADMIN_EMAIL`. Do not rely on
    `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` for Google browser access; see the
    [open issue](../runtime/OAUTH.md#domain-allowlist-behavior-by-provider-and-surface).
-2. **The teammate signs in.** Browser sign-in alone admits the identity but
-   does not create a Principal, so the session is `unprovisioned`.
-3. **Get the teammate a Principal.** Today a Principal is created only by:
-   - owner bootstrap (the first owner only);
-   - MCP team auto-provision: the teammate's first OAuth-delegated request to a
-     project-bound protected MCP route whose upstreams include `team-depot`.
-     It creates the Principal and a Project membership with role `member`;
-   - the [automatic Viewer policy](#automatic-viewer-membership) (Google only):
-     the first `/v1` request after a qualifying sign-in creates the Principal
-     with a Viewer membership on the host-selected Project.
-
-   There is no action that creates a Principal for a browser-only teammate.
-   This is a known product gap.
-4. **Learn the `principal_id`.** No action lists Principals. Once the teammate
-   has a Principal, their own `GET /auth/session` shows `authority_state:
-   "ready"` and `authority.principal_id`. They send you that value.
-5. **Add them to a Team** (needs `membership.manage` on that Team, for example
-   as its `owner` or `admin`, or platform administration). Either:
-   - add directly: `access.team.member.add` with `team_id`, `principal_id`, and
-     `role`; or
-   - invite: `access.team_invitation.create` with `team_id`, `principal_id`,
-     `role` (not `owner`), `token` (an opaque secret you generate), and
-     `ttl_seconds`. Give the token to the teammate over a private channel. The
-     teammate calls `access.team_invitation.accept` with `{"token": ...}` from
-     their own session. Accept succeeds only for the invited Principal, before
-     expiry, and only if the Team's membership epoch has not changed since the
-     invitation was created (otherwise create a new invitation).
-6. **Give the Team a Project**, if it does not have one:
+2. **Create an email-bound invitation.** The normal path is **People → Invite
+   someone** in the WebUI: enter the teammate's email and use the recommended
+   defaults (Member, seven days). Team, role, and expiry stay available behind
+   the advanced options. The API/MCP equivalent is
+   `access.team_invitation.create` with `team_id`, verified `email`, `role`, and
+   `ttl_seconds`. Labby generates the 32-byte one-time invitation credential;
+   callers never supply or choose it.
+3. **Send the generated invitation link.** The WebUI places the credential in
+   the URL fragment (`#invite=...`), not the query string. Browsers therefore do
+   not send the credential to the reverse proxy, access logs, analytics, or
+   referrer headers. Raw-token delivery remains available to API/MCP callers.
+4. **The teammate opens the link and signs in with the invited account.** Labby
+   stores a valid fragment token only in same-tab `sessionStorage`, removes it
+   from the address bar before OAuth redirect, and never copies it into
+   `return_to`. Browser sign-in establishes the provider-verified email and
+   stable issuer/subject identity.
+5. **Labby accepts the invitation.** The Join Team screen automatically uses the
+   pending credential, or accepts a manually pasted code. Labby requires the
+   verified session email to match, verifies token + expiry + Team membership
+   epoch, and creates the Principal/external identity link atomically with Team
+   membership when needed. A failure leaves no half-provisioned Principal.
+   Existing authorized users can use the same link to join another Team. If the
+   Team publishes an organization bootstrap profile, the completion screen can
+   hand that signed, non-secret profile to the user's personal Labby through a
+   URL fragment. Personal Labby verifies the signature, shows the integrations
+   and signer fingerprint, and requires an explicit trust/apply action; Team
+   Labby never mutates the personal runtime.
+6. **Direct Principal-based administration remains available** for identities
+   that already have a Principal: `access.team.member.add` takes `team_id`,
+   `principal_id`, and `role`. The email invitation path is the normal
+   coworker-onboarding flow and does not require Principal-ID exchange.
+7. **Give the Team a Project**, if it does not have one:
    `access.team_project.assign` with `team_id`, `project_id`, and `role`.
-7. **Optional: platform administration.** `access.platform_admin.grant` with
+8. **Optional: platform administration.** `access.platform_admin.grant` with
    `principal_id` (requires `lab:admin` and `platform.manage`). The teammate's
    browser session is then elevated to `lab:admin` on `/v1` routes.
 
@@ -201,7 +207,7 @@ credential. Loopback location by itself grants nothing. See
 ### Existing stores
 
 Owner bootstrap never migrates an existing older-schema store. Upgrading a
-v1–v6 store to v7 is the offline `labby state migrate-access` flow in
+v1–v7 store to v8 is the offline `labby state migrate-access` flow in
 [MIGRATION.md](../access-control/MIGRATION.md).
 
 ## Owner identity link

@@ -26,9 +26,16 @@ pub const PLUGIN_LIFECYCLE_ACTIONS: &[&str] = &[
 ];
 
 /// Setup actions that may only run from a trusted local transport. These
-/// either mint first-run credentials or initiate an outbound connectivity
-/// probe from the host, so an admin bearer alone is not sufficient.
-pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "plugin_connectivity", "proxy.configure"];
+/// mint first-run credentials, initiate host-local connectivity probes, or
+/// mutate host-local proxy/Tailscale state, so an admin bearer alone is not
+/// sufficient.
+pub const LOCAL_ONLY_ACTIONS: &[&str] = &[
+    "bootstrap",
+    "plugin_connectivity",
+    "proxy.configure",
+    "tailscale_funnel.configure",
+    "tailscale_funnel.disable",
+];
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -291,6 +298,155 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "Preview whether config or secret files would change without mutation",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "tailscale_funnel.inspect",
+        description: "Inspect whether this host can expose Labby through Tailscale Funnel without mutating Tailscale",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailscaleFunnelInspection",
+        params: &[ParamSpec {
+            name: "https_port",
+            ty: "integer",
+            required: false,
+            description: "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)",
+        }],
+    },
+    ActionSpec {
+        name: "tailscale_funnel.configure",
+        description: "Safely expose the local Labby HTTP server through Tailscale Funnel without replacing an existing mapping",
+        destructive: true,
+        requires_admin: true,
+        returns: "TailscaleFunnelMutationOutcome",
+        params: &[
+            ParamSpec {
+                name: "backend_url",
+                ty: "string",
+                required: false,
+                description: "Loopback Labby backend origin; defaults to http://127.0.0.1:8765",
+            },
+            ParamSpec {
+                name: "https_port",
+                ty: "integer",
+                required: false,
+                description: "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "tailscale_funnel.disable",
+        description: "Disable only the Tailscale Funnel mapping that exactly matches the expected local Labby backend",
+        destructive: true,
+        requires_admin: true,
+        returns: "TailscaleFunnelMutationOutcome",
+        params: &[
+            ParamSpec {
+                name: "backend_url",
+                ty: "string",
+                required: false,
+                description: "Expected loopback Labby backend origin; defaults to http://127.0.0.1:8765",
+            },
+            ParamSpec {
+                name: "https_port",
+                ty: "integer",
+                required: false,
+                description: "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "public_proxy.render",
+        description: "Render validated Caddy, Nginx, or Traefik configuration for a public Labby HTTPS origin",
+        destructive: false,
+        requires_admin: false,
+        returns: "PublicProxyRenderOutcome",
+        params: &[
+            ParamSpec {
+                name: "public_url",
+                ty: "string",
+                required: true,
+                description: "Browser-visible HTTPS Labby origin",
+            },
+            ParamSpec {
+                name: "backend_url",
+                ty: "string",
+                required: false,
+                description: "Private Labby backend origin; defaults to http://127.0.0.1:8765",
+            },
+            ParamSpec {
+                name: "format",
+                ty: "caddy|nginx|traefik|all",
+                required: false,
+                description: "Proxy configuration format; defaults to all for API/WebUI callers",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "organization_profile.create",
+        description: "Create a signed non-secret organization bootstrap profile for personal Labby",
+        destructive: false,
+        requires_admin: true,
+        returns: "OrganizationBootstrapProfile",
+        params: &[
+            ParamSpec {
+                name: "organization_id",
+                ty: "string",
+                required: true,
+                description: "Organization identifier embedded in the signed profile",
+            },
+            ParamSpec {
+                name: "team_depot_url",
+                ty: "string",
+                required: true,
+                description: "Externally reachable HTTPS MCP endpoint for Team Depot",
+            },
+            ParamSpec {
+                name: "key_id",
+                ty: "string",
+                required: true,
+                description: "Public signing-key identifier embedded in the profile",
+            },
+            ParamSpec {
+                name: "signing_key_env",
+                ty: "string",
+                required: false,
+                description: "Optional secret environment reference; defaults to LABBY_DEPOT_AUTHORITY_SIGNING_KEY",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "organization_profile.preview",
+        description: "Verify and preview a signed organization profile without mutating personal Labby",
+        destructive: false,
+        requires_admin: false,
+        returns: "OrganizationBootstrapPreview",
+        params: &[ParamSpec {
+            name: "profile",
+            ty: "object",
+            required: true,
+            description: "Signed organization bootstrap profile",
+        }],
+    },
+    ActionSpec {
+        name: "organization_profile.apply",
+        description: "Verify and atomically import approved organization integrations into personal Labby",
+        destructive: true,
+        requires_admin: true,
+        returns: "OrganizationBootstrapApplyOutcome",
+        params: &[
+            ParamSpec {
+                name: "profile",
+                ty: "object",
+                required: true,
+                description: "Signed organization bootstrap profile",
+            },
+            ParamSpec {
+                name: "expected_signer_fingerprint",
+                ty: "string",
+                required: true,
+                description: "Pinned SHA-256 fingerprint of the trusted organization profile signing key",
             },
         ],
     },

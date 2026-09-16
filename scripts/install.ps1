@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$RequiredSetupContract = 2
 $runningOnWindows = if (Get-Variable IsWindows -ErrorAction SilentlyContinue) {
     $IsWindows
 } else {
@@ -61,13 +62,18 @@ function Test-LabbyChecksum {
 }
 
 function Test-LabbyReleaseProvenance {
-    param([string]$ArtifactPath, [string]$Repo, [string]$ResolvedVersion)
+    param([string]$ArtifactPath, [string]$BundlePath, [string]$Repo, [string]$ResolvedVersion)
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         $trustError = [System.Security.SecurityException]::new('GitHub CLI (gh) is required to verify release provenance')
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
     }
-    & gh attestation verify $ArtifactPath --repo $Repo `
+    if (-not (Test-Path $BundlePath -PathType Leaf)) {
+        $trustError = [System.Security.SecurityException]::new('release provenance bundle is missing')
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+    & gh attestation verify $ArtifactPath --bundle $BundlePath --repo $Repo `
         --signer-workflow "$Repo/.github/workflows/release.yml" `
         --source-ref "refs/tags/$ResolvedVersion" --deny-self-hosted-runners | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -325,7 +331,9 @@ function Install-LabbyFromRelease {
         Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile $checksum -UseBasicParsing -TimeoutSec 300
         Test-LabbyChecksum -ArtifactPath $zip -ChecksumPath $checksum
         Write-Info 'sha256 verified'
-        Test-LabbyReleaseProvenance -ArtifactPath $zip -Repo $Repo -ResolvedVersion $resolved
+        $bundle = Join-Path $temporary 'release-provenance.sigstore.json'
+        Invoke-WebRequest -Uri "$base/release-provenance.sigstore.json" -OutFile $bundle -UseBasicParsing -TimeoutSec 300
+        Test-LabbyReleaseProvenance -ArtifactPath $zip -BundlePath $bundle -Repo $Repo -ResolvedVersion $resolved
         Expand-Archive -Path $zip -DestinationPath $temporary -Force
         $binary = Get-ChildItem -Path $temporary -Recurse -Filter 'labby.exe' | Select-Object -First 1
         if (-not $binary) { throw "archive $asset did not contain labby.exe" }
@@ -400,7 +408,16 @@ function Invoke-LabbyInstall {
     if (-not $NoPathUpdate) { Add-LabbyToUserPath $InstallDir }
     $executable = Join-Path $InstallDir 'labby.exe'
     $installed = if (Test-Path $executable) { & $executable --version } else { $executable }
+    $setupContract = if (Test-Path $executable) { (& $executable setup contract 2>$null | Select-Object -First 1) } else { $null }
+    $parsedContract = 0
+    if (-not [int]::TryParse([string]$setupContract, [ref]$parsedContract)) {
+        throw "installed Labby release does not expose the required setup contract; choose a current installer-bearing release"
+    }
+    if ($parsedContract -lt $RequiredSetupContract) {
+        throw "installed Labby setup contract $parsedContract is older than required contract $RequiredSetupContract; choose a newer release"
+    }
     Write-Info "labby installed: $installed"
+    Write-Info "setup contract $parsedContract verified"
     Write-Info "next: run 'labby setup' to start the first-run flow"
 }
 

@@ -1,4 +1,4 @@
-use labby_auth::VerifiedIdentity;
+use labby_auth::{PrincipalLink, VerifiedIdentity};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest as _, Sha256};
 
@@ -139,7 +139,8 @@ pub(crate) struct TeamMembershipSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct CreateTeamInvitationInput {
     actor: VerifiedIdentity,
-    invited_principal_id: String,
+    invited_principal_id: Option<String>,
+    invited_email: Option<String>,
     team_id: String,
     role: TeamRole,
     opaque_token: [u8; 32],
@@ -166,7 +167,35 @@ impl CreateTeamInvitationInput {
         }
         Ok(Self {
             actor,
-            invited_principal_id,
+            invited_principal_id: Some(invited_principal_id),
+            invited_email: None,
+            team_id,
+            role,
+            opaque_token,
+            ttl_seconds,
+        })
+    }
+
+    pub(crate) fn for_verified_email(
+        actor: VerifiedIdentity,
+        team_id: impl Into<String>,
+        invited_email: impl Into<String>,
+        role: TeamRole,
+        opaque_token: [u8; 32],
+        ttl_seconds: i64,
+    ) -> AccessStoreResult<Self> {
+        let team_id = team_id.into();
+        let invited_email = normalize_invitation_email(&invited_email.into())?;
+        if !valid_id(&team_id)
+            || !(1..=MAX_INVITATION_TTL_SECONDS).contains(&ttl_seconds)
+            || opaque_token.iter().all(|byte| *byte == 0)
+        {
+            return Err(AccessStoreError::InvalidTeamInput);
+        }
+        Ok(Self {
+            actor,
+            invited_principal_id: None,
+            invited_email: Some(invited_email),
             team_id,
             role,
             opaque_token,
@@ -178,6 +207,7 @@ impl CreateTeamInvitationInput {
 #[derive(Clone, Debug)]
 pub(crate) struct AcceptTeamInvitationInput {
     identity: VerifiedIdentity,
+    verified_email: Option<String>,
     opaque_token: [u8; 32],
 }
 
@@ -186,11 +216,23 @@ impl AcceptTeamInvitationInput {
         identity: VerifiedIdentity,
         opaque_token: [u8; 32],
     ) -> AccessStoreResult<Self> {
+        Self::with_verified_email(identity, None, opaque_token)
+    }
+
+    pub(crate) fn with_verified_email(
+        identity: VerifiedIdentity,
+        verified_email: Option<String>,
+        opaque_token: [u8; 32],
+    ) -> AccessStoreResult<Self> {
         if opaque_token.iter().all(|byte| *byte == 0) {
             return Err(AccessStoreError::InvalidTeamInput);
         }
+        let verified_email = verified_email
+            .map(|email| normalize_invitation_email(&email))
+            .transpose()?;
         Ok(Self {
             identity,
+            verified_email,
             opaque_token,
         })
     }
@@ -644,7 +686,9 @@ pub(super) fn create_invitation(
     if input.role == TeamRole::Owner {
         require_team_owner(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
     }
-    require_principal_in_organization(&tx, &input.invited_principal_id, &actor.organization_id)?;
+    if let Some(invited_principal_id) = input.invited_principal_id.as_deref() {
+        require_principal_in_organization(&tx, invited_principal_id, &actor.organization_id)?;
+    }
     let now = unix_now()?;
     let expires_at = now
         .checked_add(input.ttl_seconds)
@@ -662,16 +706,17 @@ pub(super) fn create_invitation(
     let digest = Sha256::digest(input.opaque_token);
     tx.execute(
         "INSERT INTO team_invitations(
-           invitation_digest,organization_id,team_id,role,invited_principal_id,
+           invitation_digest,organization_id,team_id,role,invited_principal_id,invited_email,
            inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
            created_at,expires_at,accepted_at,revoked_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,'pending',NULL,?8,?9,NULL,NULL,?8)",
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',NULL,?9,?10,NULL,NULL,?9)",
         params![
             digest.as_slice(),
             actor.organization_id,
             input.team_id,
             input.role.as_persisted(),
             input.invited_principal_id,
+            input.invited_email,
             actor.id,
             team_epoch,
             now,
@@ -716,11 +761,18 @@ fn accept_invitation_at(
     now: i64,
 ) -> AccessStoreResult<TeamMembershipSnapshot> {
     let tx = immediate(connection)?;
-    let principal = resolve_principal(&tx, &input.identity)?;
     let digest = Sha256::digest(input.opaque_token);
-    let invitation: Option<(String, String, String, String, i64, i64)> = tx
+    let invitation: Option<(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )> = tx
         .query_row(
-            "SELECT organization_id,team_id,role,invited_principal_id,
+            "SELECT organization_id,team_id,role,invited_principal_id,invited_email,
                     team_membership_epoch,expires_at
              FROM team_invitations WHERE invitation_digest=?1 AND status='pending'",
             [digest.as_slice()],
@@ -732,13 +784,21 @@ fn accept_invitation_at(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .optional()
         .map_err(map_sqlite_error)?;
-    let Some((organization_id, team_id, role, invited_principal_id, issued_epoch, expires_at)) =
-        invitation
+    let Some((
+        organization_id,
+        team_id,
+        role,
+        invited_principal_id,
+        invited_email,
+        issued_epoch,
+        expires_at,
+    )) = invitation
     else {
         return Err(AccessStoreError::TeamUnavailable);
     };
@@ -752,9 +812,15 @@ fn accept_invitation_at(
         tx.commit().map_err(map_sqlite_error)?;
         return Err(AccessStoreError::TeamUnavailable);
     }
-    if organization_id != principal.organization_id || invited_principal_id != principal.id {
-        return Err(AccessStoreError::NotAuthorized);
-    }
+    let principal_id = resolve_or_create_invited_principal(
+        &tx,
+        &input.identity,
+        input.verified_email.as_deref(),
+        &organization_id,
+        invited_principal_id.as_deref(),
+        invited_email.as_deref(),
+        now,
+    )?;
     let current_epoch: i64 = tx
         .query_row(
             "SELECT membership_epoch FROM groups
@@ -777,8 +843,8 @@ fn accept_invitation_at(
                 inviter_principal_id,?3,?3,NULL
          FROM team_invitations WHERE invitation_digest=?4 AND status='pending'",
         params![
-            format!("team-member-{team_id}-{}", principal.id),
-            principal.id,
+            format!("team-member-{team_id}-{principal_id}"),
+            principal_id,
             now,
             digest.as_slice()
         ],
@@ -789,7 +855,7 @@ fn accept_invitation_at(
             "UPDATE team_invitations
              SET status='accepted',accepted_principal_id=?1,accepted_at=?2,updated_at=?2
              WHERE invitation_digest=?3 AND status='pending'",
-            params![principal.id, now, digest.as_slice()],
+            params![principal_id, now, digest.as_slice()],
         )
         .map_err(map_sqlite_error)?;
     if changed != 1 {
@@ -801,11 +867,11 @@ fn accept_invitation_at(
         &tx,
         revision,
         now,
-        &principal.id,
+        &principal_id,
         &organization_id,
         "access.team_invitation.accept",
         "team_membership",
-        &principal.id,
+        &principal_id,
         team_epoch,
         "verified_identity_invitation",
     )?;
@@ -813,7 +879,7 @@ fn accept_invitation_at(
     Ok(TeamMembershipSnapshot {
         organization_id,
         team_id,
-        principal_id: principal.id,
+        principal_id,
         role,
         status: "active".into(),
         membership_epoch: 1,
@@ -1423,6 +1489,112 @@ fn audit(
     tx.execute("INSERT INTO access_audit(event_id,occurred_at,correlation_id,actor_principal_id,organization_id,project_id,action,target_kind,target_fingerprint,decision,reason_code,policy_epoch,metadata_json) VALUES(?1,?2,NULL,?3,?4,NULL,?5,?6,?7,'allow',?8,?9,'{}')",params![format!("team-authority-{revision}-{}",&identity[..16]),now,actor,organization,action,target_kind,target,reason,i64::try_from(policy_epoch).map_err(|_|AccessStoreError::MalformedVocabulary)?]).map_err(map_sqlite_error)?;
     Ok(())
 }
+fn resolve_or_create_invited_principal(
+    transaction: &Transaction<'_>,
+    identity: &VerifiedIdentity,
+    verified_email: Option<&str>,
+    organization_id: &str,
+    invited_principal_id: Option<&str>,
+    invited_email: Option<&str>,
+    now: i64,
+) -> AccessStoreResult<String> {
+    match (invited_principal_id, invited_email) {
+        (Some(expected_principal_id), None) => {
+            let principal = resolve_principal(transaction, identity)?;
+            if principal.organization_id != organization_id || principal.id != expected_principal_id
+            {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            Ok(principal.id)
+        }
+        (None, Some(expected_email)) => {
+            let verified_email = verified_email.ok_or(AccessStoreError::NotAuthorized)?;
+            if normalize_invitation_email(verified_email)? != expected_email {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            let PrincipalLink::External { issuer, subject } = identity.principal_link() else {
+                return Err(AccessStoreError::NotAuthorized);
+            };
+            let existing: Option<(String, String, String, String)> = transaction
+                .query_row(
+                    "SELECT l.principal_id,l.status,p.status,p.organization_id
+                     FROM principal_links l
+                     JOIN principals p ON p.principal_id=l.principal_id
+                     WHERE l.link_kind='external' AND l.issuer=?1 AND l.subject=?2",
+                    params![issuer, subject],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            if let Some((principal_id, link_status, principal_status, principal_org)) = existing {
+                if link_status != "active"
+                    || principal_status != "active"
+                    || principal_org != organization_id
+                {
+                    return Err(AccessStoreError::NotAuthorized);
+                }
+                return Ok(principal_id);
+            }
+            let identity_fingerprint = identity.safe_fingerprint().replace(':', "-");
+            let principal_id = format!("team-member-{identity_fingerprint}");
+            let link_id = format!("team-link-{identity_fingerprint}");
+            if !valid_id(&principal_id) || !valid_id(&link_id) {
+                return Err(AccessStoreError::InvalidTeamInput);
+            }
+            let verification_generation =
+                i64::try_from(VerifiedIdentity::VERIFICATION_SCHEMA_VERSION)
+                    .map_err(|_| AccessStoreError::MalformedVocabulary)?;
+            let link_generation = i64::try_from(VerifiedIdentity::LINK_SCHEMA_VERSION)
+                .map_err(|_| AccessStoreError::MalformedVocabulary)?;
+            transaction
+                .execute(
+                    "INSERT INTO principals(
+                        principal_id,organization_id,kind,status,display_name,created_at,updated_at)
+                     VALUES(?1,?2,'user','active',NULL,?3,?3)",
+                    params![principal_id, organization_id, now],
+                )
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO principal_links(
+                        link_id,principal_id,link_kind,issuer,subject,credential_id,status,
+                        verification_generation,link_generation,created_at,updated_at)
+                     VALUES(?1,?2,'external',?3,?4,NULL,'active',?5,?6,?7,?7)",
+                    params![
+                        link_id,
+                        principal_id,
+                        issuer,
+                        subject,
+                        verification_generation,
+                        link_generation,
+                        now
+                    ],
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(principal_id)
+        }
+        _ => Err(AccessStoreError::MalformedVocabulary),
+    }
+}
+
+fn normalize_invitation_email(value: &str) -> AccessStoreResult<String> {
+    let value = value.trim().to_lowercase();
+    let Some((local, domain)) = value.split_once('@') else {
+        return Err(AccessStoreError::InvalidTeamInput);
+    };
+    if local.is_empty()
+        || domain.is_empty()
+        || domain.contains('@')
+        || value.len() > 320
+        || value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(AccessStoreError::InvalidTeamInput);
+    }
+    Ok(value)
+}
+
 fn immediate(connection: &mut Connection) -> AccessStoreResult<Transaction<'_>> {
     connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2029,6 +2201,140 @@ mod tests {
                 .await,
             Err(AccessStoreError::TeamUnavailable)
         ));
+    }
+
+    #[tokio::test]
+    async fn verified_email_invitation_provisions_principal_and_accepts_case_insensitively() {
+        let (_directory, store, owner) = store().await;
+        let invitee = identity("new-coworker-subject");
+        let token = [0x31_u8; 32];
+
+        store
+            .with_connection({
+                let owner = owner.clone();
+                move |connection| {
+                    create_invitation(
+                        connection,
+                        &CreateTeamInvitationInput::for_verified_email(
+                            owner,
+                            "bootstrap-initial-team",
+                            "Coworker@Example.COM",
+                            TeamRole::Member,
+                            token,
+                            600,
+                        )?,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+
+        let accepted = store
+            .with_connection({
+                let invitee = invitee.clone();
+                move |connection| {
+                    accept_invitation(
+                        connection,
+                        &AcceptTeamInvitationInput::with_verified_email(
+                            invitee,
+                            Some("coworker@example.com".into()),
+                            token,
+                        )?,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+        assert!(accepted.principal_id.starts_with("team-member-"));
+        assert_eq!(accepted.team_id, "bootstrap-initial-team");
+        assert_eq!(accepted.role, TeamRole::Member);
+
+        let persisted = store
+            .with_connection({
+                let principal_id = accepted.principal_id.clone();
+                move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT p.organization_id,l.issuer,l.subject,m.status
+                             FROM principals p
+                             JOIN principal_links l ON l.principal_id=p.principal_id
+                             JOIN team_memberships m ON m.principal_id=p.principal_id
+                             WHERE p.principal_id=?1 AND m.team_id='bootstrap-initial-team'",
+                            [principal_id],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, String>(3)?,
+                                ))
+                            },
+                        )
+                        .map_err(map_sqlite_error)
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(persisted.0, "bootstrap-local");
+        assert_eq!(persisted.1, "https://accounts.google.com");
+        assert_eq!(persisted.2, "new-coworker-subject");
+        assert_eq!(persisted.3, "active");
+    }
+
+    #[tokio::test]
+    async fn verified_email_invitation_rejects_wrong_email_without_provisioning() {
+        let (_directory, store, owner) = store().await;
+        let invitee = identity("wrong-email-subject");
+        let token = [0x32_u8; 32];
+
+        store
+            .with_connection(move |connection| {
+                create_invitation(
+                    connection,
+                    &CreateTeamInvitationInput::for_verified_email(
+                        owner,
+                        "bootstrap-initial-team",
+                        "coworker@example.com",
+                        TeamRole::Member,
+                        token,
+                        600,
+                    )?,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .with_connection(move |connection| {
+                    accept_invitation(
+                        connection,
+                        &AcceptTeamInvitationInput::with_verified_email(
+                            invitee,
+                            Some("attacker@example.com".into()),
+                            token,
+                        )?,
+                    )
+                })
+                .await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+
+        let state = store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT
+                           (SELECT count(*) FROM principal_links WHERE subject='wrong-email-subject'),
+                           (SELECT status FROM team_invitations WHERE invited_email='coworker@example.com')",
+                        [],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(state, (0, "pending".into()));
     }
 
     #[tokio::test]

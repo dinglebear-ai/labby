@@ -40,6 +40,7 @@ export type Severity = 'ok' | 'warn' | 'fail' | 'error' | 'unknown'
 
 export interface DoctorFinding {
   service?: string
+  check?: string
   category?: string
   severity: Severity
   message: string

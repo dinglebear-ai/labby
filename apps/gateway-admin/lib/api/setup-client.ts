@@ -61,6 +61,9 @@ export interface SetupSnapshot {
   env_path: string
   draft_path: string
   last_completed_step: number
+  resume_from: string
+  personal_oauth_configured: boolean
+  claude_code_configured: boolean
   draft_stale: boolean
   has_draft: boolean
   draft_entry_count: number
@@ -212,6 +215,9 @@ function mockSetupSnapshot(): SetupSnapshot {
     env_path: '~/.labby/.env',
     draft_path: '~/.labby/.env.draft',
     last_completed_step: 3,
+    resume_from: 'connect_claude_code',
+    personal_oauth_configured: true,
+    claude_code_configured: false,
     draft_stale: false,
     has_draft: true,
     draft_entry_count: MOCK_DRAFT_ENTRIES.length,
@@ -364,6 +370,100 @@ export interface SettingsUpdate {
   services: {
     built_in_upstream_apis_enabled: boolean
   }
+}
+
+export type PublicProxyFormat = 'caddy' | 'nginx' | 'traefik' | 'all'
+
+export interface PublicProxyRenderOutcome {
+  public_origin: string
+  backend_origin: string
+  oauth_callback_url: string
+  mcp_url: string
+  recommended: string
+  configs: Record<string, string>
+  verification: string[]
+}
+
+export interface TailscaleFunnelInspection {
+  cli_available: boolean
+  version: string | null
+  backend_running: boolean
+  online: boolean
+  dns_name: string | null
+  public_origin: string | null
+  https_port: number
+  funnel_status_readable: boolean
+  configured_backend: string | null
+  https_enabled: boolean
+  funnel_enabled: boolean
+  activation_required: boolean
+  ready_to_configure: boolean
+  blockers: string[]
+  verification: string[]
+}
+
+export interface TailscaleFunnelMutationOutcome {
+  changed: boolean
+  configured: boolean
+  public_origin: string
+  backend_origin: string
+  https_port: number
+  oauth_callback_url: string
+  mcp_url: string
+  activation_required: boolean
+  activation_url: string | null
+  activation_message: string | null
+  verification: string[]
+}
+
+export interface OrganizationBootstrapOauth {
+  mode: string
+  registration_strategy: string
+}
+
+export interface OrganizationBootstrapIntegration {
+  name: string
+  display_name: string
+  url: string
+  proxy_resources: boolean
+  proxy_prompts: boolean
+  proxy_skills: boolean
+  oauth?: OrganizationBootstrapOauth
+}
+
+export interface OrganizationBootstrapProfile {
+  schema_version: string
+  organization_id: string
+  issued_at: number
+  key_id: string
+  verifying_key: string
+  integrations: OrganizationBootstrapIntegration[]
+  signature: string
+}
+
+export interface OrganizationBootstrapCreateResponse {
+  profile: OrganizationBootstrapProfile
+  signer_fingerprint: string
+}
+
+export interface OrganizationBootstrapPreview {
+  valid: true
+  schema_version: string
+  organization_id: string
+  issued_at: number
+  key_id: string
+  signer_fingerprint: string
+  integrations: OrganizationBootstrapIntegration[]
+  mutates_personal_runtime: false
+  runtime_authority: 'personal_labby'
+}
+
+export interface OrganizationBootstrapApplyOutcome {
+  applied: string[]
+  preserved: string[]
+  organization_id: string
+  signer_fingerprint: string
+  runtime_authority: 'personal_labby'
 }
 
 export const MOCK_SETTINGS_SCHEMA: SettingsSchemaResponse = {
@@ -551,6 +651,93 @@ export const setupApi = {
       })
     }
     return setupAction<CommitOutcome>('finalize', { confirm: true }, signal)
+  },
+
+  publicProxyRender(
+    publicUrl: string,
+    options?: { backendUrl?: string; format?: PublicProxyFormat },
+    signal?: AbortSignal,
+  ): Promise<PublicProxyRenderOutcome> {
+    return setupAction<PublicProxyRenderOutcome>(
+      'public_proxy.render',
+      {
+        public_url: publicUrl,
+        ...(options?.backendUrl ? { backend_url: options.backendUrl } : {}),
+        ...(options?.format ? { format: options.format } : {}),
+      },
+      signal,
+    )
+  },
+
+  tailscaleFunnelInspect(
+    httpsPort = 443,
+    signal?: AbortSignal,
+  ): Promise<TailscaleFunnelInspection> {
+    return setupAction<TailscaleFunnelInspection>(
+      'tailscale_funnel.inspect',
+      { https_port: httpsPort },
+      signal,
+    )
+  },
+
+  tailscaleFunnelConfigure(
+    options?: { backendUrl?: string; httpsPort?: number },
+    signal?: AbortSignal,
+  ): Promise<TailscaleFunnelMutationOutcome> {
+    return setupAction<TailscaleFunnelMutationOutcome>(
+      'tailscale_funnel.configure',
+      {
+        ...(options?.backendUrl ? { backend_url: options.backendUrl } : {}),
+        ...(options?.httpsPort ? { https_port: options.httpsPort } : {}),
+      },
+      signal,
+    )
+  },
+
+  tailscaleFunnelDisable(
+    options?: { backendUrl?: string; httpsPort?: number },
+    signal?: AbortSignal,
+  ): Promise<TailscaleFunnelMutationOutcome> {
+    return setupAction<TailscaleFunnelMutationOutcome>(
+      'tailscale_funnel.disable',
+      {
+        ...(options?.backendUrl ? { backend_url: options.backendUrl } : {}),
+        ...(options?.httpsPort ? { https_port: options.httpsPort } : {}),
+      },
+      signal,
+    )
+  },
+
+  organizationProfileCreate(
+    organizationId: string,
+    teamDepotUrl: string,
+    keyId: string,
+    signal?: AbortSignal,
+  ): Promise<OrganizationBootstrapCreateResponse> {
+    return setupAction<OrganizationBootstrapCreateResponse>(
+      'organization_profile.create',
+      { organization_id: organizationId, team_depot_url: teamDepotUrl, key_id: keyId },
+      signal,
+    )
+  },
+
+  organizationProfilePreview(
+    profile: OrganizationBootstrapProfile,
+    signal?: AbortSignal,
+  ): Promise<OrganizationBootstrapPreview> {
+    return setupAction<OrganizationBootstrapPreview>('organization_profile.preview', { profile }, signal)
+  },
+
+  organizationProfileApply(
+    profile: OrganizationBootstrapProfile,
+    expectedSignerFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<OrganizationBootstrapApplyOutcome> {
+    return setupAction<OrganizationBootstrapApplyOutcome>(
+      'organization_profile.apply',
+      { profile, expected_signer_fingerprint: expectedSignerFingerprint },
+      signal,
+    )
   },
 
   installedPlugins(signal?: AbortSignal): Promise<InstalledPlugin[]> {

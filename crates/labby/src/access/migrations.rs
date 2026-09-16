@@ -7,10 +7,12 @@ use super::error::{AccessStoreError, AccessStoreResult};
 
 use super::credential_schema;
 
-pub(super) const SCHEMA_VERSION: i64 = 7;
+pub(super) const SCHEMA_VERSION: i64 = 8;
 const MAX_MIGRATION_EVIDENCE_BYTES: usize = 128 * 1024;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v8-20260915";
+pub(super) const V7_SCHEMA_VERSION: i64 = 7;
+pub(super) const V7_SCHEMA_FINGERPRINT: &str = "labby-access-v7-20260905";
 pub(super) const V6_SCHEMA_VERSION: i64 = 6;
 pub(super) const V6_SCHEMA_FINGERPRINT: &str = "labby-access-v6-20260905";
 pub(super) const V5_SCHEMA_VERSION: i64 = 5;
@@ -163,7 +165,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v3;
                 CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -212,7 +214,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(super::store::map_sqlite_error)?;
         validate_v4_before_migration(&transaction)?;
-        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 7), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
+        transaction.execute_batch("CREATE TABLE access_admission_buckets ( admission_class TEXT NOT NULL CHECK(admission_class IN ('proof_global','proof_peer','credential_global','credential_peer')), bucket_fingerprint BLOB NOT NULL CHECK(length(bucket_fingerprint) = 32), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 64), updated_at INTEGER NOT NULL, PRIMARY KEY(admission_class, bucket_fingerprint) ) STRICT; CREATE INDEX access_admission_buckets_updated ON access_admission_buckets(updated_at); CREATE TABLE access_security_events ( event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 1 AND 96), occurred_at INTEGER NOT NULL, event_kind TEXT NOT NULL CHECK(event_kind IN ('proof','credential_verify','credential_issue','credential_revoke')), decision TEXT NOT NULL CHECK(decision IN ('allow','deny')), reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64), target_fingerprint BLOB NOT NULL CHECK(length(target_fingerprint) = 32), peer_fingerprint BLOB CHECK(peer_fingerprint IS NULL OR length(peer_fingerprint) = 32), metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json) AND length(metadata_json) <= 1024) ) STRICT; CREATE INDEX access_security_events_retention ON access_security_events(occurred_at, event_id); ALTER TABLE access_metadata RENAME TO access_metadata_v4; CREATE TABLE access_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 8), schema_fingerprint TEXT NOT NULL, global_revision INTEGER NOT NULL CHECK(global_revision >= 0), updated_at INTEGER NOT NULL, bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)), bootstrap_identity_fingerprint TEXT, CHECK ( (bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL) OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL AND length(trim(bootstrap_identity_fingerprint)) > 0) ) ) STRICT;").map_err(super::store::map_sqlite_error)?;
         transaction.execute("INSERT INTO access_metadata SELECT singleton,?1,?2,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata_v4",params![SCHEMA_VERSION,SCHEMA_FINGERPRINT]).map_err(super::store::map_sqlite_error)?;
         transaction
             .execute_batch("DROP TABLE access_metadata_v4;")
@@ -237,7 +239,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v5;
                  CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -291,7 +293,7 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
                 "ALTER TABLE access_metadata RENAME TO access_metadata_v6;
                  CREATE TABLE access_metadata (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
                     schema_fingerprint TEXT NOT NULL,
                     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
                     updated_at INTEGER NOT NULL,
@@ -312,6 +314,96 @@ fn migrate_found(connection: &mut Connection, found: i64) -> AccessStoreResult<(
             .map_err(super::store::map_sqlite_error)?;
         install_dev_container_schema(&transaction)?;
         install_v7_expansion(&transaction)?;
+        transaction
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .commit()
+            .map_err(super::store::map_sqlite_error)?;
+    }
+    if found == V7_SCHEMA_VERSION {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(super::store::map_sqlite_error)?;
+        validate_v7_before_migration(&transaction)?;
+        let bootstrap_trigger = transaction
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='seed_bootstrap_team_authority'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch("DROP TRIGGER seed_bootstrap_team_authority;")
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch(
+                "ALTER TABLE access_metadata RENAME TO access_metadata_v7;
+                 CREATE TABLE access_metadata (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
+                    schema_fingerprint TEXT NOT NULL,
+                    global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
+                    updated_at INTEGER NOT NULL,
+                    bootstrap_generation INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_generation IN (0, 1)),
+                    bootstrap_identity_fingerprint TEXT,
+                    CHECK ((bootstrap_generation = 0 AND bootstrap_identity_fingerprint IS NULL)
+                      OR (bootstrap_generation = 1 AND bootstrap_identity_fingerprint IS NOT NULL
+                        AND length(trim(bootstrap_identity_fingerprint)) > 0))
+                 ) STRICT;
+                 INSERT INTO access_metadata
+                    SELECT singleton, 8, 'labby-access-v8-20260915', global_revision, updated_at,
+                           bootstrap_generation, bootstrap_identity_fingerprint
+                    FROM access_metadata_v7;
+                 DROP TABLE access_metadata_v7;
+                 DROP INDEX team_invitations_pending;
+                 ALTER TABLE team_invitations RENAME TO team_invitations_v7;
+                 CREATE TABLE team_invitations (
+                    invitation_digest BLOB PRIMARY KEY CHECK(length(invitation_digest) = 32),
+                    organization_id TEXT NOT NULL,
+                    team_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+                    invited_principal_id TEXT,
+                    invited_email TEXT,
+                    inviter_principal_id TEXT NOT NULL,
+                    team_membership_epoch INTEGER NOT NULL CHECK(team_membership_epoch > 0),
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked', 'expired')),
+                    accepted_principal_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
+                    accepted_at INTEGER,
+                    revoked_at INTEGER,
+                    updated_at INTEGER NOT NULL,
+                    CHECK ((invited_principal_id IS NOT NULL) != (invited_email IS NOT NULL)),
+                    CHECK (invited_email IS NULL OR (length(trim(invited_email)) > 3 AND invited_email = lower(trim(invited_email)))),
+                    CHECK ((status = 'accepted') =
+                      (accepted_principal_id IS NOT NULL AND accepted_at IS NOT NULL)),
+                    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+                    FOREIGN KEY (organization_id, team_id)
+                      REFERENCES groups(organization_id, group_id) ON DELETE RESTRICT,
+                    FOREIGN KEY (organization_id, inviter_principal_id)
+                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+                    FOREIGN KEY (organization_id, invited_principal_id)
+                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT,
+                    FOREIGN KEY (organization_id, accepted_principal_id)
+                      REFERENCES principals(organization_id, principal_id) ON DELETE RESTRICT
+                 ) STRICT;
+                 INSERT INTO team_invitations(
+                    invitation_digest,organization_id,team_id,role,invited_principal_id,invited_email,
+                    inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
+                    created_at,expires_at,accepted_at,revoked_at,updated_at)
+                 SELECT invitation_digest,organization_id,team_id,role,invited_principal_id,NULL,
+                    inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
+                    created_at,expires_at,accepted_at,revoked_at,updated_at
+                 FROM team_invitations_v7;
+                 DROP TABLE team_invitations_v7;
+                 CREATE INDEX team_invitations_pending
+                    ON team_invitations(organization_id, team_id, status, expires_at);",
+            )
+            .map_err(super::store::map_sqlite_error)?;
+        transaction
+            .execute_batch(&bootstrap_trigger)
+            .map_err(super::store::map_sqlite_error)?;
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(super::store::map_sqlite_error)?;
@@ -657,6 +749,7 @@ pub(super) fn validate_migratable(connection: &Connection, version: i64) -> Acce
         V4_SCHEMA_VERSION => validate_v4_before_migration(connection),
         V5_SCHEMA_VERSION => validate_v5_before_migration(connection),
         V6_SCHEMA_VERSION => validate_v6_before_migration(connection),
+        V7_SCHEMA_VERSION => validate_v7_before_migration(connection),
         _ => Err(AccessStoreError::IntegrityViolation {
             check: "schema_metadata",
         }),
@@ -715,9 +808,69 @@ fn validate_v6_before_migration(connection: &Connection) -> AccessStoreResult<()
     super::integrity::validate_team_authority(connection, metadata.bootstrap_generation)
 }
 
+fn validate_v7_before_migration(connection: &Connection) -> AccessStoreResult<()> {
+    let metadata = read_legacy_metadata(connection)?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(super::store::map_sqlite_error)?;
+    if metadata.schema_version != V7_SCHEMA_VERSION
+        || metadata.schema_fingerprint != V7_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
+        || application_id != APPLICATION_ID
+    {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        });
+    }
+    let canonical = canonical_v7_schema()?;
+    if schema_manifest(connection)? != schema_manifest(&canonical)? {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_manifest",
+        });
+    }
+    validate_pre_migration_integrity(connection)?;
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
+    super::integrity::validate_team_authority(connection, metadata.bootstrap_generation)
+}
+
+fn legacy_team_authority_schema_v7() -> String {
+    TEAM_AUTHORITY_SCHEMA
+        .replace(
+            "    invited_principal_id TEXT,
+    invited_email TEXT,
+",
+            "    invited_principal_id TEXT NOT NULL,
+",
+        )
+        .replace(
+            "    CHECK ((invited_principal_id IS NOT NULL) != (invited_email IS NOT NULL)),
+    CHECK (invited_email IS NULL OR (length(trim(invited_email)) > 3 AND invited_email = lower(trim(invited_email)))),
+",
+            "",
+        )
+}
+
+fn canonical_v7_schema() -> AccessStoreResult<Connection> {
+    let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
+    let v7_metadata = SCHEMA_V2_METADATA.replace("schema_version = 8", "schema_version = 7");
+    connection
+        .execute_batch(&v7_metadata)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(DOMAIN_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    connection
+        .execute_batch(&legacy_team_authority_schema_v7())
+        .map_err(super::store::map_sqlite_error)?;
+    install_dev_container_schema(&connection)?;
+    install_v7_expansion(&connection)?;
+    Ok(connection)
+}
+
 fn canonical_v6_schema() -> AccessStoreResult<Connection> {
     let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
-    let v6_metadata = SCHEMA_V2_METADATA.replace("schema_version = 7", "schema_version = 6");
+    let v6_metadata = SCHEMA_V2_METADATA.replace("schema_version = 8", "schema_version = 6");
     connection
         .execute_batch(&v6_metadata)
         .map_err(super::store::map_sqlite_error)?;
@@ -1054,7 +1207,7 @@ pub(super) const SCHEMA_V2_METADATA: &str = concat!(
     "
 CREATE TABLE access_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_version INTEGER NOT NULL CHECK(schema_version = 7),
+    schema_version INTEGER NOT NULL CHECK(schema_version = 8),
     schema_fingerprint TEXT NOT NULL,
     global_revision INTEGER NOT NULL CHECK(global_revision >= 0),
     updated_at INTEGER NOT NULL,
@@ -1151,7 +1304,8 @@ CREATE TABLE team_invitations (
     organization_id TEXT NOT NULL,
     team_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
-    invited_principal_id TEXT NOT NULL,
+    invited_principal_id TEXT,
+    invited_email TEXT,
     inviter_principal_id TEXT NOT NULL,
     team_membership_epoch INTEGER NOT NULL CHECK(team_membership_epoch > 0),
     status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked', 'expired')),
@@ -1161,6 +1315,8 @@ CREATE TABLE team_invitations (
     accepted_at INTEGER,
     revoked_at INTEGER,
     updated_at INTEGER NOT NULL,
+    CHECK ((invited_principal_id IS NOT NULL) != (invited_email IS NOT NULL)),
+    CHECK (invited_email IS NULL OR (length(trim(invited_email)) > 3 AND invited_email = lower(trim(invited_email)))),
     CHECK ((status = 'accepted') =
       (accepted_principal_id IS NOT NULL AND accepted_at IS NOT NULL)),
     CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
@@ -1906,7 +2062,7 @@ mod credential_migration_tests {
                     "schema_version": "labby.access-migration-approval/v1",
                     "operation_id": operation_id,
                     "source_version": 5,
-                    "target_version": 7,
+                    "target_version": SCHEMA_VERSION,
                     "target_fingerprint": SCHEMA_FINGERPRINT,
                     "source_sha256": checkpoint_sha256,
                     "checkpoint_path": checkpoint_path,
@@ -2238,6 +2394,69 @@ mod credential_migration_tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn canonical_v7_preserves_principal_bound_invitations_when_adding_email_targets() {
+        let mut connection = canonical_v7_schema().unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at,bootstrap_generation,bootstrap_identity_fingerprint) VALUES(1,?1,?2,4,100,0,NULL)",
+                params![V7_SCHEMA_VERSION, V7_SCHEMA_FINGERPRINT],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO organizations VALUES('org','Org','active',0,1,1);
+                 INSERT INTO principals VALUES
+                    ('admin','org','user','active',NULL,1,1),
+                    ('invitee','org','user','active',NULL,1,1);
+                 INSERT INTO groups VALUES
+                    ('team','org','team','Team','active',1,1,'admin',1,1,NULL);
+                 INSERT INTO team_invitations(
+                    invitation_digest,organization_id,team_id,role,invited_principal_id,
+                    inviter_principal_id,team_membership_epoch,status,accepted_principal_id,
+                    created_at,expires_at,accepted_at,revoked_at,updated_at)
+                 VALUES(
+                    zeroblob(32),'org','team','member','invitee','admin',1,'pending',NULL,
+                    10,1000,NULL,NULL,10);",
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", V7_SCHEMA_VERSION)
+            .unwrap();
+
+        migrate_with_evidence(&mut connection, &MigrationEvidenceSource::UnitFixture).unwrap();
+
+        assert_eq!(
+            schema_manifest(&connection).unwrap(),
+            schema_manifest(&canonical_current_schema().unwrap()).unwrap()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT invited_principal_id,invited_email,status FROM team_invitations",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            (Some("invitee".into()), None, "pending".into())
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]

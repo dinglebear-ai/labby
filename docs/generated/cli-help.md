@@ -209,8 +209,10 @@ Usage: doctor [OPTIONS] [COMMAND]
 
 Commands:
   auth         Check auth/OAuth configuration (env vars, files, permissions)
+  oauth        Check the complete personal OAuth path: config, provider, public metadata, login redirect, and MCP challenge
   oauth-relay  Check public OAuth callback relay registry and optionally target sockets
   proxy        Check public Lab and protected MCP proxy endpoints from caller-visible URLs
+  bundle       Write a redacted support bundle containing versions, setup state, safe config shape, and doctor findings
   system       Run local system checks (env vars, Docker, disk, toolchain)
   help         Print this message or the help of the given subcommand(s)
 
@@ -244,6 +246,33 @@ Options:
 
       --live
           Explicitly probe the configured provider's discovery and JWKS endpoints
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby doctor oauth`
+
+```text
+Check the complete personal OAuth path: config, provider, public metadata, login redirect, and MCP challenge
+
+Usage: oauth [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --public-url <PUBLIC_URL>
+          Override the public Labby origin. Defaults to the resolved OAuth public URL
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -316,6 +345,35 @@ Options:
 
       --backend-url <BACKEND_URL>
           Optional private backend origin for backend-leak probe, e.g. `http://mcp-backend:3100`
+
+  -h, --help
+          Print help
+```
+
+## `labby doctor bundle`
+
+```text
+Write a redacted support bundle containing versions, setup state, safe config shape, and doctor findings
+
+Usage: bundle [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --output <OUTPUT>
+          Output path for the redacted JSON bundle
+
+          [default: labby-support.json]
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -524,9 +582,15 @@ Commands:
   plugin-sync          Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars
   plugin-export        Read ~/.labby/.env and print current values keyed by userConfig field name
   plugin-connectivity  Validate connectivity to the lab MCP server
+  resume               Resume the personal onboarding flow from the securely staged setup draft
+  contract             Print the setup contract version expected by installers and onboarding clients
+  google-oauth         Print the exact Google Auth Platform configuration for a Labby public URL
+  claude-code          Print copy/paste-ready Claude Code MCP setup for local or hardened SSH use
   check                Check local setup prerequisites without mutating the filesystem
   repair               Repair missing local setup prerequisites without contacting external services
   proxy                Configure defaults for the ephemeral stdio MCP proxy
+  public-proxy         Render copy/paste-ready public HTTPS reverse-proxy configuration
+  tailscale-funnel     Inspect or safely configure Tailscale Funnel for public Browser + ChatGPT access
   incusbackup          Validate or apply local Incus backup policy
   incus-ssh            Bootstrap container SSH trust from the host ~/.ssh/config
   install              Copy the labby binary into ~/.local/bin so it is callable in your own terminal
@@ -1310,6 +1374,134 @@ Options:
           Print help
 ```
 
+## `labby setup resume`
+
+```text
+Resume the personal onboarding flow from the securely staged setup draft
+
+Usage: resume [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup contract`
+
+```text
+Print the setup contract version expected by installers and onboarding clients
+
+Usage: contract [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup google-oauth`
+
+```text
+Print the exact Google Auth Platform configuration for a Labby public URL
+
+Usage: google-oauth [OPTIONS] --public-url <PUBLIC_URL>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --public-url <PUBLIC_URL>
+          Final browser-visible HTTPS origin for Labby, for example https://labby.example.com
+
+      --check
+          Probe the public OAuth/MCP surface after rendering the provider recipe
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup claude-code`
+
+```text
+Print copy/paste-ready Claude Code MCP setup for local or hardened SSH use
+
+Usage: claude-code [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --name <NAME>
+          Name to assign the Claude Code upstream
+
+          [default: claude-local]
+
+      --claude-path <CLAUDE_PATH>
+          Exact Claude Code executable. Required for remote SSH; auto-detected from PATH for local use
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --ssh-target <SSH_TARGET>
+          Remote SSH target in user@host form. Omit for Claude Code running on the Labby host
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --identity-file <IDENTITY_FILE>
+          Dedicated SSH private key used by the Labby service account for the remote target
+
+      --known-hosts-file <KNOWN_HOSTS_FILE>
+          Dedicated known-hosts file containing the independently verified remote host key
+
+      --apply
+          Validate, persist, and test this Claude Code upstream. Without this flag the command is read-only
+
+      --rollback
+          Restore the exact upstream definition saved before the last successful --apply for this name
+
+  -y, --yes
+          Confirm replacement when an upstream with this name already exists and differs
+
+  -h, --help
+          Print help
+```
+
 ## `labby setup check`
 
 ```text
@@ -1420,6 +1612,84 @@ Options:
 
       --dry-run
           Preview exact file changes without mutating config or secret files
+
+  -h, --help
+          Print help
+```
+
+## `labby setup public-proxy`
+
+```text
+Render copy/paste-ready public HTTPS reverse-proxy configuration
+
+Usage: public-proxy [OPTIONS] --public-url <PUBLIC_URL>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --public-url <PUBLIC_URL>
+          Browser-visible HTTPS Labby origin, for example https://labby.example.com
+
+      --backend-url <BACKEND_URL>
+          Private Labby backend origin
+
+          [default: http://127.0.0.1:8765]
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --format <FORMAT>
+          Reverse-proxy configuration to render. Caddy is the simplest recommended path
+
+          [default: caddy]
+          [possible values: caddy, nginx, traefik, all]
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup tailscale-funnel`
+
+```text
+Inspect or safely configure Tailscale Funnel for public Browser + ChatGPT access
+
+Usage: tailscale-funnel [OPTIONS]
+
+Options:
+      --backend-url <BACKEND_URL>
+          Loopback Labby backend origin to expose through Funnel
+
+          [default: http://127.0.0.1:8765]
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --https-port <HTTPS_PORT>
+          Public HTTPS port. Tailscale Funnel supports 443, 8443, or 10000
+
+          [default: 443]
+
+      --apply
+          Configure Funnel after inspection. Existing non-Labby mappings are never replaced
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --disable
+          Disable only a Funnel mapping that exactly matches this Labby backend
 
   -h, --help
           Print help

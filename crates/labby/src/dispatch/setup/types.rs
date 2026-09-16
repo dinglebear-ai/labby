@@ -146,7 +146,14 @@ pub struct SetupSnapshot {
     pub first_run: bool,
     pub env_path: PathBuf,
     pub draft_path: PathBuf,
+    /// Monotonic personal-onboarding progress marker. Readiness is verified separately by `labby doctor`.
     pub last_completed_step: u8,
+    /// Stable next action for CLI/WebUI resume without exposing staged secret values.
+    pub resume_from: String,
+    /// Whether the effective staged/committed environment contains the complete personal Google OAuth configuration shape.
+    pub personal_oauth_configured: bool,
+    /// Whether config.toml contains a Claude Code stdio/SSH upstream definition.
+    pub claude_code_configured: bool,
     pub draft_stale: bool,
     pub has_draft: bool,
     pub draft_entry_count: usize,

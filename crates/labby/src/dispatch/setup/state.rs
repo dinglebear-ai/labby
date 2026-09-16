@@ -25,6 +25,93 @@ fn registry_required_keys(registry: &ToolRegistry) -> Vec<String> {
     keys
 }
 
+fn effective_entries(
+    env: &Path,
+    draft: &Path,
+) -> Result<std::collections::BTreeMap<String, String>, ToolError> {
+    let mut values = std::collections::BTreeMap::new();
+    if env.exists() {
+        for entry in draft::read_entries(env)? {
+            values.insert(entry.key, entry.value);
+        }
+    }
+    if draft.exists() {
+        for entry in draft::read_entries(draft)? {
+            values.insert(entry.key, entry.value);
+        }
+    }
+    Ok(values)
+}
+
+fn has_nonempty(values: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    values
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn personal_oauth_configured(values: &std::collections::BTreeMap<String, String>) -> bool {
+    values
+        .get("LABBY_AUTH_MODE")
+        .is_some_and(|value| value.eq_ignore_ascii_case("oauth"))
+        && values
+            .get("LABBY_AUTH_PROVIDER")
+            .is_some_and(|value| value.eq_ignore_ascii_case("google"))
+        && has_nonempty(values, "LABBY_PUBLIC_URL")
+        && has_nonempty(values, "LABBY_GOOGLE_CLIENT_ID")
+        && has_nonempty(values, "LABBY_GOOGLE_CLIENT_SECRET")
+        && has_nonempty(values, "LABBY_AUTH_ADMIN_EMAIL")
+}
+
+fn claude_code_configured() -> bool {
+    let Ok(path) = crate::config::config_toml_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    crate::config::load_toml(&[path]).is_ok_and(|config| {
+        config.upstream.iter().any(|upstream| {
+            let command_is_claude = upstream.command.as_deref().is_some_and(|command| {
+                Path::new(command)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("claude"))
+            });
+            let remote_claude = upstream.command.as_deref().is_some_and(|command| {
+                Path::new(command)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("ssh"))
+            }) && upstream
+                .args
+                .windows(2)
+                .any(|args| args == ["mcp", "serve"]);
+            command_is_claude || remote_claude
+        })
+    })
+}
+
+fn personal_resume_progress(
+    env_exists: bool,
+    values: &std::collections::BTreeMap<String, String>,
+    oauth_configured: bool,
+    claude_configured: bool,
+) -> (u8, String) {
+    if claude_configured && oauth_configured && env_exists {
+        return (4, "verify_readiness".into());
+    }
+    if oauth_configured && env_exists {
+        return (3, "connect_claude_code".into());
+    }
+    if oauth_configured {
+        return (2, "commit_configuration".into());
+    }
+    if !values.is_empty() {
+        return (1, "configure_oauth".into());
+    }
+    (0, "configure_runtime".into())
+}
+
 /// Build a `SetupSnapshot` describing the current state of `~/.labby/.env`.
 pub fn snapshot(registry: &ToolRegistry) -> Result<SetupSnapshot, ToolError> {
     let env = env_path();
@@ -33,6 +120,15 @@ pub fn snapshot(registry: &ToolRegistry) -> Result<SetupSnapshot, ToolError> {
     let has_draft = draft.exists();
     let draft_stale = draft_is_stale(&env, &draft);
     let draft_metadata = draft_metadata(&env, &draft)?;
+    let effective = effective_entries(&env, &draft)?;
+    let personal_oauth_configured = personal_oauth_configured(&effective);
+    let claude_code_configured = claude_code_configured();
+    let (last_completed_step, resume_from) = personal_resume_progress(
+        env_exists,
+        &effective,
+        personal_oauth_configured,
+        claude_code_configured,
+    );
 
     let state = if !env_exists {
         SetupState::Uninitialized
@@ -59,7 +155,10 @@ pub fn snapshot(registry: &ToolRegistry) -> Result<SetupSnapshot, ToolError> {
         ),
         env_path: env,
         draft_path: draft,
-        last_completed_step: 0,
+        last_completed_step,
+        resume_from,
+        personal_oauth_configured,
+        claude_code_configured,
         draft_stale,
         has_draft,
         draft_entry_count: draft_metadata.draft_entry_count,

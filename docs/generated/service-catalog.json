@@ -11,7 +11,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": false
+      "web_ui": true
     },
     "default_port": null,
     "docs_url": null,

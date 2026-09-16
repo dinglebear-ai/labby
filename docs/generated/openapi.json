@@ -4997,22 +4997,18 @@
         "type": "object",
         "required": [
           "team_id",
-          "principal_id",
+          "email",
           "role",
-          "token",
           "ttl_seconds"
         ],
         "properties": {
-          "principal_id": {
+          "email": {
             "type": "string"
           },
           "role": {
             "type": "string"
           },
           "team_id": {
-            "type": "string"
-          },
-          "token": {
             "type": "string"
           },
           "ttl_seconds": {
@@ -8603,6 +8599,13 @@
               "check",
               "repair",
               "proxy.configure",
+              "tailscale_funnel.inspect",
+              "tailscale_funnel.configure",
+              "tailscale_funnel.disable",
+              "public_proxy.render",
+              "organization_profile.create",
+              "organization_profile.preview",
+              "organization_profile.apply",
               "plugins.installed",
               "installed_plugins",
               "services.status",
@@ -8668,6 +8671,54 @@
           }
         }
       },
+      "SetupOrganization_profileApplyParams": {
+        "type": "object",
+        "required": [
+          "profile",
+          "expected_signer_fingerprint"
+        ],
+        "properties": {
+          "expected_signer_fingerprint": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "object"
+          }
+        }
+      },
+      "SetupOrganization_profileCreateParams": {
+        "type": "object",
+        "required": [
+          "organization_id",
+          "team_depot_url",
+          "key_id"
+        ],
+        "properties": {
+          "key_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "signing_key_env": {
+            "type": "string"
+          },
+          "team_depot_url": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupOrganization_profilePreviewParams": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "properties": {
+          "profile": {
+            "type": "object"
+          }
+        }
+      },
       "SetupPluginInstallParams": {
         "type": "object",
         "required": [
@@ -8727,6 +8778,29 @@
             "type": "boolean"
           },
           "preferences": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupPublic_proxyRenderParams": {
+        "type": "object",
+        "required": [
+          "public_url"
+        ],
+        "properties": {
+          "backend_url": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "caddy",
+              "nginx",
+              "traefik",
+              "all"
+            ]
+          },
+          "public_url": {
             "type": "string"
           }
         }
@@ -8923,6 +8997,36 @@
         "properties": {
           "services.built_in_upstream_apis_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetupTailscale_funnelConfigureParams": {
+        "type": "object",
+        "properties": {
+          "backend_url": {
+            "type": "string"
+          },
+          "https_port": {
+            "type": "integer"
+          }
+        }
+      },
+      "SetupTailscale_funnelDisableParams": {
+        "type": "object",
+        "properties": {
+          "backend_url": {
+            "type": "string"
+          },
+          "https_port": {
+            "type": "integer"
+          }
+        }
+      },
+      "SetupTailscale_funnelInspectParams": {
+        "type": "object",
+        "properties": {
+          "https_port": {
+            "type": "integer"
           }
         }
       },

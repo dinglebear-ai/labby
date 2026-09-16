@@ -6,7 +6,8 @@
 //!   labby doctor auth         — auth/OAuth configuration checks
 //!   labby doctor oauth-relay  — public OAuth callback relay registry checks
 //!
-//! Exit codes: 0 = ok, 1 = warnings, 2 = failures.
+//! Plain `labby doctor` answers operational readiness: 0 = operational (warnings are recommendations), 2 = blocked.
+//! Focused subcommands preserve diagnostic exit codes: 0 = ok, 1 = warnings, 2 = failures.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -31,12 +32,23 @@ pub struct DoctorArgs {
 pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth(DoctorAuthArgs),
+    /// Check the complete personal OAuth path: config, provider, public metadata, login redirect, and MCP challenge.
+    Oauth(DoctorOauthArgs),
     /// Check public OAuth callback relay registry and optionally target sockets
     OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
+    /// Write a redacted support bundle containing versions, setup state, safe config shape, and doctor findings.
+    Bundle(DoctorBundleArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
     System,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorBundleArgs {
+    /// Output path for the redacted JSON bundle.
+    #[arg(long, default_value = "labby-support.json")]
+    pub output: std::path::PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -63,6 +75,13 @@ pub struct DoctorProxyArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct DoctorOauthArgs {
+    /// Override the public Labby origin. Defaults to the resolved OAuth public URL.
+    #[arg(long)]
+    pub public_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct DoctorOauthRelayArgs {
     /// Probe registered target sockets in addition to registry readiness
     #[arg(long)]
@@ -78,8 +97,10 @@ pub async fn run(
     match args.check {
         None => run_full_audit(format, config).await,
         Some(DoctorCheck::Auth(args)) => run_auth(args, format, config).await,
+        Some(DoctorCheck::Oauth(args)) => run_oauth(args, format, config).await,
         Some(DoctorCheck::OauthRelay(args)) => run_oauth_relay(args, format).await,
         Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
+        Some(DoctorCheck::Bundle(args)) => run_bundle(args, format, config).await,
         Some(DoctorCheck::System) => run_system(format).await,
     }
 }
@@ -100,6 +121,9 @@ async fn run_full_audit(
         Ok(auth) => (Some(auth), None),
         Err(error) => (None, Some(error.to_string())),
     };
+    let browser_oauth_expected = resolved_auth
+        .as_ref()
+        .is_some_and(|auth| auth.mode == labby_auth::config::AuthMode::OAuth);
 
     tokio::spawn(async move {
         crate::dispatch::doctor::service::stream_audit_full_with_relay_and_auth(
@@ -126,17 +150,239 @@ async fn run_full_audit(
         while let Some(f) = rx.recv().await {
             findings.push(f);
         }
+        let exit = operational_exit_code(&findings);
+        let readiness =
+            crate::dispatch::doctor::personal_readiness_finding(&findings, browser_oauth_expected);
+        findings.push(readiness);
         let report = Report { findings };
         println!("{}", serde_json::to_string_pretty(&report)?);
-        Ok(exit_code(&report))
+        Ok(exit)
     } else {
         let theme = CliTheme::from_context(format.render_context());
         while let Some(f) = rx.recv().await {
             print_finding(theme, &f);
             findings.push(f);
         }
-        Ok(exit_code(&Report { findings }))
+        let exit = operational_exit_code(&findings);
+        let readiness =
+            crate::dispatch::doctor::personal_readiness_finding(&findings, browser_oauth_expected);
+        println!();
+        print_finding(theme, &readiness);
+        Ok(exit)
     }
+}
+
+fn operational_exit_code(findings: &[Finding]) -> ExitCode {
+    if findings
+        .iter()
+        .any(|finding| matches!(finding.severity, Severity::Fail))
+    {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+async fn collect_full_audit_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
+    use tokio::sync::mpsc;
+
+    let clients = Arc::new(ServiceClients::from_env());
+    let (tx, mut rx) = mpsc::channel(64);
+    let public_relay = load_optional_public_relay_manager().await;
+    let (resolved_auth, auth_config_error) = match crate::config::resolve_auth_for_config(config) {
+        Ok(auth) => (Some(auth), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+
+    tokio::spawn(async move {
+        crate::dispatch::doctor::service::stream_audit_full_with_relay_and_auth(
+            clients,
+            public_relay,
+            resolved_auth,
+            tx.clone(),
+        )
+        .await;
+        if let Some(message) = auth_config_error {
+            let _unused = tx
+                .send(crate::dispatch::doctor::auth_config_error_finding(&message))
+                .await;
+        }
+    });
+
+    let mut findings = Vec::new();
+    while let Some(finding) = rx.recv().await {
+        findings.push(finding);
+    }
+    findings
+}
+
+fn redact_support_text(raw: &str) -> String {
+    let redacted = labby_runtime::agent_error::redact_secret_like_segments(raw);
+    crate::dispatch::helpers::redact_home(&redacted)
+}
+
+fn redact_support_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => serde_json::Value::String(redact_support_text(&value)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(redact_support_value).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, redact_support_value(value)))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn write_support_bundle(path: &std::path::Path, value: &serde_json::Value) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if let Ok(metadata) = std::fs::symlink_metadata(parent) {
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("refusing to write support bundle through a symlinked directory");
+        }
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("refusing to overwrite a symlink with a support bundle");
+        }
+    }
+
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    serde_json::to_writer_pretty(temporary.as_file_mut(), value)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| anyhow::anyhow!("persist support bundle: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+async fn run_bundle(
+    args: DoctorBundleArgs,
+    format: OutputFormat,
+    config: &crate::config::LabConfig,
+) -> Result<ExitCode> {
+    let findings = collect_full_audit_findings(config).await;
+    let report = Report {
+        findings: findings.clone(),
+    };
+    let setup_state = match crate::dispatch::setup::dispatch("state", serde_json::json!({})).await {
+        Ok(value) => redact_support_value(value),
+        Err(error) => serde_json::json!({
+            "status": "unavailable",
+            "error": redact_support_text(&error.to_string()),
+        }),
+    };
+    let resolved_auth = crate::config::resolve_auth_for_config(config).ok();
+    let safe_upstreams: Vec<serde_json::Value> = config
+        .upstream
+        .iter()
+        .map(|upstream| {
+            let transport = if upstream.url.is_some() {
+                "http"
+            } else if upstream.socket_path.is_some() {
+                "unix_socket"
+            } else {
+                "stdio"
+            };
+            serde_json::json!({
+                "name": upstream.name,
+                "enabled": upstream.enabled,
+                "transport": transport,
+                "proxy_resources": upstream.proxy_resources,
+                "proxy_prompts": upstream.proxy_prompts,
+                "proxy_skills": upstream.proxy_skills,
+                "has_bearer_binding": upstream.bearer_token_env.is_some(),
+                "has_oauth": upstream.oauth.is_some(),
+                "injected_env_key_count": upstream.env.len(),
+            })
+        })
+        .collect();
+    let redacted_findings: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|finding| {
+            serde_json::json!({
+                "service": finding.service,
+                "check": finding.check,
+                "severity": finding.severity,
+                "message": redact_support_text(&finding.message),
+            })
+        })
+        .collect();
+    let generated_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let bundle = serde_json::json!({
+        "schema_version": 1,
+        "generated_unix_seconds": generated_unix_seconds,
+        "labby": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "setup_contract": crate::cli::setup::SETUP_CONTRACT_VERSION,
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+        "privacy": {
+            "raw_config_included": false,
+            "raw_environment_included": false,
+            "raw_logs_included": false,
+            "credential_values_included": false,
+            "private_key_material_included": false,
+        },
+        "auth": {
+            "resolved": resolved_auth.is_some(),
+            "mode": resolved_auth.as_ref().map(|auth| format!("{:?}", auth.mode).to_lowercase()),
+            "provider": resolved_auth.as_ref().and_then(|auth| auth.inbound_provider.as_ref()).map(|provider| format!("{provider:?}").to_lowercase()),
+            "public_url_configured": resolved_auth.as_ref().is_some_and(|auth| auth.public_url.is_some()),
+            "admin_identity_configured": resolved_auth.as_ref().is_some_and(|auth| !auth.admin_email.trim().is_empty()),
+            "allowed_email_domain_count": resolved_auth.as_ref().map_or(0, |auth| auth.allowed_email_domains.len()),
+        },
+        "setup": setup_state,
+        "gateway": {
+            "upstream_count": safe_upstreams.len(),
+            "upstreams": safe_upstreams,
+        },
+        "doctor": {
+            "worst": format!("{:?}", report.worst()).to_lowercase(),
+            "findings": redacted_findings,
+        },
+    });
+
+    write_support_bundle(&args.output, &bundle)?;
+    if format.is_json() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "path": args.output,
+                "doctor_worst": format!("{:?}", report.worst()).to_lowercase(),
+            }))?
+        );
+    } else {
+        println!(
+            "redacted support bundle written to {} (raw config/env/logs and credential values excluded)",
+            args.output.display()
+        );
+    }
+    Ok(exit_code(&report))
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +475,100 @@ async fn run_auth(
     }
     println!();
 
+    Ok(exit_code(&report))
+}
+
+async fn run_oauth(
+    args: DoctorOauthArgs,
+    format: OutputFormat,
+    config: &crate::config::LabConfig,
+) -> Result<ExitCode> {
+    let resolved = match crate::config::resolve_auth_for_config(config) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            let report = Report {
+                findings: vec![crate::dispatch::doctor::auth_config_error_finding(
+                    &error.to_string(),
+                )],
+            };
+            if format.is_json() {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                let theme = CliTheme::from_context(format.render_context());
+                print_section(theme, "Personal OAuth readiness");
+                for finding in &report.findings {
+                    print_finding_indented(theme, finding);
+                }
+            }
+            return Ok(exit_code(&report));
+        }
+    };
+
+    let resolved_for_checks = resolved.clone();
+    let mut findings = tokio::task::spawn_blocking(move || {
+        run_auth_checks_with_config(Some(&resolved_for_checks))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("OAuth doctor configuration checks panicked: {error}"))?;
+    findings.push(crate::dispatch::doctor::provider::live_probe(Some(&resolved)).await);
+
+    let public_url = args
+        .public_url
+        .or_else(|| resolved.public_url.as_ref().map(ToString::to_string));
+    if let Some(public_url) = public_url {
+        match crate::cli::setup::google_oauth_public_check(&public_url).await {
+            Ok(value) => {
+                if let Some(checks) = value.get("checks").and_then(serde_json::Value::as_array) {
+                    for (index, check) in checks.iter().enumerate() {
+                        let ok = check
+                            .get("ok")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let name = check
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("public OAuth check");
+                        let detail = check
+                            .get("detail")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        findings.push(Finding {
+                            service: "oauth".into(),
+                            check: format!("oauth:public:{index}"),
+                            severity: if ok { Severity::Ok } else { Severity::Fail },
+                            message: format!("{name}: {detail}"),
+                        });
+                    }
+                }
+            }
+            Err(error) => findings.push(Finding {
+                service: "oauth".into(),
+                check: "oauth:public".into(),
+                severity: Severity::Fail,
+                message: format!("public OAuth probe failed: {error}"),
+            }),
+        }
+    } else {
+        findings.push(Finding {
+            service: "oauth".into(),
+            check: "oauth:public-url".into(),
+            severity: Severity::Fail,
+            message: "OAuth has no public URL; configure LABBY_PUBLIC_URL or pass --public-url"
+                .into(),
+        });
+    }
+
+    let report = Report { findings };
+    if format.is_json() {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let theme = CliTheme::from_context(format.render_context());
+        print_section(theme, "Personal OAuth readiness");
+        for finding in &report.findings {
+            print_finding_indented(theme, finding);
+        }
+        println!();
+    }
     Ok(exit_code(&report))
 }
 
@@ -456,6 +796,65 @@ mod tests {
     use clap::Parser;
 
     use crate::cli::{Cli, Command};
+
+    fn finding(severity: crate::dispatch::doctor::Severity) -> crate::dispatch::doctor::Finding {
+        crate::dispatch::doctor::Finding {
+            service: "test".into(),
+            check: "test:check".into(),
+            severity,
+            message: "test".into(),
+        }
+    }
+
+    #[test]
+    fn plain_doctor_treats_recommendations_as_operational() {
+        let findings = vec![
+            finding(crate::dispatch::doctor::Severity::Ok),
+            finding(crate::dispatch::doctor::Severity::Warn),
+        ];
+        assert_eq!(
+            super::operational_exit_code(&findings),
+            std::process::ExitCode::SUCCESS
+        );
+        let readiness = crate::dispatch::doctor::personal_readiness_finding(&findings, false);
+        assert!(matches!(
+            readiness.severity,
+            crate::dispatch::doctor::Severity::Ok
+        ));
+        assert!(
+            readiness
+                .message
+                .contains("operational for local/bearer workflows")
+        );
+        assert!(
+            readiness
+                .message
+                .contains("Browser + ChatGPT public OAuth is optional")
+        );
+    }
+
+    #[test]
+    fn plain_doctor_blocks_only_on_failures_and_reports_oauth_readiness() {
+        let blocked = vec![finding(crate::dispatch::doctor::Severity::Fail)];
+        assert_eq!(
+            super::operational_exit_code(&blocked),
+            std::process::ExitCode::from(2)
+        );
+        let blocked_readiness = crate::dispatch::doctor::personal_readiness_finding(&blocked, true);
+        assert!(matches!(
+            blocked_readiness.severity,
+            crate::dispatch::doctor::Severity::Fail
+        ));
+        assert!(blocked_readiness.message.contains("not operational yet"));
+
+        let ready = vec![finding(crate::dispatch::doctor::Severity::Ok)];
+        let oauth = crate::dispatch::doctor::personal_readiness_finding(&ready, true);
+        assert!(
+            oauth
+                .message
+                .contains("configured Browser + ChatGPT OAuth workflow")
+        );
+    }
 
     #[test]
     fn auth_checks_returns_findings() {

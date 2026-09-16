@@ -1157,7 +1157,7 @@ mod tests {
             .with_connection(|connection| {
                 connection
                     .execute_batch(
-                        "CREATE TEMP TRIGGER fail_security_event BEFORE INSERT ON access_security_events BEGIN SELECT RAISE(ABORT,'forced'); END;",
+                        "CREATE TRIGGER fail_security_event BEFORE INSERT ON access_security_events BEGIN SELECT RAISE(ABORT,'forced'); END;",
                     )
                     .map_err(super::super::store::map_sqlite_error)
             })
@@ -1170,7 +1170,9 @@ mod tests {
         ))
         .unwrap();
 
-        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let logs = crate::test_support::SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()

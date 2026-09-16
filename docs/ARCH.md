@@ -1,12 +1,18 @@
 ---
 title: "Architecture"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-15"
 ---
 
 # Architecture
 
 `labby` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
+
+## Deployment Topology Decision
+
+Labby is **personal-first**. A personal Labby is the user-owned runtime for OAuth, ChatGPT connectivity, Claude Code MCP, personal upstreams, credentials, and local state. A hosted Team Labby is optional shared infrastructure used primarily to publish and govern team artifacts/server definitions that users can acquire into their personal Labby. Team enrollment is additive and must not turn personal Labby into a thin client of Team Labby.
+
+The normative decision and guardrails are recorded in [ADR-0001: Personal-first Labby with optional Team distribution](./architecture-decisions/0001-personal-first-labby.md).
 
 ## Core Shape
 

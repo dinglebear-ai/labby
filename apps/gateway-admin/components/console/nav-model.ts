@@ -8,6 +8,7 @@ import {
   Logs,
   Warehouse,
   ShieldCheck,
+  Users,
   LayoutDashboard,
   MonitorSmartphone,
   SearchCode,
@@ -70,6 +71,14 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         icon: Cable,
         tooltipDetail: 'upstream MCP servers',
         capability: 'scope.manage',
+      },
+      {
+        id: 'People',
+        label: 'People',
+        href: '/people',
+        icon: Users,
+        tooltipDetail: 'teams, invitations and access',
+        capability: 'membership.manage',
       },
       {
         id: 'Browsers',

@@ -26,7 +26,12 @@ for name in names:
     path = args.assets / name
     if path.is_file():
         subjects.append({"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-known_assets = set(names) | {
+required_companion_assets = ("release-provenance.sigstore.json",)
+companion_assets = [
+    {"name": name, "status": "present" if (args.assets / name).is_file() else "missing"}
+    for name in required_companion_assets
+]
+known_assets = set(names) | set(required_companion_assets) | {
     "release-manifest.json",
     dist["incus"]["asset"],
     "generation.json",
@@ -79,4 +84,4 @@ try:
         "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
     }
 except Exception as error: observed["mcp"] = {"error": str(error)}
-args.output.write_text(json.dumps({"subjects": subjects, "unexpected_assets": unexpected_assets, "attestations": attestations, "distributions": observed}, indent=2, sort_keys=True) + "\n")
+args.output.write_text(json.dumps({"subjects": subjects, "unexpected_assets": unexpected_assets, "companion_assets": companion_assets, "attestations": attestations, "distributions": observed}, indent=2, sort_keys=True) + "\n")

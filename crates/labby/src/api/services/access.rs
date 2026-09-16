@@ -53,6 +53,7 @@ async fn handle(
     let auth = auth.ok_or_else(identity_required)?.0;
     let identity = identity.ok_or_else(identity_required)?.0;
     let ceiling = crate::access::AuthorityCeiling::from_auth_context(&auth);
+    let verified_email = auth.via_session.then(|| auth.email.clone()).flatten();
     let access_runtime = state.access_runtime;
     // The dispatch wrapper borrows the request headers and auth context for
     // logging; the CSRF check inside the closure needs its own copies.
@@ -93,6 +94,7 @@ async fn handle(
                 AccessDispatchContext {
                     store,
                     identity,
+                    verified_email,
                     ceiling,
                     installation_id,
                     #[cfg(feature = "gateway")]

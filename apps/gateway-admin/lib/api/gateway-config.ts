@@ -15,6 +15,10 @@ export function setupActionUrl(baseUrl?: string): string {
   return `${normalizeGatewayApiBase(baseUrl)}/setup`
 }
 
+export function accessActionUrl(baseUrl?: string): string {
+  return `${normalizeGatewayApiBase(baseUrl)}/access/admin`
+}
+
 export function doctorActionUrl(baseUrl?: string): string {
   return `${normalizeGatewayApiBase(baseUrl)}/doctor`
 }

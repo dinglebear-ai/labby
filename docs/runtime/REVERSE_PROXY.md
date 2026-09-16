@@ -6,6 +6,27 @@ updated: "2026-09-05"
 
 # Reverse Proxy Deployment
 
+## Fast path
+
+For a normal single-origin Browser + ChatGPT deployment, generate a validated
+streaming-safe proxy configuration instead of starting from the examples below:
+
+```bash
+# Recommended: Caddy
+labby setup public-proxy --public-url https://lab.example.com
+
+# Advanced alternatives
+labby setup public-proxy --public-url https://lab.example.com --format nginx
+labby setup public-proxy --public-url https://lab.example.com --format traefik
+```
+
+The same `public_proxy.render` contract is exposed in **Settings → Doctor →
+Public HTTPS**. It requires an HTTPS public origin, defaults the private backend
+to `http://127.0.0.1:8765`, contains no secrets, and returns verification
+commands. Caddy is the default because it minimizes first-run TLS/proxy
+configuration. The remainder of this document covers advanced multi-host,
+protected-route, edge-network, and manual proxy requirements.
+
 Labby can serve the web UI, OAuth server, native `/mcp`, and Gateway-managed
 protected MCP routes from the same HTTP listener. Put your reverse proxy in
 front of that listener and configure public MCP routes in Labby.
@@ -163,9 +184,41 @@ challenge.
 
 ## Tailscale Funnel
 
-Expose Labby's HTTP listener through Funnel for each public hostname you use, or
-put Funnel in front of a local reverse proxy that preserves `Host` and forwards
-to Labby. Keep the public route path intact.
+For a Tailscale-connected Labby host, prefer the setup helper over hand-written
+`tailscale funnel` commands:
+
+```bash
+# Read-only inspection.
+labby setup tailscale-funnel
+
+# Expose the default local listener as public HTTPS.
+labby setup tailscale-funnel --apply
+```
+
+The default backend is `http://127.0.0.1:8765` on public HTTPS port `443`. Labby
+only accepts loopback backends and Tailscale's supported Funnel ports `443`,
+`8443`, and `10000`. It refuses to replace a foreign Funnel mapping and refuses
+to auto-promote a tailnet-only `tailscale serve` mapping. The mutating configure
+and disable actions are local-only administrative operations; inspection remains
+read-only.
+
+First-time Funnel activation can require Tailscale web approval. Labby treats
+that as an explicit third state rather than success or generic failure: the
+configure command is time-bounded, any approval URL emitted by Tailscale is
+surfaced, and the operator reruns `labby setup tailscale-funnel --apply` after
+approval. Labby does not report the route configured until the desired Funnel
+mapping is actually visible.
+
+A successful configuration projects the public origin plus the two exact derived
+endpoints needed by the browser integration:
+
+```text
+https://<tailnet-dns-name>/auth/google/callback
+https://<tailnet-dns-name>/mcp
+```
+
+If you put Funnel in front of another local reverse proxy instead, preserve the
+external `Host` and all route paths when forwarding to Labby.
 
 ## Verification
 

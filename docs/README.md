@@ -8,7 +8,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 
 ## Start Here
 
-- [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
+- [Architecture](./ARCH.md) — workspace boundaries, runtime flow, product surfaces, and the personal-first deployment topology.
+- [ADR-0001: Personal-first Labby](./architecture-decisions/0001-personal-first-labby.md) — personal Labby is the primary runtime; Team Labby is optional artifact/server distribution infrastructure.
 - [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
 - [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.

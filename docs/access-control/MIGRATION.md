@@ -1,15 +1,15 @@
 ---
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
-updated: "2026-09-07"
+updated: "2026-09-16"
 status: "design"
 ---
 
 # Multi-user ownership migration and recovery
 
 This runbook freezes the rehearsal and activation contract for moving an
-existing Labby AccessStore installation (schema v1 through v6; v5 is the last
-released schema) to the multi-user ownership schema v7. The rehearsal proves
+existing Labby AccessStore installation (schema v1 through v7) to the current
+multi-user ownership schema v8. The rehearsal proves
 that the input can be inventoried, backed up, reopened, restored, and
 deterministically classified before the ownership migration is allowed to
 exist.
@@ -23,7 +23,7 @@ the complete checkpoint and losing all later writes; an old binary must never
 open the new store and reinterpret scoped rows as globally owned.
 
 Ordinary startup never crosses a schema boundary implicitly: every legacy
-version (v1 through v6) is refused with `MigrationApprovalRequired` until the
+version (v1 through v7) is refused with `MigrationApprovalRequired` until the
 operator sets `LABBY_ACCESS_MIGRATION_EVIDENCE` to the owner-controlled
 approval document described in [ENV.md](../runtime/ENV.md). Bootstrap of a
 never-initialized legacy store is gated the same way. Labby binds that
@@ -44,7 +44,7 @@ already-durable open.
 
 The migration is split into separately observable phases:
 
-1. `inventory`: open v5 read-only, run quick/FK/schema/bootstrap validation,
+1. `inventory`: open the source schema read-only, run quick/FK/schema/bootstrap validation,
    and produce the signed inventory report;
 2. `checkpoint`: stop writers, checkpoint WAL, create an SQLite-consistent
    backup, copy required sidecars/keys/configuration, and hash the restore set;

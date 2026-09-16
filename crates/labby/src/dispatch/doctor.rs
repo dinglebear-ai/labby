@@ -27,6 +27,45 @@ pub use relay::check_public_relay;
 pub use system::{run_auth_checks, run_auth_checks_with_config, run_system_checks};
 pub use types::{Finding, Report, Severity};
 
+pub fn personal_readiness_finding(findings: &[Finding], browser_oauth_expected: bool) -> Finding {
+    let failures = findings
+        .iter()
+        .filter(|finding| matches!(finding.severity, Severity::Fail))
+        .count();
+    let warnings = findings
+        .iter()
+        .filter(|finding| matches!(finding.severity, Severity::Warn))
+        .count();
+    let (severity, message) = if failures > 0 {
+        (
+            Severity::Fail,
+            format!(
+                "Labby is not operational yet: {failures} blocking check(s) failed; resolve them before relying on this installation"
+            ),
+        )
+    } else if browser_oauth_expected {
+        (
+            Severity::Ok,
+            format!(
+                "Labby is operational for the configured Browser + ChatGPT OAuth workflow; {warnings} recommendation(s) remain"
+            ),
+        )
+    } else {
+        (
+            Severity::Ok,
+            format!(
+                "Labby is operational for local/bearer workflows; Browser + ChatGPT public OAuth is optional and {warnings} recommendation(s) remain"
+            ),
+        )
+    };
+    Finding {
+        service: "doctor".into(),
+        check: "readiness:personal".into(),
+        severity,
+        message,
+    }
+}
+
 pub fn auth_config_error_finding(error: &str) -> Finding {
     let error = labby_runtime::agent_error::sanitize_error_text(error, 1024);
     tracing::warn!(

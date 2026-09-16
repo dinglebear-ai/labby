@@ -18,8 +18,18 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - `oauth.relay.check` checks callback-relay state and optionally probes configured targets; it requires `lab:admin`.
 - `proxy.check` validates a requested app/MCP/backend route combination.
 - `proxy.preflight` checks configured reverse-proxy prerequisites.
-- `audit.full` streams the combined diagnostic findings, including exactly one local access-store finding.
+- `audit.full` streams the combined diagnostic findings, including exactly one local access-store finding and a final `readiness:personal` verdict shared by CLI/API/WebUI.
 - `help` and `schema` provide discovery metadata.
+
+Bare `labby doctor` is the low-friction operational check: warnings remain visible
+as recommendations but do not make a usable installation fail. It exits `0` when
+there are no blocking `fail` findings and `2` when Labby is blocked. The final
+`readiness:personal` finding explains whether the configured workflow is ready;
+in bearer/local mode it explicitly treats public Browser + ChatGPT OAuth as
+optional. Focused subcommands (`doctor auth`, `doctor system`, `doctor oauth`,
+`doctor proxy`, and others) retain diagnostic `0`/`1`/`2` exit semantics so
+automation can distinguish warnings from clean checks. Settings → Doctor renders
+the same shared readiness verdict instead of maintaining a separate heuristic.
 
 Doctor is diagnostic. It reports structured findings and recovery guidance rather than silently repairing state. Repair belongs to the `setup` service.
 

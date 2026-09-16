@@ -175,7 +175,7 @@
         },
         {
           "name": "access.team_invitation.create",
-          "description": "Create a team invitation",
+          "description": "Create a verified-email team invitation",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -187,19 +187,13 @@
               "description": ""
             },
             {
-              "name": "principal_id",
+              "name": "email",
               "ty": "string",
               "required": true,
               "description": ""
             },
             {
               "name": "role",
-              "ty": "string",
-              "required": true,
-              "description": ""
-            },
-            {
-              "name": "token",
               "ty": "string",
               "required": true,
               "description": ""
@@ -3499,6 +3493,174 @@
             }
           ],
           "returns": "ProxySetupOutcome"
+        },
+        {
+          "name": "tailscale_funnel.inspect",
+          "description": "Inspect whether this host can expose Labby through Tailscale Funnel without mutating Tailscale",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "https_port",
+              "ty": "integer",
+              "required": false,
+              "description": "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)"
+            }
+          ],
+          "returns": "TailscaleFunnelInspection"
+        },
+        {
+          "name": "tailscale_funnel.configure",
+          "description": "Safely expose the local Labby HTTP server through Tailscale Funnel without replacing an existing mapping",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "backend_url",
+              "ty": "string",
+              "required": false,
+              "description": "Loopback Labby backend origin; defaults to http://127.0.0.1:8765"
+            },
+            {
+              "name": "https_port",
+              "ty": "integer",
+              "required": false,
+              "description": "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)"
+            }
+          ],
+          "returns": "TailscaleFunnelMutationOutcome"
+        },
+        {
+          "name": "tailscale_funnel.disable",
+          "description": "Disable only the Tailscale Funnel mapping that exactly matches the expected local Labby backend",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "backend_url",
+              "ty": "string",
+              "required": false,
+              "description": "Expected loopback Labby backend origin; defaults to http://127.0.0.1:8765"
+            },
+            {
+              "name": "https_port",
+              "ty": "integer",
+              "required": false,
+              "description": "Public Funnel HTTPS port; one of 443, 8443, or 10000 (default 443)"
+            }
+          ],
+          "returns": "TailscaleFunnelMutationOutcome"
+        },
+        {
+          "name": "public_proxy.render",
+          "description": "Render validated Caddy, Nginx, or Traefik configuration for a public Labby HTTPS origin",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "public_url",
+              "ty": "string",
+              "required": true,
+              "description": "Browser-visible HTTPS Labby origin"
+            },
+            {
+              "name": "backend_url",
+              "ty": "string",
+              "required": false,
+              "description": "Private Labby backend origin; defaults to http://127.0.0.1:8765"
+            },
+            {
+              "name": "format",
+              "ty": "caddy|nginx|traefik|all",
+              "required": false,
+              "description": "Proxy configuration format; defaults to all for API/WebUI callers"
+            }
+          ],
+          "returns": "PublicProxyRenderOutcome"
+        },
+        {
+          "name": "organization_profile.create",
+          "description": "Create a signed non-secret organization bootstrap profile for personal Labby",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "organization_id",
+              "ty": "string",
+              "required": true,
+              "description": "Organization identifier embedded in the signed profile"
+            },
+            {
+              "name": "team_depot_url",
+              "ty": "string",
+              "required": true,
+              "description": "Externally reachable HTTPS MCP endpoint for Team Depot"
+            },
+            {
+              "name": "key_id",
+              "ty": "string",
+              "required": true,
+              "description": "Public signing-key identifier embedded in the profile"
+            },
+            {
+              "name": "signing_key_env",
+              "ty": "string",
+              "required": false,
+              "description": "Optional secret environment reference; defaults to LABBY_DEPOT_AUTHORITY_SIGNING_KEY"
+            }
+          ],
+          "returns": "OrganizationBootstrapProfile"
+        },
+        {
+          "name": "organization_profile.preview",
+          "description": "Verify and preview a signed organization profile without mutating personal Labby",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "profile",
+              "ty": "object",
+              "required": true,
+              "description": "Signed organization bootstrap profile"
+            }
+          ],
+          "returns": "OrganizationBootstrapPreview"
+        },
+        {
+          "name": "organization_profile.apply",
+          "description": "Verify and atomically import approved organization integrations into personal Labby",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "profile",
+              "ty": "object",
+              "required": true,
+              "description": "Signed organization bootstrap profile"
+            },
+            {
+              "name": "expected_signer_fingerprint",
+              "ty": "string",
+              "required": true,
+              "description": "Pinned SHA-256 fingerprint of the trusted organization profile signing key"
+            }
+          ],
+          "returns": "OrganizationBootstrapApplyOutcome"
         },
         {
           "name": "plugins.installed",

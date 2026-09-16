@@ -308,9 +308,6 @@ async fn prepare_authority_action(
 ) -> serde_json::Value {
     let action_id = intent.action.replace('.', "-");
     if intent.service == "access" {
-        if intent.action == "access.team_invitation.create" {
-            params["token"] = serde_json::Value::String("b".repeat(64));
-        }
         if let Some(team_id) = params.get_mut("team_id") {
             *team_id = serde_json::Value::String(format!("matrix-{action_id}"));
         }

@@ -9,8 +9,8 @@ status: "implementation"
 
 > **Historical document.** This progress log stopped at 2026-08-23 and records
 > early milestones (for example "schema v2"). It is not a description of
-> current code. The access store is now at schema v7 (see
-> [DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current)); current operator
+> current code. The access store is now at schema v8 (see
+> [DATA_MODEL.md](./DATA_MODEL.md#schema-v8-current)); current operator
 > behavior is in [services/ACCESS.md](../services/ACCESS.md).
 
 ## Current state

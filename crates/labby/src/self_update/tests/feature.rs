@@ -52,6 +52,11 @@ impl Fixture {
             format!("{digest}  {ASSET}\n"),
         )
         .unwrap();
+        fs::write(
+            root.path().join("release-provenance.sigstore.json"),
+            "{\"test\":\"sigstore-bundle\"}\n",
+        )
+        .unwrap();
         executable(
             &root.path().join("tools/uname"),
             "#!/bin/sh\ncase \"$1\" in -s) echo Darwin;; -m) echo arm64;; *) exit 1;; esac\n",
@@ -73,6 +78,7 @@ done
 printf '%s\n' "$url" >> "$LABBY_TEST_FEATURE_ROOT/downloads"
 case "$url" in
   https://github.com/dinglebear-ai/labby/releases/download/v1.17.0/lab-aarch64-apple-darwin.tar.gz*) ;;
+  https://github.com/dinglebear-ai/labby/releases/download/v1.17.0/release-provenance.sigstore.json*) ;;
   *) echo "unexpected network request: $url" >&2; exit 91;;
 esac
 [ -n "$out" ]
@@ -83,12 +89,15 @@ cp "$LABBY_TEST_FEATURE_ROOT/${url##*/}" "$out"
             &root.path().join("tools/gh"),
             r#"#!/bin/sh
 set -eu
-printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
 case "$*" in
-  "attestation verify "*"--repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners") ;;
+  "--version") echo "gh version 2.99.0"; exit 0;;
+  "attestation verify --help") echo "verify an artifact attestation"; exit 0;;
+  "attestation verify "*"--repo dinglebear-ai/labby --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml --source-ref refs/tags/v1.17.0 --deny-self-hosted-runners")
+    printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
+    [ "$LABBY_TEST_FEATURE_CASE" != attestation_failure ]
+    ;;
   *) echo 'unexpected attestation request' >&2; exit 92;;
 esac
-[ "$LABBY_TEST_FEATURE_CASE" != attestation_failure ]
 "#,
         );
         // Seed a committed local installation through the same real installer.
@@ -275,7 +284,7 @@ fn automatic_installs_verified_newer_release_and_records_receipt() {
             .unwrap()
             .lines()
             .count(),
-        2
+        3
     );
     assert_eq!(
         fs::read_to_string(fixture.root.path().join("attestations"))

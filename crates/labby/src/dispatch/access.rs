@@ -66,12 +66,11 @@ macro_rules! access_actions {
             ),
             action(
                 "access.team_invitation.create",
-                "Create a team invitation",
+                "Create a verified-email team invitation",
                 &[
                     string("team_id"),
-                    string("principal_id"),
+                    string("email"),
                     string("role"),
-                    string("token"),
                     integer("ttl_seconds"),
                 ],
             ),
@@ -210,6 +209,7 @@ const fn admin_action(
 pub(crate) struct AccessDispatchContext {
     pub(crate) store: crate::access::AccessStore,
     pub(crate) identity: VerifiedIdentity,
+    pub(crate) verified_email: Option<String>,
     pub(crate) ceiling: AuthorityCeiling,
     pub(crate) installation_id: String,
     #[cfg(feature = "gateway")]
@@ -237,7 +237,10 @@ pub(crate) async fn dispatch(
 
     // Filtered list operations derive visibility inside AccessStore. Every mutation is
     // additionally checked through the exact evaluator.
-    if action_name != "access.team.list" && action_name != "access.project.effective.list" {
+    if action_name != "access.team.list"
+        && action_name != "access.project.effective.list"
+        && action_name != "access.team_invitation.accept"
+    {
         authorize_administration(&context, action_name, &params).await?;
     }
 
@@ -315,12 +318,13 @@ pub(crate) async fn dispatch(
             json!({"ok": true})
         }
         "access.team_invitation.create" => {
-            let input = CreateTeamInvitationInput::new(
+            let invitation_token = generate_invitation_token()?;
+            let input = CreateTeamInvitationInput::for_verified_email(
                 context.identity,
                 required_string(&params, "team_id")?,
-                required_string(&params, "principal_id")?,
+                required_string(&params, "email")?,
                 team_role(&params)?,
-                token(&params)?,
+                invitation_token,
                 required_i64(&params, "ttl_seconds")?,
             )
             .map_err(map_access_error)?;
@@ -329,18 +333,47 @@ pub(crate) async fn dispatch(
                 .create_team_invitation(input)
                 .await
                 .map_err(map_access_error)?;
-            json!({"team_id": value.team_id, "role": team_role_name(value.role), "status": value.status, "team_membership_epoch": value.team_membership_epoch, "expires_at": value.expires_at})
+            json!({
+                "team_id": value.team_id,
+                "role": team_role_name(value.role),
+                "status": value.status,
+                "team_membership_epoch": value.team_membership_epoch,
+                "expires_at": value.expires_at,
+                "token": hex::encode(invitation_token)
+            })
         }
-        "access.team_invitation.accept" => membership_json(
-            context
+        "access.team_invitation.accept" => {
+            let membership = context
                 .store
                 .accept_team_invitation(
-                    AcceptTeamInvitationInput::new(context.identity, token(&params)?)
-                        .map_err(map_access_error)?,
+                    AcceptTeamInvitationInput::with_verified_email(
+                        context.identity,
+                        context.verified_email,
+                        token(&params)?,
+                    )
+                    .map_err(map_access_error)?,
                 )
                 .await
-                .map_err(map_access_error)?,
-        ),
+                .map_err(map_access_error)?;
+            let organization_id = membership.organization_id.clone();
+            let mut response = membership_json(membership);
+            match crate::dispatch::setup::organization_profile::configured_offer(&organization_id) {
+                Ok(Some(profile)) => {
+                    response["organization_profile"] = profile;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "access",
+                        action = "access.team_invitation.accept",
+                        error = %error,
+                        "team enrollment succeeded but organization bootstrap profile is unavailable"
+                    );
+                }
+            }
+            response
+        }
         "access.team_project.assign" => {
             let input = AssignTeamProjectInput::new(
                 context.identity,
@@ -597,6 +630,12 @@ fn token(params: &Value) -> Result<[u8; 32], ToolError> {
     let bytes = hex::decode(encoded).map_err(|_| invalid("token"))?;
     bytes.try_into().map_err(|_| invalid("token"))
 }
+fn generate_invitation_token() -> Result<[u8; 32], ToolError> {
+    let mut token = [0_u8; 32];
+    getrandom::fill(&mut token)
+        .map_err(|_| ToolError::internal_message("failed to generate invitation token"))?;
+    Ok(token)
+}
 fn team_role(params: &Value) -> Result<TeamRole, ToolError> {
     match required_string(params, "role")?.as_str() {
         "owner" => Ok(TeamRole::Owner),
@@ -718,6 +757,38 @@ mod tests {
         assert_eq!(
             required_capability("access.team.create"),
             Some(Capability::PlatformManage)
+        );
+    }
+
+    #[test]
+    fn invitation_catalog_is_email_first_and_server_generated_token_only() {
+        let create = ACTIONS
+            .iter()
+            .find(|spec| spec.name == "access.team_invitation.create")
+            .expect("invitation create action");
+        let create_params = create
+            .params
+            .iter()
+            .map(|param| param.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            create_params,
+            vec!["team_id", "email", "role", "ttl_seconds"]
+        );
+        assert!(!create_params.contains(&"principal_id"));
+        assert!(!create_params.contains(&"token"));
+
+        let accept = ACTIONS
+            .iter()
+            .find(|spec| spec.name == "access.team_invitation.accept")
+            .expect("invitation accept action");
+        assert_eq!(
+            accept
+                .params
+                .iter()
+                .map(|param| param.name)
+                .collect::<Vec<_>>(),
+            vec!["token"]
         );
     }
 

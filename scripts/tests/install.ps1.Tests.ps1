@@ -61,11 +61,22 @@ Describe 'Labby Windows installer contracts' {
     It 'classifies missing provenance verification as a trust failure' {
         Mock Get-Command { $null } -ParameterFilter { $Name -eq 'gh' }
         try {
-            Test-LabbyReleaseProvenance -ArtifactPath artifact.zip -Repo example/labby -ResolvedVersion v1.2.3
+            Test-LabbyReleaseProvenance -ArtifactPath artifact.zip -BundlePath bundle.json -Repo example/labby -ResolvedVersion v1.2.3
             throw 'provenance verification unexpectedly succeeded'
         } catch {
             $_.Exception.Data['LabbyTrustFailure'] | Should -BeTrue
         }
+    }
+
+    It 'passes the published provenance bundle to gh without requiring gh auth' {
+        $artifact = Join-Path $TestDrive 'artifact.zip'
+        $bundle = Join-Path $TestDrive 'bundle.json'
+        Set-Content -NoNewline -Path $artifact -Value 'artifact bytes'
+        Set-Content -NoNewline -Path $bundle -Value '{}'
+        Mock Get-Command { [pscustomobject]@{ Source = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+        Mock gh { $global:LASTEXITCODE = 0 }
+        { Test-LabbyReleaseProvenance -ArtifactPath $artifact -BundlePath $bundle -Repo example/labby -ResolvedVersion v1.2.3 } | Should -Not -Throw
+        Assert-MockCalled gh -Times 1 -ParameterFilter { $args -contains '--bundle' -and $args -contains $bundle }
     }
 
     It 'accepts named and bare checksum digests for the requested archive' {

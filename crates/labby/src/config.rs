@@ -37,6 +37,8 @@ pub use paths::{
 pub use secret_files::heal_env_file_permissions;
 
 #[cfg(test)]
+use std::sync::MutexGuard;
+#[cfg(test)]
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -67,7 +69,7 @@ static PROCESS_CODE_MODE_TEST_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(test)]
 pub(crate) struct ProcessCodeModeTestGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
+    _lock: MutexGuard<'static, ()>,
     previous: bool,
 }
 
@@ -346,11 +348,48 @@ impl ConfigBackupCandidate {
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+#[cfg(test)]
+static TEST_CONFIG_TOML_PATH_SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[cfg(test)]
 pub(crate) fn set_test_config_toml_path(path: Option<PathBuf>) {
     let slot = TEST_CONFIG_TOML_PATH.get_or_init(|| Mutex::new(None));
-    *slot.lock().expect("test config path lock") = path;
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+#[cfg(test)]
+pub(crate) struct TestConfigTomlPathGuard {
+    _serial: MutexGuard<'static, ()>,
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl TestConfigTomlPathGuard {
+    pub(crate) fn set(path: PathBuf) -> Self {
+        let serial = TEST_CONFIG_TOML_PATH_SERIAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = TEST_CONFIG_TOML_PATH
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        set_test_config_toml_path(Some(path));
+        Self {
+            _serial: serial,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestConfigTomlPathGuard {
+    fn drop(&mut self) {
+        set_test_config_toml_path(self.previous.take());
+    }
 }
 
 /// Fully-resolved `lab` configuration, assembled from env + TOML.

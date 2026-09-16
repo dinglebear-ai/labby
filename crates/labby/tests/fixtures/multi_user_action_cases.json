@@ -558,9 +558,8 @@
       "fixture": "isolated_access_workflow",
       "parameters": {
         "team_id": "$fixture.team_id",
-        "principal_id": "$fixture.principal_id",
+        "email": "$fixture.email",
         "role": "$fixture.role",
-        "token": "$fixture.invitation_code",
         "ttl_seconds": "$fixture.ttl_seconds"
       }
     },

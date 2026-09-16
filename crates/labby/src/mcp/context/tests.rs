@@ -723,21 +723,27 @@ fn local_only_actions_track_the_propagated_locality() {
         actions: crate::dispatch::setup::ACTIONS,
         dispatch: noop_dispatch,
     };
-    let Some(local_only) = crate::dispatch::setup::LOCAL_ONLY_ACTIONS.first() else {
-        return;
-    };
-
     let local_via_hop = resolve_caller_authorization(
         None,
         AbsentAuth::Untrusted,
         Some(PropagatedCallerAuth::trusted_local()),
     );
+    for local_only in ["tailscale_funnel.configure", "tailscale_funnel.disable"] {
+        assert!(
+            crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&local_only),
+            "{local_only} must stay in the canonical local-only action set"
+        );
+        assert!(
+            tool_execute_builtin_action_allowed(&entry, local_only, &local_via_hop),
+            "a local operator keeps {local_only} through Code Mode"
+        );
+    }
     assert!(
-        tool_execute_builtin_action_allowed(&entry, local_only, &local_via_hop),
-        "a local operator keeps local-only actions through Code Mode"
+        !crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&"tailscale_funnel.inspect"),
+        "read-only Funnel inspection should remain remotely inspectable"
     );
 
-    // A remote admin does NOT get them: these are gated on locality, not scope.
+    // A remote admin does NOT get mutations: these are gated on locality, not scope.
     let remote_admin = resolve_caller_authorization(
         None,
         AbsentAuth::Untrusted,
@@ -747,8 +753,14 @@ fn local_only_actions_track_the_propagated_locality() {
         )),
     );
     assert!(remote_admin.is_admin());
+    for local_only in ["tailscale_funnel.configure", "tailscale_funnel.disable"] {
+        assert!(
+            !tool_execute_builtin_action_allowed(&entry, local_only, &remote_admin),
+            "{local_only} is gated on locality, not on admin scope"
+        );
+    }
     assert!(
-        !tool_execute_builtin_action_allowed(&entry, local_only, &remote_admin),
-        "local-only actions are gated on locality, not on admin scope"
+        tool_execute_builtin_action_allowed(&entry, "tailscale_funnel.inspect", &remote_admin),
+        "read-only Funnel inspection remains available to an authenticated admin"
     );
 }

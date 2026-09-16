@@ -149,6 +149,58 @@ async fn dispatch_inner(
             })
             .await
         }
+        "tailscale_funnel.inspect" => {
+            let request =
+                serde_json::from_value::<super::tailscale_funnel::TailscaleFunnelRequest>(
+                    params.clone(),
+                )
+                .map_err(|error| ToolError::InvalidParam {
+                    message: format!("invalid Tailscale Funnel inspection request: {error}"),
+                    param: "https_port".to_string(),
+                })?;
+            to_json(super::tailscale_funnel::inspect(request.https_port).await?)
+        }
+        "tailscale_funnel.configure" => {
+            let request =
+                serde_json::from_value::<super::tailscale_funnel::TailscaleFunnelRequest>(
+                    params.clone(),
+                )
+                .map_err(|error| ToolError::InvalidParam {
+                    message: format!("invalid Tailscale Funnel configuration request: {error}"),
+                    param: "backend_url".to_string(),
+                })?;
+            to_json(super::tailscale_funnel::configure(request).await?)
+        }
+        "tailscale_funnel.disable" => {
+            let request =
+                serde_json::from_value::<super::tailscale_funnel::TailscaleFunnelRequest>(
+                    params.clone(),
+                )
+                .map_err(|error| ToolError::InvalidParam {
+                    message: format!("invalid Tailscale Funnel disable request: {error}"),
+                    param: "backend_url".to_string(),
+                })?;
+            to_json(super::tailscale_funnel::disable(request).await?)
+        }
+        "public_proxy.render" => {
+            let request = serde_json::from_value::<super::public_proxy::PublicProxyRenderRequest>(
+                params.clone(),
+            )
+            .map_err(|error| ToolError::InvalidParam {
+                message: format!("invalid public proxy render request: {error}"),
+                param: "public_url".to_string(),
+            })?;
+            to_json(super::public_proxy::render(request)?)
+        }
+        "organization_profile.create" => {
+            let params = params.clone();
+            run_blocking_setup("organization_profile.create", move || {
+                super::organization_profile::create(&params)
+            })
+            .await
+        }
+        "organization_profile.preview" => super::organization_profile::preview(params),
+        "organization_profile.apply" => super::organization_profile::apply(params).await,
         // Plugin-lifecycle actions. The dotted `<resource>.<verb>` forms are
         // the canonical names; the snake_case arms beside them are deprecated
         // aliases retained for backward compatibility. Every name routed here
@@ -1129,6 +1181,10 @@ mod tests {
             "plugin_sync",
             "plugin_export",
             "plugin_connectivity",
+            "public_proxy.render",
+            "organization_profile.create",
+            "organization_profile.preview",
+            "organization_profile.apply",
         ] {
             assert!(names.contains(required), "missing setup action {required}");
         }
@@ -1331,7 +1387,7 @@ mod tests {
             "# keep me\n[services]\n# upstream policy\nbuilt_in_upstream_apis_enabled = true\n[plugin_owned]\nfuture = \"keep\"\n",
         )
         .expect("write config");
-        crate::config::set_test_config_toml_path(Some(config_path.clone()));
+        let _config_path_guard = crate::config::TestConfigTomlPathGuard::set(config_path.clone());
         crate::registry::set_runtime_built_in_upstream_apis_enabled(true);
 
         let updated = dispatch(
@@ -1363,7 +1419,6 @@ mod tests {
         );
 
         crate::registry::set_runtime_built_in_upstream_apis_enabled(previous_runtime);
-        crate::config::set_test_config_toml_path(None);
     }
 
     #[tokio::test]
@@ -1375,11 +1430,7 @@ mod tests {
         let config_path = config_dir.join("config.toml");
         let original = "# keep me\n[mcp]\nport = 8765\n[plugin_owned]\nfuture = \"keep\"\n";
         std::fs::write(&config_path, original).expect("write config");
-        crate::config::set_test_config_toml_path(Some(config_path.clone()));
-        let lab_dir = temp.path().join("lab-home");
-        std::fs::create_dir_all(&lab_dir).expect("lab dir");
-        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
-
+        let _config_path_guard = crate::config::TestConfigTomlPathGuard::set(config_path.clone());
         // Pin an empty Lab home. Without this the dispatch loads the developer's
         // real `~/.labby/.env`, and on any machine that actually runs Labby that
         // file defines `LABBY_MCP_HTTP_PORT`, which makes `mcp.port` report as
@@ -1438,9 +1489,6 @@ mod tests {
                 .expect("read config")
                 .contains("port = 8766")
         );
-
-        crate::dispatch::helpers::set_test_lab_home(None);
-        crate::config::set_test_config_toml_path(None);
     }
 
     #[tokio::test]
@@ -1451,7 +1499,7 @@ mod tests {
         std::fs::create_dir_all(&config_dir).expect("config dir");
         let config_path = config_dir.join("config.toml");
         std::fs::write(&config_path, "[mcp]\nport = 8765\n").expect("write config");
-        crate::config::set_test_config_toml_path(Some(config_path.clone()));
+        let _config_path_guard = crate::config::TestConfigTomlPathGuard::set(config_path.clone());
 
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
@@ -1483,8 +1531,6 @@ mod tests {
                 .expect("read config")
                 .contains("port = 8765")
         );
-
-        crate::config::set_test_config_toml_path(None);
     }
 
     #[tokio::test]

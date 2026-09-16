@@ -468,10 +468,11 @@ pub(crate) fn tool_execute_builtin_action_allowed(
         .strip_prefix(&format!("{}.", entry.name))
         .unwrap_or(action);
     if entry.name == "setup" && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare) {
-        // These mint credentials or ask the host to probe a caller-selected
-        // URL, so they are for trusted local stdio only. A remote caller always
-        // carries an AuthContext and is refused; a local operator reaching them
-        // through Code Mode is honored, because the propagated facts say so.
+        // These mint credentials, initiate host-local connectivity probes, or
+        // mutate host-local proxy/Tailscale state, so they are for trusted local
+        // transports only. A remote caller always carries an AuthContext and is
+        // refused; a local operator reaching them through Code Mode is honored,
+        // because the propagated facts say so.
         return caller.is_trusted_local();
     }
     if !builtin_action_requires_admin(entry, action) {

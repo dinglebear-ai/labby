@@ -23,34 +23,67 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 
 ## Google OAuth and ChatGPT web
 
-Labby's supported ChatGPT web connection requires the server to run in OAuth mode and to have a publicly reachable HTTPS origin. A bearer-only Labby server is appropriate for local or explicitly token-configured CLI clients, but it is not the supported ChatGPT web connection path.
+Labby's supported ChatGPT web connection requires OAuth and one browser-visible public HTTPS origin. Bearer auth remains useful for local/CLI and break-glass access, but it is not the supported Labby -> ChatGPT web path.
 
-For Google OAuth, choose the final public Labby origin before creating provider credentials. If the public origin is `https://labby.example.com`, Labby's Google callback is exactly:
+### Fast path: let Labby calculate the provider values
+
+Before opening Google Cloud, choose the final Labby URL and ask Labby to print the exact provider recipe:
+
+```bash
+labby setup google-oauth --public-url https://labby.example.com
+# Add --json for automation or ticket/checklist generation.
+```
+
+For `https://labby.example.com`, the Google callback is exactly:
 
 ```text
 https://labby.example.com/auth/google/callback
 ```
 
-Configure Google in this order:
+Do not substitute the internal container URL, an IP address, the `/mcp` URL, or a URL with an extra trailing slash. Google compares the callback exactly.
 
-1. Open the project in Google Auth Platform and complete the Branding page with the application name and support/contact information.
-2. Choose the Audience appropriate for the deployment. For an External application that is still in testing, add the Google accounts that must be able to sign in as test users.
-3. Under Clients, create an OAuth 2.0 client of type **Web application**.
-4. Add the exact Labby callback URL above to **Authorized redirect URIs**. Do not add a wildcard, path variant, query string, or trailing slash after `callback`.
-5. Copy the generated Client ID and Client secret. Treat the secret as a credential and do not put it in `config.toml`, shell history, or documentation.
-6. Use the Google scopes Labby expects: `openid`, `email`, and `profile` (the defaults).
-7. Start Labby setup and select Google OAuth. Interactive setup now prints the exact redirect URI before asking for the provider credentials.
+### Google Cloud Console: exact click-by-click setup
 
-Interactive setup:
+1. **Sign in and select the project.** Open <https://console.cloud.google.com/>. Use the project selector in the top bar. Create a dedicated Labby project if your team does not already have one. Keep production and experiments in separate projects when practical.
+2. **Open Google Auth Platform.** Use **Navigation menu -> Google Auth Platform** or go directly to <https://console.cloud.google.com/auth/overview>. If the project has never used Google Auth Platform, click **Get started**.
+3. **Initial app registration.** Enter:
+   - **App name:** `Labby` (or an environment-qualified name such as `Labby - Team`)
+   - **User support email:** a monitored team/admin address
+   - **Audience:** prefer **Internal** when the Cloud project belongs to the same Google Workspace/Cloud Identity organization as every intended Labby user; otherwise choose **External**
+   - **Contact information:** a monitored team/admin address
+4. **Branding.** Open <https://console.cloud.google.com/auth/branding>. Confirm the app name and support/contact information. If Google asks for **Authorized domains**, add the organization-owned registrable parent domain used by the public Labby host (for `labby.example.com`, that is normally `example.com`). Domain verification/publishing requirements are Google-owned and are more relevant to an External production app.
+5. **Audience.** Open <https://console.cloud.google.com/auth/audience>.
+   - **Internal** is the lowest-friction team deployment when all coworkers are in the same Workspace organization. Users outside that organization will receive `org_internal`.
+   - For **External**, Testing is sufficient for a bounded deployment. Labby requests only the OpenID identity scopes `openid`, `email`, and `profile`. Google explicitly exempts that identity-only subset from the normal Testing requirement to add every user to the test-user list and from the normal seven-day Testing authorization expiry. If you later add any non-identity Google scope, revisit test users, verification, and token-expiry requirements.
+6. **Data Access.** Open <https://console.cloud.google.com/auth/scopes>. Click **Add or remove scopes** if needed. Keep the app identity-only. Confirm only:
+   - `openid`
+   - `email` (the console may display `https://www.googleapis.com/auth/userinfo.email`)
+   - `profile` (the console may display `https://www.googleapis.com/auth/userinfo.profile`)
+
+   Labby sign-in does **not** need Gmail, Drive, Calendar, Contacts, or other Google API scopes. Do not enable unrelated Google APIs merely for Labby authentication.
+7. **Create the OAuth client.** Open <https://console.cloud.google.com/auth/clients> and click **Create client**. Set:
+   - **Application type:** **Web application**
+   - **Name:** `Labby` or `Labby <environment>`
+   - **Authorized JavaScript origins:** leave empty for Labby's server-side Google OAuth flow
+   - **Authorized redirect URIs:** click **Add URI** and paste the exact callback printed by `labby setup google-oauth`, for example `https://labby.example.com/auth/google/callback`
+8. Click **Create**. Copy the **Client ID** and **Client secret** immediately and put the secret in the team's secret manager. Do not commit it, paste it into tickets/chat, place it in `config.toml`, or pass it as a command-line argument. Google notes that OAuth client changes can take several minutes, and sometimes longer, to propagate.
+
+### Configure Labby with the Google client
+
+Interactive server setup asks for the public URL first, prints the exact Google console recipe and callback, then prompts for the client credentials:
 
 ```bash
 labby setup
-# role: Server
-# authentication: Google OAuth
-# public URL: https://labby.example.com
+# Role: Server
+# Deployment: Native or Incus
+# Authentication: Google OAuth
+# Public browser / OAuth URL: https://labby.example.com
+# Google client ID: <paste client ID>
+# Google client secret: <secret prompt; input is hidden>
+# Bootstrap admin email: <the Google identity that should initially administer Labby>
 ```
 
-Unattended setup keeps provider secrets in environment variables rather than command-line arguments:
+For unattended deployment, keep secrets out of argv:
 
 ```bash
 export LABBY_GOOGLE_CLIENT_ID='...apps.googleusercontent.com'
@@ -65,19 +98,94 @@ labby setup \
   --yes
 ```
 
-The configured admin email must be the verified Google identity that should receive the initial administrative scope. Labby generates the remaining local OAuth encryption material during setup. Google access and refresh tokens remain server-side.
+Setup persists the provider credentials in Labby's managed environment file with the service configuration; the client secret is not a normal `config.toml` setting. The configured admin email must resolve to the Google identity that should receive the initial administrative scope. Labby generates its remaining local OAuth encryption/session material. Google access/refresh tokens remain server-side.
 
-After the service is reachable through HTTPS, verify discovery before adding ChatGPT:
+### Recommended HTTPS fast path: Tailscale Funnel
+
+When the Labby host is already signed into Tailscale, the built-in Funnel setup is the lowest-friction way to create the public HTTPS origin ChatGPT needs. Inspection is read-only:
 
 ```bash
+labby setup tailscale-funnel
+```
+
+Apply the recommended mapping to the local Labby listener with:
+
+```bash
+labby setup tailscale-funnel --apply
+```
+
+Labby accepts only loopback backends and Tailscale's public HTTPS ports `443`, `8443`, and `10000`. It will not overwrite a Funnel mapping owned by another service, and it will not silently promote an existing tailnet-only `tailscale serve` mapping to public Funnel. Configure and disable are local-only administrative actions.
+
+On a node that has never enabled HTTPS/Funnel, Tailscale may require a one-time web approval. Labby bounds the CLI call instead of waiting indefinitely, surfaces the approval URL when Tailscale provides one, and leaves the mapping unconfigured. Complete the Tailscale approval, then rerun `labby setup tailscale-funnel --apply`. A successful result prints both exact values needed by the remaining setup:
+
+- Google callback: `<public-origin>/auth/google/callback`
+- ChatGPT MCP endpoint: `<public-origin>/mcp`
+
+Use `--https-port 8443` or `--https-port 10000` only when you deliberately need one of Tailscale's alternate supported Funnel ports.
+
+### Publish the HTTPS origin
+
+The reverse proxy, tunnel, or ingress must preserve the external origin and forward all of these to the same Labby service:
+
+- `/.well-known/oauth-authorization-server`
+- `/.well-known/oauth-protected-resource`
+- `/.well-known/openid-configuration` when advertised
+- `/auth/login`
+- `/auth/google/callback`
+- `POST /register`
+- `/authorize`
+- `/token`
+- `/mcp`
+
+Do not protect those OAuth protocol routes behind a second incompatible authentication layer. A WAF/proxy that blocks Dynamic Client Registration can make MCP discovery succeed while ChatGPT authorization later fails.
+
+### Prove Google -> Labby before adding ChatGPT
+
+Run this ladder in order:
+
+```bash
+# 1. OAuth discovery is public and coherent.
 curl -fsS https://labby.example.com/.well-known/oauth-authorization-server
 curl -fsS https://labby.example.com/.well-known/oauth-protected-resource
+
+# 2. MCP exists. An unauthenticated request should challenge rather than 404.
 curl -i https://labby.example.com/mcp
 ```
 
-An unauthenticated `/mcp` request should challenge the caller and point it at Labby's OAuth resource metadata. The reverse proxy must pass the OAuth discovery endpoints and `POST /register`, `/authorize`, `/token`, and `/mcp` to Labby. A WAF or proxy that blocks dynamic client registration can make ChatGPT discovery appear to work while authorization fails; use the DCR diagnostics in [OAuth](../runtime/OAUTH.md) when that happens.
+Then open this URL in a browser and complete Google sign-in:
 
-In ChatGPT web, create a custom MCP app in the workspace's developer/app settings, use `https://labby.example.com/mcp` as the MCP endpoint, select OAuth, scan tools, and complete the Google authorization flow. Availability and exact ChatGPT UI labels are workspace/plan dependent and may change; Labby's durable requirement is OAuth plus the public HTTPS `/mcp` endpoint.
+```text
+https://labby.example.com/auth/login?return_to=%2F
+```
+
+A successful browser flow must return through the exact Google callback and leave you signed into Labby as the expected identity. If Google reports `redirect_uri_mismatch`, compare the URI character-for-character and allow for provider propagation time. If Google reports `org_internal`, the selected Google account is outside an Internal app's organization.
+
+### Connect Labby to ChatGPT web
+
+Once the browser login succeeds:
+
+1. Use **ChatGPT web**. Full custom MCP app setup is currently a web workflow.
+2. Ensure developer mode is available to your account. Workspace admins first enable it under **Workspace Settings -> Permissions & Roles -> Connected Data Developer mode / Create custom MCP connectors**. On Enterprise/Edu, an enabled coworker then turns it on under **Settings -> Apps -> Advanced Settings**. Business admins/owners can enable it for themselves while creating an app under **Workspace Settings -> Apps -> Create**.
+3. Create the app. Admins/owners can use **Workspace Settings -> Apps -> Create**. An authorized user can use **Settings -> Apps -> Create**.
+4. Enter Labby's MCP endpoint: `https://labby.example.com/mcp`.
+5. Choose **OAuth** as the authentication mechanism.
+6. Click **Scan Tools** and wait for discovery. ChatGPT should read Labby's protected-resource and authorization-server metadata.
+7. Complete the OAuth prompt with an allowed Google coworker identity, then let **Scan Tools** finish.
+8. Click **Create**. In user settings the app appears under **Settings -> Apps -> Enabled Apps** with a **Dev** label; workspace-created apps appear as drafts under **Workspace Settings -> Apps -> Drafts** until an admin/owner publishes them.
+9. Open a new chat, select the draft/dev Labby app from the tools menu, and perform one safe read-only call. Confirm the expected tool surface before publishing or enabling write-capable actions broadly.
+
+If discovery works but authorization fails, verify `/register`, `/authorize`, `/token`, and the WAF/proxy path before changing Google. Use [OAuth](../runtime/OAUTH.md) for DCR/CIMD diagnostics.
+
+### Google OAuth troubleshooting by symptom
+
+| Symptom | Most likely cause | Fix |
+| --- | --- | --- |
+| `redirect_uri_mismatch` | Google client callback differs from Labby | Copy the value from `labby setup google-oauth --public-url ...` exactly; no wildcard/query/trailing slash |
+| `org_internal` | External Google account against an Internal app | Use an account in the project organization or change Audience deliberately |
+| Google client ID/secret rejected immediately | Wrong client, secret, or stale change | Re-open **Google Auth Platform -> Clients**, verify the Web application client, then allow propagation time |
+| Login works in browser but ChatGPT cannot authorize | Public OAuth/DCR routes blocked or rewritten | Verify discovery, `/register`, `/authorize`, `/token`, and `/mcp` through the public edge |
+| OAuth redirects to an internal hostname | `LABBY_PUBLIC_URL` does not match the real browser origin | Re-run setup with the final HTTPS origin |
+| Google asks for unrelated Gmail/Drive permissions | Extra Google scopes were configured | Remove them; Labby authentication needs only `openid email profile` |
 
 ## macOS server and automatic updates
 
@@ -175,22 +283,90 @@ directory synchronization guarantee through the portable filesystem API.
 | Draft configuration | `draft.get`, `draft.set`, `draft.commit`, `draft.discard` |
 | Settings | `settings.state`, `settings.schema`, `settings.env_schema`, `settings.update`, `settings.env.update`, `settings.config.update` |
 | Plugin lifecycle | `plugin.install`, `plugin.uninstall`, `plugins.installed`, `plugin_hook`, `plugin_sync`, `plugin_export` |
-| Proxy | `proxy.configure` |
+| Local stdio proxy | `proxy.configure` |
+| Public HTTPS | `public_proxy.render` |
+| Organization enrollment | `organization_profile.create`, `organization_profile.preview`, `organization_profile.apply` |
 | Service inspection | `services.status`, `state` |
 
 Legacy snake-case plugin action aliases remain in the action catalog for compatibility; new integrations should use the dotted canonical action names.
+
+## Organization Bootstrap Profiles
+
+Team Labby can publish a signed, non-secret profile that seeds approved team
+integrations into a teammate's personal Labby after enrollment. The profile is
+data, not remote runtime authority: applying it mutates only the teammate's
+personal gateway configuration, and later execution remains controlled by that
+personal Labby.
+
+- `organization_profile.create` signs the canonical profile with the existing
+  Depot authority Ed25519 signing seed. The operator supplies an externally
+  reachable HTTPS Team Depot MCP URL plus a public key id. The profile always
+  includes Team Depot and the Linear notifications MCP; it contains no bearer
+  tokens, OAuth refresh tokens, client secrets, or local container addresses.
+- `organization_profile.preview` verifies the signature and returns the signer
+  SHA-256 fingerprint plus the exact integrations that would be added. It does
+  not mutate gateway state.
+- `organization_profile.apply` requires an explicit
+  `expected_signer_fingerprint` and verifies the signature again. Existing
+  personal definitions with the same canonical name + endpoint are preserved;
+  a same-name/different-endpoint conflict aborts before mutation. Missing Team
+  Depot and Linear definitions use the gateway's all-or-nothing batch path, so
+  the organization defaults are persisted together or not at all. On first
+  trust, the fingerprint is a human trust decision: Team Labby shows it before
+  handoff, personal Labby shows the cryptographically verified fingerprint
+  again, and the user explicitly confirms trust before apply. Signature
+  verification proves integrity and possession of that key; it does not by
+  itself make an unknown self-signed key a pre-pinned organization root.
+
+A Team Labby that sets `LABBY_ORGANIZATION_BOOTSTRAP_TEAM_DEPOT_URL` and
+`LABBY_ORGANIZATION_BOOTSTRAP_KEY_ID` will attach this signed profile offer to
+a successful email-bound Team invitation acceptance when the signing key is
+available. The signed profile carries the accepted membership's real
+Organization ID. Failure to construct the optional profile is logged but never
+rolls back or masks a successful Team enrollment.
+
+The browser completion flow does not apply that profile to Team Labby. It offers
+a safe handoff to the user's personal Labby (local `127.0.0.1:8765` by
+default, or a remote HTTPS origin). The non-secret signed profile travels only
+in the URL fragment, survives personal-Labby sign-in in same-tab session
+storage, and is then previewed on personal Labby. The user sees the exact
+integrations and signer fingerprint and explicitly chooses **Trust team and
+apply defaults**. Skipping the profile leaves Team membership intact and changes
+nothing in personal runtime configuration.
+
+## Public HTTPS without reverse-proxy guesswork
+
+`public_proxy.render` is the shared non-mutating contract for public exposure.
+It validates an HTTPS public origin plus a credential-free HTTP(S) private
+backend origin, then renders streaming-safe Caddy, Nginx, and Traefik examples
+and the exact verification commands. Caddy is the recommended low-friction
+default. The WebUI exposes the same contract under **Settings → Doctor → Public
+HTTPS**; Nginx and Traefik stay behind progressive disclosure. The existing
+`proxy.configure` action is a different capability: it configures Labby's
+ephemeral stdio MCP proxy and is not a public reverse-proxy generator.
 
 ## CLI
 
 `labby setup` is the supported operator entrypoint. Use `labby setup --help` and the generated [CLI help](../generated/cli-help.md) for the exact current command grammar.
 
-Bare `labby setup` prompts for a server or client role. Server setup uses a native
-service by default; Linux x86_64 hosts with a reachable Incus daemon can select
-`--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
-Google and Authelia configuration require provider credentials and a public URL.
-Client setup saves the selected gateway URL and uses browser OAuth or a bearer
-token. The optional desktop app is downloaded from the matching release and its
-provenance is verified before installation.
+Bare `labby setup` starts with intent, not infrastructure trivia. After choosing
+whether this computer runs Labby or connects to another Labby, a new server gets
+three choices: **Personal / local**, **Browser + ChatGPT**, or **Customize**.
+
+- **Personal / local** uses the secure native defaults (`127.0.0.1:8765`, bearer
+  authentication, desktop app when supported) without asking deployment, bind,
+  port, auth-provider, or desktop questions.
+- **Browser + ChatGPT** uses the same network/deployment defaults and selects
+  Google OAuth, then asks only for the public HTTPS/provider values actually
+  required for browser authentication.
+- **Customize** preserves every existing advanced control: native vs Incus, bind
+  address, port, bearer/Google/Authelia, desktop selection, and the explicit CLI
+  flags. Supplying those advanced flags directly also selects the matching path.
+
+Resumable setup keeps staged host, port, and authentication choices, so an
+interrupted run continues instead of silently starting over. Client setup saves
+the selected gateway URL and uses browser OAuth or a bearer token. Published
+desktop packages remain provenance-verified before installation.
 
 For a fresh bearer-only server, explicit setup creates the durable first owner
 for its static credential. It preserves an existing owner and refuses a blocked
@@ -206,8 +382,17 @@ OAuth client setup requires a browser; `--no-browser` rejects that combination
 before changing configuration. A bearer client can be configured without a browser.
 
 ```bash
-# Inspect a native server setup without changing host state.
+# The common interactive path: choose Personal/local, Browser + ChatGPT, or Customize.
+labby setup
+
+# Inspect an explicit native/bearer server plan without changing host state.
 labby setup --role server --oauth none --no-desktop --yes --dry-run
+
+# Generate the recommended Caddy reverse-proxy config for a public Labby origin.
+labby setup public-proxy --public-url https://labby.example.com
+
+# Power users can render Nginx, Traefik, or every supported proxy format.
+labby setup public-proxy --public-url https://labby.example.com --format nginx
 
 # Connect this machine to an existing OAuth gateway.
 labby setup --role client --server-url https://labby.example.com --oauth google --no-desktop --yes
@@ -217,7 +402,7 @@ labby setup wizard
 ```
 
 The Linux/macOS release installer invokes this same setup flow after verifying
-and installing the binary. This contract requires an installer-bearing release that includes the first-run role interface; public `v1.13.3` predates it and rejects `labby setup --role ...`. The verified installer also requires an attestation-capable, authenticated GitHub CLI; Ubuntu 26.04's packaged `gh 2.46.0` is too old. Verify `gh attestation verify --help` and `gh auth status --hostname github.com` before bootstrap. Unattended callers must select `LABBY_SETUP_ROLE`;
+and installing the binary. This contract requires an installer-bearing release that includes the first-run role interface and `release-provenance.sigstore.json`; public `v1.13.3` predates it and rejects `labby setup --role ...`. The verified installer requires an attestation-capable GitHub CLI, but it verifies the published Sigstore bundle locally and therefore does not require `gh auth login` or a personal GitHub token. Ubuntu 26.04's packaged `gh 2.46.0` is too old. Verify `gh attestation verify --help` before bootstrap. Unattended callers must select `LABBY_SETUP_ROLE`;
 other shell options include `LABBY_SETUP_DEPLOYMENT`, `LABBY_SETUP_HOST`,
 `LABBY_SETUP_PORT`, `LABBY_SETUP_SERVER_URL`, `LABBY_SETUP_PUBLIC_URL`,
 `LABBY_SETUP_OAUTH`, `LABBY_SETUP_DESKTOP`, and `LABBY_SETUP_NO_BROWSER`.

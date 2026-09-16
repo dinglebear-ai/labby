@@ -124,6 +124,10 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
     ("setup", "plugin_sync"),
     ("setup", "plugins.installed"),
     ("setup", "proxy.configure"),
+    ("setup", "public_proxy.render"),
+    ("setup", "tailscale_funnel.inspect"),
+    ("setup", "tailscale_funnel.configure"),
+    ("setup", "tailscale_funnel.disable"),
     ("setup", "repair"),
     ("setup", "services.status"),
     ("setup", "state"),
@@ -144,6 +148,7 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
 ];
 
 const WEB_ACTION_CLIENT_SOURCES: &[&str] = &[
+    include_str!("../../../../apps/gateway-admin/lib/api/access-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/doctor-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/gateway-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/metrics-client.ts"),
@@ -323,7 +328,7 @@ mod tests {
     #[cfg(feature = "all")]
     #[test]
     fn all_features_cli_action_denominator_is_exact() {
-        assert_eq!(CLI_ACTION_BINDINGS.len(), 76);
+        assert_eq!(CLI_ACTION_BINDINGS.len(), 80);
     }
 
     #[test]
@@ -369,6 +374,16 @@ mod tests {
                 .all(|(service, action)| web_action_bound(service, action))
         );
         assert!(!projected.is_empty());
+        for binding in [
+            ("access", "access.team.list"),
+            ("access", "access.team_invitation.create"),
+            ("access", "access.team_invitation.accept"),
+        ] {
+            assert!(
+                projected.contains(&binding),
+                "missing WebUI access binding {binding:?}"
+            );
+        }
     }
 
     #[test]

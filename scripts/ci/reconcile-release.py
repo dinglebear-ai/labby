@@ -38,7 +38,14 @@ attestation_errors = {
     for row in expected.get("attestations", [])
     if observed_attestations.get(row["subject"]) != "verified"
 }
-complete = not (missing or unexpected or mismatched or distribution_errors or attestation_errors)
-report = {"tag": expected["tag"], "complete": complete, "missing": missing, "unexpected": unexpected, "mismatched": mismatched, "distribution_errors": distribution_errors, "attestation_errors": attestation_errors}
+required_companions = {"release-provenance.sigstore.json"}
+observed_companions = {row.get("name"): row.get("status") for row in observed.get("companion_assets", [])}
+companion_errors = {
+    name: observed_companions.get(name, "not observed")
+    for name in required_companions
+    if observed_companions.get(name) != "present"
+}
+complete = not (missing or unexpected or mismatched or distribution_errors or attestation_errors or companion_errors)
+report = {"tag": expected["tag"], "complete": complete, "missing": missing, "unexpected": unexpected, "mismatched": mismatched, "distribution_errors": distribution_errors, "attestation_errors": attestation_errors, "companion_errors": companion_errors}
 print(json.dumps(report, sort_keys=True))
 raise SystemExit(0 if complete else 1)

@@ -1348,7 +1348,9 @@ mod tests {
 
     #[tokio::test]
     async fn api_terminal_observation_covers_outer_handler_failures() {
-        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let logs = crate::test_support::SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()
@@ -1387,7 +1389,9 @@ mod tests {
 
     #[tokio::test]
     async fn download_observation_tracks_eof_partial_drop_and_unpolled_timeout_exactly_once() {
-        let _lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let logs = crate::test_support::SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()

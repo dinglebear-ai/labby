@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
 from pathlib import Path
@@ -620,7 +621,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 changed = Path(tmp) / "changed"; output = Path(tmp) / "output"
                 changed.write_text(path + "\n")
-                subprocess.run(["python3", str(ROOT / "scripts/ci/changed_paths.py"), "--event", "pull_request", "--changed-files", str(changed), "--output", str(output)], check=True, stdout=subprocess.DEVNULL)
+                subprocess.run(["python3", str(ROOT / "scripts/ci/changed_paths.py"), "--event", "pull_request", "--changed-files", str(changed), "--output", str(output)], check=True, stdout=subprocess.DEVNULL, cwd=tmp)
                 routed = dict(line.split("=", 1) for line in output.read_text().splitlines())
                 self.assertEqual("true", routed["workflow"], path)
                 self.assertEqual("true", routed["docker"], path)
@@ -965,11 +966,11 @@ class ReleaseHelperTests(unittest.TestCase):
             observed = work / "observed.json"
             manifest_data = json.loads(manifest.read_text())
             verified = [{"subject": item["subject"], "status": "verified"} for item in manifest_data["attestations"]]
-            observed.write_text(json.dumps({"subjects": [row, row["sbom"]], "attestations": verified, "distributions": manifest_data["distributions"]}))
+            observed.write_text(json.dumps({"subjects": [row, row["sbom"]], "companion_assets": [{"name": "release-provenance.sigstore.json", "status": "present"}], "attestations": verified, "distributions": manifest_data["distributions"]}))
             command = ["python3", str(ROOT / "scripts/ci/reconcile-release.py"), "--manifest", str(manifest), "--observed", str(observed)]
             self.assertEqual(0, subprocess.run(command, check=False).returncode)
             row["sha256"] = "0" * 64
-            observed.write_text(json.dumps({"subjects": [row, row["sbom"]], "attestations": verified, "distributions": manifest_data["distributions"]}))
+            observed.write_text(json.dumps({"subjects": [row, row["sbom"]], "companion_assets": [{"name": "release-provenance.sigstore.json", "status": "present"}], "attestations": verified, "distributions": manifest_data["distributions"]}))
             failed = subprocess.run(command, text=True, capture_output=True, check=False)
             self.assertNotEqual(0, failed.returncode)
             self.assertIn('"mismatched": ["lab-linux.tar.gz"]', failed.stdout)
@@ -1024,9 +1025,28 @@ class ReleaseHelperTests(unittest.TestCase):
                 current = json.loads(json.dumps(expected))
                 current["distributions"].pop(missing, None)
                 current["subjects"].append(expected["subjects"][0]["sbom"])
+                current["companion_assets"] = [{"name": "release-provenance.sigstore.json", "status": "present"}]
                 observed.write_text(json.dumps(current))
                 result = subprocess.run(["python3", str(ROOT / "scripts/ci/reconcile-release.py"), "--manifest", str(manifest), "--observed", str(observed)], check=False)
                 self.assertEqual(0 if missing is None else 1, result.returncode, missing)
+
+    def test_reconciler_requires_release_provenance_companion_bundle(self) -> None:
+        expected = {
+            "schema": "ai.dinglebear.labby/release-manifest/v1", "tag": "v1.2.3",
+            "subjects": [],
+            "distributions": {name: {"identity": name} for name in ("github", "npm", "incus", "mcp")},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp); manifest = work / "manifest"; observed = work / "observed"
+            manifest.write_text(json.dumps(expected))
+            base = {"subjects": [], "attestations": [], "distributions": expected["distributions"]}
+            observed.write_text(json.dumps({**base, "companion_assets": [{"name": "release-provenance.sigstore.json", "status": "present"}]}))
+            command = ["python3", str(ROOT / "scripts/ci/reconcile-release.py"), "--manifest", str(manifest), "--observed", str(observed)]
+            self.assertEqual(0, subprocess.run(command, check=False).returncode)
+            observed.write_text(json.dumps({**base, "companion_assets": [{"name": "release-provenance.sigstore.json", "status": "missing"}]}))
+            failed = subprocess.run(command, text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("release-provenance.sigstore.json", failed.stdout)
 
     def test_observer_has_authoritative_remote_probe_for_every_surface(self) -> None:
         observer = (ROOT / "scripts/ci/observe-release.py").read_text()
@@ -1214,7 +1234,7 @@ if authenticated_action; then exit 93; fi
                 "usage.db": "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,capability TEXT NOT NULL,operation TEXT NOT NULL,subject_scoped INTEGER NOT NULL,actor TEXT NOT NULL,outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL,response_bytes INTEGER)",
             }
             for name, schema in schemas.items():
-                with sqlite3.connect(Path(tmp) / name) as database:
+                with closing(sqlite3.connect(Path(tmp) / name)) as database, database:
                     database.execute(schema)
             subprocess.run(["python3", str(helper), "seed", tmp], check=True)
             self.assertEqual(0, subprocess.run(["python3", str(helper), "verify", tmp]).returncode)
@@ -1223,7 +1243,7 @@ if authenticated_action; then exit 93; fi
                 ("access.db", "DELETE FROM access_security_events"),
                 ("usage.db", "DELETE FROM upstream_calls"),
             ):
-                with sqlite3.connect(Path(tmp) / database) as connection:
+                with closing(sqlite3.connect(Path(tmp) / database)) as connection, connection:
                     connection.execute(statement)
                 self.assertNotEqual(0, subprocess.run(["python3", str(helper), "verify", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, database)
                 subprocess.run(["python3", str(helper), "seed", tmp], check=True)
@@ -1240,7 +1260,7 @@ if authenticated_action; then exit 93; fi
         # v1.13.3 in bearer mode: no auth.db, no access.db, and an older usage schema.
         old_usage = "CREATE TABLE upstream_calls(id INTEGER PRIMARY KEY AUTOINCREMENT,ts_unix INTEGER NOT NULL,upstream_name TEXT NOT NULL,tool_name TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'unattributed',outcome TEXT NOT NULL,elapsed_ms INTEGER NOT NULL)"
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage)
             seed = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertEqual(0, seed.returncode, seed.stderr)
@@ -1251,14 +1271,14 @@ if authenticated_action; then exit 93; fi
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The usage store prunes rows older than its retention window, so
             # the seeded row must carry a current timestamp.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls WHERE ts_unix < CAST(strftime('%s','now') AS INTEGER) - 86400")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             # The candidate migrates usage.db in place; the seeded row must survive that.
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("ALTER TABLE upstream_calls ADD COLUMN response_bytes INTEGER")
             self.assertEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute("DELETE FROM upstream_calls")
             self.assertNotEqual(0, subprocess.run([sys.executable, str(helper), "verify", tmp], capture_output=True).returncode)
             (Path(tmp) / "n-minus-one-seeded.json").unlink()
@@ -1268,7 +1288,7 @@ if authenticated_action; then exit 93; fi
             self.assertNotEqual(0, none.returncode)
             self.assertIn("created none of the durable databases", none.stderr)
         with tempfile.TemporaryDirectory() as tmp:
-            with sqlite3.connect(Path(tmp) / "usage.db") as database:
+            with closing(sqlite3.connect(Path(tmp) / "usage.db")) as database, database:
                 database.execute(old_usage.replace("elapsed_ms INTEGER NOT NULL)", "elapsed_ms INTEGER NOT NULL,unknown_required TEXT NOT NULL)"))
             unknown = subprocess.run([sys.executable, str(helper), "seed", tmp], text=True, capture_output=True, check=False)
             self.assertNotEqual(0, unknown.returncode)
@@ -1302,8 +1322,10 @@ if authenticated_action; then exit 93; fi
         self.assertIn('"auxiliary"', manifest)
         observer = self.text("scripts/ci/observe-release.py")
         self.assertIn("verify-release-provenance.sh", observer)
+        self.assertIn("release-provenance.sigstore.json", observer)
         reconciler = self.text("scripts/ci/reconcile-release.py")
         self.assertIn("attestation_errors", reconciler)
+        self.assertIn("companion_errors", reconciler)
 
     def test_mcp_semantic_observation_can_converge_without_inventing_digest(self) -> None:
         observer = self.text("scripts/ci/observe-release.py")

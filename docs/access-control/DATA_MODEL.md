@@ -1,13 +1,13 @@
 ---
 title: "Access Control Data Model"
 created: "2026-08-22"
-updated: "2026-09-13"
+updated: "2026-09-16"
 status: "design"
 ---
 
 # Access Control Data Model
 
-> The [Schema v7 (current)](#schema-v7-current) section describes the
+> The [Schema v8 (current)](#schema-v8-current) section describes the
 > implemented store. Most other entity sections are the broader design.
 
 ## Storage direction
@@ -50,7 +50,7 @@ Artifact IDs/revision IDs remain owned by the Artifact subsystem and are stored 
 
 ### access_metadata
 
-The current (schema v7) STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
+The current (schema v8) STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
 
 Unknown/newer schema versions fail closed.
 
@@ -93,13 +93,13 @@ Constraints:
 
 Verified email, last-seen time, and explicit revocation time are optional future metadata. They are not authorization keys and are not columns in the Milestone 1 v1 schema.
 
-### Schema v7 (current)
+### Schema v8 (current)
 
-`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 7`. A fresh
-store is created directly at v7 in one transaction. Existing v1 through v6
+`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 8`. A fresh
+store is created directly at v8 in one transaction. Existing v1 through v7
 stores are migrated only by `labby state migrate-access` with approval
 evidence (see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
-The v7 `access.db` contains these tables (source file in parentheses when not
+The v8 `access.db` contains these tables (source file in parentheses when not
 `migrations.rs`):
 
 | Area | Tables |
@@ -117,13 +117,23 @@ The v7 `access.db` contains these tables (source file in parentheses when not
 Team roles are `owner`, `admin`, and `member`. Project roles are `owner`,
 `admin`, `member`, and `viewer`. Column definitions are authoritative in the
 source files above; the entity sections later in this document are the broader
-design and do not all match v7 columns.
+design and do not all match v8 columns.
+
+Schema v8 is intentionally narrow: `team_invitations` supports either a
+Principal-bound target or a provider-verified email target.
+`invited_principal_id` and `invited_email` are nullable individually but an
+exactly-one-target constraint requires one and only one to be present. Email
+targets are persisted trimmed and lowercase. Migrated v7 invitations preserve
+their Principal target with `invited_email = NULL`; newly accepted email
+invitations may create the Principal and external identity link atomically with
+the Team membership after the browser session proves the matching verified
+email.
 
 #### Historical: Milestone 1 schema subset
 
 Milestone 1 schema v2 contained exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and stores one symbolic named Loadout admitted against desired gateway configuration. Because Gateway and AccessStore are separate stores, existence is revalidated at every use and is not a SQLite referential-integrity guarantee. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
 
-At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for v7.
+At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for v8.
 
 Custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables remain broader future design and require later versioned migrations.
 

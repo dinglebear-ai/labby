@@ -48,6 +48,19 @@ enum OAuthConfig {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerSetupExperience {
+    LocalPersonal,
+    BrowserChatgpt,
+    Customize,
+}
+
+impl ServerSetupExperience {
+    const fn uses_recommended_defaults(self) -> bool {
+        !matches!(self, Self::Customize)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupPlan {
     role: SetupRoleArg,
@@ -82,14 +95,22 @@ pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCod
         );
     }
 
+    let server_setup = matches!(plan.role, SetupRoleArg::Server);
     if requires_root(&plan) && !is_unix_root() {
         elevate_and_apply(&plan)?;
         if plan.install_desktop {
             install_desktop(&plan)?;
         }
+        if server_setup {
+            clear_resume_draft()?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
-    apply(plan, format).await
+    let exit = apply(plan, format).await?;
+    if server_setup {
+        clear_resume_draft()?;
+    }
+    Ok(exit)
 }
 
 pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result<ExitCode> {
@@ -107,13 +128,18 @@ pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result
 
 fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
     let theme = ColorfulTheme::default();
+    let resume = if interactive {
+        load_resume_values()?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let role = match args.role {
         Some(role) => role,
         None if interactive => match Select::with_theme(&theme)
             .with_prompt("What are we setting up?")
             .items([
-                "Server — run Labby here",
-                "Client — connect to a Labby server",
+                "This computer — run my Labby here (recommended)",
+                "Another Labby — connect this computer as a client",
             ])
             .default(0)
             .interact()?
@@ -132,13 +158,67 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
         invoking_home_for(is_unix_root(), invoking_user.as_deref(), dirs::home_dir())?;
 
     match role {
-        SetupRoleArg::Server => {
-            collect_server_plan(args, interactive, &theme, invoking_home, invoking_user)
-        }
+        SetupRoleArg::Server => collect_server_plan(
+            args,
+            interactive,
+            &theme,
+            invoking_home,
+            invoking_user,
+            &resume,
+        ),
         SetupRoleArg::Client => {
             collect_client_plan(args, interactive, &theme, invoking_home, invoking_user)
         }
     }
+}
+
+fn load_resume_values() -> Result<std::collections::BTreeMap<String, String>> {
+    let path = crate::dispatch::setup::setup_draft_path();
+    if !path.exists() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+    let entries = crate::dispatch::setup::read_setup_draft_entries(&path).map_err(|error| {
+        anyhow::anyhow!("read resumable setup draft {}: {error}", path.display())
+    })?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| (entry.key, entry.value))
+        .collect())
+}
+
+fn stage_resume_entries(interactive: bool, entries: Vec<(&str, String)>) -> Result<()> {
+    if !interactive || entries.is_empty() {
+        return Ok(());
+    }
+    let path = crate::dispatch::setup::setup_draft_path();
+    let entries = entries
+        .into_iter()
+        .map(|(key, value)| crate::dispatch::setup::DraftEntry {
+            key: key.to_string(),
+            value,
+        })
+        .collect();
+    crate::dispatch::setup::merge_setup_draft_entries(&path, entries, true).map_err(|error| {
+        anyhow::anyhow!("stage resumable setup draft {}: {error}", path.display())
+    })?;
+    Ok(())
+}
+
+fn clear_resume_draft() -> Result<()> {
+    let path = crate::dispatch::setup::setup_draft_path();
+    crate::dispatch::setup::discard_setup_draft(&path)
+        .with_context(|| format!("remove completed setup draft {}", path.display()))?;
+    Ok(())
+}
+
+fn resume_value<'a>(
+    resume: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> Option<&'a str> {
+    resume
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(unix)]
@@ -168,61 +248,137 @@ fn invoking_home_for(
     ambient_home.context("could not determine the invoking user's home directory")
 }
 
+fn infer_server_setup_experience(
+    args: &SetupArgs,
+    resume: &std::collections::BTreeMap<String, String>,
+) -> Option<ServerSetupExperience> {
+    if args.deployment.is_some() || args.host.is_some() || args.port.is_some() {
+        return Some(ServerSetupExperience::Customize);
+    }
+    match args.oauth {
+        Some(SetupOauthArg::Google) => return Some(ServerSetupExperience::BrowserChatgpt),
+        Some(SetupOauthArg::None) => return Some(ServerSetupExperience::LocalPersonal),
+        Some(SetupOauthArg::Authelia) => return Some(ServerSetupExperience::Customize),
+        None => {}
+    }
+    if resume_value(resume, "LABBY_AUTH_PROVIDER")
+        .is_some_and(|value| value.eq_ignore_ascii_case("google"))
+    {
+        return Some(ServerSetupExperience::BrowserChatgpt);
+    }
+    if resume_value(resume, "LABBY_AUTH_MODE")
+        .is_some_and(|value| value.eq_ignore_ascii_case("bearer"))
+    {
+        return Some(ServerSetupExperience::LocalPersonal);
+    }
+    if !resume.is_empty() {
+        return Some(ServerSetupExperience::Customize);
+    }
+    None
+}
+
 fn collect_server_plan(
     args: &SetupArgs,
     interactive: bool,
     theme: &ColorfulTheme,
     invoking_home: PathBuf,
     invoking_user: Option<String>,
+    resume: &std::collections::BTreeMap<String, String>,
 ) -> Result<SetupPlan> {
+    let experience = match infer_server_setup_experience(args, resume) {
+        Some(value) => value,
+        None if interactive => match Select::with_theme(theme)
+            .with_prompt("How will you use this Labby?")
+            .items([
+                "Personal / local — secure defaults for CLI, Claude Code and desktop",
+                "Browser + ChatGPT — Google sign-in with a public HTTPS URL",
+                "Customize — deployment, network, identity provider and desktop",
+            ])
+            .default(0)
+            .interact()?
+        {
+            1 => ServerSetupExperience::BrowserChatgpt,
+            2 => ServerSetupExperience::Customize,
+            _ => ServerSetupExperience::LocalPersonal,
+        },
+        None => ServerSetupExperience::Customize,
+    };
     let incus_ready =
         cfg!(all(target_os = "linux", target_arch = "x86_64")) && command_ok("incus", &["version"]);
     let deployment = match args.deployment {
         Some(value) => value,
-        None if interactive && incus_ready => match Select::with_theme(theme)
-            .with_prompt("Deployment")
-            .items(["Native service — fastest", "Incus container — isolated"])
-            .default(0)
-            .interact()?
-        {
-            0 => SetupDeploymentArg::Native,
-            _ => SetupDeploymentArg::Incus,
-        },
+        None if interactive && incus_ready && !experience.uses_recommended_defaults() => {
+            match Select::with_theme(theme)
+                .with_prompt("Deployment")
+                .items(["Native service — fastest", "Incus container — isolated"])
+                .default(0)
+                .interact()?
+            {
+                0 => SetupDeploymentArg::Native,
+                _ => SetupDeploymentArg::Incus,
+            }
+        }
         None => SetupDeploymentArg::Native,
     };
     if matches!(deployment, SetupDeploymentArg::Incus) && !incus_ready {
         bail!("Incus deployment was selected, but a usable local Incus daemon was not detected");
     }
 
+    let host_default = resume_value(resume, "LABBY_MCP_HTTP_HOST")
+        .unwrap_or(DEFAULT_HOST)
+        .to_string();
     let host = match args.host.as_deref() {
         Some(value) => validate_host(value)?,
-        None if interactive => validate_host(
+        None if interactive && !experience.uses_recommended_defaults() => validate_host(
             &Input::<String>::with_theme(theme)
                 .with_prompt("Listen address")
-                .default(DEFAULT_HOST.to_string())
+                .default(host_default.clone())
                 .interact_text()?,
         )?,
-        None => DEFAULT_HOST.to_string(),
+        None => host_default,
     };
+    let port_default = resume_value(resume, "LABBY_MCP_HTTP_PORT")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PORT);
     let port = match args.port {
         Some(port) if port > 0 => port,
         Some(_) => bail!("port must be between 1 and 65535"),
-        None if interactive => Input::<u16>::with_theme(theme)
-            .with_prompt("Port")
-            .default(DEFAULT_PORT)
-            .validate_with(|value: &u16| {
-                if *value == 0 {
-                    Err("port must be non-zero")
-                } else {
-                    Ok(())
-                }
-            })
-            .interact_text()?,
-        None => DEFAULT_PORT,
+        None if interactive && !experience.uses_recommended_defaults() => {
+            Input::<u16>::with_theme(theme)
+                .with_prompt("Port")
+                .default(port_default)
+                .validate_with(|value: &u16| {
+                    if *value == 0 {
+                        Err("port must be non-zero")
+                    } else {
+                        Ok(())
+                    }
+                })
+                .interact_text()?
+        }
+        None => port_default,
     };
+    stage_resume_entries(
+        interactive && !args.dry_run,
+        vec![
+            ("LABBY_MCP_TRANSPORT", "http".to_string()),
+            ("LABBY_MCP_HTTP_HOST", host.clone()),
+            ("LABBY_MCP_HTTP_PORT", port.to_string()),
+        ],
+    )?;
 
+    let provider_default = match resume_value(resume, "LABBY_AUTH_PROVIDER") {
+        Some(value) if value.eq_ignore_ascii_case("google") => 1,
+        Some(value) if value.eq_ignore_ascii_case("authelia") => 2,
+        _ => 0,
+    };
     let provider = match args.oauth {
         Some(value) => value,
+        None if matches!(experience, ServerSetupExperience::LocalPersonal) => SetupOauthArg::None,
+        None if matches!(experience, ServerSetupExperience::BrowserChatgpt) => {
+            SetupOauthArg::Google
+        }
         None if interactive => match Select::with_theme(theme)
             .with_prompt("Authentication")
             .items([
@@ -230,7 +386,7 @@ fn collect_server_plan(
                 "Google OAuth — required for Labby + ChatGPT web (+ bearer break-glass)",
                 "Authelia OAuth — self-hosted IdP (+ bearer break-glass)",
             ])
-            .default(0)
+            .default(provider_default)
             .interact()?
         {
             1 => SetupOauthArg::Google,
@@ -239,37 +395,76 @@ fn collect_server_plan(
         },
         None => SetupOauthArg::None,
     };
+    stage_resume_entries(
+        interactive && !args.dry_run,
+        match provider {
+            SetupOauthArg::None => vec![("LABBY_AUTH_MODE", "bearer".to_string())],
+            SetupOauthArg::Google => vec![
+                ("LABBY_AUTH_MODE", "oauth".to_string()),
+                ("LABBY_AUTH_PROVIDER", "google".to_string()),
+            ],
+            SetupOauthArg::Authelia => vec![
+                ("LABBY_AUTH_MODE", "oauth".to_string()),
+                ("LABBY_AUTH_PROVIDER", "authelia".to_string()),
+            ],
+        },
+    )?;
 
     let (public_url, oauth) = match provider {
         SetupOauthArg::None => (args.public_url.clone(), None),
         SetupOauthArg::Google => {
             let public_url = required_public_url(
                 args.public_url.as_deref(),
+                resume_value(resume, "LABBY_PUBLIC_URL"),
                 interactive,
                 theme,
                 host.as_str(),
                 port,
             )?;
+            if matches!(experience, ServerSetupExperience::BrowserChatgpt) {
+                validate_browser_chatgpt_public_url(&public_url)?;
+            }
             if interactive {
                 print_google_oauth_setup_guidance(&public_url);
             }
-            let client_id = prompt_required(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_PUBLIC_URL", public_url.clone())],
+            )?;
+            let client_id = prompt_required_resume(
                 "Google client ID",
                 "LABBY_GOOGLE_CLIENT_ID",
+                resume_value(resume, "LABBY_GOOGLE_CLIENT_ID"),
                 interactive,
                 theme,
             )?;
-            let client_secret = prompt_secret(
+            validate_google_client_id(&client_id)?;
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_GOOGLE_CLIENT_ID", client_id.clone())],
+            )?;
+            let client_secret = prompt_secret_resume(
                 "Google client secret",
                 "LABBY_GOOGLE_CLIENT_SECRET",
+                resume_value(resume, "LABBY_GOOGLE_CLIENT_SECRET"),
                 interactive,
                 theme,
             )?;
-            let admin_email = prompt_required(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_GOOGLE_CLIENT_SECRET", client_secret.clone())],
+            )?;
+            let admin_email = prompt_required_resume(
                 "Bootstrap admin email",
                 "LABBY_AUTH_ADMIN_EMAIL",
+                resume_value(resume, "LABBY_AUTH_ADMIN_EMAIL"),
                 interactive,
                 theme,
+            )?;
+            validate_admin_email(&admin_email)?;
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_AUTH_ADMIN_EMAIL", admin_email.clone())],
             )?;
             (
                 Some(public_url),
@@ -283,35 +478,60 @@ fn collect_server_plan(
         SetupOauthArg::Authelia => {
             let public_url = required_public_url(
                 args.public_url.as_deref(),
+                resume_value(resume, "LABBY_PUBLIC_URL"),
                 interactive,
                 theme,
                 host.as_str(),
                 port,
             )?;
-            let issuer_url = prompt_required(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_PUBLIC_URL", public_url.clone())],
+            )?;
+            let issuer_url = prompt_required_resume(
                 "Authelia issuer URL",
                 "LABBY_AUTHELIA_ISSUER_URL",
+                resume_value(resume, "LABBY_AUTHELIA_ISSUER_URL"),
                 interactive,
                 theme,
             )?;
             validate_https_url(&issuer_url, "Authelia issuer URL")?;
-            let client_id = prompt_required(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_AUTHELIA_ISSUER_URL", issuer_url.clone())],
+            )?;
+            let client_id = prompt_required_resume(
                 "Authelia client ID",
                 "LABBY_AUTHELIA_CLIENT_ID",
+                resume_value(resume, "LABBY_AUTHELIA_CLIENT_ID"),
                 interactive,
                 theme,
             )?;
-            let client_secret = prompt_secret(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_AUTHELIA_CLIENT_ID", client_id.clone())],
+            )?;
+            let client_secret = prompt_secret_resume(
                 "Authelia client secret",
                 "LABBY_AUTHELIA_CLIENT_SECRET",
+                resume_value(resume, "LABBY_AUTHELIA_CLIENT_SECRET"),
                 interactive,
                 theme,
             )?;
-            let admin_email = prompt_required(
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_AUTHELIA_CLIENT_SECRET", client_secret.clone())],
+            )?;
+            let admin_email = prompt_required_resume(
                 "Bootstrap admin email",
                 "LABBY_AUTH_ADMIN_EMAIL",
+                resume_value(resume, "LABBY_AUTH_ADMIN_EMAIL"),
                 interactive,
                 theme,
+            )?;
+            stage_resume_entries(
+                interactive && !args.dry_run,
+                vec![("LABBY_AUTH_ADMIN_EMAIL", admin_email.clone())],
             )?;
             (
                 Some(public_url),
@@ -325,7 +545,12 @@ fn collect_server_plan(
         }
     };
 
-    let install_desktop = desktop_choice(args, interactive, theme)?;
+    let install_desktop =
+        if experience.uses_recommended_defaults() && !args.desktop && !args.no_desktop {
+            desktop_supported()
+        } else {
+            desktop_choice(args, interactive, theme)?
+        };
     Ok(SetupPlan {
         role: SetupRoleArg::Server,
         deployment: Some(deployment),
@@ -376,10 +601,7 @@ fn collect_client_plan(
             1 => ClientAuth::Bearer,
             _ => ClientAuth::OAuth,
         }
-    } else if std::env::var("LABBY_MCP_HTTP_TOKEN")
-        .ok()
-        .is_some_and(|v| !v.trim().is_empty())
-    {
+    } else if std::env::var("LABBY_MCP_HTTP_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
         ClientAuth::Bearer
     } else {
         ClientAuth::OAuth
@@ -456,16 +678,19 @@ fn desktop_supported() -> bool {
 
 fn required_public_url(
     configured: Option<&str>,
+    resume_default: Option<&str>,
     interactive: bool,
     theme: &ColorfulTheme,
     host: &str,
     port: u16,
 ) -> Result<String> {
-    let default = if host == "127.0.0.1" || host == "localhost" {
-        format!("http://127.0.0.1:{port}")
-    } else {
-        String::new()
-    };
+    let default = resume_default.map(str::to_string).unwrap_or_else(|| {
+        if host == "127.0.0.1" || host == "localhost" {
+            format!("http://127.0.0.1:{port}")
+        } else {
+            String::new()
+        }
+    });
     let value = match configured {
         Some(value) => value.to_string(),
         None if interactive => Input::<String>::with_theme(theme)
@@ -478,15 +703,143 @@ fn required_public_url(
     Ok(value.trim_end_matches('/').to_string())
 }
 
-fn google_callback_url(public_url: &str) -> String {
+pub(super) fn google_callback_url(public_url: &str) -> String {
     format!("{}/auth/google/callback", public_url.trim_end_matches('/'))
 }
 
-fn print_google_oauth_setup_guidance(public_url: &str) {
+pub(super) fn google_oauth_guide(public_url: &str) -> Result<serde_json::Value> {
+    validate_public_url(public_url)?;
+    let public_url = public_url.trim_end_matches('/');
     let callback_url = google_callback_url(public_url);
-    eprintln!(
-        "\nGoogle OAuth setup\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
-    );
+    Ok(json!({
+        "public_url": public_url,
+        "callback_url": callback_url,
+        "console": {
+            "overview": "https://console.cloud.google.com/auth/overview",
+            "branding": "https://console.cloud.google.com/auth/branding",
+            "audience": "https://console.cloud.google.com/auth/audience",
+            "data_access": "https://console.cloud.google.com/auth/scopes",
+            "clients": "https://console.cloud.google.com/auth/clients",
+        },
+        "client_type": "Web application",
+        "authorized_javascript_origins": [],
+        "authorized_redirect_uris": [callback_url],
+        "scopes": ["openid", "email", "profile"],
+        "environment": [
+            "LABBY_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+            "LABBY_AUTH_ADMIN_EMAIL",
+        ],
+        "notes": [
+            "Prefer Internal audience when the Google Cloud project belongs to the same Google Workspace organization as every Labby user.",
+            "For External/Testing with only openid, email, and profile, Google exempts these identity-only scopes from the normal test-user requirement and seven-day testing authorization expiry.",
+            "Do not add Gmail, Drive, Calendar, or other Google API scopes for Labby sign-in.",
+            "Google OAuth client changes may take several minutes to propagate.",
+        ],
+    }))
+}
+
+pub(super) fn google_oauth_guide_text(public_url: &str) -> Result<String> {
+    validate_public_url(public_url)?;
+    let public_url = public_url.trim_end_matches('/');
+    let callback_url = google_callback_url(public_url);
+    Ok(format!(
+        r"Google OAuth setup for Labby
+
+Public Labby URL: {public_url}
+Exact Google callback: {callback_url}
+
+1. Select the Google Cloud project
+   Open: https://console.cloud.google.com/
+   Use the project selector in the top bar. Create a dedicated project if your team does not already have one for Labby.
+
+2. Open Google Auth Platform
+   Navigation menu -> Google Auth Platform
+   Direct link: https://console.cloud.google.com/auth/overview
+   If Google shows Get started, complete the initial app registration.
+
+3. Branding
+   Open: https://console.cloud.google.com/auth/branding
+   App name: Labby
+   User support email: a monitored team/admin address
+   Developer/contact email: a monitored team/admin address
+   Authorized domains: add your organization-owned parent domain when Google requires it for the public Labby hostname or verification.
+
+4. Audience
+   Open: https://console.cloud.google.com/auth/audience
+   Recommended for coworkers in one Google Workspace organization: Internal.
+   Otherwise choose External. If you leave an External app in Testing and Labby requests only openid/email/profile, Google exempts those identity-only scopes from the normal test-user requirement and seven-day testing grant expiry. If you add any other Google scope later, re-check Google's test-user and verification requirements.
+
+5. Data Access
+   Open: https://console.cloud.google.com/auth/scopes
+   Keep Labby identity-only. Add/confirm exactly these scopes:
+     - openid
+     - email (Google may display https://www.googleapis.com/auth/userinfo.email)
+     - profile (Google may display https://www.googleapis.com/auth/userinfo.profile)
+   Do NOT add Gmail, Drive, Calendar, or other Google API scopes for Labby sign-in.
+
+6. Create the OAuth client
+   Open: https://console.cloud.google.com/auth/clients
+   Click Create client.
+   Application type: Web application
+   Name: Labby (or Labby <environment>)
+   Authorized JavaScript origins: leave empty for Labby's server-side Google OAuth flow
+   Authorized redirect URIs -> Add URI -> paste EXACTLY:
+     {callback_url}
+   Click Create.
+
+7. Save the credentials
+   Copy the Client ID and Client secret when Google shows them.
+   Store the secret in your team secret manager. Do not paste it into docs, chat, config.toml, or shell history.
+
+8. Return to Labby setup
+   Interactive: labby setup
+   Or set LABBY_GOOGLE_CLIENT_ID, LABBY_GOOGLE_CLIENT_SECRET, and LABBY_AUTH_ADMIN_EMAIL in the process environment and run:
+     labby setup --role server --oauth google --public-url {public_url} --no-desktop --yes
+
+9. Verify before connecting clients
+   curl -fsS {public_url}/.well-known/oauth-authorization-server
+   curl -fsS {public_url}/.well-known/oauth-protected-resource
+   curl -i {public_url}/mcp
+   Then complete one Google sign-in with the configured admin identity.
+
+ChatGPT web requires Labby OAuth plus a publicly reachable HTTPS public URL. Bearer-only mode is not the supported Labby -> ChatGPT web path. Google notes that redirect/client changes can take several minutes to propagate."
+    ))
+}
+
+fn print_google_oauth_setup_guidance(public_url: &str) {
+    match google_oauth_guide_text(public_url) {
+        Ok(guide) => eprintln!("\n{guide}\n"),
+        Err(error) => eprintln!("\nUnable to render Google OAuth guide: {error}\n"),
+    }
+}
+
+fn validate_google_client_id(raw: &str) -> Result<()> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value.chars().any(char::is_whitespace)
+        || !value.ends_with(".apps.googleusercontent.com")
+    {
+        bail!(
+            "Google client ID must be the Web application Client ID from Google Auth Platform and end with .apps.googleusercontent.com"
+        );
+    }
+    Ok(())
+}
+
+fn validate_admin_email(raw: &str) -> Result<()> {
+    let value = raw.trim();
+    let Some((local, domain)) = value.split_once('@') else {
+        bail!("bootstrap admin email must be a valid Google account email address");
+    };
+    if local.is_empty()
+        || domain.is_empty()
+        || domain.contains('@')
+        || value.chars().any(char::is_whitespace)
+    {
+        bail!("bootstrap admin email must be a valid Google account email address");
+    }
+    Ok(())
 }
 
 fn validate_public_url(raw: &str) -> Result<()> {
@@ -497,12 +850,32 @@ fn validate_public_url(raw: &str) -> Result<()> {
     if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
         bail!("public OAuth URL must use HTTPS except for loopback development origins");
     }
+    if url.host().is_none() {
+        bail!("public OAuth URL must include a hostname");
+    }
     if !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
+        || url.path() != "/"
     {
-        bail!("public OAuth URL must not contain credentials, query, or fragment");
+        bail!(
+            "public OAuth URL must be an origin only: scheme + hostname + optional port, with no credentials, path, query, or fragment"
+        );
+    }
+    Ok(())
+}
+
+fn validate_browser_chatgpt_public_url(raw: &str) -> Result<()> {
+    validate_public_url(raw)?;
+    let url = url::Url::parse(raw).context("public URL is not a valid URL")?;
+    let loopback = matches!(url.host(), Some(url::Host::Ipv4(v)) if v.is_loopback())
+        || matches!(url.host(), Some(url::Host::Ipv6(v)) if v.is_loopback())
+        || matches!(url.host(), Some(url::Host::Domain(v)) if v.eq_ignore_ascii_case("localhost"));
+    if url.scheme() != "https" || loopback {
+        bail!(
+            "Browser + ChatGPT requires a publicly reachable HTTPS Labby origin. Run labby setup tailscale-funnel --apply, use an existing HTTPS origin, or generate a conventional proxy with labby setup public-proxy."
+        );
     }
     Ok(())
 }
@@ -533,32 +906,6 @@ fn validate_host(raw: &str) -> Result<String> {
     Ok(host.to_string())
 }
 
-fn prompt_required(
-    label: &str,
-    env_key: &str,
-    interactive: bool,
-    theme: &ColorfulTheme,
-) -> Result<String> {
-    if let Some(value) = std::env::var(env_key).ok().filter(|v| !v.trim().is_empty()) {
-        return Ok(value);
-    }
-    if !interactive {
-        bail!("{label} is required; set {env_key}");
-    }
-    Ok(Input::<String>::with_theme(theme)
-        .with_prompt(label)
-        .validate_with(|value: &String| {
-            if value.trim().is_empty() {
-                Err("value is required")
-            } else {
-                Ok(())
-            }
-        })
-        .interact_text()?
-        .trim()
-        .to_string())
-}
-
 fn prompt_secret(
     label: &str,
     env_key: &str,
@@ -575,6 +922,69 @@ fn prompt_secret(
         .with_prompt(label)
         .allow_empty_password(false)
         .interact()?)
+}
+
+fn prompt_required_resume(
+    label: &str,
+    env_key: &str,
+    resume: Option<&str>,
+    interactive: bool,
+    theme: &ColorfulTheme,
+) -> Result<String> {
+    if let Some(value) = std::env::var(env_key).ok().filter(|v| !v.trim().is_empty()) {
+        return Ok(value);
+    }
+    if !interactive {
+        return resume
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("{label} is required; set {env_key}"));
+    }
+    let mut input = Input::<String>::with_theme(theme).with_prompt(label);
+    if let Some(value) = resume.filter(|value| !value.trim().is_empty()) {
+        input = input.default(value.to_string());
+    }
+    Ok(input
+        .validate_with(|value: &String| {
+            if value.trim().is_empty() {
+                Err("value is required")
+            } else {
+                Ok(())
+            }
+        })
+        .interact_text()?
+        .trim()
+        .to_string())
+}
+
+fn prompt_secret_resume(
+    label: &str,
+    env_key: &str,
+    resume: Option<&str>,
+    interactive: bool,
+    theme: &ColorfulTheme,
+) -> Result<String> {
+    if let Some(value) = std::env::var(env_key).ok().filter(|v| !v.trim().is_empty()) {
+        return Ok(value);
+    }
+    if !interactive {
+        return resume
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("{label} is required; set {env_key}"));
+    }
+    if let Some(existing) = resume.filter(|value| !value.is_empty()) {
+        let entered = Password::with_theme(theme)
+            .with_prompt(format!("{label} [already staged; Enter to keep]"))
+            .allow_empty_password(true)
+            .interact()?;
+        return if entered.is_empty() {
+            Ok(existing.to_string())
+        } else {
+            Ok(entered)
+        };
+    }
+    prompt_secret(label, env_key, interactive, theme)
 }
 
 fn requires_root(plan: &SetupPlan) -> bool {
@@ -1398,6 +1808,83 @@ mod tests {
     }
 
     #[test]
+    fn fresh_server_setup_defers_to_the_intent_prompt() {
+        let args = SetupArgs::default();
+        let resume = std::collections::BTreeMap::new();
+        assert_eq!(infer_server_setup_experience(&args, &resume), None);
+    }
+
+    #[test]
+    fn explicit_server_options_select_the_matching_setup_experience() {
+        let resume = std::collections::BTreeMap::new();
+
+        let local = SetupArgs {
+            oauth: Some(SetupOauthArg::None),
+            ..SetupArgs::default()
+        };
+        assert_eq!(
+            infer_server_setup_experience(&local, &resume),
+            Some(ServerSetupExperience::LocalPersonal)
+        );
+
+        let browser = SetupArgs {
+            oauth: Some(SetupOauthArg::Google),
+            ..SetupArgs::default()
+        };
+        assert_eq!(
+            infer_server_setup_experience(&browser, &resume),
+            Some(ServerSetupExperience::BrowserChatgpt)
+        );
+
+        let custom = SetupArgs {
+            host: Some("0.0.0.0".into()),
+            ..SetupArgs::default()
+        };
+        assert_eq!(
+            infer_server_setup_experience(&custom, &resume),
+            Some(ServerSetupExperience::Customize)
+        );
+
+        let authelia = SetupArgs {
+            oauth: Some(SetupOauthArg::Authelia),
+            ..SetupArgs::default()
+        };
+        assert_eq!(
+            infer_server_setup_experience(&authelia, &resume),
+            Some(ServerSetupExperience::Customize)
+        );
+    }
+
+    #[test]
+    fn resumable_auth_state_reenters_the_matching_fast_path() {
+        let args = SetupArgs::default();
+
+        let mut google = std::collections::BTreeMap::new();
+        google.insert("LABBY_AUTH_PROVIDER".to_string(), "google".to_string());
+        assert_eq!(
+            infer_server_setup_experience(&args, &google),
+            Some(ServerSetupExperience::BrowserChatgpt)
+        );
+
+        let mut bearer = std::collections::BTreeMap::new();
+        bearer.insert("LABBY_AUTH_MODE".to_string(), "bearer".to_string());
+        assert_eq!(
+            infer_server_setup_experience(&args, &bearer),
+            Some(ServerSetupExperience::LocalPersonal)
+        );
+
+        let mut custom = std::collections::BTreeMap::new();
+        custom.insert(
+            "LABBY_AUTHELIA_ISSUER_URL".to_string(),
+            "https://auth.example.com".to_string(),
+        );
+        assert_eq!(
+            infer_server_setup_experience(&args, &custom),
+            Some(ServerSetupExperience::Customize)
+        );
+    }
+
+    #[test]
     fn elevated_plan_defers_desktop_installation_to_invoking_process() {
         let plan = server_plan(PathBuf::from("/home/operator"));
         let elevated = privileged_plan(&plan);
@@ -1612,6 +2099,14 @@ esac
     }
 
     #[test]
+    fn google_identity_inputs_fail_early_when_obviously_wrong() {
+        assert!(validate_google_client_id("123.apps.googleusercontent.com").is_ok());
+        assert!(validate_google_client_id("not-a-google-client-id").is_err());
+        assert!(validate_admin_email("operator@example.com").is_ok());
+        assert!(validate_admin_email("operator example.com").is_err());
+    }
+
+    #[test]
     fn google_callback_uses_public_origin_without_duplicate_slash() {
         assert_eq!(
             google_callback_url("https://labby.example.com/"),
@@ -1620,9 +2115,48 @@ esac
     }
 
     #[test]
+    fn google_oauth_guide_contains_exact_provider_contract() {
+        let guide = google_oauth_guide("https://labby.example.com/").unwrap();
+        assert_eq!(
+            guide["callback_url"],
+            "https://labby.example.com/auth/google/callback"
+        );
+        assert_eq!(guide["client_type"], "Web application");
+        assert_eq!(guide["authorized_javascript_origins"], json!([]));
+        assert_eq!(guide["scopes"], json!(["openid", "email", "profile"]));
+        assert_eq!(
+            guide["console"]["clients"],
+            "https://console.cloud.google.com/auth/clients"
+        );
+        let text = google_oauth_guide_text("https://labby.example.com").unwrap();
+        assert!(text.contains("Google Auth Platform"));
+        assert!(text.contains("Authorized JavaScript origins: leave empty"));
+        assert!(text.contains("Do NOT add Gmail, Drive, Calendar"));
+        assert!(text.contains("LABBY_GOOGLE_CLIENT_SECRET"));
+    }
+
+    #[test]
     fn public_oauth_url_allows_loopback_http_but_not_remote_http() {
         assert!(validate_public_url("http://127.0.0.1:8765").is_ok());
         assert!(validate_public_url("https://labby.example.com").is_ok());
         assert!(validate_public_url("http://192.168.1.50:8765").is_err());
+        assert!(validate_public_url("https://labby.example.com/prefix").is_err());
+        assert!(validate_public_url("https://").is_err());
+    }
+
+    #[test]
+    fn browser_chatgpt_requires_non_loopback_https() {
+        assert!(validate_browser_chatgpt_public_url("https://labby.example.com").is_ok());
+        for invalid in [
+            "http://127.0.0.1:8765",
+            "http://localhost:8765",
+            "https://127.0.0.1:8765",
+            "https://localhost:8765",
+        ] {
+            assert!(
+                validate_browser_chatgpt_public_url(invalid).is_err(),
+                "accepted Browser + ChatGPT origin {invalid}"
+            );
+        }
     }
 }

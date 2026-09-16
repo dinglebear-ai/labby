@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(test)]
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use labby_primitives::action::ActionSpec;
 use serde_json::Value;
@@ -20,6 +20,8 @@ pub use labby_runtime::path_safety::reject_path_traversal;
 
 #[cfg(test)]
 static TEST_LABBY_HOME: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+#[cfg(test)]
+static TEST_LABBY_HOME_SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[cfg(test)]
 pub(crate) fn set_test_lab_home(path: Option<std::path::PathBuf>) {
@@ -35,25 +37,38 @@ pub(crate) fn set_test_lab_home(path: Option<std::path::PathBuf>) {
 /// clearing it with a trailing call at the end of a test body leaks the pin to
 /// unrelated tests whenever the body panics or returns early.
 #[cfg(test)]
-pub(crate) struct TestLabHomeGuard(Option<std::path::PathBuf>);
+pub(crate) struct TestLabHomeGuard {
+    _serial: MutexGuard<'static, ()>,
+    previous: Option<std::path::PathBuf>,
+}
 
 #[cfg(test)]
 impl TestLabHomeGuard {
     pub(crate) fn set(path: std::path::PathBuf) -> Self {
+        // The home override is process-global. Hold a separate lifetime lock so
+        // concurrent tests cannot interleave set/restore operations while still
+        // allowing lab_home() to read the value from TEST_LABBY_HOME.
+        let serial = TEST_LABBY_HOME_SERIAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let slot = TEST_LABBY_HOME.get_or_init(|| Mutex::new(None));
         let previous = slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         set_test_lab_home(Some(path));
-        Self(previous)
+        Self {
+            _serial: serial,
+            previous,
+        }
     }
 }
 
 #[cfg(test)]
 impl Drop for TestLabHomeGuard {
     fn drop(&mut self) {
-        set_test_lab_home(self.0.take());
+        set_test_lab_home(self.previous.take());
     }
 }
 

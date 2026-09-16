@@ -813,7 +813,9 @@ mod tests {
 
     #[test]
     fn google_revoke_logs_actor_key_without_raw_subject() {
-        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let buf = SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             fmt::layer()
@@ -866,7 +868,9 @@ mod tests {
 
     #[test]
     fn google_revoke_logs_do_not_invent_an_actor_when_actor_key_is_missing() {
-        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let buf = SharedBuf::default();
         let subscriber = tracing_subscriber::registry().with(
             fmt::layer()

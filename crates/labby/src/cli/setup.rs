@@ -20,9 +20,9 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::output::theme::CliTheme;
@@ -31,6 +31,9 @@ use crate::output::{OutputFormat, print};
 mod onboarding;
 
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
+/// Versioned contract used by installers and setup clients to prove that the
+/// selected Labby binary supports the personal-first onboarding flow.
+pub const SETUP_CONTRACT_VERSION: u32 = 2;
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
@@ -216,12 +219,26 @@ pub enum SetupCommand {
         #[arg(long)]
         server_url: Option<String>,
     },
+    /// Resume the personal onboarding flow from the securely staged setup draft.
+    Resume,
+    /// Print the setup contract version expected by installers and onboarding clients.
+    Contract,
+    /// Print the exact Google Auth Platform configuration for a Labby public URL.
+    GoogleOauth(GoogleOauthGuideArgs),
+    /// Print copy/paste-ready Claude Code MCP setup for local or hardened SSH use.
+    ClaudeCode(ClaudeCodeGuideArgs),
     /// Check local setup prerequisites without mutating the filesystem.
     Check,
     /// Repair missing local setup prerequisites without contacting external services.
     Repair,
     /// Configure defaults for the ephemeral stdio MCP proxy.
     Proxy(SetupProxyArgs),
+    /// Render copy/paste-ready public HTTPS reverse-proxy configuration.
+    #[command(name = "public-proxy")]
+    PublicProxy(SetupPublicProxyArgs),
+    /// Inspect or safely configure Tailscale Funnel for public Browser + ChatGPT access.
+    #[command(name = "tailscale-funnel")]
+    TailscaleFunnel(SetupTailscaleFunnelArgs),
     /// Validate or apply local Incus backup policy.
     #[command(alias = "incus-backup")]
     Incusbackup(IncusBackupArgs),
@@ -233,6 +250,51 @@ pub enum SetupCommand {
     InstallPlugin(PluginMutationArgs),
     /// Uninstall the Claude Code plugin for a service.
     UninstallPlugin(PluginMutationArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GoogleOauthGuideArgs {
+    /// Final browser-visible HTTPS origin for Labby, for example https://labby.example.com.
+    #[arg(long)]
+    pub public_url: String,
+    /// Probe the public OAuth/MCP surface after rendering the provider recipe.
+    #[arg(long)]
+    pub check: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ClaudeCodeGuideArgs {
+    /// Name to assign the Claude Code upstream.
+    #[arg(long, default_value = "claude-local")]
+    pub name: String,
+
+    /// Exact Claude Code executable. Required for remote SSH; auto-detected from PATH for local use.
+    #[arg(long)]
+    pub claude_path: Option<PathBuf>,
+
+    /// Remote SSH target in user@host form. Omit for Claude Code running on the Labby host.
+    #[arg(long)]
+    pub ssh_target: Option<String>,
+
+    /// Dedicated SSH private key used by the Labby service account for the remote target.
+    #[arg(long, requires = "ssh_target")]
+    pub identity_file: Option<PathBuf>,
+
+    /// Dedicated known-hosts file containing the independently verified remote host key.
+    #[arg(long, requires = "ssh_target")]
+    pub known_hosts_file: Option<PathBuf>,
+
+    /// Validate, persist, and test this Claude Code upstream. Without this flag the command is read-only.
+    #[arg(long, conflicts_with = "rollback")]
+    pub apply: bool,
+
+    /// Restore the exact upstream definition saved before the last successful --apply for this name.
+    #[arg(long, conflicts_with = "apply")]
+    pub rollback: bool,
+
+    /// Confirm replacement when an upstream with this name already exists and differs.
+    #[arg(short = 'y', long, requires = "apply")]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -444,6 +506,54 @@ pub struct SetupProxyArgs {
     /// Preview exact file changes without mutating config or secret files.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SetupPublicProxyFormat {
+    Caddy,
+    Nginx,
+    Traefik,
+    All,
+}
+
+impl SetupPublicProxyFormat {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Caddy => "caddy",
+            Self::Nginx => "nginx",
+            Self::Traefik => "traefik",
+            Self::All => "all",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct SetupPublicProxyArgs {
+    /// Browser-visible HTTPS Labby origin, for example https://labby.example.com.
+    #[arg(long)]
+    pub public_url: String,
+    /// Private Labby backend origin.
+    #[arg(long, default_value = "http://127.0.0.1:8765")]
+    pub backend_url: String,
+    /// Reverse-proxy configuration to render. Caddy is the simplest recommended path.
+    #[arg(long, value_enum, default_value_t = SetupPublicProxyFormat::Caddy)]
+    pub format: SetupPublicProxyFormat,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupTailscaleFunnelArgs {
+    /// Loopback Labby backend origin to expose through Funnel.
+    #[arg(long, default_value = "http://127.0.0.1:8765")]
+    pub backend_url: String,
+    /// Public HTTPS port. Tailscale Funnel supports 443, 8443, or 10000.
+    #[arg(long, default_value_t = 443)]
+    pub https_port: u16,
+    /// Configure Funnel after inspection. Existing non-Labby mappings are never replaced.
+    #[arg(long, conflicts_with = "disable")]
+    pub apply: bool,
+    /// Disable only a Funnel mapping that exactly matches this Labby backend.
+    #[arg(long, conflicts_with = "apply")]
+    pub disable: bool,
 }
 
 #[derive(Debug, Args)]
@@ -873,6 +983,96 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
             let value = crate::dispatch::setup::dispatch("plugin_connectivity", params).await?;
             print(&value, format)?;
         }
+        SetupCommand::Resume => {
+            let value = crate::dispatch::setup::dispatch("state", json!({})).await?;
+            if format.is_json() {
+                print(&value, format)?;
+            } else {
+                let snapshot: crate::dispatch::setup::SetupSnapshot =
+                    serde_json::from_value(value)?;
+                println!("Personal Labby onboarding");
+                println!("  completed step: {}", snapshot.last_completed_step);
+                println!("  resume from: {}", snapshot.resume_from);
+                println!(
+                    "  secure draft: {}",
+                    if snapshot.has_draft {
+                        snapshot.draft_path.display().to_string()
+                    } else {
+                        "none".into()
+                    }
+                );
+                if snapshot.draft_stale {
+                    println!(
+                        "  warning: the staged draft is older than the committed environment; inspect it before continuing"
+                    );
+                }
+                match snapshot.resume_from.as_str() {
+                    "configure_runtime" | "configure_oauth" | "commit_configuration" => {
+                        println!("  next: labby setup")
+                    }
+                    "connect_claude_code" => println!("  next: labby setup claude-code --apply"),
+                    "verify_readiness" => println!("  next: labby doctor && labby doctor oauth"),
+                    other => println!("  next: resume `{other}` from the WebUI or setup flow"),
+                }
+            }
+        }
+        SetupCommand::Contract => {
+            if format.is_json() {
+                print(
+                    &json!({
+                        "version": SETUP_CONTRACT_VERSION,
+                        "capabilities": [
+                            "personal_server",
+                            "google_oauth",
+                            "claude_code_mcp",
+                            "chatgpt_oauth",
+                            "resumable_setup"
+                        ]
+                    }),
+                    format,
+                )?;
+            } else {
+                println!("{SETUP_CONTRACT_VERSION}");
+            }
+        }
+        SetupCommand::GoogleOauth(args) => {
+            let guide = onboarding::google_oauth_guide(&args.public_url)?;
+            let checks = if args.check {
+                Some(google_oauth_public_check(&args.public_url).await?)
+            } else {
+                None
+            };
+            if format.is_json() {
+                print(&json!({ "guide": guide, "public_check": checks }), format)?;
+            } else {
+                println!("{}", onboarding::google_oauth_guide_text(&args.public_url)?);
+                if let Some(checks) = checks.as_ref() {
+                    println!("{}", google_oauth_public_check_text(checks));
+                }
+            }
+            if checks
+                .as_ref()
+                .and_then(|value| value.get("all_ok"))
+                .and_then(Value::as_bool)
+                == Some(false)
+            {
+                anyhow::bail!(
+                    "public Google OAuth/MCP checks failed; fix the failed layer(s) above before connecting ChatGPT"
+                );
+            }
+        }
+        SetupCommand::ClaudeCode(args) => {
+            if args.apply || args.rollback {
+                run_claude_code_mutation(&args, format).await?;
+            } else {
+                let (value, text) = claude_code_guide(&args)?;
+                if format.is_json() {
+                    print(&value, format)?;
+                } else {
+                    println!("{text}");
+                }
+            }
+        }
         SetupCommand::Check => {
             let value = crate::dispatch::setup::dispatch("check", json!({})).await?;
             print(&value, format)?;
@@ -883,6 +1083,12 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
         SetupCommand::Proxy(args) => {
             run_setup_proxy(args, format).await?;
+        }
+        SetupCommand::PublicProxy(args) => {
+            run_public_proxy(args, format).await?;
+        }
+        SetupCommand::TailscaleFunnel(args) => {
+            run_tailscale_funnel(args, format).await?;
         }
         SetupCommand::Incusbackup(args) => {
             run_incus_backup_command(args, format).await?;
@@ -902,6 +1108,857 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn google_oauth_probe_json(client: &reqwest::Client, name: &str, url: &str) -> Value {
+    match client.get(url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.json::<Value>().await;
+            let ok = status.is_success() && body.is_ok();
+            json!({
+                "name": name,
+                "url": url,
+                "ok": ok,
+                "status": status.as_u16(),
+                "detail": if ok { "reachable JSON metadata" } else { "expected successful JSON metadata" },
+            })
+        }
+        Err(error) => json!({
+            "name": name,
+            "url": url,
+            "ok": false,
+            "detail": error.to_string(),
+        }),
+    }
+}
+
+pub(crate) async fn google_oauth_public_check(public_url: &str) -> Result<Value> {
+    let origin = public_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("build OAuth public-check HTTP client")?;
+
+    let authorization_metadata = google_oauth_probe_json(
+        &client,
+        "authorization-server metadata",
+        &format!("{origin}/.well-known/oauth-authorization-server"),
+    )
+    .await;
+    let protected_metadata = google_oauth_probe_json(
+        &client,
+        "protected-resource metadata",
+        &format!("{origin}/.well-known/oauth-protected-resource"),
+    )
+    .await;
+
+    let mcp_url = format!("{origin}/mcp");
+    let mcp = match client.get(&mcp_url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let challenge = response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let ok = status == reqwest::StatusCode::UNAUTHORIZED && !challenge.is_empty();
+            json!({
+                "name": "unauthenticated MCP challenge",
+                "url": mcp_url,
+                "ok": ok,
+                "status": status.as_u16(),
+                "detail": if ok { challenge } else { "expected HTTP 401 with WWW-Authenticate challenge".to_string() },
+            })
+        }
+        Err(error) => json!({
+            "name": "unauthenticated MCP challenge",
+            "url": mcp_url,
+            "ok": false,
+            "detail": error.to_string(),
+        }),
+    };
+
+    let login_url = format!("{origin}/auth/login?return_to=%2F");
+    let login = match client.get(&login_url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let ok = status.is_redirection()
+                && reqwest::Url::parse(&location)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .is_some_and(|host| host == "accounts.google.com");
+            json!({
+                "name": "Google login redirect",
+                "url": login_url,
+                "ok": ok,
+                "status": status.as_u16(),
+                "detail": if ok { location } else { "expected redirect to accounts.google.com".to_string() },
+            })
+        }
+        Err(error) => json!({
+            "name": "Google login redirect",
+            "url": login_url,
+            "ok": false,
+            "detail": error.to_string(),
+        }),
+    };
+
+    let checks = vec![authorization_metadata, protected_metadata, mcp, login];
+    let all_ok = checks
+        .iter()
+        .all(|check| check.get("ok").and_then(Value::as_bool) == Some(true));
+    Ok(json!({ "all_ok": all_ok, "checks": checks }))
+}
+
+pub(crate) fn google_oauth_public_check_text(value: &Value) -> String {
+    let mut lines = vec!["Google OAuth / MCP public check".to_string()];
+    if let Some(checks) = value.get("checks").and_then(Value::as_array) {
+        for check in checks {
+            let ok = check.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let name = check.get("name").and_then(Value::as_str).unwrap_or("check");
+            let detail = check
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let status = check
+                .get("status")
+                .and_then(Value::as_u64)
+                .map(|status| format!(" HTTP {status}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "  {} {name}{status}: {detail}",
+                if ok { "PASS" } else { "FAIL" }
+            ));
+        }
+    }
+    lines.join(
+        "
+",
+    )
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate = dir.join(format!("{name}.exe"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn claude_code_guide(args: &ClaudeCodeGuideArgs) -> Result<(Value, String)> {
+    let name = args.name.trim();
+    if name.is_empty() {
+        anyhow::bail!("Claude Code upstream name must not be empty");
+    }
+
+    if let Some(target) = args.ssh_target.as_deref() {
+        let target = target.trim();
+        if target.is_empty() || !target.contains('@') {
+            anyhow::bail!("--ssh-target must use user@host form");
+        }
+        let claude = args.claude_path.as_ref().ok_or_else(|| anyhow::anyhow!("remote Claude Code setup requires --claude-path with the exact executable path on the remote machine"))?;
+        let identity = args.identity_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote Claude Code setup requires --identity-file for a dedicated Labby SSH key"
+            )
+        })?;
+        let known_hosts = args.known_hosts_file.as_ref().ok_or_else(|| anyhow::anyhow!("remote Claude Code setup requires --known-hosts-file containing an independently verified host key"))?;
+        let ssh = find_executable_on_path("ssh").unwrap_or_else(|| PathBuf::from("/usr/bin/ssh"));
+        let claude_s = claude.to_string_lossy();
+        let identity_s = identity.to_string_lossy();
+        let known_hosts_s = known_hosts.to_string_lossy();
+        let ssh_s = ssh.to_string_lossy();
+
+        let preflight = format!(
+            "{} -i {} -o IdentitiesOnly=yes -o UserKnownHostsFile={} -T -S none -o ControlMaster=no -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes {} {} --version",
+            sh_quote(&ssh_s),
+            sh_quote(&identity_s),
+            sh_quote(&known_hosts_s),
+            sh_quote(target),
+            sh_quote(&claude_s)
+        );
+        let add = format!(
+            "labby gateway add --name {} --command {} --arg=-i --arg={} --arg=-o --arg=IdentitiesOnly=yes --arg=-o --arg=UserKnownHostsFile={} --arg=-T --arg=-S --arg=none --arg=-o --arg=ControlMaster=no --arg=-o --arg=BatchMode=yes --arg=-o --arg=ConnectTimeout=10 --arg=-o --arg=ServerAliveInterval=30 --arg=-o --arg=ServerAliveCountMax=3 --arg=-o --arg=StrictHostKeyChecking=yes --arg={} --arg={} --arg=mcp --arg=serve",
+            sh_quote(name),
+            sh_quote(&ssh_s),
+            sh_quote(&identity_s),
+            sh_quote(&known_hosts_s),
+            sh_quote(target),
+            sh_quote(&claude_s)
+        );
+        let test = format!("labby gateway test --name {}", sh_quote(name));
+        let value = json!({
+            "mode": "remote_ssh",
+            "name": name,
+            "ssh_target": target,
+            "claude_path": claude,
+            "identity_file": identity,
+            "known_hosts_file": known_hosts,
+            "preflight_command": preflight,
+            "add_command": add,
+            "test_command": test,
+        });
+        let claude_login = format!("{} auth login", sh_quote(&claude_s));
+        let claude_auth_status = format!("{} auth status --text", sh_quote(&claude_s));
+        let claude_version = format!("{} --version", sh_quote(&claude_s));
+        let claude_doctor = format!("{} doctor", sh_quote(&claude_s));
+        let identity_quoted = sh_quote(&identity_s);
+        let identity_pub = sh_quote(&format!("{identity_s}.pub"));
+        let comment = sh_quote(&format!("labby-{name}"));
+        let known_hosts_quoted = sh_quote(&known_hosts_s);
+        let text = format!(
+            r"Claude Code MCP -> Labby (remote over hardened SSH)
+
+1. On the remote machine, install/update native Claude Code and authenticate the exact account that will serve MCP.
+   Sign in and verify:
+     {claude_login}
+     {claude_auth_status}
+     {claude_version}
+     {claude_doctor}
+
+2. On the Labby host, use a dedicated Ed25519 key for this one remote machine.
+   If {identity} does not already exist:
+     ssh-keygen -t ed25519 -f {identity} -C {comment}
+   Add ONLY the public key ({identity_pub}) to the target account's ~/.ssh/authorized_keys.
+
+3. Obtain the target SSH host-key fingerprint through a trusted channel.
+   Store the verified key in: {known_hosts}
+   Do not disable StrictHostKeyChecking and do not treat an unverified ssh-keyscan result as trust.
+
+4. As the same service account that runs Labby, prove the exact non-interactive command:
+   {preflight}
+
+5. Persist the upstream:
+   {add}
+
+6. Test it:
+   {test}
+
+7. Invoke one safe Claude MCP tool and verify hostname, whoami, platform, and current working directory.
+
+Keep Labby's spawn guard enabled. Both ssh and claude are normal supported commands; a global spawn-guard bypass is unnecessary.",
+            claude_login = claude_login,
+            claude_auth_status = claude_auth_status,
+            claude_version = claude_version,
+            claude_doctor = claude_doctor,
+            identity = identity_quoted,
+            identity_pub = identity_pub,
+            comment = comment,
+            known_hosts = known_hosts_quoted,
+            preflight = preflight,
+            add = add,
+            test = test,
+        );
+        return Ok((value, text));
+    }
+
+    let claude = match args
+        .claude_path
+        .clone()
+        .or_else(|| find_executable_on_path("claude"))
+    {
+        Some(path) => path,
+        None => anyhow::bail!(
+            "Claude Code was not found on PATH; install/authenticate Claude Code or pass --claude-path /absolute/path/to/claude"
+        ),
+    };
+    let claude_s = claude.to_string_lossy();
+    let add = format!(
+        "labby gateway add --name {} --command {} --arg=mcp --arg=serve",
+        sh_quote(name),
+        sh_quote(&claude_s)
+    );
+    let test = format!("labby gateway test --name {}", sh_quote(name));
+    let value = json!({
+        "mode": "local_stdio",
+        "name": name,
+        "claude_path": claude,
+        "doctor_command": format!("{} doctor", sh_quote(&claude_s)),
+        "add_command": add,
+        "test_command": test,
+    });
+    let login = format!("{} auth login", sh_quote(&claude_s));
+    let auth_status = format!("{} auth status --text", sh_quote(&claude_s));
+    let doctor = format!("{} doctor", sh_quote(&claude_s));
+    let version = format!("{} --version", sh_quote(&claude_s));
+    let text = format!(
+        r"Claude Code MCP -> Labby (local stdio)
+
+1. Authenticate and verify Claude Code:
+   {login}
+   {auth_status}
+   {doctor}
+   {version}
+
+2. Persist Claude Code as a Labby upstream:
+   {add}
+
+3. Test the upstream:
+   {test}
+
+4. Invoke one safe Claude MCP tool and verify hostname, whoami, platform, and current working directory.
+
+Labby launches Claude Code with `claude mcp serve`. Keep the spawn guard enabled; current Labby treats `claude` as a built-in allowed stdio command.",
+        login = login,
+        auth_status = auth_status,
+        doctor = doctor,
+        version = version,
+        add = add,
+        test = test,
+    );
+    Ok((value, text))
+}
+
+const CLAUDE_CODE_ROLLBACK_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClaudeCodeRollbackRecord {
+    version: u32,
+    name: String,
+    previous: Option<crate::config::UpstreamConfig>,
+    applied: crate::config::UpstreamConfig,
+}
+
+fn validate_claude_backup_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 80
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        anyhow::bail!(
+            "Claude Code upstream name must contain only ASCII letters, digits, '-', '_', or '.'"
+        );
+    }
+    Ok(())
+}
+
+fn claude_code_rollback_path(name: &str) -> Result<PathBuf> {
+    validate_claude_backup_name(name)?;
+    Ok(crate::dispatch::helpers::lab_home()
+        .join("setup-backups")
+        .join(format!("claude-code-{name}.json")))
+}
+
+fn existing_upstream_safe_to_snapshot(upstream: &crate::config::UpstreamConfig) -> bool {
+    upstream.url.is_none()
+        && upstream.socket_path.is_none()
+        && upstream.headers.is_empty()
+        && upstream.bearer_token_env.is_none()
+        && upstream.env.is_empty()
+        && upstream.oauth.is_none()
+        && upstream.imported_from.is_none()
+}
+
+fn claude_code_upstream_spec(args: &ClaudeCodeGuideArgs) -> Result<crate::config::UpstreamConfig> {
+    let name = args.name.trim();
+    validate_claude_backup_name(name)?;
+
+    let (command, command_args) = if let Some(target) = args.ssh_target.as_deref() {
+        let target = target.trim();
+        if target.is_empty() || !target.contains('@') {
+            anyhow::bail!("--ssh-target must use user@host form");
+        }
+        let claude = args.claude_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote Claude Code setup requires --claude-path with the exact executable path on the remote machine"
+            )
+        })?;
+        let identity = args.identity_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote Claude Code setup requires --identity-file for a dedicated Labby SSH key"
+            )
+        })?;
+        let known_hosts = args.known_hosts_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote Claude Code setup requires --known-hosts-file containing an independently verified host key"
+            )
+        })?;
+        let ssh = find_executable_on_path("ssh").unwrap_or_else(|| PathBuf::from("/usr/bin/ssh"));
+        (
+            ssh.to_string_lossy().to_string(),
+            vec![
+                "-i".to_string(),
+                identity.to_string_lossy().to_string(),
+                "-o".to_string(),
+                "IdentitiesOnly=yes".to_string(),
+                "-o".to_string(),
+                format!("UserKnownHostsFile={}", known_hosts.to_string_lossy()),
+                "-T".to_string(),
+                "-S".to_string(),
+                "none".to_string(),
+                "-o".to_string(),
+                "ControlMaster=no".to_string(),
+                "-o".to_string(),
+                "BatchMode=yes".to_string(),
+                "-o".to_string(),
+                "ConnectTimeout=10".to_string(),
+                "-o".to_string(),
+                "ServerAliveInterval=30".to_string(),
+                "-o".to_string(),
+                "ServerAliveCountMax=3".to_string(),
+                "-o".to_string(),
+                "StrictHostKeyChecking=yes".to_string(),
+                target.to_string(),
+                claude.to_string_lossy().to_string(),
+                "mcp".to_string(),
+                "serve".to_string(),
+            ],
+        )
+    } else {
+        let claude = args
+            .claude_path
+            .clone()
+            .or_else(|| find_executable_on_path("claude"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Claude Code was not found on PATH; install/authenticate Claude Code or pass --claude-path /absolute/path/to/claude"
+                )
+            })?;
+        (
+            claude.to_string_lossy().to_string(),
+            vec!["mcp".to_string(), "serve".to_string()],
+        )
+    };
+
+    serde_json::from_value(json!({
+        "name": name,
+        "enabled": true,
+        "priority": 1.0,
+        "command": command,
+        "args": command_args,
+        "proxy_resources": true,
+        "proxy_prompts": true,
+        "proxy_skills": false
+    }))
+    .context("build Claude Code upstream definition")
+}
+
+#[cfg(not(feature = "gateway"))]
+async fn run_claude_code_mutation(
+    _args: &ClaudeCodeGuideArgs,
+    _format: OutputFormat,
+) -> Result<()> {
+    anyhow::bail!("Claude Code --apply/--rollback requires the Labby gateway feature")
+}
+
+fn upstreams_equal(
+    left: &crate::config::UpstreamConfig,
+    right: &crate::config::UpstreamConfig,
+) -> Result<bool> {
+    Ok(serde_json::to_value(left)? == serde_json::to_value(right)?)
+}
+
+fn write_claude_code_rollback(record: &ClaudeCodeRollbackRecord) -> Result<PathBuf> {
+    let path = claude_code_rollback_path(&record.name)?;
+    let directory = path
+        .parent()
+        .context("Claude Code rollback path has no parent")?;
+    if std::fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        anyhow::bail!("refusing to write Claude rollback state through a symlinked directory");
+    }
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    serde_json::to_writer_pretty(&mut temporary, record)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&path)
+        .map_err(|error| anyhow::anyhow!("persist Claude Code rollback record: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(path)
+}
+
+fn read_claude_code_rollback(name: &str) -> Result<(PathBuf, ClaudeCodeRollbackRecord)> {
+    let path = claude_code_rollback_path(name)?;
+    let metadata = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("no Claude Code rollback record exists for `{name}`"))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("refusing to read Claude rollback state through a symlink");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            anyhow::bail!(
+                "Claude rollback record {} is too permissive; require mode 0600 before using it",
+                path.display()
+            );
+        }
+    }
+    let record: ClaudeCodeRollbackRecord = serde_json::from_slice(&std::fs::read(&path)?)
+        .context("parse Claude Code rollback record")?;
+    if record.version != CLAUDE_CODE_ROLLBACK_VERSION || record.name != name {
+        anyhow::bail!("Claude Code rollback record is incompatible with this request");
+    }
+    Ok((path, record))
+}
+
+#[cfg(feature = "gateway")]
+async fn restore_claude_code_upstream(
+    manager: &crate::dispatch::gateway::manager::GatewayManager,
+    record: &ClaudeCodeRollbackRecord,
+) -> Result<()> {
+    if manager.upstream_config(&record.name).await.is_some() {
+        manager
+            .remove(&record.name, Some("setup.claude-code.rollback"), None)
+            .await?;
+    }
+    if let Some(previous) = record.previous.clone() {
+        manager
+            .add(previous, None, Some("setup.claude-code.rollback"), None)
+            .await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "gateway")]
+async fn run_claude_code_mutation(args: &ClaudeCodeGuideArgs, format: OutputFormat) -> Result<()> {
+    let config_path = crate::config::config_toml_path()?;
+    let config = crate::config::load_toml(&[config_path])?;
+    let manager = crate::cli::gateway::build_manager(&config, true).await?;
+
+    if args.rollback {
+        let (path, record) = read_claude_code_rollback(args.name.trim())?;
+        let current = manager.upstream_config(&record.name).await;
+        let current_matches_applied = match current.as_ref() {
+            Some(current) => upstreams_equal(current, &record.applied)?,
+            None => false,
+        };
+        if !current_matches_applied {
+            anyhow::bail!(
+                "refusing Claude Code rollback because `{}` changed after Labby applied it; inspect {} before restoring manually",
+                record.name,
+                path.display()
+            );
+        }
+        restore_claude_code_upstream(manager.as_ref(), &record).await?;
+        std::fs::remove_file(&path)?;
+        let result = json!({
+            "status": "rolled_back",
+            "name": record.name,
+            "restored_previous": record.previous.is_some()
+        });
+        if format.is_json() {
+            print(&result, format)?;
+        } else {
+            println!(
+                "restored `{}` to its exact pre-Labby upstream state",
+                args.name.trim()
+            );
+        }
+        return Ok(());
+    }
+
+    let desired = claude_code_upstream_spec(args)?;
+    let preflight = manager.test(Ok(&desired)).await?;
+    if !preflight.connected {
+        anyhow::bail!(
+            "Claude Code MCP preflight failed before any config change: {}",
+            preflight
+                .last_error
+                .as_deref()
+                .unwrap_or("upstream did not complete MCP discovery")
+        );
+    }
+
+    let existing = manager.upstream_config(&desired.name).await;
+    if let Some(existing) = existing.as_ref() {
+        if upstreams_equal(existing, &desired)? {
+            let saved_test = manager.test(Err(&desired.name)).await?;
+            if !saved_test.connected {
+                anyhow::bail!(
+                    "existing Claude Code upstream matches the requested config but is not healthy: {}",
+                    saved_test
+                        .last_error
+                        .as_deref()
+                        .unwrap_or("upstream did not complete MCP discovery")
+                );
+            }
+            let result = json!({
+                "status": "already_configured",
+                "name": desired.name,
+                "connected": true
+            });
+            if format.is_json() {
+                print(&result, format)?;
+            } else {
+                println!(
+                    "Claude Code upstream `{}` is already configured and healthy",
+                    args.name.trim()
+                );
+            }
+            return Ok(());
+        }
+        if !existing_upstream_safe_to_snapshot(existing) {
+            anyhow::bail!(
+                "refusing to replace `{}` automatically because the existing upstream contains transport, credential, imported, or environment state outside the plain Claude stdio profile",
+                desired.name
+            );
+        }
+        if !args.yes {
+            anyhow::bail!(
+                "an upstream named `{}` already exists and differs; no changes made. Review it, then re-run with --apply --yes to replace it transactionally",
+                desired.name
+            );
+        }
+    }
+
+    let record = ClaudeCodeRollbackRecord {
+        version: CLAUDE_CODE_ROLLBACK_VERSION,
+        name: desired.name.clone(),
+        previous: existing.clone(),
+        applied: desired.clone(),
+    };
+    let rollback_path = write_claude_code_rollback(&record)?;
+
+    let applied = async {
+        if existing.is_some() {
+            manager
+                .remove(&desired.name, Some("setup.claude-code"), None)
+                .await?;
+        }
+        manager
+            .add(desired.clone(), None, Some("setup.claude-code"), None)
+            .await?;
+        let test = manager.test(Err(&desired.name)).await?;
+        if !test.connected {
+            anyhow::bail!(
+                "saved Claude Code upstream failed its post-apply MCP handshake: {}",
+                test.last_error
+                    .as_deref()
+                    .unwrap_or("upstream did not complete MCP discovery")
+            );
+        }
+        Ok::<_, anyhow::Error>(test)
+    }
+    .await;
+
+    let test = match applied {
+        Ok(test) => test,
+        Err(error) => match restore_claude_code_upstream(manager.as_ref(), &record).await {
+            Ok(()) => {
+                drop(std::fs::remove_file(&rollback_path));
+                anyhow::bail!(
+                    "Claude Code setup failed after mutation, so Labby restored the exact prior upstream state automatically: {error}"
+                );
+            }
+            Err(rollback_error) => {
+                anyhow::bail!(
+                    "Claude Code setup failed and automatic rollback also failed. Rollback record retained at {}. setup error: {error}; rollback error: {rollback_error}",
+                    rollback_path.display()
+                );
+            }
+        },
+    };
+
+    let result = json!({
+        "status": "configured",
+        "name": desired.name,
+        "connected": test.connected,
+        "tool_count": test.tool_count,
+        "resource_count": test.resource_count,
+        "prompt_count": test.prompt_count,
+        "rollback_record": rollback_path
+    });
+    if format.is_json() {
+        print(&result, format)?;
+    } else {
+        println!(
+            "Claude Code upstream `{}` is configured and healthy; rollback: `labby setup claude-code --name {} --rollback`",
+            args.name.trim(),
+            args.name.trim()
+        );
+    }
+    Ok(())
+}
+
+async fn run_tailscale_funnel(args: SetupTailscaleFunnelArgs, format: OutputFormat) -> Result<()> {
+    let (action, params) = if args.disable {
+        (
+            "tailscale_funnel.disable",
+            json!({
+                "backend_url": args.backend_url,
+                "https_port": args.https_port,
+            }),
+        )
+    } else if args.apply {
+        (
+            "tailscale_funnel.configure",
+            json!({
+                "backend_url": args.backend_url,
+                "https_port": args.https_port,
+            }),
+        )
+    } else {
+        (
+            "tailscale_funnel.inspect",
+            json!({ "https_port": args.https_port }),
+        )
+    };
+    let value = crate::dispatch::setup::dispatch(action, params).await?;
+    if format.is_json() {
+        print(&value, format)?;
+        return Ok(());
+    }
+
+    if args.apply || args.disable {
+        let outcome: crate::dispatch::setup::tailscale_funnel::TailscaleFunnelMutationOutcome =
+            serde_json::from_value(value).context("decode Tailscale Funnel mutation result")?;
+        if outcome.activation_required {
+            println!("One-time Tailscale approval is required before Funnel can be enabled.");
+            if let Some(url) = outcome.activation_url.as_deref() {
+                println!("Approve: {url}");
+            } else if let Some(message) = outcome.activation_message.as_deref() {
+                println!("{message}");
+            }
+            println!("After approval, rerun: labby setup tailscale-funnel --apply");
+            return Ok(());
+        }
+        println!(
+            "Tailscale Funnel: {}{}",
+            if outcome.configured {
+                "configured"
+            } else {
+                "disabled"
+            },
+            if outcome.changed {
+                ""
+            } else {
+                " (already converged)"
+            }
+        );
+        println!("Public Labby: {}", outcome.public_origin);
+        println!("Private backend: {}", outcome.backend_origin);
+        println!("Google callback: {}", outcome.oauth_callback_url);
+        println!("ChatGPT MCP URL: {}", outcome.mcp_url);
+        println!("Verify:");
+        for command in outcome.verification {
+            println!("  {command}");
+        }
+        return Ok(());
+    }
+
+    let inspection: crate::dispatch::setup::tailscale_funnel::TailscaleFunnelInspection =
+        serde_json::from_value(value).context("decode Tailscale Funnel inspection result")?;
+    if !inspection.cli_available {
+        println!("Tailscale Funnel is not available on this host.");
+    } else {
+        println!(
+            "Tailscale: {}{}",
+            inspection.version.as_deref().unwrap_or("detected"),
+            if inspection.online {
+                " · online"
+            } else {
+                " · offline"
+            }
+        );
+    }
+    if let Some(origin) = inspection.public_origin.as_deref() {
+        println!("Public HTTPS candidate: {origin}");
+    }
+    if let Some(backend) = inspection.configured_backend.as_deref() {
+        println!("Existing Funnel mapping: {backend}");
+    }
+    for blocker in &inspection.blockers {
+        println!("Blocker: {blocker}");
+    }
+    if inspection.ready_to_configure {
+        if inspection.configured_backend.as_deref() == Some(args.backend_url.as_str()) {
+            println!(
+                "Labby is already exposed through Funnel on port {}.",
+                args.https_port
+            );
+        } else if inspection.activation_required {
+            println!(
+                "Ready for first-time approval. Run labby setup tailscale-funnel --apply; Labby will surface the Tailscale approval URL instead of waiting indefinitely."
+            );
+        } else {
+            println!(
+                "Ready. Run labby setup tailscale-funnel --apply to expose the local Labby backend."
+            );
+        }
+    } else if !inspection.cli_available {
+        println!(
+            "Install the Tailscale CLI, or use labby setup public-proxy with an HTTPS public URL for Caddy, Nginx, or Traefik."
+        );
+    }
+    Ok(())
+}
+
+async fn run_public_proxy(args: SetupPublicProxyArgs, format: OutputFormat) -> Result<()> {
+    let value = crate::dispatch::setup::dispatch(
+        "public_proxy.render",
+        json!({
+            "public_url": args.public_url,
+            "backend_url": args.backend_url,
+            "format": args.format.as_str(),
+        }),
+    )
+    .await?;
+    if format.is_json() {
+        print(&value, format)?;
+        return Ok(());
+    }
+
+    let outcome: crate::dispatch::setup::public_proxy::PublicProxyRenderOutcome =
+        serde_json::from_value(value).context("decode public proxy render result")?;
+    println!("Public Labby: {}", outcome.public_origin);
+    println!("Private backend: {}", outcome.backend_origin);
+    println!("Google callback: {}", outcome.oauth_callback_url);
+    println!("ChatGPT MCP URL: {}", outcome.mcp_url);
+    println!("Recommended: {}", outcome.recommended);
+    println!();
+    for (name, config) in outcome.configs {
+        println!("{} configuration:\n{}", name, config.trim_end());
+        println!();
+    }
+    println!("Verify after installing/reloading the proxy:");
+    for command in outcome.verification {
+        println!("  {command}");
+    }
+    Ok(())
 }
 
 async fn run_setup_proxy(args: SetupProxyArgs, format: OutputFormat) -> Result<()> {
@@ -1615,6 +2672,49 @@ mod tests {
     }
 
     #[test]
+    fn public_proxy_cli_defaults_to_caddy_and_allows_advanced_formats() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "public-proxy",
+            "--public-url",
+            "https://labby.example.com",
+        ])
+        .expect("public proxy command");
+        assert!(matches!(
+            cli.command,
+            crate::cli::Command::Setup(SetupArgs {
+                command: Some(SetupCommand::PublicProxy(SetupPublicProxyArgs {
+                    format: SetupPublicProxyFormat::Caddy,
+                    ..
+                })),
+                ..
+            })
+        ));
+
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "public-proxy",
+            "--public-url",
+            "https://labby.example.com",
+            "--format",
+            "traefik",
+        ])
+        .expect("advanced public proxy command");
+        assert!(matches!(
+            cli.command,
+            crate::cli::Command::Setup(SetupArgs {
+                command: Some(SetupCommand::PublicProxy(SetupPublicProxyArgs {
+                    format: SetupPublicProxyFormat::Traefik,
+                    ..
+                })),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn owner_link_prepare_requires_an_explicit_approval_file() {
         assert!(crate::cli::Cli::try_parse_from(["labby", "setup", "owner-link-prepare"]).is_err());
         let cli = crate::cli::Cli::try_parse_from([
@@ -1696,6 +2796,79 @@ mod tests {
             panic!("expected plugin-connectivity with url");
         };
         assert_eq!(url, "http://node-a:8765");
+    }
+
+    #[test]
+    fn parses_google_oauth_guide_subcommand() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "google-oauth",
+            "--public-url",
+            "https://labby.example.com",
+        ])
+        .unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup command");
+        };
+        let Some(SetupCommand::GoogleOauth(args)) = args.command else {
+            panic!("expected google-oauth setup helper");
+        };
+        assert_eq!(args.public_url, "https://labby.example.com");
+    }
+
+    #[test]
+    fn parses_remote_claude_code_guide_subcommand() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "claude-code",
+            "--name",
+            "claude-remote",
+            "--ssh-target",
+            "operator@remote-host",
+            "--claude-path",
+            "/Users/operator/.local/bin/claude",
+            "--identity-file",
+            "/home/labby/.ssh/labby-claude-remote",
+            "--known-hosts-file",
+            "/home/labby/.ssh/known_hosts.claude-remote",
+        ])
+        .unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup command");
+        };
+        let Some(SetupCommand::ClaudeCode(args)) = args.command else {
+            panic!("expected claude-code setup helper");
+        };
+        assert_eq!(args.name, "claude-remote");
+        assert_eq!(args.ssh_target.as_deref(), Some("operator@remote-host"));
+        assert_eq!(
+            args.claude_path,
+            Some(PathBuf::from("/Users/operator/.local/bin/claude"))
+        );
+    }
+
+    #[test]
+    fn claude_code_guide_uses_native_auth_and_hardened_ssh_commands() {
+        let args = ClaudeCodeGuideArgs {
+            name: "claude-remote".into(),
+            claude_path: Some(PathBuf::from("/Users/operator/.local/bin/claude")),
+            ssh_target: Some("operator@remote-host".into()),
+            identity_file: Some(PathBuf::from("/home/labby/.ssh/labby-claude-remote")),
+            known_hosts_file: Some(PathBuf::from("/home/labby/.ssh/known_hosts.claude-remote")),
+            apply: false,
+            rollback: false,
+            yes: false,
+        };
+        let (value, text) = claude_code_guide(&args).unwrap();
+        assert_eq!(value["mode"], "remote_ssh");
+        assert!(text.contains("auth login"));
+        assert!(text.contains("auth status --text"));
+        assert!(text.contains("BatchMode=yes"));
+        assert!(text.contains("StrictHostKeyChecking=yes"));
+        assert!(text.contains("known_hosts.claude-remote"));
+        assert!(text.contains("labby-claude-remote.pub"));
     }
 
     #[test]

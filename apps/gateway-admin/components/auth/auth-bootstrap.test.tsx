@@ -101,9 +101,11 @@ test('AuthBootstrap shows owner setup instead of the app while owner bootstrap i
   assert.match(markup, /Finish setting up Labby/)
   assert.match(markup, /Complete owner bootstrap to enable multi-user authority\./)
   assert.match(markup, /owner@example\.com/)
-  assert.match(markup, /name="organization_name"/)
-  assert.match(markup, /name="project_name"/)
-  assert.match(markup, /Complete owner bootstrap/)
+  assert.equal(markup.includes('Using Local / Default. No decisions required.'), true)
+  assert.match(markup, /Customize organization and project names/)
+  assert.match(markup, /Finish setup/)
+  assert.equal(markup.includes('name="organization_name"'), false)
+  assert.equal(markup.includes('name="project_name"'), false)
   assert.equal(markup.includes('children'), false)
   assert.equal(markup.includes('Authentication Error'), false)
 })
@@ -111,7 +113,8 @@ test('AuthBootstrap shows owner setup instead of the app while owner bootstrap i
 function assertNoBootstrapForm(markup: string) {
   assert.equal(markup.includes('name="organization_name"'), false)
   assert.equal(markup.includes('name="project_name"'), false)
-  assert.equal(markup.includes('Complete owner bootstrap'), false)
+  assert.equal(markup.includes('Customize organization and project names'), false)
+  assert.equal(markup.includes('Finish setup'), false)
   assert.match(markup, /Sign out/)
   assert.equal(markup.includes('children'), false)
 }
@@ -122,8 +125,11 @@ test('AuthBootstrap never offers owner bootstrap to an unprovisioned identity', 
   __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'unprovisioned', ownerBootstrapAvailable: true })
 
   const markup = renderGate()
-  assert.match(markup, /No access yet/)
-  assert.match(markup, /Ask an administrator/)
+  assert.match(markup, /Join your team/)
+  assert.match(markup, /Use your team invitation to finish joining this Labby./)
+  assert.match(markup, /Invitation code/)
+  assert.match(markup, /Paste invitation code/)
+  assert.match(markup, /Join team/)
   assertNoBootstrapForm(markup)
 })
 
@@ -144,6 +150,36 @@ test('AuthBootstrap renders the app for a ready session', () => {
   __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'ready' })
 
   assert.match(renderGate(), /children/)
+})
+
+test('AuthBootstrap surfaces a signed Team profile offer after enrollment instead of dropping it', async () => {
+  const { installTestDom, renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const { ORGANIZATION_PROFILE_OFFER_SESSION_KEY } = await import('../../lib/auth/organization-profile-handoff.ts')
+  installTestDom()
+  const offer = {
+    signer_fingerprint: 'ab'.repeat(32),
+    profile: {
+      schema_version: 'labby.organization-bootstrap/v1',
+      organization_id: 'team-org',
+      issued_at: 123,
+      key_id: 'team-key',
+      verifying_key: 'verify-key',
+      integrations: [],
+      signature: 'signature',
+    },
+  }
+  window.sessionStorage.setItem(ORGANIZATION_PROFILE_OFFER_SESSION_KEY, JSON.stringify(offer))
+  __setBrowserSessionStateForTests({ ...signedIn, authorityState: 'ready' })
+
+  const view = await withAuthEnv(() => renderClient(React.createElement(AuthBootstrap, null, React.createElement('div', null, 'children'))))
+  try {
+    assert.match(view.container.textContent ?? '', /Bring team defaults into your personal Labby/)
+    assert.match(view.container.textContent ?? '', /Your personal Labby stays the runtime owner/)
+    assert.equal((view.container.textContent ?? '').includes('children'), false)
+  } finally {
+    window.sessionStorage.clear()
+    await view.unmount()
+  }
 })
 
 test('authority changes replace the SWR cache and isolate late mutations', async () => {

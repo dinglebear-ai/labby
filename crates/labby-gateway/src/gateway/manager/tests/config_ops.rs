@@ -749,6 +749,30 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
 }
 
 #[tokio::test]
+async fn batch_add_atomic_rejects_the_entire_set_before_persisting_any_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+
+    let error = manager
+        .batch_add_atomic(
+            vec![
+                fixture_stdio_upstream("alpha"),
+                fixture_stdio_upstream("bad name"),
+                fixture_stdio_upstream("bravo"),
+            ],
+            Some("test.atomic"),
+            None,
+        )
+        .await
+        .expect_err("invalid sibling must abort the complete atomic batch");
+
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(manager.get("alpha").await.is_err());
+    assert!(manager.get("bravo").await.is_err());
+}
+
+#[tokio::test]
 async fn batch_add_returns_successful_views_and_preserves_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
