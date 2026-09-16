@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
@@ -397,7 +398,7 @@ fn collect_snippets(
             continue;
         }
         names.insert(stem.to_string());
-        let body = match fs::read_to_string(&path) {
+        let body = match read_snippet_body(&path) {
             Ok(body) => body,
             Err(_) => continue,
         };
@@ -436,12 +437,27 @@ fn has_snippet_extension(path: &Path) -> bool {
         .is_some_and(|ext| SNIPPET_EXTENSIONS.contains(&ext))
 }
 
+fn read_snippet_body(path: &Path) -> Result<String, ToolError> {
+    let file = fs::File::open(path).map_err(|e| io_error("open snippet", path, e))?;
+    let mut body = String::new();
+    file.take((MAX_SNIPPET_FILE_BYTES + 1) as u64)
+        .read_to_string(&mut body)
+        .map_err(|e| io_error("read snippet", path, e))?;
+    if body.len() > MAX_SNIPPET_FILE_BYTES {
+        return Err(ToolError::InvalidParam {
+            message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
+            param: "body".to_string(),
+        });
+    }
+    Ok(body)
+}
+
 fn read_resolved(
     name: &str,
     source: SnippetSource,
     path: PathBuf,
 ) -> Result<ResolvedSnippet, ToolError> {
-    let body = fs::read_to_string(&path).map_err(|e| io_error("read snippet", &path, e))?;
+    let body = read_snippet_body(&path)?;
     validate_snippet_body(name, &body)?;
     let (description, tags, inputs, tools) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
@@ -1290,6 +1306,18 @@ mod tests {
         );
         let error =
             validate_snippet_body("demo", &body).expect_err("oversized file should be rejected");
+        assert!(format!("{error}").contains("snippet file exceeds"));
+    }
+
+    #[test]
+    fn read_resolved_bounds_file_bytes_before_full_read() {
+        let dir = tempfile::tempdir().expect("temp snippets");
+        let path = dir.path().join("demo.js");
+        fs::write(&path, vec![b'x'; MAX_SNIPPET_FILE_BYTES + 4096])
+            .expect("write oversized fixture");
+
+        let error = read_resolved("demo", SnippetSource::User, path)
+            .expect_err("oversized on-disk snippet must fail before a full read");
         assert!(format!("{error}").contains("snippet file exceeds"));
     }
 
