@@ -11,6 +11,7 @@ export {
   getSessionCsrfToken,
   getSessionAuthority,
   getSessionProjectId,
+  isProjectBoundSession,
   loadBrowserSession,
   logoutBrowserSession,
   subscribeToBrowserSession,
@@ -18,6 +19,7 @@ export {
   selectSessionWorkspace,
   type AuthorityOwner,
   type BrowserSessionState,
+  type ProjectBoundSession,
   type SessionAuthority,
   type SessionAuthorityState,
 } from './session-store.ts'
@@ -25,6 +27,7 @@ export {
   AUTHORITY_COMPATIBILITY_GENERATION,
   AUTHORITY_SCHEMA_VERSION,
   MalformedAuthorityResponseError,
+  WorkspaceSelectionError,
   authorityCacheKey,
   authorityIdentity,
   parseAuthoritySnapshot,

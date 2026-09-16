@@ -5,7 +5,7 @@ import { Archive, BookOpen, Check, Download, FilePlus2, Loader2, Pencil, Plus, R
 import { toast } from 'sonner'
 
 import { AURORA_DENSE_META, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
-import { ProjectWorkspaceRequired, sessionProjectId } from '@/components/auth/project-workspace-required'
+import { ProjectWorkspaceRequired } from '@/components/auth/project-workspace-required'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,7 @@ import {
   type SkillVisibility,
 } from '@/lib/api/skill-library-client'
 import { isAbortError } from '@/lib/api/service-action-client'
-import { authorityIdentity, getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
+import { authorityIdentity, getBrowserSessionContextIdentity, isProjectBoundSession, useBrowserSession } from '@/lib/auth/session'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 const STARTER = `---
@@ -67,13 +67,12 @@ function LifecycleRail({ selected, validation, libraryPublished = false }: { sel
 
 export function SkillLibraryPageContent() {
   const session = useBrowserSession()
-  const projectId = sessionProjectId(session)
 
-  if (projectId && session.status === 'authenticated') {
+  if (isProjectBoundSession(session)) {
     // Key the project-scoped editor to the caller and current authority
     // identity so workspace, login, or policy changes cannot leave stale
     // Artifacts or in-flight editor state visible in a new context.
-    const scopeKey = `${session.user.sub}:${projectId}:${authorityIdentity(session.authority)}`
+    const scopeKey = `${session.user.sub}:${session.projectId}:${authorityIdentity(session.authority)}`
     return <ProjectScopedSkillLibraryPageContent key={scopeKey} />
   }
 

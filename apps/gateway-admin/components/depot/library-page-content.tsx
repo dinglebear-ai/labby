@@ -1,12 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Archive, Box, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, Filter, Globe, Grid2X2, Link2, List, Loader2, LockKeyhole, RefreshCw, Search, ShieldCheck, Table2, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
-import { ProjectWorkspaceRequired, sessionProjectId } from '@/components/auth/project-workspace-required'
+import { ProjectWorkspaceRequired } from '@/components/auth/project-workspace-required'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
@@ -18,8 +18,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { depotPublishCapability, depotStatus, type DepotArtifact, type DepotPublishCapability, type DepotStatus } from '@/lib/api/depot-client'
 import { controlPlaneAction } from '@/lib/api/artifact-control-client'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
-import { useBrowserSession } from '@/lib/auth/session'
-import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
+import { authorityIdentity, isProjectBoundSession, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 import { artifactDescription, artifactExportFilename, artifactId, artifactKind, artifactLabel, collectArtifactKinds, collectArtifactTags, filterLibraryArtifacts, sortLibraryArtifacts, serializeArtifact } from './library-model'
 import { ARTIFACT_TYPES, ArtifactTypeMark, artifactTypeDefinition } from './artifact-type'
 import { updateLibraryUrl as updateUrl } from './library-url'
@@ -116,25 +116,33 @@ export function LibrarySortMenu({ sort, onSort }: { sort: 'catalog' | 'name' | '
 
 export function LibraryPageContent() {
   const session = useBrowserSession()
-  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   // Every `artifacts.*` read is project-scoped and the server refuses one that
   // arrives without a project, so the collection mounts only for a
-  // project-bound session. Session changes invalidate both retained data and
-  // every in-flight read.
-  if (sessionProjectId(session)) return <SessionLibraryPage key={sessionEpoch} />
+  // project-bound session. Keying it on the caller, project, and authority
+  // identity remounts it whenever that context changes, which discards
+  // retained data and lets every in-flight read see a stale epoch.
+  if (isProjectBoundSession(session)) {
+    return <SessionLibraryPage key={`${session.user.sub}:${session.projectId}:${authorityIdentity(session.authority)}`} />
+  }
   return (
-    <LibraryShell>
+    <LibraryShell pulse={{ color: 'var(--aurora-warn)', label: 'project required' }}>
       <ProjectWorkspaceRequired session={session} description="The Library is project-scoped. Select an eligible project workspace to continue." />
     </LibraryShell>
   )
 }
 
-/** The Library chrome without a project-bound collection: the other sections stay reachable. */
-function LibraryShell({ children }: { children: ReactNode }) {
+/** The Library chrome: header, hero with the section tabs and the Discover action, and the page frame. */
+function LibraryShell({ pulse, stats, counts, actions, children }: {
+  pulse: ComponentProps<typeof ConsoleHero>['pulse']
+  stats?: ComponentProps<typeof ConsoleHero>['stats']
+  counts?: ComponentProps<typeof LibraryTabs>['counts']
+  actions?: ReactNode
+  children: ReactNode
+}) {
   return <>
     <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
     <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
-      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached />} pulse={{ color: 'var(--aurora-warn)', label: 'project required' }} actions={<Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button>} />
+      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={counts} />} pulse={pulse} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button>{actions}</div>} stats={stats} />
       {children}
     </div></div>
   </>
@@ -263,14 +271,12 @@ function SessionLibraryPage() {
   }, [copy])
 
   return <>
-    <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }]} />
-    <div className={`${AURORA_PAGE_SHELL} min-w-0 flex-1`}><div className={`${AURORA_PAGE_FRAME} gap-3.5`}>
-      <ConsoleHero eyebrow="Depot · Library" title="Library" footer={<LibraryTabs active="artifacts" attached counts={state.error || state.total === undefined ? {} : { artifacts: state.total }} />} pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'live catalog' : 'Depot unavailable' }} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><a href="/depot"><Search className="size-4"/>Discover</a></Button><Button variant="outline" size="sm" disabled={state.loading} onClick={() => void load(activeQuery)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}Refresh</Button></div>} stats={[
+    <LibraryShell counts={state.error || state.total === undefined ? {} : { artifacts: state.total }} pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'live catalog' : 'Depot unavailable' }} actions={<Button variant="outline" size="sm" disabled={state.loading} onClick={() => void load(activeQuery)}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}Refresh</Button>} stats={[
         { label: activeQuery ? 'Matches' : 'Published artifacts', value: state.total ?? '—', icon: <Archive size={12}/> },
         { label: 'Loaded', value: state.artifacts.length, icon: <Box size={12}/> },
         { label: 'Kinds loaded', value: kinds.length, icon: <FileText size={12}/> },
         { label: 'Your access', value: state.publishing?.available ? 'Read + publish' : state.publishing?.reason === 'owner_link_approval_pending' ? 'Confirm owner link' : state.publishing ? 'Read only' : 'Unknown', icon: <ShieldCheck size={12}/> },
-      ]}/>
+      ]}>
       {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Refresh after Depot is connected.</p></DashboardPanel> : null}
       <div data-lbgrid="1" className="grid min-w-0 items-start gap-3.5 min-[901px]:grid-cols-[214px_minmax(0,1fr)]">
       <LibraryFilterRail artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
@@ -288,7 +294,7 @@ function SessionLibraryPage() {
       </section>
       </div>
       </div>
-    </div></div>
+    </LibraryShell>
     <Dialog open={Boolean(selectedId)} onOpenChange={(open) => { if (!open) updateUrl({ artifact: null }) }}><DialogContent className="flex max-h-[86vh] w-[96vw] max-w-[720px] flex-col gap-0 overflow-hidden rounded-aurora-2 border-aurora-border-subtle bg-gradient-to-b from-aurora-panel-strong-top to-aurora-panel-strong p-0 shadow-[var(--aurora-shadow-strong)] sm:max-w-[720px]">
       <DialogHeader className="shrink-0 border-b border-aurora-border-subtle px-4 py-[15px] pr-14 text-left">
         <div className="flex min-w-0 items-start gap-[11px]">

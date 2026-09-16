@@ -1,62 +1,60 @@
 'use client'
 
-import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AURORA_DENSE_META } from '@/components/aurora/tokens'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { shouldBypassBrowserSessionAuth } from '@/lib/auth/auth-mode'
-import { selectSessionWorkspace, type BrowserSessionState } from '@/lib/auth/session'
-import { cn, getErrorMessage } from '@/lib/utils'
+import { WorkspaceSelectionError, selectSessionWorkspace, type BrowserSessionState } from '@/lib/auth/session'
+import { cn } from '@/lib/utils'
 
 /**
- * The project a browser session is bound to, if any.
+ * What a project-scoped page renders while its session has no project.
  *
- * A fresh session always starts in the Personal workspace with no project,
- * and the server refuses every project-scoped request (`artifacts.*` and the
- * remote control-plane services) that arrives without one. Project-scoped
- * pages mount their content only when this is set instead of issuing reads
- * that can only be refused.
- */
-export function sessionProjectId(session: BrowserSessionState): string | undefined {
-  return session.status === 'authenticated' ? session.projectId : undefined
-}
-
-/**
- * Terminal states for a project-scoped page whose session has no project:
- * waits for the session, explains mock data mode, offers the projects the
- * server projected for this caller, or asks the operator to sign in.
+ * An OAuth or bearer sign-in starts in the Personal workspace with no project
+ * selected; only a source-bound project session arrives already bound. The
+ * Skills and Depot Library pages mount their collections only for a bound
+ * session (`isProjectBoundSession`) and render this otherwise, because the
+ * server refuses every `artifacts.*` action that arrives without
+ * `x-labby-project-id`.
  *
- * Choosing a project goes through the shared workspace switch, so the
- * sidebar, request headers, and every other page observe the same context.
- * The choice is a selector only; the server revalidates membership on every
- * request.
+ * Two states reach operators: mock data mode, where the session never loads,
+ * and an authenticated session with no project, which is offered the projects
+ * the server projected for this caller. `AuthBootstrap` owns the loading,
+ * signed-out, and auth-error states in the admin layout, so those render
+ * nothing here.
+ *
+ * Choosing a project goes through `selectSessionWorkspace`, the same switch
+ * the sidebar uses, so `gatewayHeaders` and every page keyed on the session
+ * identity observe the same context. The client only accepts a project the
+ * server projected; the server re-authorizes membership on every request.
  */
 export function ProjectWorkspaceRequired({ session, description }: { session: BrowserSessionState; description: string }) {
-  if (session.status === 'loading' && !shouldBypassBrowserSessionAuth()) {
-    return <div className="flex min-h-56 items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
-  }
-  if (session.status === 'loading') {
-    return (
-      <DashboardPanel title="Project required">
-        <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to continue.</p>
-      </DashboardPanel>
-    )
-  }
   if (session.status !== 'authenticated') {
+    if (session.status === 'loading' && shouldBypassBrowserSessionAuth()) {
+      return (
+        <DashboardPanel title="Project required">
+          <p className="text-sm text-aurora-text-muted">Mock data mode does not project an authenticated project. Use a live project-bound session to continue.</p>
+        </DashboardPanel>
+      )
+    }
+    return null
+  }
+  if (!session.authority) {
     return (
       <DashboardPanel title="Project required">
-        <p className="text-sm text-destructive">{session.status === 'auth_error' ? session.message : 'Sign in to select a project workspace.'}</p>
+        <p className="text-sm text-aurora-text-muted">This session carries no workspace authority projection, so no project can be selected. Sign in again.</p>
       </DashboardPanel>
     )
   }
-  const projects = session.authority?.projects ?? []
+  const projects = session.authority.projects
   const chooseProject = (projectId: string) => {
     try {
       selectSessionWorkspace({ projectId })
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'The project workspace could not be selected.'))
+      if (!(cause instanceof WorkspaceSelectionError)) throw cause
+      toast.error(cause.message)
     }
   }
   return (
@@ -71,7 +69,7 @@ export function ProjectWorkspaceRequired({ session, description }: { session: Br
           ))}
         </div>
       ) : (
-        <p className={cn(AURORA_DENSE_META, 'mt-3 text-aurora-text-muted')}>No eligible project is available for this session. Create or assign a project in the Control Plane, then refresh your session.</p>
+        <p className={cn(AURORA_DENSE_META, 'mt-3 text-aurora-text-muted')}>No eligible project is available for this session. Create or assign a project in the Control Plane, then reload the page.</p>
       )}
     </DashboardPanel>
   )
