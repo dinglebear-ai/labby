@@ -2,7 +2,7 @@ import { DISCOVERY_KINDS } from '../depot/provider-model.ts'
 import { z } from 'zod'
 
 import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
-import { gatewayRequestInit } from './gateway-request'
+import { assertGatewayAuthorityCurrent, gatewayRequestInit } from './gateway-request'
 import { refreshBrowserSession } from './service-action-client'
 import { mockDepotLibraryArtifactIds, mockDepotProviderOptions, mockGetArtifact, mockListArtifacts } from './depot-mock-data'
 
@@ -266,15 +266,14 @@ export async function depotOperations(signal?: AbortSignal): Promise<DepotOperat
 
 let depotCatalogPreflight: { epoch: number; promise: Promise<void> } | undefined
 
-async function ensureDepotOperationCatalog(signal?: AbortSignal): Promise<void> {
-  const epoch = getBrowserSessionEpoch()
+async function ensureDepotOperationCatalog(epoch: number): Promise<void> {
   let preflight = depotCatalogPreflight
   if (!preflight || preflight.epoch !== epoch) {
     const promise = (async () => {
       // Do not bind the shared preflight to one caller's AbortSignal. A cancelled
-      // Library request must not abort catalog establishment for another caller.
+      // request must not abort catalog establishment for another caller.
       await depotOperations()
-      if (epoch !== getBrowserSessionEpoch()) throw new Error('Session changed while establishing Depot operation catalog')
+      assertGatewayAuthorityCurrent(epoch)
     })()
     preflight = { epoch, promise }
     depotCatalogPreflight = preflight
@@ -282,7 +281,6 @@ async function ensureDepotOperationCatalog(signal?: AbortSignal): Promise<void> 
     void promise.then(clear, clear)
   }
   await preflight.promise
-  signal?.throwIfAborted()
 }
 
 function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
@@ -313,7 +311,14 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
   // current operation catalog. Establish one immediately before every real
   // operation; concurrent callers share only the in-flight preflight, never a
   // long-lived client cache that could survive a backend restart.
-  await ensureDepotOperationCatalog(signal)
+  signal?.throwIfAborted()
+  const operationEpoch = getBrowserSessionEpoch()
+  await ensureDepotOperationCatalog(operationEpoch)
+  signal?.throwIfAborted()
+  // The shared preflight may resolve before this caller resumes. Re-check at the
+  // dispatch boundary so a session/project transition cannot reuse another
+  // actor's catalog and recreate the cold-session 502.
+  assertGatewayAuthorityCurrent(operationEpoch)
   const init = gatewayRequestInit(operation, params, undefined, signal)
   init.body = JSON.stringify({ operation, params, ...(destructiveIntent ? { destructiveIntent } : {}) })
   const value = await parse(await fetch('/v1/depot/operations', init))

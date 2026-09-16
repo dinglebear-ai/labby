@@ -193,6 +193,54 @@ test('generic operation dispatch establishes the actor catalog immediately befor
   } finally { globalThis.fetch = original }
 })
 
+test('already-aborted operation never starts a catalog preflight', async () => {
+  const original = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => {
+    requests++
+    return operationCatalog()
+  }) as typeof fetch
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    await assert.rejects(depotCall('depot.system.status', {}, controller.signal), /aborted/i)
+    assert.equal(requests, 0)
+  } finally { globalThis.fetch = original }
+})
+
+test('session transition during catalog preflight prevents operation dispatch', async () => {
+  const original = globalThis.fetch
+  const sequence: string[] = []
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'catalog-actor-one' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-one' })
+  globalThis.fetch = (async (url, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (String(url) === '/v1/depot/operations' && method === 'GET') {
+      sequence.push('catalog')
+      await catalogGate
+      return operationCatalog()
+    }
+    if (String(url) === '/v1/depot/operations' && method === 'POST') {
+      sequence.push('post')
+      return json({ schemaVersion: 'labby.depot-compatibility/v1', result: { ok: true } })
+    }
+    return json({ message: 'unexpected request' }, 500)
+  }) as typeof fetch
+  try {
+    const pending = depotCall('depot.system.status', {})
+    await Promise.resolve()
+    assert.deepEqual(sequence, ['catalog'])
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'catalog-actor-two' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-two' })
+    releaseCatalog()
+    await assert.rejects(pending, /Authority or project context changed/)
+    assert.deepEqual(sequence, ['catalog'], 'operation POST is blocked after the actor changes')
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
 test('concurrent operation dispatch shares one in-flight catalog preflight', async () => {
   const original = globalThis.fetch
   const sequence: string[] = []
