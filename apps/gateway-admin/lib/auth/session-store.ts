@@ -1,5 +1,5 @@
 import { invalidateAuthorityRequests } from './authority-context.ts'
-import { MalformedAuthorityResponseError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
+import { MalformedAuthorityResponseError, WorkspaceSelectionError, authorityIdentity, parseAuthoritySnapshot, resetAuthorityOpaqueValues, selectAuthorityWorkspace, type AuthorityOwner, type AuthoritySnapshot } from './authority.ts'
 
 export type SessionAuthority = AuthoritySnapshot
 export type SessionAuthorityState = 'ready' | 'transport' | 'unprovisioned'
@@ -193,8 +193,30 @@ export function getSessionCsrfToken() {
   return currentState.status === 'authenticated' ? currentState.csrfToken : undefined
 }
 
+/** An authenticated session that carries a project, so project-scoped requests can be issued. */
+export type ProjectBoundSession = Extract<BrowserSessionState, { status: 'authenticated' }> & { projectId: string }
+
+/**
+ * Whether a session is bound to a project. Project-scoped pages mount their
+ * content only for such a session; the server refuses every `artifacts.*`
+ * action that arrives without `x-labby-project-id`.
+ */
+export function isProjectBoundSession(state: BrowserSessionState): state is ProjectBoundSession {
+  return state.status === 'authenticated' && typeof state.projectId === 'string' && state.projectId.length > 0
+}
+
 export function getSessionProjectId() {
-  return currentState.status === 'authenticated' ? currentState.projectId : undefined
+  return isProjectBoundSession(currentState) ? currentState.projectId : undefined
+}
+
+/**
+ * The session context identity while the session is project-bound, or `''`.
+ * A primitive snapshot for `useSyncExternalStore`: project-scoped pages key
+ * their content on it, and a transport-only refresh (CSRF token, expiry)
+ * leaves it unchanged so nothing re-renders.
+ */
+export function getProjectBoundSessionScope(): string {
+  return isProjectBoundSession(currentState) ? sessionIdentity(currentState) : ''
 }
 
 export function getSessionAuthority() {
@@ -206,7 +228,7 @@ export function sessionHasCapability(capability: string) {
 }
 
 export function selectSessionWorkspace(selection: { teamId?: string | null; projectId?: string | null }) {
-  if (currentState.status !== 'authenticated' || !currentState.authority) throw new Error('Authority is unavailable')
+  if (currentState.status !== 'authenticated' || !currentState.authority) throw new WorkspaceSelectionError('Authority is unavailable')
   const authority = selectAuthorityWorkspace(currentState.authority, selection)
   setState({ ...currentState, authority, projectId: authority.activeProjectId })
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(AUTHORITY_WORKSPACE_CHANGED_EVENT))
