@@ -10,10 +10,8 @@ const DEPLOYMENT_README: &str = include_str!("../../../deploy/team-labby/README.
 const RELEASE_DOCKERFILE: &str = include_str!("../../../config/Dockerfile");
 
 fn cargo_manifest(path: &std::path::Path) -> toml::Value {
-    let body = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-    toml::from_str(&body)
-        .unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
+    let body = std::fs::read_to_string(path).expect("Cargo manifest must be readable");
+    toml::from_str(&body).expect("Cargo manifest must contain valid TOML")
 }
 
 fn release_local_package_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -34,7 +32,7 @@ fn release_local_package_manifests(root: &std::path::Path) -> Vec<std::path::Pat
     while let Some(manifest) = pending.pop() {
         let manifest = manifest
             .canonicalize()
-            .unwrap_or_else(|error| panic!("failed to resolve {}: {error}", manifest.display()));
+            .expect("local package manifest must resolve");
         if !seen.insert(manifest.clone()) {
             continue;
         }
@@ -122,12 +120,17 @@ fn release_dockerfile_tracks_every_local_rust_package_needed_by_the_workspace() 
             "release Dockerfile must create a stub source directory for {relative}"
         );
         let stub_target = if directory.join("src/lib.rs").exists() {
-            format!("{relative}/src/lib.rs")
+            Some(format!("{relative}/src/lib.rs"))
         } else if directory.join("src/main.rs").exists() {
-            format!("{relative}/src/main.rs")
+            Some(format!("{relative}/src/main.rs"))
         } else {
-            panic!("local package {relative} has no standard lib.rs or main.rs cache target");
+            None
         };
+        assert!(
+            stub_target.is_some(),
+            "local package {relative} has no standard lib.rs or main.rs cache target"
+        );
+        let stub_target = stub_target.expect("cache target existence asserted above");
         if relative.starts_with("verification/") {
             assert!(
                 RELEASE_DOCKERFILE.contains(&format!(
