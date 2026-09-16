@@ -263,7 +263,9 @@ impl ArtifactControlPlane {
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
     ) -> Result<Self, ToolError> {
-        let sources = super::artifact_sources::admit_host_sources(config, depot);
+        let sources = super::artifact_sources::admit_host_sources(config, depot, &|name| {
+            std::env::var_os(name)
+        });
         sources.warn_rejections();
         Self::from_admitted_sources(&sources, depot)
     }
@@ -275,7 +277,9 @@ impl ArtifactControlPlane {
         config: &ArtifactPreferences,
         depot: &crate::config::depot::DepotPreferences,
     ) -> Result<Self, ToolError> {
-        let sources = super::artifact_sources::admit_host_sources(config, depot);
+        let sources = super::artifact_sources::admit_host_sources(config, depot, &|name| {
+            std::env::var_os(name)
+        });
         if let Some(rejected) = sources.rejected.first() {
             return Err(rejected.to_tool_error());
         }

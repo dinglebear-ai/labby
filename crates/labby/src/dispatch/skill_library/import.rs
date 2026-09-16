@@ -192,8 +192,11 @@ impl ImportCoordinator {
         staging_root: &Path,
         env: &impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, ArtifactError> {
-        let sources =
-            crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            env,
+        );
         sources.warn_rejections();
         Self::from_admitted_sources(&sources, config, staging_root, env)
     }
@@ -403,6 +406,7 @@ impl ImportCoordinator {
             config,
             &crate::config::depot::DepotPreferences::default(),
             policy,
+            env,
         );
         if let Some(rejected) = sources.rejected.first() {
             return Err(rejected.to_artifact_error());
@@ -2223,6 +2227,59 @@ pinned_addresses = ["8.8.8.8"]
                 "{id} was rejected and must not get a staging directory"
             );
         }
+    }
+
+    /// Two environment variables holding the same secret are one credential.
+    /// A source that reuses the Public Depot token under another variable name
+    /// is disabled exactly like one that reuses the variable name; the values
+    /// are compared by digest and never logged.
+    #[test]
+    fn public_token_value_reuse_is_rejected() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let root = tempfile::tempdir().unwrap();
+        let config: crate::config::LabConfig = toml::from_str(
+            r#"
+[depot]
+read_project_id = "catalog-project"
+[depot.public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_PUBLIC_TOKEN"
+deployment_id = "catalog-depot"
+[[artifacts.sources]]
+id = "public"
+kind = "depot"
+endpoint = "https://depot.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.8.8"]
+bearer_token_env = "LABBY_DEPOT_PUBLIC_TOKEN"
+[[artifacts.sources]]
+id = "other"
+kind = "depot"
+endpoint = "https://other.example.com/api/artifacts/exact"
+pinned_addresses = ["8.8.4.4"]
+bearer_token_env = "LABBY_DEPOT_OTHER_TOKEN"
+"#,
+        )
+        .unwrap();
+        let same_value = |name: &str| {
+            matches!(name, "LABBY_DEPOT_PUBLIC_TOKEN" | "LABBY_DEPOT_OTHER_TOKEN")
+                .then(|| std::ffi::OsString::from("one-shared-secret-value"))
+        };
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &same_value)
+                .unwrap();
+        assert!(
+            !imports.depot_connection_ids().contains(&"other".to_owned()),
+            "a source holding the Public Depot token under another name must be disabled"
+        );
+        let distinct_values = |name: &str| match name {
+            "LABBY_DEPOT_PUBLIC_TOKEN" => Some(std::ffi::OsString::from("public-secret-value")),
+            "LABBY_DEPOT_OTHER_TOKEN" => Some(std::ffi::OsString::from("other-secret-value")),
+            _ => None,
+        };
+        let imports =
+            ImportCoordinator::from_host_config_with_env(&config, root.path(), &distinct_values)
+                .unwrap();
+        assert!(imports.depot_connection_ids().contains(&"other".to_owned()));
     }
 
     #[test]

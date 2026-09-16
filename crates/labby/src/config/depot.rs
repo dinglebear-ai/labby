@@ -492,6 +492,37 @@ impl DepotPreferences {
             )
     }
 
+    /// `validate_public_acquisition` plus the value-level reuse check: two
+    /// variables that resolve to the same secret are one credential, so a
+    /// non-public source holding the Public Depot token under another name
+    /// is refused exactly like one naming the same variable. Values are
+    /// compared by digest and never logged or returned.
+    pub fn validate_public_acquisition_with_env(
+        &self,
+        artifacts: &super::ArtifactPreferences,
+        env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<(), &'static str> {
+        self.validate_public_acquisition(artifacts)?;
+        let Some(binding) = &self.public_read_binding else {
+            return Ok(());
+        };
+        let Some(public) = env(&binding.bearer_token_env).map(|value| credential_digest(&value))
+        else {
+            return Ok(());
+        };
+        if artifacts.sources.iter().any(|source| {
+            source.id != PUBLIC_ID
+                && source
+                    .bearer_token_env
+                    .as_deref()
+                    .and_then(env)
+                    .is_some_and(|value| credential_digest(&value) == public)
+        }) {
+            return Err("Public Depot credential cannot be reused by another acquisition source");
+        }
+        Ok(())
+    }
+
     pub fn validate_public_acquisition(
         &self,
         artifacts: &super::ArtifactPreferences,
@@ -582,6 +613,13 @@ pub fn valid_provider_id(id: &str) -> bool {
 
 /// Secret references are environment-variable names in the `LABBY_DEPOT_*`
 /// namespace ending in `_TOKEN` (bearer values) or `_KEY` (signing seeds).
+/// Fixed-size fingerprint of a resolved credential value, for equality checks
+/// that must never hold or log the value itself.
+pub fn credential_digest(value: &std::ffi::OsStr) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(value.as_encoded_bytes()).into()
+}
+
 pub fn allowed_secret_reference(key: &str) -> bool {
     key.len() <= 128
         && key.starts_with("LABBY_DEPOT_")

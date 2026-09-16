@@ -12,7 +12,8 @@
 //!
 //! Checks run in one fixed order: id validity, duplicate ids (every copy is
 //! disabled), the Public Depot acquisition binding, Public Depot credential
-//! reuse, the endpoint URL, the control-plane origin, then `pinned_addresses`
+//! reuse (by variable name or by resolved value, compared as digests and never
+//! logged), the endpoint URL, the control-plane origin, then `pinned_addresses`
 //! against the endpoint host and, for control-plane sources, against the
 //! control-plane host as well. Pins are judged by the Depot network policy in
 //! [`super::depot::network`], which refuses IPv4-mapped IPv6 and cloud metadata
@@ -26,7 +27,7 @@ use std::net::IpAddr;
 #[cfg(test)]
 use labby_runtime::artifacts::ArtifactError;
 
-use crate::config::depot::{DepotPreferences, PUBLIC_ID};
+use crate::config::depot::{DepotPreferences, PUBLIC_ID, credential_digest};
 use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 use crate::dispatch::depot::network::{NetworkPolicy, validate_addresses};
 #[cfg(test)]
@@ -186,13 +187,18 @@ impl HostArtifactSources<'_> {
     }
 }
 
+/// Resolves credential environment variables; the composition root passes the
+/// process environment and tests pass fixtures. Values are only ever digested.
+pub(crate) type CredentialEnv<'e> = &'e dyn Fn(&str) -> Option<std::ffi::OsString>;
+
 /// Admit the host's sources under its `[depot.private_hosts]` policy.
 pub(crate) fn admit_host_sources<'a>(
     artifacts: &'a ArtifactPreferences,
     depot: &DepotPreferences,
+    env: CredentialEnv<'_>,
 ) -> HostArtifactSources<'a> {
     match super::depot::manager::host_policy(depot) {
-        Ok(policy) => admit_sources(artifacts, depot, policy),
+        Ok(policy) => admit_sources(artifacts, depot, policy, env),
         Err(_) => {
             let mut rejected = Vec::new();
             for source in &artifacts.sources {
@@ -212,16 +218,32 @@ pub(crate) fn admit_sources<'a>(
     artifacts: &'a ArtifactPreferences,
     depot: &DepotPreferences,
     policy: NetworkPolicy,
+    env: CredentialEnv<'_>,
 ) -> HostArtifactSources<'a> {
     let mut copies: BTreeMap<&str, usize> = BTreeMap::new();
     for source in &artifacts.sources {
         *copies.entry(source.id.as_str()).or_default() += 1;
     }
+    let public_credential = depot
+        .public_read_binding
+        .as_ref()
+        .map(|binding| PublicCredential {
+            env_name: binding.bearer_token_env.as_str(),
+            digest: env(&binding.bearer_token_env).map(|value| credential_digest(&value)),
+        });
     let mut admitted = Vec::new();
     let mut rejected = Vec::new();
     for source in &artifacts.sources {
         let copies = copies.get(source.id.as_str()).copied().unwrap_or(1);
-        match admit_one(source, artifacts, depot, &policy, copies) {
+        match admit_one(
+            source,
+            artifacts,
+            depot,
+            &policy,
+            copies,
+            public_credential.as_ref(),
+            env,
+        ) {
             Ok(source) => admitted.push(source),
             Err(reason) => push_rejection(&mut rejected, &source.id, reason),
         }
@@ -246,12 +268,38 @@ fn push_rejection(rejected: &mut Vec<RejectedArtifactSource>, id: &str, reason: 
     });
 }
 
+/// The Public Depot read credential as admission sees it: the variable name,
+/// and the digest of its value when the variable is set.
+struct PublicCredential<'a> {
+    env_name: &'a str,
+    digest: Option<[u8; 32]>,
+}
+
+impl PublicCredential<'_> {
+    /// Whether `source` would authenticate with the Public Depot credential,
+    /// by naming the same variable or by holding the same secret.
+    fn reused_by(&self, source: &ArtifactSourceConfig, env: CredentialEnv<'_>) -> bool {
+        let Some(name) = source.bearer_token_env.as_deref() else {
+            return false;
+        };
+        if name == self.env_name {
+            return true;
+        }
+        match (self.digest, env(name)) {
+            (Some(public), Some(value)) => credential_digest(&value) == public,
+            _ => false,
+        }
+    }
+}
+
 fn admit_one<'a>(
     source: &'a ArtifactSourceConfig,
     artifacts: &ArtifactPreferences,
     depot: &DepotPreferences,
     policy: &NetworkPolicy,
     copies: usize,
+    public_credential: Option<&PublicCredential<'_>>,
+    env: CredentialEnv<'_>,
 ) -> Result<AdmittedArtifactSource<'a>, SourceRejection> {
     labby_runtime::artifacts::validation::validate_id(&source.id, "connection_id")
         .map_err(|_| SourceRejection::InvalidId)?;
@@ -262,9 +310,7 @@ fn admit_one<'a>(
         return Err(SourceRejection::PublicAcquisitionBinding);
     }
     if source.id != PUBLIC_ID
-        && depot.public_read_binding.as_ref().is_some_and(|binding| {
-            source.bearer_token_env.as_deref() == Some(&binding.bearer_token_env)
-        })
+        && public_credential.is_some_and(|public| public.reused_by(source, env))
     {
         return Err(SourceRejection::PublicCredentialReuse);
     }
@@ -349,6 +395,23 @@ mod tests {
         }
     }
 
+    fn no_env(_: &str) -> Option<std::ffi::OsString> {
+        None
+    }
+
+    fn public_binding_depot() -> DepotPreferences {
+        toml::from_str(
+            r#"
+read_project_id = "catalog-project"
+[public_read_binding]
+endpoint = "http://127.0.0.1:4101/"
+bearer_token_env = "LABBY_DEPOT_PUBLIC_TOKEN"
+deployment_id = "catalog-depot"
+"#,
+        )
+        .unwrap()
+    }
+
     fn ids<'a>(sources: &'a HostArtifactSources<'_>) -> Vec<&'a str> {
         sources
             .admitted
@@ -372,6 +435,7 @@ mod tests {
             &artifacts,
             &depot,
             grants(&[("cp.example.com", "10.1.0.8")]),
+            &no_env,
         );
         assert!(ids(&one_host).is_empty());
         assert_eq!(
@@ -388,6 +452,7 @@ mod tests {
             &artifacts,
             &depot,
             grants(&[("depot.example.com", "10.1.0.8")]),
+            &no_env,
         );
         assert_eq!(
             other_host.rejected[0].reason,
@@ -403,6 +468,7 @@ mod tests {
                 ("cp.example.com", "10.1.0.8"),
                 ("depot.example.com", "10.1.0.8"),
             ]),
+            &no_env,
         );
         assert_eq!(ids(&both), ["private"]);
         assert_eq!(
@@ -425,6 +491,7 @@ mod tests {
             &artifacts,
             &DepotPreferences::default(),
             NetworkPolicy::default(),
+            &no_env,
         );
         assert!(ids(&verdict).is_empty());
         assert!(matches!(
@@ -454,6 +521,7 @@ mod tests {
             &artifacts,
             &DepotPreferences::default(),
             NetworkPolicy::default(),
+            &no_env,
         );
         assert!(ids(&verdict).is_empty());
         assert_eq!(
@@ -463,6 +531,62 @@ mod tests {
                 reason: SourceRejection::DuplicateId,
             }]
         );
+    }
+
+    #[test]
+    fn public_credential_reuse_is_judged_by_value_as_well_as_by_name() {
+        let mut public = depot_source(
+            "public",
+            "https://depot.example.com/api/artifacts/exact",
+            None,
+            "8.8.8.8",
+        );
+        public.bearer_token_env = Some("LABBY_DEPOT_PUBLIC_TOKEN".to_owned());
+        let mut other = depot_source(
+            "other",
+            "https://other.example.com/api/artifacts/exact",
+            None,
+            "8.8.4.4",
+        );
+        other.bearer_token_env = Some("LABBY_DEPOT_OTHER_TOKEN".to_owned());
+        let artifacts = ArtifactPreferences {
+            sources: vec![public, other],
+        };
+        let depot = public_binding_depot();
+        let same_value = |name: &str| {
+            matches!(name, "LABBY_DEPOT_PUBLIC_TOKEN" | "LABBY_DEPOT_OTHER_TOKEN")
+                .then(|| std::ffi::OsString::from("one-shared-secret-value"))
+        };
+        let verdict = admit_sources(&artifacts, &depot, NetworkPolicy::default(), &same_value);
+        assert_eq!(ids(&verdict), ["public"]);
+        assert_eq!(
+            verdict.rejected,
+            [RejectedArtifactSource {
+                id: "other".to_owned(),
+                reason: SourceRejection::PublicCredentialReuse,
+            }]
+        );
+        assert!(
+            !verdict.rejected[0]
+                .reason
+                .to_string()
+                .contains("one-shared-secret-value"),
+            "the rejection must never carry the secret"
+        );
+        let distinct = |name: &str| match name {
+            "LABBY_DEPOT_PUBLIC_TOKEN" => Some(std::ffi::OsString::from("public-secret-value")),
+            "LABBY_DEPOT_OTHER_TOKEN" => Some(std::ffi::OsString::from("other-secret-value")),
+            _ => None,
+        };
+        let verdict = admit_sources(&artifacts, &depot, NetworkPolicy::default(), &distinct);
+        assert_eq!(ids(&verdict), ["public", "other"]);
+        // An unset variable cannot be compared and is not a reuse.
+        let public_only = |name: &str| {
+            (name == "LABBY_DEPOT_PUBLIC_TOKEN")
+                .then(|| std::ffi::OsString::from("public-secret-value"))
+        };
+        let verdict = admit_sources(&artifacts, &depot, NetworkPolicy::default(), &public_only);
+        assert_eq!(ids(&verdict), ["public", "other"]);
     }
 
     #[test]
@@ -481,7 +605,7 @@ mod tests {
                 "8.8.8.8",
             )],
         };
-        let verdict = admit_host_sources(&artifacts, &depot);
+        let verdict = admit_host_sources(&artifacts, &depot, &no_env);
         assert!(verdict.policy.is_none());
         assert!(ids(&verdict).is_empty());
         assert_eq!(verdict.rejected[0].reason, SourceRejection::HostPolicy);

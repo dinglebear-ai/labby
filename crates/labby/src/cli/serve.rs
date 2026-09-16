@@ -166,8 +166,11 @@ fn bootstrap_skill_library(
     // Admit `[[artifacts.sources]]` once so the import coordinator and the
     // control plane project exactly the same sources and each disabled source
     // is warned about exactly once.
-    let sources =
-        crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+    let sources = crate::dispatch::artifact_sources::admit_host_sources(
+        &config.artifacts,
+        &config.depot,
+        &|name| std::env::var_os(name),
+    );
     sources.warn_rejections();
     let imports = configure_skill_library_imports(&sources, config, &artifacts_root)?;
     let controls = Arc::new(
@@ -703,7 +706,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
     config
         .depot
-        .validate_public_acquisition(&config.artifacts)
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
         .map_err(anyhow::Error::msg)?;
     let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
     depot_secrets
@@ -2944,13 +2947,19 @@ mod tests {
             },
             ..LabConfig::default()
         };
-        let sources =
-            crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
         assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
 
         config.artifacts = ArtifactPreferences::default();
-        let sources =
-            crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+        let sources = crate::dispatch::artifact_sources::admit_host_sources(
+            &config.artifacts,
+            &config.depot,
+            &|_| None,
+        );
         assert!(configure_skill_library_imports(&sources, &config, root.path()).is_ok());
     }
 

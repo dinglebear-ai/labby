@@ -82,7 +82,7 @@ pub(crate) fn validate_startup_config(config: &LabConfig) -> Vec<ConfigProblem> 
 fn fatal_depot_checks(config: &LabConfig) -> Result<()> {
     config
         .depot
-        .validate_public_acquisition(&config.artifacts)
+        .validate_public_acquisition_with_env(&config.artifacts, &|name| std::env::var_os(name))
         .map_err(anyhow::Error::msg)
         .context("validate Public Depot acquisition")?;
     crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot)
@@ -99,8 +99,11 @@ fn fatal_depot_checks(config: &LabConfig) -> Result<()> {
 /// source it would disable, then prove both Artifact adapters construct.
 #[cfg(feature = "skills")]
 fn skill_library_checks(config: &LabConfig) -> Vec<ConfigProblem> {
-    let sources =
-        crate::dispatch::artifact_sources::admit_host_sources(&config.artifacts, &config.depot);
+    let sources = crate::dispatch::artifact_sources::admit_host_sources(
+        &config.artifacts,
+        &config.depot,
+        &|name| std::env::var_os(name),
+    );
     let mut problems = sources
         .rejected
         .iter()
