@@ -220,6 +220,29 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY", false, false, "false", "Temporary compatibility switch for clients without RFC 9207 response issuer support"),
         auth_env("LABBY_AUTH_MACHINE_CLIENTS_JSON", false, true, "[]", "Preregistered machine-client definitions"),
         auth_env("LABBY_AUTH_ENTERPRISE_ISSUERS_JSON", false, true, "[]", "Trusted enterprise issuer definitions"),
+        // Agent execution provider. `agents`/`tasks` are caller-bound services
+        // with synthetic registry metadata and no PluginMeta, so the variables
+        // their executor reads are declared here against the code constants.
+        EnvDoc {
+            service: "agents".to_string(),
+            env_var: crate::dispatch::phoenix_openai::BASE_URL_ENV.to_string(),
+            required: false,
+            secret: false,
+            description: "OpenAI-compatible provider base URL used by Agent and Agent Task execution; must be reachable from the Labby process and carry no credentials, query, or fragment"
+                .to_string(),
+            example: "http://127.0.0.1:43871/v1".to_string(),
+            default_port: None,
+        },
+        EnvDoc {
+            service: "agents".to_string(),
+            env_var: crate::dispatch::phoenix_openai::API_KEY_ENV.to_string(),
+            required: false,
+            secret: true,
+            description: "Bearer credential sent to the OpenAI-compatible Agent execution provider when it requires one"
+                .to_string(),
+            example: "<labby_phoenix_openai_api_key>".to_string(),
+            default_port: None,
+        },
         EnvDoc {
             service: "proxy".to_string(),
             env_var: "LABBY_PROXY_BEARER_TOKEN".to_string(),
@@ -1042,6 +1065,46 @@ mod tests {
                 "OpenAPI omits {action}"
             );
         }
+    }
+
+    /// Every `LABBY_*` variable the Agent execution provider reads from the
+    /// environment must appear in the generated reference, so operators and
+    /// the settings env schema learn about it from product metadata rather
+    /// than from a service doc alone. Test-only hooks are documented in
+    /// TESTING.md and intentionally excluded here.
+    #[test]
+    fn env_reference_lists_every_labby_env_constant_read_in_source() {
+        let projection = build_docs_projection(&workspace_root().unwrap()).unwrap();
+        let documented = projection
+            .env_reference
+            .iter()
+            .map(|entry| entry.env_var.as_str())
+            .collect::<BTreeSet<_>>();
+        let source = include_str!("../dispatch/phoenix_openai.rs");
+        let constants = labby_env_literals(source);
+        assert!(
+            constants.iter().any(|name| name.contains("PHOENIX")),
+            "scan must find the provider variables: {constants:?}"
+        );
+        for constant in constants {
+            assert!(
+                documented.contains(constant.as_str()),
+                "{constant} is read from the environment but absent from the generated env reference"
+            );
+        }
+    }
+
+    /// `"LABBY_..."` string literals in `source`, in order of appearance.
+    fn labby_env_literals(source: &str) -> Vec<String> {
+        source
+            .match_indices("\"LABBY_")
+            .map(|(start, _)| {
+                source[start + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     #[test]

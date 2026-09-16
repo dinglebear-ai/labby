@@ -397,7 +397,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "oauth_needs_reauth"
         | "oauth_scope_upgrade_required"
         | "oauth_shared_credential_protected"
-        | "route_scope_denied" => AgentErrorOrigin::Policy,
+        | "route_scope_denied"
+        // Membership, policy, or the execution lease moved under a running
+        // Agent session or Task attempt.
+        | "authority_changed" => AgentErrorOrigin::Policy,
         // A capability the operator did not build in. Policy rather than
         // discovery: the action is genuinely unavailable here, and no amount of
         // rediscovery changes that.
@@ -438,7 +441,13 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "connection_error"
         | "connection_refused"
         | "dns_error"
-        | "relay_forwarder_init_failed" => AgentErrorOrigin::UpstreamTransport,
+        | "relay_forwarder_init_failed"
+        // Agent execution: the OpenAI-compatible provider (or the pinned
+        // payload it depends on) is unreachable, or it answered with bytes
+        // that do not satisfy the expected contract. Neither is a completed
+        // provider result.
+        | "unavailable"
+        | "protocol_error" => AgentErrorOrigin::UpstreamTransport,
         "bridge_transport_error" => AgentErrorOrigin::Bridge,
         _ => AgentErrorOrigin::Runtime,
     }
@@ -449,9 +458,15 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
 pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
     // These limits can reject a result or a later step after work committed.
     // Budget origin alone does not establish pre-execution rejection.
+    // `authority_changed` is a policy outcome observed mid-execution: the run
+    // may already have reached its provider before the fence closed.
     if matches!(
         kind,
-        "result_too_large" | "response_too_large" | "budget_exceeded" | "call_budget_exceeded"
+        "result_too_large"
+            | "response_too_large"
+            | "budget_exceeded"
+            | "call_budget_exceeded"
+            | "authority_changed"
     ) {
         return AgentSideEffectRisk::Possible;
     }
@@ -530,7 +545,7 @@ pub fn recovery_for_kind(
         },
         "timeout" | "network_error" | "upstream_error" | "bad_gateway"
         | "service_unavailable" | "runtime_unavailable" | "provider_error"
-        | "provider_unavailable" | "provider_timeout"
+        | "provider_unavailable" | "provider_timeout" | "unavailable"
         | "not_connected" | "connection_error" | "connection_refused" | "dns_error"
         | "relay_forwarder_init_failed" => {
             AgentRecoveryAdvice {
@@ -668,6 +683,18 @@ pub fn recovery_for_kind(
                 retry_after_ms: None,
             }
         }
+        "protocol_error" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::InspectAndEscalate,
+            same_arguments: AgentSameArgumentsRetry::Discouraged,
+            guidance: "The Agent execution provider or the pinned payload store returned bytes that do not satisfy the expected contract. Inspect the provider configuration and server diagnostics; an unchanged retry is unlikely to succeed until the provider or stored content is repaired.".to_string(),
+            retry_after_ms: None,
+        },
+        "authority_changed" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::RetryLater,
+            same_arguments: AgentSameArgumentsRetry::Conditional,
+            guidance: "Authority for the owner scope changed while the Agent session or Task attempt was executing. Confirm the caller is still authorized, check whether the run committed partial work at its provider, then start a fresh run; the fenced session cannot be resumed.".to_string(),
+            retry_after_ms: None,
+        },
         "feature_not_compiled" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::DoNotRetry,
             same_arguments: AgentSameArgumentsRetry::Never,
@@ -692,6 +719,37 @@ pub fn recovery_for_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_execution_kinds_are_classified() {
+        let unavailable = metadata_for_kind("unavailable", None);
+        assert_eq!(unavailable.origin, AgentErrorOrigin::UpstreamTransport);
+        assert_eq!(unavailable.side_effects, AgentSideEffectRisk::Possible);
+        assert_eq!(unavailable.recovery.action, AgentRecoveryAction::RetryLater);
+
+        let protocol = metadata_for_kind("protocol_error", None);
+        assert_eq!(protocol.origin, AgentErrorOrigin::UpstreamTransport);
+        assert_eq!(protocol.side_effects, AgentSideEffectRisk::Possible);
+        assert_eq!(
+            protocol.recovery.action,
+            AgentRecoveryAction::InspectAndEscalate
+        );
+        assert_eq!(
+            protocol.recovery.same_arguments,
+            AgentSameArgumentsRetry::Discouraged
+        );
+
+        // Authority moved under a run that may already have produced provider
+        // effects; the caller must re-establish authority, not retry blindly.
+        let authority = metadata_for_kind("authority_changed", None);
+        assert_eq!(authority.origin, AgentErrorOrigin::Policy);
+        assert_eq!(authority.side_effects, AgentSideEffectRisk::Possible);
+        assert_eq!(authority.recovery.action, AgentRecoveryAction::RetryLater);
+        assert_eq!(
+            authority.recovery.same_arguments,
+            AgentSameArgumentsRetry::Conditional
+        );
+    }
 
     #[test]
     fn validation_error_is_fixable_without_side_effects() {
